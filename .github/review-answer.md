@@ -122,8 +122,8 @@ stop holds ("The two stops", below).
   It changes nothing else.
 - A suggestion replaces only lines of the diff: right-side lines of one
   hunk of `.review/pr.diff`, numbered as in the file at the head. The
-  workflow posts no other suggestion. It gives each other suggestion in the
-  summary as a sentence that names its file and line.
+  workflow posts no other suggestion. It writes a sentence after the
+  summary for each other suggestion, which names its file and line.
 - The summary names each change that a suggestion cannot carry, with its
   file and line: a change outside the lines of the diff, a new file, or a
   deleted or renamed file.

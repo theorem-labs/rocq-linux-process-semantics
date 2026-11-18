@@ -1317,10 +1317,28 @@ class InertTest(unittest.TestCase):
                 self.assertEqual(got.replace(WJ, ""), text)
 
 
+def markup_layout(body):
+    """(states, end): for each line of body, whether a fenced code block holds it and how many <details> are open
+    before it, as CommonMark reads a fence and as HTML counts <details>; and the same after its last line."""
+    states, fence, depth = [], "", 0
+    for line in body.split("\n"):
+        states.append((bool(fence), depth))
+        if fence:
+            if re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{%d,}[ \t]*" % len(fence), line):
+                fence = ""
+            continue
+        m = re.match(r" {0,3}(`{3,}(?=[^`]*$)|~{3,})", line)
+        if m:
+            fence = m.group(1)
+            continue
+        depth += len(re.findall(r"(?i)<details\b", line)) - len(re.findall(r"(?i)</details\s*>", line))
+    return states, (bool(fence), depth)
+
+
 class ClosedTest(unittest.TestCase):
     """trim.py's closed, which the review job applies to each text of the model or the reader that a fixed part
     follows: the trimmed review, each added item and the review in the collapsed block (FreshReaderTest), the answer,
-    and the summary and each why of a fix."""
+    and the summary, each why and each sentence off the diff of a fix."""
 
     def test_markup_that_a_text_closes_stays_as_it_is_and_closing_again_changes_nothing(self):
         """A collapsed block of the model's own, a fence that holds a shorter fence, and a tag in a code block or a
@@ -1362,6 +1380,33 @@ class ClosedTest(unittest.TestCase):
         self.assertEqual([c["body"] for c in got["comments"]],
                          ["Why:\n\n```text\nlog\n```\n\n```suggestion\nx\n```",
                           f"Why. <{WJ}/details>\n\n```suggestion\ny\n```"])
+
+    def test_a_fix_summary_that_leaves_a_fence_open_keeps_each_sentence_off_the_diff_outside_it(self):
+        """The sentences of the suggestions off the diff (rules.py suggestions) come after the trimmed summary, which
+        is closed first, so a fence that the summary leaves open ends before them. The why in each sentence is made
+        inert and the sentence is closed as a whole: a why that opens a fence or a <details>, or one whose fence is
+        whole on its own but opens a code block after the sentence's words, takes in no later sentence and not the
+        footer."""
+        said = "The diff of this pull request does not show `a.v:{}`, so no suggested change can change it."
+        fix = {"summary": "", "suggestions": [{"path": "a.v", "start_line": 1, "line": 1, "replacement": "x\n"}],
+               "off": [{"sentence": said.format(9), "why": "Why:\n```coq\nexact I."},
+                       {"sentence": said.format(4), "why": "```text\nlog\n```"},
+                       {"sentence": said.format(5),
+                        "why": " <details><summary>Log</summary>\n\nAsk @octocat. <!-- x -->"},
+                       {"sentence": said.format(6), "why": "  "}]}
+        got = trim.fix_review(fix, "Notes:\n\n```text\nlog", ["Why."], "0" * 40, "HEAD", "FOOT")
+        self.assertEqual(got["body"], "\n\n".join([
+            "HEAD", "Notes:\n\n```text\nlog\n```", said.format(9) + " Why:\n```coq\nexact I.\n```",
+            said.format(4) + " ```text\nlog\n```\n```",
+            said.format(5) + f" <details><summary>Log</summary>\n\nAsk @{WJ}octocat. <{WJ}!-- x -->\n\n</details>",
+            said.format(6), "---\nFOOT"]))
+        lines = got["body"].split("\n")
+        states, end = markup_layout(got["body"])
+        places = [i for i, line in enumerate(lines) if line.startswith(("The diff of", "---", "FOOT"))]
+        self.assertEqual(len(places), 6, got["body"])
+        for i in places:
+            self.assertEqual(states[i], (False, 0), lines[i])   # in no code block and no <details>
+        self.assertEqual(end, (False, 0))
 
 
 class ReachTest(Runner):
@@ -2351,23 +2396,24 @@ class HoldTest(Holding):
 
     # A hold that is tried again says from when, and which events start the run that takes it again: there is no
     # schedule.
-    AGAIN = (r"The workflow screens this (pull request|issue) again at its first run after "
-             r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\. The workflow runs when a CI run in this repository "
-             r"ends, when someone pushes to `main`, or when someone opens or reopens an issue\. ")
+    AGAIN = (r"The workflow screens this (pull request|issue) again at the first of these events after "
+             r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:\n\n- A CI run in this repository ends\.\n"
+             r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n\n")
     # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
     # be held for another reason, says only that a new hold says why. The marker follows, and nothing asks anyone to
     # start a run.
     AGAIN_LIMIT = AGAIN + (r"If the account is still at the limit then, the workflow holds this (pull request|issue) "
                            r"again\. This comment then gives the new time\.\n\n<!-- ")
-    AGAIN_OTHER = AGAIN + r"If the workflow holds it again, this comment says why\.\n\n<!-- "
+    AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
         of the screen carries no such marker, so it is never screened again on its own. The workflow still works on
         the item: no state label."""
         _calls, _post, body = self.hold("limit", tries="1")
-        self.assertIn(f"The workflow screens at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes "
-                      "and comments of such an account each hour", body)
+        self.assertIn(f"Each hour, the workflow screens at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, "
+                      "issues, pushes and comments of such an account, before it reviews or answers them. This account "
+                      "is at that limit.", body)
         self.assertRegex(body, self.AGAIN_LIMIT)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
@@ -2383,8 +2429,9 @@ class HoldTest(Holding):
 
     def test_a_review_stopped_at_the_cap_is_tried_again_and_counts_no_try(self):
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", capped=True)
-        self.assertIn(f"the workflow already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and "
-                      "answers an hour", body)
+        cap = WF["env"]["SCREENED_HOURLY_CAP"]
+        self.assertIn(f"The automated screen passed it. The workflow runs at most {cap} automated reviews and answers "
+                      f"each hour for such accounts, and it already ran {cap}.", body)
         self.assertRegex(body, self.AGAIN_OTHER)
         self.assertNotIn("account is still at the limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
@@ -2397,7 +2444,7 @@ class HoldTest(Holding):
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/issues/7#c40"})
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="0", capped=True,
                                         labels=("review-held", THEOREM_LABEL), comments=[label])
-        self.assertRegex(body, r"after [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\.")
+        self.assertRegex(body, r"after [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:")
         self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL)])
         (method, endpoint, text), = label_comments(self.api)
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
@@ -2408,7 +2455,7 @@ class HoldTest(Holding):
         """The count of the hour's reviews could not be read: the cap was not reached, so the hold says so and counts a
         try, and REVIEW_TRIES still ends the tries."""
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", uncounted=True)
-        self.assertNotIn("already ran its limit", body)
+        self.assertNotIn("automated reviews and answers each hour", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
     def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
@@ -2645,7 +2692,7 @@ class HoldTest(Holding):
         review = attempt_job("review", "Check the count and the cap", name="review (screened)")
         _calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1",
                                         jobs=self.gathered() + [attempt_job("screen", name="screen mallory"), review])
-        self.assertNotIn("already ran its limit", body)
+        self.assertNotIn("automated reviews and answers each hour", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
     def test_jobs_that_cannot_be_read_hold_nothing(self):
@@ -2674,7 +2721,7 @@ class HoldTest(Holding):
                 ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
                  "<!-- review-held-limit 50 0 answer 900 -->"),
                 ("screen", {"review": "failure", "capped": True},
-                 f"already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers an hour",
+                 f"at most {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers each hour",
                  "<!-- review-held-cap 50 0 answer 900 -->"),
                 ("screen", {"review": "failure"},
                  f"the automated answer to the author's comment did not finish. This was try 1 of {self.TRIES}.",
@@ -2724,10 +2771,10 @@ class HoldTest(Holding):
                 ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
                  "<!-- review-held-limit 50 0 draft -->"),
                 ("screen", {"review": "failure", "capped": True},
-                 f"already ran its limit of {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers an hour",
+                 f"at most {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers each hour",
                  "<!-- review-held-cap 50 0 draft -->"),
                 ("screen", {"review": "failure"},
-                 f"the automated draft of a reply did not finish. This was try 1 of {self.TRIES}.",
+                 f"the automated reply did not finish. This was try 1 of {self.TRIES}.",
                  "<!-- review-held-transient 50 1 draft -->")):
             with self.subTest(route=route, **kwargs):
                 self.tearDown()
@@ -2754,8 +2801,8 @@ class HoldTest(Holding):
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated draft of a reply did not finish after {self.TRIES} tries. The workflow does not "
-                      "try it again.", body)
+        self.assertIn(f"the automated reply did not finish after {self.TRIES} tries. The workflow does not try it "
+                      "again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
         self.assertWaitsOnSami("Sami starts the automated work on this item again by hand.")
 
@@ -4958,7 +5005,8 @@ class AnswerFixTest(ReaderRunner):
         self.assertFalse(os.path.exists(self.token_file))
         with open(self.summary, encoding="utf-8") as f:
             summary = f.read()
-        self.assertIn(f"\n\n{reason.replace('@', f'@{WJ}')}\n", summary)
+        self.assertIn("### The second Claude session refused the review\n\nNo part of the review posts. The session "
+                      f"gave this reason:\n\n{reason.replace('@', f'@{WJ}')}\n", summary)
         self.assertNotIn("exact I", summary)
         self.assertEqual(evaluate(JOBS["review"]["outputs"]["refused"], {"steps.result.outputs.refused": "review"}),
                          "review")
@@ -5054,26 +5102,29 @@ class AnswerFixTest(ReaderRunner):
             self.assertNotIn("not a fence", content)
             self.assertNotIn("suggestion", content)
 
-    def test_a_suggestion_off_the_diff_becomes_a_sentence_of_the_summary(self):
+    def test_a_suggestion_off_the_diff_becomes_a_sentence_after_the_summary_that_the_reader_never_reads(self):
         """b1 (D22): code keeps a suggestion only when its lines are right-side lines of one hunk of .review/pr.diff.
-        Each other one (another line, a range past the hunk, a file that the diff does not hold) becomes a sentence of
-        the summary that names its file and lines, which the reader trims with the summary. With no suggestion on the
-        diff, no fix posts and the reader is not called."""
+        Each other one (another line, a range past the hunk, a file that the diff does not hold) becomes a sentence
+        that names its file and lines, with its why: a fixed part of the review's body, after the trimmed summary and
+        before the footer. The reader's requests hold the summary and the why of the kept suggestion alone, and no
+        sentence off the diff and no why of one, so no trim drops them. With no suggestion on the diff, no fix posts
+        and the reader is not called."""
         self.pull_request()
         off = [dict(self.SUGGESTION, start_line=9, line=9, why="Line 9 needs it too."),
                dict(self.SUGGESTION, start_line=4, line=6, why="So do lines 4 to 6."),
                dict(self.SUGGESTION, path="theories/B.v", start_line=1, line=2, why="And theories/B.v.")]
         rc, out, fixed = self.fixed([self.SUGGESTION] + off, summary="The fix.")
         self.assertEqual(rc, 0, out)
-        self.assertEqual([(c["path"], c.get("start_line"), c["line"]) for c in json.loads(fixed["review"])["comments"]],
+        request = json.loads(fixed["review"])
+        self.assertEqual([(c["path"], c.get("start_line"), c["line"]) for c in request["comments"]],
                          [("theories/A.v", 3, 4)])
-        summaries = [text for r in self.readings() for _name, text in self.parts(r["body"]["messages"][0]["content"])
-                     if text.startswith("The fix.")]
         cannot = "The diff of this pull request does not show {}, so no suggested change can change it. {}"
-        self.assertEqual(summaries, ["\n\n".join([
-            "The fix.", cannot.format("`theories/A.v:9`", "Line 9 needs it too."),
+        self.assertTrue(request["body"].endswith("\n\n" + "\n\n".join([
+            "Trimmed.", cannot.format("`theories/A.v:9`", "Line 9 needs it too."),
             cannot.format("`theories/A.v:4-6`", "So do lines 4 to 6."),
-            cannot.format("`theories/B.v:1-2`", "And theories/B.v.")])])
+            cannot.format("`theories/B.v:1-2`", "And theories/B.v."), "---\n" + self.FIX_FOOT])), request["body"])
+        read = [text for r in self.readings() for _name, text in self.parts(r["body"]["messages"][0]["content"])]
+        self.assertEqual(read, ["The fix.", trim.inert(self.SUGGESTION["why"])])
         self.tearDown()
         self.setUp()
         self.pull_request()
@@ -5081,6 +5132,31 @@ class AnswerFixTest(ReaderRunner):
         self.assertEqual((rc, "review" in fixed, self.readings()), (0, False, []), out)
         self.assertIn("no fix posts", out)
         self.assertFalse(os.path.exists(self.token_file))
+
+    def test_a_summary_that_leaves_a_fence_open_keeps_the_sentences_off_the_diff_outside_the_code_block(self):
+        """b1 (R9): the reader gives the summary back inside an open ``` fence, and the whys off the diff open a fence
+        and a <details> of their own, and hold a mention and a marker. Each sentence off the diff and the footer are
+        in no code block and no <details>, each such why is made inert, and no request of the reader holds one."""
+        self.pull_request()
+        open_fence = "The fix.\n\n```text\nlog line"
+        off = [dict(self.SUGGESTION, start_line=9, line=9, why="As @hubot said: <!-- review -->\n```coq\nexact I."),
+               dict(self.SUGGESTION, start_line=4, line=6, why="<details><summary>Lines 4 to 6</summary>\n\nThe log.")]
+        rc, out, fixed = self.fixed([self.SUGGESTION] + off, summary=open_fence, trimmed=open_fence)
+        self.assertEqual(rc, 0, out)
+        body = json.loads(fixed["review"])["body"]
+        lines = body.split("\n")
+        states, end = markup_layout(body)
+        places = [i for i, line in enumerate(lines) if line.startswith(("The diff of this pull request", "---"))]
+        self.assertEqual((len(places), lines[-1]), (3, self.FIX_FOOT), body)
+        for i in places + [len(lines) - 1]:
+            self.assertEqual(states[i], (False, 0), lines[i])   # in no code block and no <details>
+        self.assertEqual(end, (False, 0))
+        self.assertIn(f"As @{WJ}hubot said: <{WJ}!-- review -->", body)
+        self.assertNotIn("<!-- review -->", body)
+        for reading in self.readings():
+            content = reading["body"]["messages"][0]["content"]
+            for words in ("hubot", "Lines 4 to 6", "does not show"):
+                self.assertNotIn(words, content)
 
     def test_the_answer_and_the_fix_write_from_the_rules_and_the_repositorys_three_skill_copies(self):
         """b1 (R1): the prompts of the answer and of the fix name .github/review-answer.md, .github/review.md and
@@ -7146,9 +7222,9 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "answer-post")]), out)
         body = self.assertStopped(
-            "answer-post", "Automated answer held.", "The workflow wrote the automated answer to the author's comment "
-            f"on this pull request {self.TRIES} times, and could not post it. The workflow does not try it again. You "
-            "do not need to do anything.", edited=True)
+            "answer-post", "Automated answer held.", "The workflow wrote the automated answer to your comment on this "
+            f"pull request {self.TRIES} times, and could not post it. The workflow does not try it again. You do not "
+            "need to do anything.", edited=True)
         self.comments(7, *waits, {"id": 9, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
                                   "body": body})
         rc, out, runs = self.started()
@@ -7901,9 +7977,9 @@ class LeftClosedTest(Scheduled):
         self.ran(64, self.TITLE, made=100, ended=95, jobs=[self.CANCELLED])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "reopen")]), out)
-        body = self.assertStopped("reopen", "Automated catch-up held.", "The automated catch-up closed this pull "
-                                  f"request and could not reopen it after {self.TRIES} tries. The workflow closed it so "
-                                  "that GitHub starts its checks.",
+        body = self.assertStopped("reopen", "Automated catch-up held.", "The workflow closed this pull request so that "
+                                  "GitHub starts its checks. It could not reopen the pull request after "
+                                  f"{self.TRIES} tries.",
                                   step_line="Sami reopens the pull request.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         rc, out, runs = self.started()
@@ -8348,8 +8424,8 @@ class HeadScheduleTest(Scheduled):
         self.relabelled([self.line_label()])
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
         body = self.label_of()
-        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The automated work on this item is not "
-                                        "finished.\n"), body)
+        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The workflow continues the automated "
+                                        "work on this item.\n"), body)
         self.assertNotIn("review-conflict-state", body)
         self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
@@ -8862,8 +8938,9 @@ class CatchupTest(Held):
         self.closed()
         self.serve(f"repos/{REPO}/issues/7/comments", [
             {"id": 5, "user": {"login": BOT}, "updated_at": OLD,
-             "body": "<!-- review-held -->\n**Automated catch-up held.**\n\nThe automated catch-up closed this pull "
-                     f"request and could not reopen it after 3 tries.\n\n<!-- review-held-head {HEAD} -->"}])
+             "body": "<!-- review-held -->\n**Automated catch-up held.**\n\nThe workflow closed this pull request so "
+                     "that GitHub starts its checks. It could not reopen the pull request after 3 tries.\n\n"
+                     f"<!-- review-held-head {HEAD} -->"}])
         rc, out, got = self.catchup()
         self.assertEqual((rc, got.get("route")), (0, None), out)
         self.assertNotIn(f"repos/{REPO}/actions/workflows/review.yml/runs", self.calls())
@@ -8967,7 +9044,8 @@ class LabelRuleTest(unittest.TestCase):
                     self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-author -->"), body)
                 else:
-                    self.assertTrue(step_line.startswith("**Next step:** The automated "), step_line)
+                    steps = ("**Next step:** The automated ", "**Next step:** The workflow ")
+                    self.assertTrue(step_line.startswith(steps), step_line)
                     self.assertNotIn("<!-- waits-on-", body)
                     self.assertNotIn("Sami", body)
 
@@ -8979,13 +9057,13 @@ class LabelRuleTest(unittest.TestCase):
         merge = "If the rules of this repository allow a merge, Sami merges the pull request in this repository."
         approve = "Sami approves the head commit for the import into the internal repository."
         copy = "Sami copies the change into the internal repository by hand."
-        live = "if the import takes each path"
+        live = "if the import copies each path"
         unread = "GitHub did not give the full list of the files that this pull request changes"
         for state in ("decide", "person"):
             for value, decision, step_words, words, absent in (
                     ("README.md", "markdown", approve, [], [copy, merge, unread]),
                     ("README.md", "person", approve, [], [copy, merge, unread]),
-                    ("README.md", "outside", copy, ["changes a path that the import does not take"],
+                    ("README.md", "outside", copy, ["changes a path that the import does not copy"],
                      [approve, merge, "`.github/`"]),
                     ("README.md", "steering", copy, ["changes a file under `.github/`"], [approve, merge]),
                     ("README.md", "unread", None, [unread, live, copy], [merge]),
@@ -9020,7 +9098,7 @@ class LabelRuleTest(unittest.TestCase):
         body = rules.label_comment("decide")
         for words in ("- If the rules of this repository allow a merge, Sami merges the pull request in this "
                       "repository.\n",
-                      "- Else, when the import into the internal repository runs and takes each changed path, Sami "
+                      "- Else, when the import into the internal repository runs and copies each changed path, Sami "
                       "approves the head commit for the import.\n",
                       "- Else, when the import runs, Sami copies the change into the internal repository by hand."):
             self.assertIn(words, body)
@@ -9180,6 +9258,19 @@ class LabelTest(Runner):
         self.assertEqual(state_labels(self.api), [])
         self.assertEqual(label_comments(self.api), [("POST", f"repos/{REPO}/issues/7/comments",
                                                      rules.label_comment("working", markers=[line]))])
+
+    def test_a_marker_line_is_the_comment_marks_around_one_line_of_text(self):
+        """with_marker reads the last part of a label comment as its marker lines only when each line of it is <!--
+        and a space, any text with no line break, then a space and -->: a test of the line's start and end, not a
+        pattern that matches HTML comments."""
+        for line, want in ((f"<!-- review-catchup {HEAD} -->", True), ("<!--  -->", True), ("<!-- a --> -->", True),
+                           ("<!-- -->", False), ("<!--x -->", False), ("<!-- x-->", False), ("<!-- a\nb -->", False),
+                           (" <!-- a -->", False), ("<!-- a --> ", False), ("<!-- a --!>", False), ("", False)):
+            with self.subTest(line=line):
+                self.assertIs(rules.marker_line(line), want)
+        line = f"<!-- review-catchup {HEAD} -->"
+        self.assertEqual(rules.with_marker("Text.\n\n<!--  -->", line), f"Text.\n\n{line}\n<!--  -->")
+        self.assertEqual(rules.with_marker("Text.\n\n<!-- -->", line), f"Text.\n\n<!-- -->\n\n{line}")
 
     def test_with_no_state_label_an_item_with_no_label_comment_gets_none(self):
         rc, out = self.rule("label", "7", "held=true", labels=(THEOREM_LABEL,))
@@ -9345,7 +9436,7 @@ class ImportCheckTest(ReaderRunner):
     COPY = "Sami copies the change into the internal repository by hand."
     # The text before Sami's step of the import in the label comment of a person verdict.
     ANSWERED = "If the answers to the questions leave no blocking finding,"
-    NOT_TAKEN = "This pull request changes a path that the import does not take."
+    NOT_TAKEN = "This pull request changes a path that the import does not copy."
     UNREAD = "GitHub did not give the full list of the files that this pull request changes"
 
     def setUp(self):
@@ -9486,8 +9577,8 @@ class ImportCheckTest(ReaderRunner):
         cannot tell apart, a merge on this repository first. Both marker lines hold null."""
         got = self.judge(["docs/guide.md"], value=None)
         self.assertRecorded(got, None)
-        self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and takes each "
-                         "changed path", "Else, when the import runs, Sami copies the change", value=None)
+        self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and copies "
+                         "each changed path", "Else, when the import runs, Sami copies the change", value=None)
 
     def test_with_the_variable_and_each_path_matching_the_check_run_and_no_label(self):
         """The variable holds the pair's import_paths, and each changed path is a Markdown file that they take: the
@@ -9546,7 +9637,7 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(paths, "pass", None)
                 self.assertNotRecorded(got, "steering")
                 self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and "
-                                 "takes each changed path", "Else, when the import runs, Sami copies the change",
+                                 "copies each changed path", "Else, when the import runs, Sami copies the change",
                                  value=None)
 
     def test_a_change_of_reports_corpus_replay_md_gets_the_copy_by_hand_comment(self):
@@ -9642,7 +9733,7 @@ class ImportCheckTest(ReaderRunner):
                     words = [self.MERGE] if value is None else [self.APPROVE]
                     body = self.assertWaits(got, step_line, *words, value=value)
                     # With no variable, no step of the live import; with it, no copy by hand.
-                    self.assertNotIn("if the import takes each path" if value is None else self.COPY, body)
+                    self.assertNotIn("if the import copies each path" if value is None else self.COPY, body)
 
     def test_a_new_head_after_an_approved_one_gets_no_check_run_until_it_passes(self):
         """HEAD got the check run. The author pushed OTHER_HEAD: the post job of HEAD's review that runs after the push
@@ -9675,7 +9766,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertRecorded(self.judge(many, value=self.LPS.replace("README.md", "docs/**")),
                             self.LPS.replace("README.md", "docs/**"))
         self.assertNotRecorded(self.judge(many[:120] + [".github/x.md"] + many[120:]), "steering")
-        for value, words in ((None, [self.MERGE]), (self.LPS, ["if the import takes each path", self.COPY])):
+        for value, words in ((None, [self.MERGE]), (self.LPS, ["if the import copies each path", self.COPY])):
             with self.subTest(variable=value is not None):
                 got = self.judge(["README.md"], value=value, changed=3001)
                 self.assertNotRecorded(got, "unread")
@@ -9691,7 +9782,7 @@ class ImportCheckTest(ReaderRunner):
                          ["success", "failure", "skipped"])
         self.assertEqual((got["result"], got["post"]["recorded"]), ("failure", "false"))
         self.assertNotRecorded(got)
-        self.assertWaits(got, self.SOME, "if the import takes each path", self.COPY, value=self.LPS)
+        self.assertWaits(got, self.SOME, "if the import copies each path", self.COPY, value=self.LPS)
         self.refuse(f"repos/{REPO}/check-runs", 403, "Resource not accessible by integration")
         got = self.judge(["README.md"], value=self.LPS)
         self.assertEqual((got["steps"][self.RECORD], got["result"], got["post"]["recorded"]),

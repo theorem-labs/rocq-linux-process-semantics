@@ -606,12 +606,12 @@ jobs:
                  any($b[]; startswith("<!-- review-label -->")
                    and test("\n<!-- review-catchup " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
           }
-          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the automated
-          # catch-up closed it and could not reopen it. The catch-up then tries nothing more on it.
+          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
+          # it and could not reopen it. The catch-up then tries nothing more on it.
           gave_up() {
             comments "$1" | jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
               | startswith("<!-- review-held -->")
-                and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
+                and contains("\n\nThe workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after ")))'
           }
           # pages: the start of the --jq filter of a list of runs, which gives, before the rows of each page, the line
           # "= <total_count> <runs on the page>" that whole reads.
@@ -921,7 +921,7 @@ jobs:
               "is not tried again, and the label comment names the next step for Sami."
             case $1 in
               answer) title="Automated answer held." work="the automated answer" ;;
-              draft) title="Automated reply held." work="the automated draft of a reply" ;;
+              draft) title="Automated reply held." work="the automated reply" ;;
               approve) title="Automated approval held." work="the automated approval of the checks" ;;
               *) title="Automated review held." work="the automated review" ;;
             esac
@@ -963,7 +963,7 @@ jobs:
             echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
               "tried again, and the label comment names the next step for Sami."
             halt reopen left_closed catchup "Automated catch-up held." \
-              "The automated catch-up closed this pull request and could not reopen it after $1 tries. The workflow closed it so that GitHub starts its checks."
+              "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
           # whose post job succeeded, how many failed in the post job at a step that is not a sign-in (at most
@@ -1098,7 +1098,7 @@ jobs:
             [ "$kind" != pr ] || what="this pull request"
             echo "::error::#$number: the comment job of $2 answer runs of comment $1 failed: the answer is not tried" \
               "again, and the label comment names the next step for Sami."
-            halt answer-post tries_used_up answer "Automated answer held." "The workflow wrote the automated answer to the author's comment on $what $2 times, and could not post it. The workflow does not try it again. You do not need to do anything."
+            halt answer-post tries_used_up answer "Automated answer held." "The workflow wrote the automated answer to your comment on $what $2 times, and could not post it. The workflow does not try it again. You do not need to do anything."
           }
           # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
           # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
@@ -3435,17 +3435,19 @@ jobs:
         run: python3 .github/review/trim.py sign-in
 
       # The fix as it is posted: code keeps only the suggestions whose lines are right-side lines of one hunk of
-      # .review/pr.diff, and makes each other one a sentence of the summary that names its file and lines (rules.py
-      # suggestions). The fresh reader trims the summary and each why, one request each, and never reads a suggestion
-      # block, which holds the lines of the fix byte for byte (trim.py fix). The review: its marker (the head), its
-      # marker <!-- review-read <time> --> (when the trust job of this run decided it, before the gather job read the
-      # conversation, as in the review comment), a fixed line, the trimmed summary and the footer, and one comment for
-      # each suggestion, on the right side of the diff. The trimmed words are made inert and closed (trim.py's closed),
-      # so that no why takes in its suggestion block. With no suggestion on the diff, no fix posts. A reader that
-      # fails fails this job, so nothing posts untrimmed. A reader that refuses the summary or a why (trim.py's status
-      # 3) gives the output refused=fix and no review: nothing of the fix posts, and the comment job gives the item
-      # waits-on-theorem with Sami's next step. The run's summary gets the reader's reason alone, for Sami, and neither
-      # this log nor an output holds it.
+      # .review/pr.diff, and makes each other one a sentence that names its file and lines, with its why (rules.py
+      # suggestions, its key off). The fresh reader trims the summary and the why of each suggestion on the diff, one
+      # request each, and never reads a suggestion block, which holds the lines of the fix byte for byte, nor a
+      # sentence of off (trim.py fix). The review: its marker (the head), its marker <!-- review-read <time> --> (when
+      # the trust job of this run decided it, before the gather job read the conversation, as in the review comment),
+      # a fixed line, the trimmed summary, each sentence of off and the footer, and one comment for each suggestion, on
+      # the right side of the diff. The trimmed words are made inert and closed (trim.py's closed), so that the
+      # summary takes in no sentence of off and no why takes in its suggestion block. The why in a sentence of off is
+      # made inert, and the sentence closed. With no suggestion on the diff, no fix posts. A reader that fails fails
+      # this job, so nothing posts untrimmed. A reader that refuses the summary or a why (trim.py's status 3) gives the
+      # output refused=fix and no review: nothing of the fix posts, and the comment job gives the item waits-on-theorem
+      # with Sami's next step. The run's summary gets the reader's reason alone, for Sami, and neither this log nor an
+      # output holds it.
       - name: The fix, as it is posted
         id: fixed
         if: steps.fixable.outputs.fix == 'true'
@@ -4339,7 +4341,7 @@ jobs:
           if [ "$TASK" = answer ]; then
             work_of="the automated answer to the author's comment" title="Automated answer held."
           elif [ "$TASK" = draft ]; then
-            work_of="the automated draft of a reply" title="Automated reply held."
+            work_of="the automated reply" title="Automated reply held."
           elif [ "$TASK" = approve ]; then
             work_of="the automated approval of the checks" title="Automated approval held."
           fi
@@ -4406,13 +4408,14 @@ jobs:
           # the other holds say only that a new hold replaces this comment, since a rescreen can be held for another
           # cause than theirs.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
-          again="The workflow screens $what again at its first run after $next. The workflow runs when a CI run in this repository ends, when someone pushes to \`main\`, or when someone opens or reopens an issue."
-          again_limit="$again If the account is still at the limit then, the workflow holds $what again. This comment then gives the new time."
-          again_other="$again If the workflow holds it again, this comment says why."
+          events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."$'\n\n'
+          again="The workflow screens $what again at the first of these events after $next:$events"
+          again_limit="${again}If the account is still at the limit then, the workflow holds $what again. This comment then gives the new time."
+          again_other="${again}If the workflow holds $what again, this comment says why."
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
             kind=limit
-            why="The latest event of $what comes from an account with no write access to this repository. The workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account each hour for automated reviews and answers. This account is at that limit. $again_limit"
+            why="The latest event of $what comes from an account with no write access to this repository. Each hour, the workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account, before it reviews or answers them. This account is at that limit. $again_limit"
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
@@ -4427,7 +4430,7 @@ jobs:
             # above).
             if grep -qxF 'Hold at the hourly cap' <<< "$failed"; then
               kind=cap
-              why="${what^} comes from an account without write access to this repository. The automated screen passed it, but the workflow already ran its limit of $SCREENED_HOURLY_CAP automated reviews and answers an hour for such accounts. $again_other"
+              why="${what^} comes from an account without write access to this repository. The automated screen passed it. The workflow runs at most $SCREENED_HOURLY_CAP automated reviews and answers each hour for such accounts, and it already ran $SCREENED_HOURLY_CAP. $again_other"
             else
               tries=$((tries + 1))
               if (( tries < REVIEW_TRIES )); then

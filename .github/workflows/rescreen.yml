@@ -378,12 +378,12 @@ jobs:
                  any($b[]; startswith("<!-- review-label -->")
                    and test("\n<!-- review-catchup " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
           }
-          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the automated
-          # catch-up closed it and could not reopen it. The catch-up then tries nothing more on it.
+          # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
+          # it and could not reopen it. The catch-up then tries nothing more on it.
           gave_up() {
             comments "$1" | jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
               | startswith("<!-- review-held -->")
-                and contains("\n\nThe automated catch-up closed this pull request and could not reopen it after ")))'
+                and contains("\n\nThe workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after ")))'
           }
           # pages: the start of the --jq filter of a list of runs, which gives, before the rows of each page, the line
           # "= <total_count> <runs on the page>" that whole reads.
@@ -693,7 +693,7 @@ jobs:
               "is not tried again, and the label comment names the next step for Sami."
             case $1 in
               answer) title="Automated answer held." work="the automated answer" ;;
-              draft) title="Automated reply held." work="the automated draft of a reply" ;;
+              draft) title="Automated reply held." work="the automated reply" ;;
               approve) title="Automated approval held." work="the automated approval of the checks" ;;
               *) title="Automated review held." work="the automated review" ;;
             esac
@@ -735,7 +735,7 @@ jobs:
             echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
               "tried again, and the label comment names the next step for Sami."
             halt reopen left_closed catchup "Automated catch-up held." \
-              "The automated catch-up closed this pull request and could not reopen it after $1 tries. The workflow closed it so that GitHub starts its checks."
+              "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
           # whose post job succeeded, how many failed in the post job at a step that is not a sign-in (at most
@@ -870,7 +870,7 @@ jobs:
             [ "$kind" != pr ] || what="this pull request"
             echo "::error::#$number: the comment job of $2 answer runs of comment $1 failed: the answer is not tried" \
               "again, and the label comment names the next step for Sami."
-            halt answer-post tries_used_up answer "Automated answer held." "The workflow wrote the automated answer to the author's comment on $what $2 times, and could not post it. The workflow does not try it again. You do not need to do anything."
+            halt answer-post tries_used_up answer "Automated answer held." "The workflow wrote the automated answer to your comment on $what $2 times, and could not post it. The workflow does not try it again. You do not need to do anything."
           }
           # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
           # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,

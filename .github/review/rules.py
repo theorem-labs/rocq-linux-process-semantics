@@ -75,10 +75,12 @@ to the author's last own push: GitHub made each commit between them from a sugge
 a message that starts with "Apply suggestion"), and such a commit is not a push of the author. So a fix review of an
 older push does not count. The status is 2 when <head> is not in <commits.jsonl>.
 
-suggestions: the fix of <fix.json> ({summary, suggestions}, .github/review-answer.md, "The fix") with only the
-suggestions whose lines are right-side lines of one hunk of <pr.diff>, as JSON on standard output. Each other
-suggestion becomes a sentence of the summary that names its file and lines: a suggested change can change only a line
-that the diff shows. The status is 2 when <fix.json> is not such a fix.
+suggestions: the fix of <fix.json> ({summary, suggestions}, .github/review-answer.md, "The fix") as {summary,
+suggestions[, off]}, as JSON on standard output: suggestions holds only the suggestions whose lines are right-side
+lines of one hunk of <pr.diff>, and off, there only when a suggestion is off the diff, each other suggestion as the
+sentence that names its file and lines, with its why: a suggested change can change only a line that the diff shows.
+trim.py fix puts these sentences after the trimmed summary, where the reader never sees them. The status is 2 when
+<fix.json> is not such a fix.
 
 import-check: the decision of R12 on the head <head> of an outside pull request (import_decision), on standard output:
 record, or the first rule that does not hold. <files.jsonl> holds the files of the pull request at <head> as the API
@@ -176,8 +178,6 @@ FACTS = {
 VERDICTS = ("", "pass", "blocking", "person")
 # The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
 REFUSALS = ("", "review", "answer", "fix")
-# The words of a label comment on a text that the fresh reader refused.
-REFUSAL = "A second Claude session checks each automated text before the text posts."
 # The post job's decisions on the import check run at a head (import_decision): record, or the first rule of R12 that
 # does not hold, or moved when the pull request moved on from the head. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved")
@@ -189,12 +189,12 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 PASSED = "The automated screen and the automated review passed this pull request."
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
-    "- Else, when the import into the internal repository runs and takes each changed path, Sami approves the head "
-    "commit for the import.\n"
+    "- Else, when the import into the internal repository runs and copies each changed path, Sami approves the "
+    "head commit for the import.\n"
     "- Else, when the import runs, Sami copies the change into the internal repository by hand.")
 APPROVE = "Sami approves the head commit for the import into the internal repository."
 COPY = "Sami copies the change into the internal repository by hand."
-IMPORT_STEPS = (f"- {APPROVE.removesuffix('.')}, if the import takes each path that the pull request changes.\n"
+IMPORT_STEPS = (f"- {APPROVE.removesuffix('.')}, if the import copies each path that the pull request changes.\n"
                 f"- Else, {COPY}")
 UNREAD = ("GitHub did not give the full list of the files that this pull request changes, so the workflow cannot "
           "tell which step comes next.")
@@ -202,7 +202,7 @@ UNREAD = ("GitHub did not give the full list of the files that this pull request
 NOT_TAKEN = {
     "steering": ("This pull request changes a file under `.github/`. The workflow never records the check "
                  "`repo-pairs/import-approved` for such a change."),
-    "outside": "This pull request changes a path that the import does not take.",
+    "outside": "This pull request changes a path that the import does not copy.",
 }
 
 # Each state: its label (None for no state label), the next step, which names who takes it, and the text after it
@@ -225,15 +225,16 @@ STATES = {
     # The fresh reader refused the text (the fact refused): nothing of it posted.
     "refused-review": (
         THEOREM, "Sami writes the review by hand.",
-        f"{REFUSAL} It stopped the automated review, so the review did not post. You do not need to do anything."),
+        "A second Claude session read the automated review and stopped it, so the review did not post. You do not "
+        "need to do anything."),
     "refused-answer": (
         THEOREM, "Sami answers your comment by hand.",
-        f"{REFUSAL} It stopped the automated answer to your comment, so the answer did not post. You do not need to do "
-        "anything."),
+        "A second Claude session read the automated answer to your comment and stopped it, so the answer did not "
+        "post. You do not need to do anything."),
     "refused-fix": (
         THEOREM, "Sami writes the fix by hand.",
-        f"The automated review gave a blocking finding. {REFUSAL} It stopped the automated fix for the finding, so no "
-        "suggested change posted. You can push your own change."),
+        "The automated review gave a blocking finding. A second Claude session read the automated fix for the "
+        "finding and stopped it, so no suggested change posted. You can push your own change."),
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the review or the checks of this item by hand.", "You do not need to do anything."),
@@ -242,7 +243,7 @@ STATES = {
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
         "runs again."),
     "fix-stop": (
-        THEOREM, "Sami writes the next step for the blocking finding that the automated fixes did not fix.",
+        THEOREM, "Sami writes a comment on the blocking finding that the automated fixes did not fix.",
         "The workflow posted 2 automated fixes since your last push, and the automated review still gives a blocking "
         "finding. No automated fix runs again. You do not need to do anything."),
     # The hold comment says what did not finish, after how many tries, and that the workflow does not try it again.
@@ -261,7 +262,7 @@ STATES = {
         f"{PASSED} The workflow recorded the check `repo-pairs/import-approved` on its head commit. You do not need "
         "to do anything."),
     "working": (
-        None, "The automated work on this item is not finished.",
+        None, "The workflow continues the automated work on this item.",
         "You do not need to do anything. When a hold comment gives a time, the workflow tries the item again from "
         "that time."),
 }
@@ -274,8 +275,12 @@ NUMBER = re.compile(r"[1-9][0-9]*")
 # reopened the pull request at (D16 (a): once for each head).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->")
-# A marker line, as the last part of a label comment holds them.
-MARKER_LINE = re.compile(r"<!-- [^\n]* -->")
+
+
+def marker_line(line):
+    """Whether line is a marker line, as the last part of a label comment holds them: <!-- and a space, then any
+    text with no line break, then a space and -->."""
+    return len(line) >= 9 and line.startswith("<!-- ") and line.endswith(" -->") and "\n" not in line
 
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
@@ -358,7 +363,7 @@ def import_steps(state, value, decision):
     unread = f"{UNREAD} " if decision == "unread" else ""
     if state == "decide":
         if live and decision in ("person", "markdown"):
-            return APPROVE, (f"{PASSED} The import takes each path that this pull request changes. You do not need "
+            return APPROVE, (f"{PASSED} The import copies each path that this pull request changes. You do not need "
                              "to do anything.")
         if live and decision in NOT_TAKEN:
             return COPY, f"{PASSED} {NOT_TAKEN[decision]} You do not need to do anything."
@@ -523,7 +528,7 @@ def with_marker(body, line):
     kind = marker_kind(line)
     text, gap, last = body.rpartition("\n\n")
     lines = last.split("\n")
-    if not gap or not all(MARKER_LINE.fullmatch(m) for m in lines):
+    if not gap or not all(marker_line(m) for m in lines):
         return f"{body}\n\n{line}"
     kept = [m for m in lines if KEPT.fullmatch(m) and marker_kind(m) != kind]
     rest = [m for m in lines if not KEPT.fullmatch(m)]
@@ -894,9 +899,9 @@ def check_run(head, value, hold):
     summary = ["The automated screen and the automated review passed this head commit.",
                "No changed file is under `.github/`."]
     if hold:
-        summary.append("Each changed file is a Markdown file. While the soundness hold lasts, the workflow records "
-                       "this check only for such a change.")
-    summary.append("The import takes each changed path." if value is not None else
+        summary.append("Each changed file is a Markdown file. For now, the workflow records this check only for such "
+                       "a change, because stock Rocq accepts three public proofs of `False`.")
+    summary.append("The import copies each changed path." if value is not None else
                    "The variable `REPO_PAIRS_IMPORT_PATHS` is not set, so the workflow did not compare the changed "
                    "paths with the paths of the import.")
     return {"name": CHECK, "head_sha": head, "status": "completed", "conclusion": "success",
@@ -1579,8 +1584,10 @@ def on_diff(suggestion, found):
 
 
 def suggestions(fix, diff):
-    """The fix with only the suggestions on the diff; each other one is a sentence of the summary, with its file and
-    lines. A ValueError when the fix is not {summary, suggestions} of .github/review-answer.md."""
+    """The fix {summary, suggestions[, off]}, with only the suggestions on the diff in suggestions. off, there only
+    when a suggestion is off the diff, holds each such one as {sentence, why}: the sentence that names its file and
+    lines, and its why, which trim.py puts after the trimmed summary. A ValueError when the fix is not {summary,
+    suggestions} of .github/review-answer.md."""
     if not (isinstance(fix, dict) and isinstance(fix.get("summary"), str) and isinstance(fix.get("suggestions"), list)):
         raise ValueError("the fix is not {summary, suggestions}")
     found, kept, off = hunks(diff), [], []
@@ -1593,10 +1600,9 @@ def suggestions(fix, diff):
             kept.append(s)
         else:
             where = s["path"] + (f":{s['line']}" if s["start_line"] == s["line"] else f":{s['start_line']}-{s['line']}")
-            off.append(f"The diff of this pull request does not show {code(where)}, so no suggested change can change "
-                       f"it. {s['why'].strip()}".strip())
-    summary = "\n\n".join(p for p in [fix["summary"].strip()] + off if p)
-    return {"summary": summary, "suggestions": kept}
+            off.append({"sentence": f"The diff of this pull request does not show {code(where)}, so no suggested "
+                                    "change can change it.", "why": s["why"]})
+    return {"summary": fix["summary"].strip(), "suggestions": kept, **({"off": off} if off else {})}
 
 
 # --- the relabel (D16) ----------------------------------------------------------------------------------------------
@@ -1614,7 +1620,8 @@ ANSWER_WILL_FIX = re.compile(r"<!-- review-answer [0-9]+ will-fix ([0-9a-f]{40})
 # The words of the holds that are not tried again: the screen's, and the catch-up's that could not reopen a pull
 # request. Each other such hold is a last try.
 SCREEN_HELD = "The automated screen held "
-LEFT_CLOSED = "The automated catch-up closed this pull request and could not reopen it"
+LEFT_CLOSED = ("The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull "
+               "request")
 
 
 def hold_fact(body):

@@ -56,12 +56,14 @@ summary, and --summary-extra appends that file's text after them.
 answer: the answer to a comment of the author of an outside item (.github/review-answer.md), on standard output:
 <head>, the trimmed text, and --- and <foot>; with neither, the trimmed text alone. fix: the request of one review of
 suggested changes (GitHub's POST pulls/<n>/reviews: commit_id <sha>, event COMMENT, a body and one comment for each
-suggestion), as JSON on standard output. <file> of --fix is the fix that code kept ({summary, suggestions}). The body
-is <head>, the trimmed summary, and --- and <foot>. Each comment is the trimmed why of its suggestion and a suggestion
-block that holds the suggestion's replacement byte for byte. The reader reads the words of a fix, the summary and each
-why, in a request of its own each. It never reads a suggestion block. Each text is made inert and cut at CUT
-characters before the reader reads it, and the reader's text is made inert and closed. The suggestion blocks are not
-made inert: GitHub shows no mention, reference or link in a code block.
+suggestion), as JSON on standard output. <file> of --fix is the fix that code kept ({summary, suggestions[, off]},
+rules.py suggestions). The body is <head>, the trimmed summary, each sentence of off with its why, and --- and <foot>.
+Each comment is the trimmed why of its suggestion and a suggestion block that holds the suggestion's replacement byte
+for byte. The reader reads the words of a fix, the summary and the why of each suggestion on the diff, in a request of
+its own each. It never reads a suggestion block, nor a sentence of off or its why. Each text is made inert and cut at
+CUT characters before the reader reads it, and the reader's text is made inert and closed. The why in a sentence of
+off is made inert, and the sentence closed (off_diff). The suggestion blocks are not made inert: GitHub shows no
+mention, reference or link in a code block.
 
 A review, an answer or a fix whose text the reader refuses (for a fix, the summary or one why) ends the script with
 status REFUSED and nothing on standard output: nothing of the text posts (review.yml gives the item waits-on-theorem).
@@ -672,8 +674,8 @@ def summary(review, items, extra=""):
 def refusal(kind, reason):
     """The run's summary of a review, an answer or a fix that the reader refused: that it refused it, and its reason,
     made inert and closed. No other part of the text."""
-    return (f"### The fresh reader refused the {kind}\n\nNothing of the {kind} posts. Its reason:\n\n"
-            f"{closed(inert(reason.strip()))}\n")
+    return (f"### The second Claude session refused the {kind}\n\nNo part of the {kind} posts. The session gave this "
+            f"reason:\n\n{closed(inert(reason.strip()))}\n")
 
 
 # --- the answer and the fix ---------------------------------------------------------------------------------------
@@ -694,11 +696,19 @@ def suggestion(replacement):
     return f"{fence}suggestion\n{lines}{fence}"
 
 
+def off_diff(off):
+    """The sentence of a suggestion off the diff, which code wrote (rules.py suggestions), and its why: the why made
+    inert, and the whole closed, so that the why takes in no part after it. The reader reads neither."""
+    why = inert(off["why"].strip())
+    return closed(f"{off['sentence']} {why}" if why else off["sentence"])
+
+
 def fix_review(fix, summary_trimmed, whys, commit, head="", foot=""):
     """The request of the review of a fix: the body, and one comment for each suggestion of fix, on the right side of
-    the diff, with its trimmed why and its suggestion block. The trimmed words are made inert and closed, so that no
-    why takes in the suggestion block after it, and a suggestion block is neither."""
-    body = framed((head, closed(inert(summary_trimmed))), foot)
+    the diff, with its trimmed why and its suggestion block. The trimmed words are made inert and closed, so that the
+    summary takes in no sentence of off and no why takes in the suggestion block after it, and a suggestion block is
+    neither."""
+    body = framed((head, closed(inert(summary_trimmed)), *(off_diff(o) for o in fix.get("off", ()))), foot)
     comments = []
     for s, why in zip(fix["suggestions"], whys, strict=True):
         c = {"path": s["path"], "line": s["line"], "side": "RIGHT",
@@ -713,13 +723,16 @@ def fix_review(fix, summary_trimmed, whys, commit, head="", foot=""):
 
 
 def kept_fix(fix):
-    """fix, when it is the fix that code kept: {summary, suggestions}, each suggestion {path, start_line, line,
-    replacement, why}."""
+    """fix, when it is the fix that code kept: {summary, suggestions[, off]}, each suggestion {path, start_line, line,
+    replacement, why}, and each part of off, there only when a suggestion is off the diff, {sentence, why}."""
     if not (isinstance(fix, dict) and isinstance(fix.get("summary"), str) and isinstance(fix.get("suggestions"), list)
             and all(isinstance(s, dict) and isinstance(s.get("path"), str) and isinstance(s.get("start_line"), int)
                     and isinstance(s.get("line"), int) and isinstance(s.get("replacement"), str)
-                    and isinstance(s.get("why"), str) for s in fix["suggestions"])):
-        raise ReaderError("the fix is not {summary, suggestions}")
+                    and isinstance(s.get("why"), str) for s in fix["suggestions"])
+            and isinstance(fix.get("off", []), list)
+            and all(isinstance(o, dict) and isinstance(o.get("sentence"), str) and isinstance(o.get("why"), str)
+                    for o in fix.get("off", []))):
+        raise ReaderError("the fix is not {summary, suggestions[, off]}")
     return fix
 
 
