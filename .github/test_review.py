@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Tests of .github/workflows/review.yml.
+"""Tests of .github/workflows/review.yml and .github/workflows/rescreen.yml.
 
 Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail), against a stand-in gh that answers
 from files: which task and route a run gets (a CI run's workflow_run, by the pull requests into main that it names or
-by its head, an issue, an author's comment, a run by hand, the rescreen job's run), the hourly limit of an account
+by its head, an issue, an author's comment, a run by hand, a run of the rescreen pass), the hourly limit of an account
 without write access and the hourly caps, also when GitHub cuts a list of runs at 1,000, which comments and reviews
 the review reads, what the posted comment can notify or link, what a held pull request or issue is told, that a run
 whose sign-in failed holds nothing and uses none of an account's limit, the comment on a merge conflict, how one held
-for a reason not its own is taken again as the task of its hold, and which other runs the schedule starts (an answer
-that waits, a draft, an approval of held runs, the App's writes again, the failed jobs of a screened review that could
-not sign in: the rescreen job, and the trust job's check of its run), and the state label and the label comment that
-each of those gives (.github/review/rules.py, whose rule is also tested on its own). The review job's two sign-ins to
-Anthropic and its fresh reader (.github/review/trim.py), which
+for a reason not its own is taken again as the task of its hold, and which other runs the rescreen pass starts (an
+answer that waits, a draft, an approval of held runs, the App's writes again, the failed jobs of a screened review
+that could not sign in, and the stop of work at its bound of tries: rescreen.yml's step, and the trust job's check of
+its run), and the state label and the label comment that each of those gives (.github/review/rules.py, whose rule is
+also tested on its own). The review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which
 trims the review and adds back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so
 does the soundness rule of an outside pull request's proof (.github/review/rules.py soundness), on a pull request that
 the gather job's step reads from git. The draft of the reply to an outside issue becomes a file of the runner's
@@ -20,9 +20,9 @@ answer or a fix that the fresh reader refuses posts nothing, and the item waits 
 posts byte for byte, once. The post job's steps approve a first-time contributor's held runs against the
 stand-in gh, with a stand-in token from each of the App's sign-in steps, only when the screen passed. Each job's
 condition is evaluated for every task and route, to show which jobs run, and that a run by hand off main runs none,
-with a ref that is main in another case too. The rest checks what each job holds, that no job of either workflow
-holds a right on pull_request, and the settings that keep Claude to the checkout and to the pinned binaries.
-.github/test_screen.py tests the screen itself.
+with a ref that is main in another case too. The rest checks what each job holds, that no job of these workflows
+holds a right on pull_request, that none runs on a schedule, and the settings that keep Claude to the checkout and to
+the pinned binaries. .github/test_screen.py tests the screen itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -47,7 +47,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows", "review.yml")
 CI_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "ci.yml")
-# main's .github/, as the checkout of the comment, hold and rescreen jobs gives it, the rule they run from it, and the
+# The rescreen pass, which starts the runs of review.yml that the open items are due.
+RESCREEN_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "rescreen.yml")
+# main's .github/, as the checkout of the comment, hold and post jobs gives it, the rule they run from it, and the
 # fresh reader that the review job runs from main's checkout.
 GITHUB_DIR = os.path.dirname(os.path.abspath(__file__))
 RULES_PY = os.path.join(GITHUB_DIR, "review", "rules.py")
@@ -147,6 +149,7 @@ WF = load()
 JOBS = WF["jobs"]
 APPS = WF["env"]["APPS"]
 CI = load(CI_WORKFLOW)
+RESCREEN = load(RESCREEN_WORKFLOW)
 
 
 def load_module(path, name):
@@ -463,10 +466,11 @@ class Runner(unittest.TestCase):
              "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}} for p in prs])
 
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
-                  head_repository="", title=None, reply="", pulls=None):
+                  head_repository="", title=None, reply="", pulls=None, variable=None):
         """The trust step, with the event and the inputs as GitHub gives them. A run by hand has run 100's name:
         the one run-name gives its inputs, or title. pulls: the pull requests that a CI run names
-        (workflow_run.pull_requests; named_pr), None for an event that names none."""
+        (workflow_run.pull_requests; named_pr), None for an event that names none. variable: the variable
+        REPO_PAIRS_IMPORT_PATHS (None: not set, so GitHub gives an empty value), which the check of a stop reads."""
         if event == "workflow_dispatch":
             if title is None:
                 title = run_name(**{"github.event_name": event, "inputs.task": task or "review",
@@ -474,12 +478,15 @@ class Runner(unittest.TestCase):
                                     "inputs.comment": comment, "inputs.account": account})
             self.serve(f"repos/{REPO}/actions/runs/100",
                        {"id": 100, "event": event, "display_title": title, "actor": {"login": actor}})
-        return self.run_script(step("trust", TRUST)["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
+        s = step("trust", TRUST)
+        (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
+        return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
                                TASK=task, SCREEN=screen, ACCOUNT=account, COMMENT=comment, HEAD=head,
                                HEAD_REPOSITORY=head_repository, REPLY=reply, RUN_ID="100",
                                PULLS="" if pulls is None else json.dumps(pulls),
-                               OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
-                               HELD_LABEL=WF["env"]["HELD_LABEL"])
+                               **{name: "" if variable is None else variable},
+                               **{k: WF["env"][k] for k in ("OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES",
+                                                            "POST_REVIEW")})
 
     def run_script(self, script, **env):
         open(self.output, "w").close()
@@ -787,26 +794,27 @@ class TrustTest(Runner):
         self.assertReview(None, "issues", "x[bot][bot]", "x[bot][bot]")
 
     def test_the_job_reads_only_and_checks_nothing_out(self):
+        """checks: read is for the check runs of a head, which the check of a stop reads again (due_variable)."""
         job = JOBS["trust"]
-        self.assertEqual(job["permissions"], {"actions": "read", "issues": "read", "pull-requests": "read"})
+        self.assertEqual(job["permissions"], {"actions": "read", "issues": "read", "pull-requests": "read",
+                                              "checks": "read"})
         self.assertFalse(any("uses" in s for s in job["steps"]))
-        names = ("task", "route", "outsider", "number", "head", "comment", "origin", "tries", "started")
+        names = ("task", "route", "outsider", "number", "head", "comment", "origin", "tries", "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
         for name in names:
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
 
-    def test_only_this_repository_on_main_and_no_scheduled_run(self):
-        """Every other job needs the trust job, so nothing runs in a fork, nor on the schedule; but the rescreen job,
-        which has a guard of its own (RescreenJobTest) and is a scheduled run's only job."""
+    def test_only_this_repository_on_main(self):
+        """Every other job needs the trust job, so nothing runs in a fork, nor for a run by hand on another ref."""
         cond = JOBS["trust"]["if"]
         here = {"github.repository_id": 1425819621, "github.ref": "refs/heads/main", "github.event_name": "issues"}
         self.assertTrue(evaluate(cond, here))
-        for change in ({"github.event_name": "schedule"}, {"github.repository_id": 1},
+        for change in ({"github.repository_id": 1},
                        {"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/feature"}):
             with self.subTest(change=change):
                 self.assertFalse(evaluate(cond, dict(here, **change)))
         for name, job in JOBS.items():
-            if name not in ("trust", "rescreen"):
+            if name != "trust":
                 with self.subTest(job=name):
                     self.assertTrue(set(job["needs"] if isinstance(job["needs"], list) else [job["needs"]])
                                     & {"trust", "review"}, name)
@@ -841,7 +849,7 @@ class TrustTest(Runner):
             return found[0]
         gather = step("gather", "Gather the pull request or issue")["run"]
         trust = step("trust", "Whether the author and the account that started the run have write access")["run"]
-        rescreen = step("rescreen", RESCREEN_JOB)["run"]
+        rescreen = pass_step()["run"]
         self.assertEqual(trusted(gather), trusted(trust))
         self.assertEqual(trusted(rescreen), trusted(trust))
 
@@ -1382,9 +1390,8 @@ def run_graph(trust, results=None, outputs=None, github=None, trust_result="succ
     base = {"github.ref": "refs/heads/main", "github.event_name": "workflow_run", **(github or {})}
     got = {"trust": trust_result}
     out = {"trust": trust if trust_result == "success" else {}}
-    # The rescreen job needs no other job, and runs on the schedule alone (RescreenJobTest).
     order = ["trust", "gather", "screen", "review", "post", "comment", "hold"]
-    assert set(order) | {"rescreen"} == set(JOBS), set(JOBS)
+    assert set(order) == set(JOBS), set(JOBS)
     for name in order[1:]:
         job = JOBS[name]
         needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
@@ -1540,6 +1547,18 @@ class RouteTest(unittest.TestCase):
                 self.assertEqual(self.ran({"task": "relabel", "route": "review", "number": "7", "head": HEAD},
                                           results={"post": result}), {"post", "comment"})
 
+    def test_a_stop_runs_the_comment_job_alone(self):
+        """A stop of the rescreen pass screens nothing, runs no model, and has no review job that a cap could count:
+        its trust job decides it again, and the comment job alone writes it; no job holds it when its write fails. A
+        stop whose trust job refused it (no route) runs no other job."""
+        stop = {"task": "stop", "route": "review", "outsider": "", "number": "7", "head": HEAD}
+        dispatch = {"github.event_name": "workflow_dispatch"}
+        for result in ("success", "failure"):
+            with self.subTest(result=result):
+                self.assertEqual(self.ran(stop, results={"comment": result}, outputs={"gather": {}}, github=dispatch),
+                                 {"comment"})
+        self.assertEqual(self.ran({}, outputs={"gather": {}}, github=dispatch), set())
+
     def test_a_draft_takes_the_outsiders_path_and_a_reply_runs_the_comment_job_alone(self):
         """b1 (R3): a draft is gathered and screened (the issue is outside text), then the review job writes it and
         uploads it, and the comment job posts its label comment; it is held at the limit, by the screen, or when the
@@ -1571,7 +1590,7 @@ class RouteTest(unittest.TestCase):
     def test_a_run_by_hand_off_main_runs_no_job(self):
         """A run by hand on another ref holds no identity and posts nothing: the if of every job checks the ref,
         whatever the jobs before it gave. On main, each job runs for some of those."""
-        tasks = ("review", "answer", "draft", "reply", "rescreen", "approve", "catchup", "conflict", "relabel",
+        tasks = ("review", "answer", "draft", "reply", "rescreen", "approve", "catchup", "conflict", "relabel", "stop",
                  "measure")
 
         def contexts(ref, event="workflow_dispatch"):
@@ -1587,9 +1606,8 @@ class RouteTest(unittest.TestCase):
                 yield ctx
         for name, job in JOBS.items():
             with self.subTest(job=name):
-                event = "schedule" if name == "rescreen" else "workflow_dispatch"
-                self.assertFalse(any(evaluate(job["if"], c) for c in contexts("refs/heads/feature", event)))
-                self.assertTrue(any(evaluate(job["if"], c) for c in contexts("refs/heads/main", event)))
+                self.assertFalse(any(evaluate(job["if"], c) for c in contexts("refs/heads/feature")))
+                self.assertTrue(any(evaluate(job["if"], c) for c in contexts("refs/heads/main")))
 
     def test_a_measurement_runs_the_screen_job_alone(self):
         self.assertEqual(self.ran({"task": "measure", "route": "measure", "number": ""}, outputs={"gather": {}}),
@@ -1995,9 +2013,9 @@ class HoldingsTest(unittest.TestCase):
                     self.assertNotIn(needle, text)
 
     def test_the_jobs_that_run_rules_py_check_out_mains_github_alone(self):
-        """The post, comment, hold and rescreen jobs run .github/review/rules.py from main's .github/, never from the
-        pull request, and keep no token in the checkout."""
-        for name in ("post", "comment", "hold", "rescreen"):
+        """The post, comment and hold jobs run .github/review/rules.py from main's .github/, never from the pull
+        request, and keep no token in the checkout."""
+        for name in ("post", "comment", "hold"):
             with self.subTest(job=name):
                 found = [s for s in JOBS[name]["steps"] if s.get("uses", "").startswith("actions/checkout@")]
                 self.assertEqual([s["uses"] for s in found], [CHECKOUT])
@@ -2224,10 +2242,10 @@ class Holding(Runner):
 
     def assertHeldNothing(self, rc, out, failed):
         """No hold comment, no label and no try: the step writes nothing to GitHub, and the run's summary names the
-        step and says that the schedule takes the item again."""
+        step and says that the rescreen workflow takes the item again."""
         self.assertEqual((rc, writes(self.api)), (0, []), out)
         self.assertIn(f'the step "{failed}" failed in this run', self.summary())
-        self.assertIn("The schedule takes the item again.", self.summary())
+        self.assertIn("The rescreen workflow takes the item again at its next run.", self.summary())
 
 
 class HoldTest(Holding):
@@ -2251,8 +2269,11 @@ class HoldTest(Holding):
                 self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
                 self.assertWaitsOnSami("Sami starts the review or the checks of this item by hand.")
 
-    AGAIN = (r"The workflow screens this (pull request|issue) again at its first scheduled run after "
-             r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\. A scheduled run starts every 15 minutes\. ")
+    # A hold that is tried again says from when, and which events start the run that takes it again: there is no
+    # schedule.
+    AGAIN = (r"The workflow screens this (pull request|issue) again at its first run after "
+             r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\. The workflow runs when a CI run in this repository "
+             r"ends, when someone pushes to `main`, or when someone opens or reopens an issue\. ")
     # A limit hold says what happens while the account stays at its limit; a cap or transient hold, whose rescreen can
     # be held for another reason, says only that a new hold says why. The marker follows, and nothing asks anyone to
     # start a run.
@@ -5259,7 +5280,15 @@ class FixRuleTest(unittest.TestCase):
 
 
 RESCREEN_JOB = "Start the runs that the open items are due"
+# The comment job's step that writes a stop of the rescreen pass.
+STOP_STEP = "Say that the work of the item is not tried again"
 OLD, NEW = "2000-01-01T00:00:00Z", "2999-01-01T00:00:00Z"   # a hold over an hour old, and one under it
+
+
+def pass_step():
+    """The step of rescreen.yml that starts the runs that the open items are due."""
+    (found,) = [s for s in RESCREEN["jobs"]["rescreen"]["steps"] if s.get("name") == RESCREEN_JOB]
+    return found
 
 
 def ago(minutes):
@@ -5636,24 +5665,30 @@ class RescreenTrustTest(Held):
                 self.assertEqual(any(f"inputs.{i}" in text for i in ("task", "account", "comment", "head", "screen")),
                                  name == "trust")
 
-    def test_both_copies_of_held_are_the_same(self):
+    def test_the_trust_job_and_the_rescreen_pass_share_their_functions_and_their_values(self):
+        """The trust job of each run that rescreen.yml starts decides it again with the block of functions that
+        rescreen.yml's step runs, byte for byte (the check of a stop runs the pass for its item), and both count with
+        the same values: a pass that counted the limit or the tries with another value than review.yml's jobs would
+        start runs that their trust job refuses, or stops that it never takes."""
         def held(text):
             found = re.findall(r"# held\n(.*?)# end of held\n", text, re.S)
             self.assertEqual(len(found), 1)
             return found[0]
-        self.assertEqual(held(step("rescreen", RESCREEN_JOB)["run"]), held(step("trust", TRUST)["run"]))
+        self.assertEqual(held(pass_step()["run"]), held(step("trust", TRUST)["run"]))
+        for name in ("POST_REVIEW", "APPS", "OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES"):
+            with self.subTest(name=name):
+                self.assertEqual(RESCREEN["env"][name], WF["env"][name])
 
 
 def schedule(test, post_review=None, variable=None):
-    """The rescreen job's step, run against test's stand-in gh, with the variable REPO_PAIRS_IMPORT_PATHS variable
-    (None: not set, so GitHub gives an empty value) in the name that its env maps: its exit status, its log, and each
-    run that it started, in order, as the inputs of its call: (number, task, account, head, comment)."""
-    s = step("rescreen", RESCREEN_JOB)
+    """The step of the rescreen pass (rescreen.yml), run against test's stand-in gh with that workflow's env, and with
+    the variable REPO_PAIRS_IMPORT_PATHS variable (None: not set, so GitHub gives an empty value) in the name that its
+    env maps: its exit status, its log, and each run of review.yml that it started, in order, as the inputs of its call:
+    (number, task, account, head, comment)."""
+    s = pass_step()
     (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
-    rc, out, _ = test.run_script(s["run"], **{name: "" if variable is None else variable},
-                                 OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
-                                 HELD_LABEL=WF["env"]["HELD_LABEL"], REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
-                                 POST_REVIEW=WF["env"]["POST_REVIEW"] if post_review is None else post_review)
+    env = dict(RESCREEN["env"], **({} if post_review is None else {"POST_REVIEW": post_review}))
+    rc, out, _ = test.run_script(s["run"], **{name: "" if variable is None else variable}, **env)
     runs = []
     for call in gh_calls(test.api):
         if call[:3] == ["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]:
@@ -5663,8 +5698,26 @@ def schedule(test, post_review=None, variable=None):
     return rc, out, runs
 
 
+def write_stop(test, stop, number="7", head=""):
+    """The run of review.yml that the rescreen pass started for a stop (-f task=stop -f comment=<stop>), as the API says
+    of #number now: its trust job, of github-actions[bot], which must take it, then, after the stand-in gh forgot its
+    calls, the comment job's steps: the trust job's outputs, and the outcome of each step."""
+    rc, out, trust = test.run_trust("workflow_dispatch", actor=BOT, number=number, task="stop", head=head, comment=stop)
+    test.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "stop", "review"), out)
+    test.forget()
+    ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+    ctx.update({"needs.trust.result": "success", "github.event_name": "workflow_dispatch",
+                "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": ApproveTest.RUN_TOKEN,
+                "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+    ctx.update({f"needs.{job}.result": "skipped" for job in ("gather", "screen", "review", "post")})
+    test.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+    test.logs = getattr(test, "logs", [])
+    return trust, run_job(test, "comment", ctx, {})
+
+
 class RescreenJobTest(Held):
-    """The rescreen job: which held items it starts a run for, how many for one account, and where it runs."""
+    """The rescreen pass (rescreen.yml): which held items it starts a run for, how many for one account, where it runs,
+    and the run of review.yml that writes a stop it decides."""
 
     def setUp(self):
         super().setUp()
@@ -5689,6 +5742,13 @@ class RescreenJobTest(Held):
         rc, out, runs = schedule(self, post_review)
         return rc, out, [r[:3] for r in runs]
 
+    def stop(self, stop="hold-review", number=7):
+        """The run of the stop that the pass started for #number, an issue of alice labelled review-held, as the API
+        says of it now: its trust job, which must take it, then its comment job's steps, after the stand-in gh forgot
+        its calls: the outcome of each step."""
+        self.serve_item(number, "alice", labels=("review-held",))
+        return write_stop(self, stop, number=str(number))[1]
+
     def test_nothing_is_started_when_reviews_are_not_posted(self):
         """Without a posted review the label never comes off, so every held item would be screened and reviewed again
         up to REVIEW_TRIES times for nothing, and then left to a person."""
@@ -5707,19 +5767,19 @@ class RescreenJobTest(Held):
         self.assertIn("POST_REVIEW is not true", out)
 
     def test_a_run_on_main_in_another_case_starts_no_run(self):
-        """R6: GitHub's == compares strings with no case, so the rescreen job's if passes a run on refs/heads/MAIN.
-        The job runs without the trust job, so its own step compares the ref byte for byte: it fails before any read,
-        and starts and writes nothing. The same step on refs/heads/main starts the held item's run."""
-        github = {"github.event_name": "schedule", "github.repository": "theorem-labs/rocq-linux-process-semantics",
-                  "github.repository_id": 1425819621}
-        self.assertTrue(evaluate(JOBS["rescreen"]["if"], dict(github, **{"github.ref": "refs/heads/MAIN"})))
+        """R6: GitHub's == compares strings with no case, so the rescreen pass's if passes a run by hand on
+        refs/heads/MAIN. The pass has no trust job before it, so its own step compares the ref byte for byte: it fails
+        before any read, and starts and writes nothing. The same step on refs/heads/main starts the held item's run."""
+        github = {"github.event_name": "workflow_dispatch",
+                  "github.repository": "theorem-labs/rocq-linux-process-semantics", "github.repository_id": 1425819621}
+        self.assertTrue(evaluate(RESCREEN["jobs"]["rescreen"]["if"], dict(github, **{"github.ref": "refs/heads/MAIN"})))
         self.items((7, "open"))
         self.held(7, limit_hold(50))
         self.origin(50, "mallory")
         self.env["GITHUB_REF"] = "refs/heads/MAIN"
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, self.calls()), (1, [], []), out)
-        self.assertIn("::error::This run is not on refs/heads/main, so the schedule starts no run.", out)
+        self.assertIn("::error::This run is not on refs/heads/main, so the rescreen pass starts no run.", out)
         self.env["GITHUB_REF"] = "refs/heads/main"
         self.assertEqual(self.started()[2], [("7", "rescreen", "mallory")])
 
@@ -5820,9 +5880,9 @@ class RescreenJobTest(Held):
     def test_rescreens_since_the_hold_that_settled_nothing_are_tried_up_to_review_tries(self):
         """A rescreen that left neither a new hold nor a posted review (its trust job failed on a GitHub read, its
         hold job could not write, or its review or post failed on the writers' route) is followed by another start,
-        up to REVIEW_TRIES in all since the hold, however long ago. Then the item waits on Sami, and the job fails so
-        that someone sees it. A rescreen before the hold (the one the hold came from), or another item's, does not
-        count."""
+        up to REVIEW_TRIES in all since the hold, however long ago. Then the pass starts the stop of that work, which
+        writes it, and fails so that someone sees it. A rescreen before the hold (the one the hold came from), or
+        another item's, does not count."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         self.assertGreater(tries, 1)
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -5843,7 +5903,7 @@ class RescreenJobTest(Held):
         self.serve(f"repos/{REPO}/actions/runs/10/jobs", {"jobs": [
             {"name": "trust", "status": "completed", "conclusion": "failure"}]})
         rc, out, runs = self.started()
-        self.assertEqual(sorted(runs), [("7", "rescreen", "mallory"), ("8", "rescreen", "eve")], out)
+        self.assertEqual(sorted(runs), [("7", "rescreen", "mallory"), ("8", "rescreen", "eve"), ("9", "stop", "")], out)
         self.assertIn("#7: 1 runs of rescreen since its hold settled nothing; trying again.", out)
         self.assertEqual(rc, 1, out)
         self.assertIn(f"::error::#9: rescreen ran {tries} times since its hold", out)
@@ -5885,15 +5945,16 @@ class RescreenJobTest(Held):
                 if before < tries:
                     self.assertEqual((rc, runs), (0, [("7", "rescreen", "mallory")]), out)
                 else:
-                    self.assertEqual((rc, runs), (1, []), out)
+                    self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
                     self.assertIn(f"::error::#7: rescreen ran {tries} times since its hold", out)
                     self.assertIn("it is not tried again", out)
 
     def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
-        """The hold comment stops promising an automatic try: it is replaced with fixed words that name no maintainer,
-        with no marker of a hold that is tried again, and the item gets waits-on-theorem with the label comment's step
-        for Sami (b1, the third end of tries). That run fails; the next one finds no hold that is tried again, starts
-        nothing, labels nothing and passes."""
+        """The hold comment stops promising an automatic try: the pass writes nothing itself and starts the stop's run
+        of review.yml, whose comment job replaces the hold with fixed words that name no maintainer, with no marker of a
+        hold that is tried again, and gives the item waits-on-theorem with the label comment's step for Sami (b1, the
+        third end of tries). That pass fails; the next one finds no hold that is tried again, starts nothing, writes
+        nothing and passes."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         hours_ago = (datetime.datetime.now(datetime.timezone.utc)
                      - datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -5906,8 +5967,12 @@ class RescreenJobTest(Held):
         self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
                     for i in range(tries)])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
         self.assertIn(f"::error::#7: rescreen ran {tries} times since its hold", out)
+        self.assertEqual([c[:3] for c in writes(self.api)],
+                         [["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]])
+        steps = self.stop()
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
         self.assertEqual(method, "POST")
@@ -5927,14 +5992,12 @@ class RescreenJobTest(Held):
         self.forget()
         self.held(7, older, {"id": 50, "user": {"login": BOT}, "updated_at": "2999-01-01T00:00:00Z", "body": body})
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (0, []), out)
+        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
         self.assertIn("#7: no hold that is tried again", out)
-        self.assertFalse(any(c[:2] == ["--method", "PATCH"] for c in gh_calls(self.api)))
-        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
     def test_at_the_bound_a_label_that_cannot_be_set_leaves_the_hold_for_the_next_run(self):
-        """The labels of the item cannot be read: the hold comment keeps its marker, so the next run sets the label
-        and replaces the comment then."""
+        """The labels of the item cannot be read: the stop's run writes nothing and fails, and the hold comment keeps
+        its marker, so the next pass starts the stop again."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         self.items((7, "open"))
         self.held(7, limit_hold(50, kind="cap", tries=0))
@@ -5943,42 +6006,56 @@ class RescreenJobTest(Held):
         self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
                     for i in range(tries)])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs, writes(self.api)), (1, [], []), out)
-        self.assertIn("the label of #7 could not be set; the next run tries again", out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
+        steps = self.stop()
+        self.assertEqual((steps[STOP_STEP], writes(self.api)), ("failure", []), self.logs)
+        self.assertIn("the label of #7 could not be set. The next rescreen pass decides the stop again.",
+                      "".join(self.logs))
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
 
     def test_at_the_bound_a_hold_that_changed_meanwhile_is_not_overwritten(self):
-        """The comment is replaced only while the newest hold is still the one the run read. A newer hold written in
-        between (a new event's, or a rescreen's that finished) is left as it is, for the next run, and the job does
-        not fail for it; the same hold read twice is replaced."""
+        """The stop is written only while it is still due when the trust job of its run reads the item again, and while
+        no comment of the workflow on the item changed after that read: a newer hold (a new event's, or a rescreen's
+        that finished) is left as it is, for the next pass, and the stop's run does not fail for it. The same hold read
+        again is replaced."""
         tries = int(WF["env"]["REVIEW_TRIES"])
-        for changed in (True, False):
+        newer = [limit_hold(50, kind="cap", tries=0), dict(limit_hold(60, at=NEW), id=60)]
+        for changed in (None, "before its trust job", "after its trust job"):
             with self.subTest(changed=changed):
                 self.tearDown()
                 self.setUp()
                 self.items((7, "open"))
                 self.labelled(7)
                 self.held(7, limit_hold(50, kind="cap", tries=0))
-                if changed:
-                    self.serve(f"repos/{REPO}/issues/7/comments.then",
-                               [limit_hold(50, kind="cap", tries=0),
-                                dict(limit_hold(60, at="2999-01-01T00:00:00Z"), id=60)])
                 self.origin(50, "mallory")
                 self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model/issues/7#c"})
                 self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
                             for i in range(tries)])
                 rc, out, runs = self.started()
-                patches = [c for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
-                self.assertEqual(runs, [], out)
+                self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
+                if changed == "before its trust job":
+                    self.held(7, *newer)
+                    self.serve_item(7, "alice", labels=("review-held",))
+                    rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="stop", comment="hold-review")
+                    self.assertEqual((rc, trust.get("route")), (0, None), out)
+                    self.assertIn("No stop of #7: the rescreen pass's functions, run again now, decide no such stop", out)
+                    continue
+                if changed == "after its trust job":
+                    self.serve(f"repos/{REPO}/issues/7/comments.then", newer)
+                steps = self.stop()
+                self.assertEqual(steps[STOP_STEP], "success", self.logs)
+                patches = [c[2] for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
                 if changed:
-                    self.assertEqual((rc, patches), (0, []), out)
-                    self.assertIn("#7: its hold changed (2999-01-01T00:00:00Z, read at 2000-01-01T00:00:00Z)", out)
-                    self.assertNotIn("::error::", out)
+                    self.assertEqual((patches, writes(self.api)), ([], []), self.logs)
+                    self.assertIn("a comment of the workflow on it changed after the trust job read it",
+                                  "".join(self.logs))
                 else:
-                    self.assertEqual(rc, 1, out)
-                    self.assertEqual([p[2] for p in patches], [f"repos/{REPO}/issues/comments/50"])
+                    self.assertEqual(patches, [f"repos/{REPO}/issues/comments/50"])
 
     def test_a_hold_comment_that_cannot_be_replaced_is_tried_again_next_run(self):
-        """The PATCH fails (no stand-in answer): the job fails, and the comment keeps its marker for the next run."""
+        """The PATCH fails (no stand-in answer): the stop's run fails, the comment keeps its marker, and the next pass
+        starts the stop again."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         self.items((7, "open"))
         self.labelled(7)
@@ -5987,8 +6064,12 @@ class RescreenJobTest(Held):
         self.runs(*[(10 + i, BOT, "workflow_dispatch", "rescreen #7 of mallory", "completed", 120 + i)
                     for i in range(tries)])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        self.assertIn("the hold comment of #7 could not be replaced; the next run tries again", out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
+        steps = self.stop()
+        self.assertEqual(steps[STOP_STEP], "failure", self.logs)
+        self.assertIn(["--method", "PATCH", f"repos/{REPO}/issues/comments/50"], [c[:3] for c in gh_calls(self.api)])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
 
     def test_a_draft_is_left_alone(self):
         """The trust job takes no draft, and a run it stops would still count toward the account's limit, held
@@ -6090,8 +6171,12 @@ class RescreenJobTest(Held):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, []), out)
 
-    def test_one_rescreen_job_at_a_time(self):
-        self.assertEqual(JOBS["rescreen"]["concurrency"], {"group": "review-rescreen", "cancel-in-progress": False})
+    def test_one_run_of_the_pass_at_a_time_and_none_cancelled(self):
+        """b13: the runs of rescreen.yml queue in one concurrency group of the whole workflow, so that two runs cannot
+        start the same item, and none is cancelled (queue: max keeps every pending one). It has one job."""
+        self.assertEqual(RESCREEN["concurrency"], {"group": "rescreen", "cancel-in-progress": False, "queue": "max"})
+        self.assertEqual(list(RESCREEN["jobs"]), ["rescreen"])
+        self.assertNotIn("concurrency", RESCREEN["jobs"]["rescreen"])
 
     def test_a_hold_naming_a_run_that_is_not_an_events_of_this_workflow_is_left_alone(self):
         self.items((7, "open"), (8, "open"))
@@ -6110,44 +6195,58 @@ class RescreenJobTest(Held):
         self.assertEqual((rc, runs), (1, [("8", "rescreen", "mallory")]), out)
         self.assertIn("the comments of #7 could not be read", out)
 
-    def test_it_runs_on_the_schedule_alone_in_the_public_repository(self):
-        cond = JOBS["rescreen"]["if"]
-        here = {"github.event_name": "schedule", "github.repository": "theorem-labs/rocq-linux-process-semantics",
-                "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
-        self.assertTrue(evaluate(cond, here))
-        for change in ({"github.event_name": "workflow_dispatch"}, {"github.event_name": "issues"},
-                       {"github.repository": "someone/rocq-linux-process-semantics"},
-                       {"github.repository_id": 1425069221}, {"github.ref": "refs/heads/feature"}):
-            with self.subTest(change=change):
-                self.assertFalse(evaluate(cond, dict(here, **change)))
-        on = WF["on"]
-        self.assertEqual(on["schedule"], [{"cron": "7,22,37,52 * * * *"}])
+    def test_it_runs_on_events_alone_in_the_public_repository_on_main(self):
+        """b13: rescreen.yml runs on a completed run of CI, a push to main, a new or reopened issue and a run by hand,
+        and on nothing else: no schedule. Its job runs for each of them on main of the public repository alone (its
+        step compares the ref byte for byte too: test_a_run_on_main_in_another_case_starts_no_run)."""
+        self.assertEqual(RESCREEN["on"], {"workflow_run": {"workflows": [CI["name"]], "types": ["completed"]},
+                                          "push": {"branches": ["main"]}, "issues": {"types": ["opened", "reopened"]},
+                                          "workflow_dispatch": None})
+        cond = RESCREEN["jobs"]["rescreen"]["if"]
+        for event in ("workflow_run", "push", "issues", "workflow_dispatch"):
+            here = {"github.event_name": event, "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                    "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
+            with self.subTest(event=event):
+                self.assertTrue(evaluate(cond, here))
+                for change in ({"github.repository": "someone/rocq-linux-process-semantics"},
+                               {"github.repository_id": 1425069221}, {"github.ref": "refs/heads/feature"}):
+                    self.assertFalse(evaluate(cond, dict(here, **change)), change)
 
-    def test_only_this_job_can_start_a_run(self):
-        """actions: write is what starting a run needs: only this job has it, and only this job starts one."""
-        self.assertEqual(WF["permissions"], {})
-        # actions: write starts the runs; issues and pull-requests: write set waits-on-theorem and write a hold comment
-        # at REVIEW_TRIES; checks: read reads a head's check runs; contents: read checks out main's .github/ for
-        # .github/review/rules.py.
-        self.assertEqual(JOBS["rescreen"]["permissions"], {"actions": "write", "issues": "write",
-                                                           "pull-requests": "write", "checks": "read",
-                                                           "contents": "read"})
+    def test_only_the_pass_can_start_a_run_and_it_writes_no_label_or_comment(self):
+        """b13: actions: write is what starting a run needs: only the pass has it, beside read permissions alone
+        (contents, issues, pull-requests and checks), and it holds no environment, no secret and no identity token.
+        Its step's only writes are the start of a run of review.yml on main and the re-run of the failed jobs of a
+        review run (rerun): no label, no comment and no other write of an item, and it runs no file of the repository,
+        so it checks nothing out. No job of review.yml can start a run."""
+        self.assertEqual((WF["permissions"], RESCREEN["permissions"]), ({}, {}))
+        job = RESCREEN["jobs"]["rescreen"]
+        self.assertEqual(job["permissions"], {"actions": "write", "contents": "read", "issues": "read",
+                                              "pull-requests": "read", "checks": "read"})
+        self.assertNotIn("environment", job)
+        with open(RESCREEN_WORKFLOW, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotRegex(text, r"\bsecrets\.|id-token")
+        self.assertEqual([s for s in job["steps"] if "uses" in s], [])
+        run = pass_step()["run"]
+        self.assertNotRegex(run, r"python3|\.github/review/")
+        self.assertEqual(sorted(set(re.findall(r"--method (POST|PATCH|PUT|DELETE) \"([^\"]+)\"", run))),
+                         [("POST", "repos/$REPO/actions/runs/$1/rerun-failed-jobs"),
+                          ("POST", "repos/$REPO/actions/workflows/review.yml/dispatches")])
+        self.assertIn('review.yml/dispatches" -f ref=main ', run)
         for name, job in JOBS.items():
-            if name != "rescreen":
-                with self.subTest(job=name):
-                    self.assertNotEqual((job.get("permissions") or {}).get("actions"), "write")
-                    self.assertNotIn("/dispatches", json.dumps(job))
-                    self.assertNotIn("gh workflow run", "".join(s.get("run", "") for s in job["steps"])
-                                     .replace("gh workflow run review.yml -R", ""))
-        self.assertEqual([s["uses"] for s in JOBS["rescreen"]["steps"] if "uses" in s], [CHECKOUT])
+            with self.subTest(job=name):
+                self.assertNotEqual((job.get("permissions") or {}).get("actions"), "write")
+                self.assertNotIn("/dispatches", json.dumps(job))
+                self.assertNotIn("gh workflow run", "".join(s.get("run", "") for s in job["steps"])
+                                 .replace("gh workflow run review.yml -R", ""))
 
     def test_the_names_the_counts_read_are_the_ones_run_name_gives(self):
         """run-name gives each run the name that the counts and the trust job read: its task, its item, and the
-        account whose limit it counts on; on the schedule, a name of its own. The pattern of the rescreen job's names
-        that name an account takes the number and the account from them, and nothing from any other name."""
+        account whose limit it counts on; a stop names its stop. The pattern of the rescreen pass's names that name an
+        account takes the number and the account from them, and nothing from any other name: a stop counts toward no
+        account's limit."""
         def name(event, **ctx):
             return run_name(**{"github.event_name": event, **ctx})
-        self.assertEqual(name("schedule"), "rescreen the held items")
         self.assertEqual(name("workflow_run", **{"github.event.workflow_run.head_sha": HEAD, "github.actor": "mallory"}),
                          f"review {HEAD} by mallory")
         self.assertEqual(name("issues", **{"github.event.issue.number": 7}), "review #7")
@@ -6162,16 +6261,20 @@ class RescreenJobTest(Held):
                              ({"inputs.task": "answer", "inputs.comment": "900", "inputs.account": "mallory"},
                               "answer #7 for 900 of mallory"),
                              ({"inputs.task": "catchup", "inputs.head": HEAD}, f"catchup #7 at {HEAD}"),
+                             ({"inputs.task": "stop", "inputs.head": HEAD, "inputs.comment": "head-review"},
+                              f"stop #7 at {HEAD} for head-review"),
+                             ({"inputs.task": "stop", "inputs.comment": "hold-draft"}, "stop #7 for hold-draft"),
                              ({"inputs.task": "measure", "inputs.number": None}, "measure the screen")):
             with self.subTest(inputs=inputs):
                 self.assertEqual(name("workflow_dispatch", **dict(by_hand, **inputs)), want)
-        titled = re.search(r"^ *titled=('.*')$", step("rescreen", RESCREEN_JOB)["run"], re.M).group(1)
+        titled = re.search(r"^ *titled=('.*')$", pass_step()["run"], re.M).group(1)
         script = (f"titled={titled}\n" + 'while IFS= read -r t; do\n  if [[ $t =~ $titled ]]; then '
                   'echo "${BASH_REMATCH[2]} ${BASH_REMATCH[5]}"; else echo -; fi\ndone\n')
         names = {"rescreen #7 of mallory": "7 mallory", f"review #7 at {HEAD} of mallory": "7 mallory",
                  "answer #7 for 900 of mallory": "7 mallory", "draft #7 of mallory": "7 mallory",
                  f"approve #12 at {HEAD} of eve": "12 eve", "rescreen #123 of dependabot[bot]": "123 dependabot[bot]",
                  f"catchup #7 at {HEAD}": "-", "review #7": "-", "reply #7 of mallory": "-",
+                 f"stop #7 at {HEAD} for hold-review": "-", "stop #7 for answer-post": "-",
                  "rescreen #7 of mallory x": "-", f"review {HEAD} by mallory": "-", "answer #7 for 900 by mallory": "-"}
         r = subprocess.run(["bash", "--noprofile", "--norc", "-c", script], input="\n".join(names) + "\n",
                            capture_output=True, text=True, check=True)
@@ -6195,9 +6298,9 @@ def post_job(conclusions):
 
 
 class Scheduled(Held):
-    """The rescreen job's step against the stand-in gh, with the open items, the open pull requests, this workflow's
-    runs and their jobs, and the runs of each head (GitHub's held runs and CI runs) that it reads, and the steps of a
-    run that it starts: the trust job and the jobs after it."""
+    """The step of the rescreen pass (rescreen.yml) against the stand-in gh, with the open items, the open pull
+    requests, review.yml's runs and their jobs, and the runs of each head (GitHub's held runs and CI runs) that it
+    reads, and the steps of a run that it starts: the trust job and the jobs after it."""
 
     TRIES = int(WF["env"]["REVIEW_TRIES"])
     HELD = "The held runs of the screened head"
@@ -6315,7 +6418,7 @@ class Scheduled(Held):
             self.serve(f"repos/{REPO}/actions/runs/{i}/approve", {})
 
     def started(self, variable=None):
-        """The rescreen job's step on what is served now (schedule), with the variable REPO_PAIRS_IMPORT_PATHS
+        """The step of the rescreen pass on what is served now (schedule), with the variable REPO_PAIRS_IMPORT_PATHS
         variable, after the stand-in gh forgot its calls."""
         self.forget()
         return schedule(self, variable=variable)
@@ -6325,11 +6428,14 @@ class Scheduled(Held):
         """The screen job of a run of mallory's item: it passed, or it failed at the step failed."""
         return attempt_job("screen", failed, name="screen mallory")
 
-    def assertStopped(self, title, text, edited=False,
+    def assertStopped(self, stop, title, text, edited=False,
                       step_line="Sami starts the automated work on this item again by hand.", number=7):
-        """The run gave #number waits-on-theorem with the label comment's step step_line for Sami, in a new label
-        comment (or in the one it had, when edited), and posted one hold comment with title and text, which names
-        HEAD."""
+        """The run of the stop that the rescreen pass started (stop #<number> at HEAD for <stop>): its trust job takes
+        it, and its comment job gives #number waits-on-theorem with the label comment's step step_line for Sami, in a
+        new label comment (or in the one it had, when edited), and posts one hold comment with title and text, which
+        names HEAD."""
+        _trust, steps = write_stop(self, stop, number=str(number), head=HEAD)
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
         self.assertEqual(state_labels(self.api, number), [("+", THEOREM_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
         self.assertEqual(method, "PATCH" if edited else "POST")
@@ -6523,17 +6629,19 @@ class ScheduleTest(Scheduled):
 
     def test_review_tries_runs_of_a_held_answer_that_settle_nothing_stop_it(self):
         """b1 (D16): REVIEW_TRIES answer runs since the hold of an answer that ended with neither a new hold nor a post
-        stop the item: its hold comment gets words that name Sami's next step and no marker of a hold that is tried
-        again, the item gets waits-on-theorem with the label comment (t5), and the run fails. The next run starts
-        nothing and writes nothing."""
+        stop the item: the pass starts the stop's run, whose comment job gives the hold comment words that name Sami's
+        next step and no marker of a hold that is tried again, and the item waits-on-theorem with the label comment
+        (t5); the pass fails. The next pass starts nothing and writes nothing."""
         hold = dict(limit_hold(50, at=ago(400), tries=0, task="answer", comment="900"), id=5)
         self.origin(50, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
         self.item(labels=("review-held",), comments=[self.REPLIED, said(900, 500), hold])
         for i in range(self.TRIES):
             self.ran(10 + i, "answer #7 for 900 of mallory", made=70 + 90 * i)
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "hold-answer")]), out)
         self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        _trust, steps = write_stop(self, "hold-answer")
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
         self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
         (method, endpoint, label), = label_comments(self.api)
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/3"))
@@ -6702,8 +6810,9 @@ class ScheduleTest(Scheduled):
     def test_review_tries_answers_whose_comment_job_failed_stop_it(self):
         """R1, D16: an answer whose comment job failed is taken again once an hour, and each such run ran the screen
         and the model. After REVIEW_TRIES runs of the comment whose comment job failed, the answer is not tried again:
-        the item gets a hold comment that says so and waits-on-theorem with the label comment's step for Sami, and
-        the run fails. That hold answers the comment, so the next run starts nothing and writes nothing."""
+        the pass starts the stop's run, which gives the item a hold comment that says so and waits-on-theorem with the
+        label comment's step for Sami, and the pass fails. That hold answers the comment, so the next pass starts
+        nothing and writes nothing."""
         failed = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
                   attempt_job("comment", "Post the answer")]
         waits = [self.REVIEWED, self.LABELLED, said(900, 500)]
@@ -6714,11 +6823,11 @@ class ScheduleTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
         self.ran(89, "answer #7 for 900 by mallory", made=400, event="issue_comment", jobs=failed)
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "answer-post")]), out)
         body = self.assertStopped(
-            "Automated answer held.", "The workflow wrote the automated answer to the author's comment on this pull "
-            f"request {self.TRIES} times, and could not post it. The workflow does not try it again. You do not need "
-            "to do anything.", edited=True)
+            "answer-post", "Automated answer held.", "The workflow wrote the automated answer to the author's comment "
+            f"on this pull request {self.TRIES} times, and could not post it. The workflow does not try it again. You "
+            "do not need to do anything.", edited=True)
         self.comments(7, *waits, {"id": 9, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
                                   "body": body})
         rc, out, runs = self.started()
@@ -6786,8 +6895,9 @@ class ScheduleTest(Scheduled):
 
     def test_the_bound_of_one_held_work_leaves_the_hold_of_another(self):
         """R1, D16: REVIEW_TRIES answer runs since the hold of an answer settled nothing, and the item has a newer hold
-        of its review too. The schedule stops the answer alone: it replaces the hold comment of the answer, never the
-        newer hold of the review, whose rescreen it still starts."""
+        of its review too. The pass starts the rescreen of the review, and the stop of the answer waits for a pass that
+        starts no other run of the item (the trust job of the stop would find the rescreen unfinished). Then the stop's
+        run replaces the hold comment of the answer alone, never the newer hold of the review."""
         self.origin(41, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
         self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
         self.item(kind="pr", labels=("review-held",), comments=[
@@ -6802,13 +6912,20 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "rescreen", "mallory", HEAD, "")]), out)
         self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        self.assertIn("#7 waits: this run started another run of it", out)
+        # The rescreen ran and settled nothing: the next pass, within the hour of that rescreen, starts the stop alone.
+        self.ran(60, f"rescreen #7 at {HEAD} of mallory", made=4, ended=2)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "hold-answer")]), out)
+        _trust, steps = write_stop(self, "hold-answer", head=HEAD)
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
         holds = [c[:3] for c in writes(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
         self.assertEqual(holds, [["--method", "PATCH", f"repos/{REPO}/issues/comments/5"]])
 
     def test_a_head_that_is_not_tried_again_leaves_the_hold_of_other_work(self):
         """R1, D16: the import check of the head that the App could not record REVIEW_TRIES times stops the head with a
-        hold comment of its own. The hold of an answer that is tried again keeps its comment and its marker, and the
-        schedule still starts that answer."""
+        hold comment of its own, which the stop's run writes. The hold of an answer that is tried again keeps its
+        comment and its marker, and the pass still starts that answer, before the stop."""
         refused = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "failure"})
         self.origin(51, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
         self.item(kind="pr", labels=("review-held",), comments=[
@@ -6820,6 +6937,9 @@ class ScheduleTest(Scheduled):
             self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 90 * i, jobs=[refused])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "answer", "mallory", "", "900")]), out)
+        self.assertIn("#7 waits: this run started another run of it", out)
+        _trust, steps = write_stop(self, "head-import", head=HEAD)
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
         holds = [c[:3] for c in writes(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
         self.assertEqual(holds, [["--method", "POST", f"repos/{REPO}/issues/7/comments"]])
 
@@ -6841,7 +6961,7 @@ class ScheduleTest(Scheduled):
         self.assertIn(f"#7: {self.TRIES - 1} runs of answer since its hold settled nothing; trying again.", out)
         self.ran(30, "answer #7 for 900 of mallory", made=600)
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "hold-answer")]), out)
         self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
 
     def test_an_outside_issue_with_no_stored_draft_gets_one_draft(self):
@@ -6970,10 +7090,10 @@ class ScheduleTest(Scheduled):
                 if tries < self.TRIES:
                     self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
                     continue
-                self.assertEqual((rc, runs), (1, []), out)
-                body = self.assertStopped("Automated approval held.", "The automated approval of the checks of the "
-                                          f"head commit {HEAD[:12]} did not finish after {self.TRIES} tries. The "
-                                          "workflow does not try it again.")
+                self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
+                body = self.assertStopped("head-approve", "Automated approval held.", "The automated approval of the "
+                                          f"checks of the head commit {HEAD[:12]} did not finish after {self.TRIES} "
+                                          "tries. The workflow does not try it again.")
                 self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
                                   "body": body})
                 rc, out, runs = self.started()
@@ -7025,10 +7145,10 @@ class ScheduleTest(Scheduled):
         for i in range(1, self.TRIES):
             self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 90 * i, jobs=[refused])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        self.assertStopped("Automated check for the import held.", f"The automated check of the head commit {HEAD[:12]} "
-                           f"for the import into the internal repository did not finish after {self.TRIES} tries. The "
-                           "workflow does not try it again.", edited=True)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-import")]), out)
+        self.assertStopped("head-import", "Automated check for the import held.", "The automated check of the head "
+                           f"commit {HEAD[:12]} for the import into the internal repository did not finish after "
+                           f"{self.TRIES} tries. The workflow does not try it again.", edited=True)
 
     def test_runs_that_screen_stay_under_the_limit_of_one_account(self):
         """D16: mallory's items are due two drafts and an approval, and she had one run of the last hour that counts
@@ -7295,9 +7415,9 @@ class CatchUpScheduleTest(Scheduled):
         for i in range(1, self.TRIES):
             self.ran(10 + i, f"review #7 at {HEAD} of mallory", made=71 + 90 * i, jobs=failed)
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        self.assertStopped("Automated review held.", f"The automated review of the head commit {HEAD[:12]} did not "
-                           f"finish after {self.TRIES} tries. The workflow does not try it again.")
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-review")]), out)
+        self.assertStopped("head-review", "Automated review held.", f"The automated review of the head commit "
+                           f"{HEAD[:12]} did not finish after {self.TRIES} tries. The workflow does not try it again.")
 
     def test_a_head_whose_ci_runs_github_does_not_list_whole_gets_no_catch_up(self):
         """GitHub gives at most 1,000 runs for a list with head_sha, and total_count then says that more match. When it
@@ -7406,10 +7526,10 @@ class LeftClosedTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
         self.ran(64, self.TITLE, made=100, ended=95, jobs=[self.CANCELLED])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        body = self.assertStopped("Automated catch-up held.", "The automated catch-up closed this pull request and "
-                                  f"could not reopen it after {self.TRIES} tries. The workflow closed it so that GitHub "
-                                  "starts its checks.",
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "reopen")]), out)
+        body = self.assertStopped("reopen", "Automated catch-up held.", "The automated catch-up closed this pull "
+                                  f"request and could not reopen it after {self.TRIES} tries. The workflow closed it so "
+                                  "that GitHub starts its checks.",
                                   step_line="Sami reopens the pull request.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         rc, out, runs = self.started()
@@ -7471,6 +7591,133 @@ class LeftClosedTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
         self.assertIn(f"created={first - datetime.timedelta(days=1)}", [a for c in gh_calls(self.api) for a in c])
         self.reopened(self.dispatched("catchup"))
+
+
+class RescreenEventsTest(Scheduled):
+    """b13: runs of the rescreen pass (rescreen.yml) on its events, against the stand-in gh: each takes the items that
+    wait, oldest reason first and under the limits, starts one workflow_dispatch run of review.yml on main for each,
+    and writes nothing else. And the trust job of a stop that the pass starts: it takes the stop only from the pass, by
+    the pass's name, while the pass's own functions, read again from the API, decide the same stop."""
+
+    # An approve run of HEAD whose post job failed at the approval itself: a try of the head (due_approve).
+    REFUSED = [attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+               post_job({ScheduleTest.HELD: "success", MINT_B: "success", ScheduleTest.APPROVE: "failure"})]
+
+    def on(self, event):
+        """A run of the pass on event, on main of the public repository: its job runs, and its step runs on what is
+        served now. Its exit status and log, the runs that it started, and every write of the stand-in gh."""
+        github = {"github.event_name": event, "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                  "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
+        self.assertTrue(evaluate(RESCREEN["jobs"]["rescreen"]["if"], github))
+        rc, out, runs = self.started()
+        return rc, out, runs, writes(self.api)
+
+    def test_a_push_to_main_takes_the_oldest_item_that_a_cap_held_and_starts_one_run(self):
+        """Two of mallory's issues held at SCREENED_HOURLY_CAP over an hour ago, and mallory had one run fewer than
+        OUTSIDE_HOURLY_LIMIT in the last hour: a run of the pass on a push to main starts one workflow_dispatch run of
+        review.yml, on main, a rescreen of the item held first, and nothing else; the other waits for a later run."""
+        for number, run, held in ((7, 50, 300), (8, 51, 200)):
+            self.origin(run, "mallory", title=f"review #{number}")
+            self.item(number, labels=("review-held",), comments=[
+                dict(limit_hold(run, at=ago(held), kind="cap", tries=0), id=run)])
+        for i in range(self.LIMIT - 1):
+            self.ran(20 + i, f"rescreen #{30 + i} of mallory", made=20 + i)
+        rc, out, runs, wrote = self.on("push")
+        self.assertEqual((rc, runs), (0, [("7", "rescreen", "mallory", "", "")]), out)
+        self.assertEqual([c[:3] for c in wrote],
+                         [["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]])
+        self.assertIn(f"#8 waits: mallory had {self.LIMIT} runs that screen in the last hour", out)
+        self.assertEqual(self.dispatched("rescreen", head="", account="mallory")["route"], "screen")
+
+    def test_a_completed_ci_run_of_another_pull_request_starts_the_approval_of_a_held_head(self):
+        """GitHub holds the CI runs of mallory's first pull request, and a held run starts no workflow_run. The CI run
+        of eve's pull request completes: the run of the pass on that workflow_run finds the head whose held runs no
+        screen has answered and starts its approve run, which screens it, and nothing for eve's pull request, whose
+        CI run has just ended. The trust job of the approve run takes it."""
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        self.item(8, kind="pr", author="eve", head=OTHER_HEAD)
+        self.ci(ended=2, head=OTHER_HEAD)
+        rc, out, runs, wrote = self.on("workflow_run")
+        self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+        self.assertEqual(len(wrote), 1, wrote)
+        self.assertEqual(self.dispatched("approve", account="mallory")["route"], "screen")
+
+    def test_a_run_with_nothing_waiting_starts_nothing_and_writes_nothing(self):
+        """An outside pull request whose head has its review and its label comment, and a writer's issue with no hold:
+        a run of the pass on a new issue starts nothing, writes nothing and passes."""
+        self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
+        self.ci(ended=600)
+        self.item(8, author="alice")
+        rc, out, runs, wrote = self.on("issues")
+        self.assertEqual((rc, runs, wrote), (0, [], []), out)
+
+    def approval_tried(self, tries):
+        """mallory's pull request at HEAD, whose runs GitHub holds, and tries approve runs of HEAD whose post job
+        failed at the approval: at REVIEW_TRIES, the pass decides the stop head-approve."""
+        self.item(kind="pr")
+        self.held_runs(made=600)
+        for i in range(tries):
+            self.ran(10 + i, f"approve #7 at {HEAD} of mallory", made=70 + 70 * i, jobs=self.REFUSED)
+
+    def stop_trust(self, stop="head-approve", **kwargs):
+        """The trust job of a run of the task stop, with stop and the other inputs of kwargs: its log and outputs."""
+        kwargs = {"actor": BOT, "head": HEAD, **kwargs}
+        rc, out, got = self.run_trust("workflow_dispatch", task="stop", comment=stop, **kwargs)
+        self.assertEqual(rc, 0, out)
+        return out, got
+
+    def test_a_stop_is_taken_only_from_the_pass_by_its_name_while_the_pass_decides_it_again(self):
+        """The trust job takes the stop of the approval of a head that REVIEW_TRIES approve runs could not write, and
+        gives the comment job the stop as the pass's functions decided it again. No route, so no job writes: for a run
+        that a writer or an App of APPS started by hand, for a name that is not the one the pass gives it, for a stop
+        that the pass does not give, for another stop of the item, with one try fewer, and once the hold comment of the
+        stop names the head."""
+        self.approval_tried(self.TRIES)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
+        out, got = self.stop_trust()
+        self.assertEqual((got.get("task"), got.get("route"), got.get("number"), got.get("head")),
+                         ("stop", "review", "7", HEAD), out)
+        self.assertEqual({k: v for k, v in json.loads(got["stop"]).items() if k != "text"},
+                         {"stop": "head-approve", "fact": "tries_used_up", "id": "", "title": "Automated approval held.",
+                          "head": HEAD})
+        for case, kwargs in (("a writer's run by hand", {"actor": "alice"}),
+                             ("an App's run by hand", {"actor": "sjawhar-agent[bot]"}),
+                             ("a name with no head", {"title": "stop #7 for head-approve"}),
+                             ("a stop that the pass does not give", {"stop": "head-everything"}),
+                             ("another stop of the item", {"stop": "head-review"})):
+            with self.subTest(case=case):
+                out, got = self.stop_trust(**kwargs)
+                self.assertEqual(got.get("route"), None, out)
+        self.tearDown()
+        self.setUp()
+        self.approval_tried(self.TRIES - 1)
+        out, got = self.stop_trust()
+        self.assertEqual(got.get("route"), None, out)
+        self.assertIn("decide no such stop", out)
+        self.tearDown()
+        self.setUp()
+        self.approval_tried(self.TRIES)
+        body = self.assertStopped("head-approve", "Automated approval held.", "The automated approval of the checks "
+                                  f"of the head commit {HEAD[:12]} did not finish after {self.TRIES} tries. The workflow "
+                                  "does not try it again.")
+        self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
+        out, got = self.stop_trust()
+        self.assertEqual(got.get("route"), None, out)
+        self.assertIn(f"a hold that is not tried again names {HEAD}", out)
+
+    def test_the_stops_own_run_does_not_hold_it_back_and_another_unfinished_run_of_the_item_does(self):
+        """GitHub lists the run of the stop itself, unfinished, among the item's runs: its trust job still takes it.
+        An unfinished run of the item's comment event stops it, as it stops the pass."""
+        self.approval_tried(self.TRIES)
+        self.ran(100, f"stop #7 at {HEAD} for head-approve", made=1, status="in_progress")
+        out, got = self.stop_trust()
+        self.assertEqual(got.get("route"), "review", out)
+        self.ran(101, "answer #7 for 900 by mallory", made=1, event="issue_comment", status="in_progress")
+        out, got = self.stop_trust()
+        self.assertEqual(got.get("route"), None, out)
+        self.assertIn("#7: a run of it has not finished", out)
 
 
 def review_of(head, verdict="pass", will_fix=False, at=OLD, id_=30, login=BOT):
@@ -7627,9 +7874,10 @@ class HeadScheduleTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "review", "mallory", HEAD, "")]), out)
         self.ran(22, title, made=80, jobs=self.REVIEWED_NONE)
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        body = self.assertStopped("Automated review held.", f"The automated review of the head commit {HEAD[:12]} did not "
-                                  f"finish after {self.TRIES} tries. The workflow does not try it again.")
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-review")]), out)
+        body = self.assertStopped("head-review", "Automated review held.", f"The automated review of the head commit "
+                                  f"{HEAD[:12]} did not finish after {self.TRIES} tries. The workflow does not try it "
+                                  "again.")
         self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
@@ -7815,10 +8063,10 @@ class HeadScheduleTest(Scheduled):
         for i in range(self.TRIES):
             self.ran(11 + i, f"relabel #7 at {HEAD}", made=200 - 10 * i, jobs=self.stopped_jobs())
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, []), out)
-        self.assertStopped("Automated check for the import held.", f"The automated check of the head commit {HEAD[:12]} "
-                           f"for the import into the internal repository did not finish after {self.TRIES} tries. The "
-                           "workflow does not try it again.", edited=True)
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-import")]), out)
+        self.assertStopped("head-import", "Automated check for the import held.", "The automated check of the head "
+                           f"commit {HEAD[:12]} for the import into the internal repository did not finish after "
+                           f"{self.TRIES} tries. The workflow does not try it again.", edited=True)
         self.merge(7, "unknown")
         self.dispatched("relabel", want=False)
 
@@ -7922,16 +8170,28 @@ class TriggerTest(unittest.TestCase):
     """What starts each workflow, and what a run of a pull request's event can hold."""
 
     def test_no_workflow_starts_on_pull_request_target(self):
-        for name, wf in (("review.yml", WF), ("ci.yml", CI)):
+        for name, wf in (("review.yml", WF), ("ci.yml", CI), ("rescreen.yml", RESCREEN)):
             with self.subTest(workflow=name):
                 self.assertNotIn("pull_request_target", triggers(wf))
         # review.yml runs when a run of CI (by its name) completes
         self.assertEqual(triggers(WF)["workflow_run"], {"workflows": [CI["name"]], "types": ["completed"]})
 
+    def test_neither_review_yml_nor_rescreen_yml_runs_on_a_schedule(self):
+        """b13: neither workflow has a schedule trigger, and no job of either names schedule in its if; nor does a
+        name that run-name gives. review.yml runs on its events and by hand alone, and the rescreen pass on events
+        alone (RescreenJobTest)."""
+        self.assertEqual(set(triggers(WF)), {"workflow_run", "issues", "issue_comment", "workflow_dispatch"})
+        for name, wf in (("review.yml", WF), ("rescreen.yml", RESCREEN)):
+            with self.subTest(workflow=name):
+                self.assertNotIn("schedule", triggers(wf))
+                self.assertNotIn("schedule", wf.get("run-name", ""))
+                for job, value in wf["jobs"].items():
+                    self.assertNotIn("schedule", value.get("if", ""), job)
+
     def test_no_job_holds_a_right_on_pull_request(self):
-        """Each job of ci.yml whose if can be true on pull_request has only read permissions, and no job of either
-        workflow reads a secret or has id-token: write on pull_request: review.yml does not run on it."""
-        self.assertFalse({"pull_request", "pull_request_target"} & set(triggers(WF)))
+        """Each job of ci.yml whose if can be true on pull_request has only read permissions, and no job of these
+        workflows reads a secret or has id-token: write on pull_request: review.yml and rescreen.yml do not run on it."""
+        self.assertFalse({"pull_request", "pull_request_target"} & (set(triggers(WF)) | set(triggers(RESCREEN))))
         self.assertIn("pull_request", triggers(CI))
         self.assertNotIn("secrets", json.dumps({k: v for k, v in CI.items() if k != "jobs"}))
         top = CI.get("permissions")
@@ -8032,8 +8292,8 @@ class ArtifactTest(Runner):
 
 
 class ConcurrencyTest(unittest.TestCase):
-    """The job groups: one screen and one review at a time for each item and task, and each comment, hold and App job
-    of an item kept in its queue, none cancelled."""
+    """The job groups: one screen and one review at a time for each item and task, every write of an item's label in
+    one queue of the item, and each App job of an item kept in its queue, none cancelled."""
 
     def ctx(self, task, number="7"):
         return {"needs.trust.outputs.task": task, "needs.trust.outputs.number": number}
@@ -8052,13 +8312,26 @@ class ConcurrencyTest(unittest.TestCase):
                                    ("reply", False)):
                     self.assertIs(evaluate(c["cancel-in-progress"], self.ctx(task)), want, task)
 
-    def test_the_comment_hold_and_app_jobs_queue_and_cancel_nothing(self):
-        for job in ("comment", "post", "hold"):
-            with self.subTest(job=job):
-                c = JOBS[job]["concurrency"]
-                self.assertEqual(interpolate(c["group"], self.ctx("answer")), f"{job}-7")
-                self.assertIs(c["cancel-in-progress"], False)
-                self.assertEqual(c["queue"], "max")
+    def test_every_write_of_a_label_runs_in_the_items_label_group_queued_and_never_cancelled(self):
+        """Decision 4 and b13: every write of an item's state label and label comment runs in one group of the item,
+        label-<n>: the comment job's (its label step, the comment on a merge conflict, a relabel, and a stop of the
+        rescreen pass) and the hold job's, whatever the task. Each waits in that queue and none is cancelled; another
+        item has another group. No other job writes a label. The App's job, which writes none, keeps a queue of its
+        own."""
+        for job in ("comment", "hold"):
+            c = JOBS[job]["concurrency"]
+            for task in ("review", "answer", "draft", "reply", "rescreen", "approve", "conflict", "relabel", "stop"):
+                with self.subTest(job=job, task=task):
+                    self.assertEqual(interpolate(c["group"], self.ctx(task)), "label-7")
+                    self.assertEqual(interpolate(c["group"], self.ctx(task, "70")), "label-70")
+            self.assertIs(c["cancel-in-progress"], False)
+            self.assertEqual(c["queue"], "max")
+        c = JOBS["post"]["concurrency"]
+        self.assertEqual((interpolate(c["group"], self.ctx("review")), c["cancel-in-progress"], c["queue"]),
+                         ("post-7", False, "max"))
+        writers = {name for name, job in JOBS.items() for s in job["steps"]
+                   if re.search(r"rules\.py (label|relabel|make-label) |issues/\$NUMBER/labels", s.get("run", ""))}
+        self.assertEqual(writers, {"comment", "hold"})
 
 
 class ConflictTest(Runner):
@@ -8898,11 +9171,13 @@ class ImportCheckTest(ReaderRunner):
         self.assertWaits(got, self.COPY, value=value)
 
     def test_each_step_that_reads_the_variable_maps_it_from_the_repository_variable(self):
-        """The workflow loaded with yq: each step of the post, comment and rescreen jobs whose script reads the name
-        that a step maps to ${{ vars.REPO_PAIRS_IMPORT_PATHS }} maps that name to it in its own env, and reads each name
-        that it maps. The post job's decision step, the comment job's label step and the rescreen job's step (which
-        relabels a head whose recorded value is not the value now) do, and no script holds the expression itself."""
-        steps = [(job, s) for job in ("post", "comment", "rescreen") for s in JOBS[job]["steps"]]
+        """The workflows loaded with yq: each step of the trust, post and comment jobs and of rescreen.yml whose script
+        reads the name that a step maps to ${{ vars.REPO_PAIRS_IMPORT_PATHS }} maps that name to it in its own env, and
+        reads each name that it maps. The post job's decision step, the comment job's label step, the rescreen pass's
+        step (which relabels a head whose recorded value is not the value now) and the trust job's step (which runs the
+        pass's functions again for a stop) do, and no script holds the expression itself."""
+        jobs = [(job, JOBS[job]) for job in ("trust", "post", "comment")] + [("rescreen", RESCREEN["jobs"]["rescreen"])]
+        steps = [(job, s) for job, value in jobs for s in value["steps"]]
         names = {k for _job, s in steps for k, v in s.get("env", {}).items() if v == self.VARIABLE}
         self.assertTrue(names)
         mapped = set()
@@ -8916,9 +9191,10 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual(reads, maps)
                 if maps:
                     mapped.add((job, s["name"]))
-        self.assertLessEqual({("post", self.DECIDE), ("comment", self.LABEL), ("rescreen", RESCREEN_JOB)}, mapped)
-        for job in ("post", "comment", "rescreen"):
-            self.assertNotIn(self.VARIABLE, json.dumps({k: v for k, v in JOBS[job].items() if k != "steps"}))
+        self.assertLessEqual({("trust", TRUST), ("post", self.DECIDE), ("comment", self.LABEL),
+                              ("rescreen", RESCREEN_JOB)}, mapped)
+        for job, value in jobs:
+            self.assertNotIn(self.VARIABLE, json.dumps({k: v for k, v in value.items() if k != "steps"}))
 
     def test_while_the_hold_lasts_a_change_that_is_not_markdown_alone_gets_no_check_run(self):
         """While SOUNDNESS_HOLD is "true", with a stand-in model that misses the soundness verdict (it passes each

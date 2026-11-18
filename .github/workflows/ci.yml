@@ -27,8 +27,8 @@ jobs:
   #            the lanes run .github/check_assumptions.py.
   #   review   (the review workflow's tests) is true when one of the review
   #            workflow's own files changed: .github/workflows/review.yml,
-  #            .github/test_review.py, .github/test_screen.py,
-  #            .github/screen.py, .github/review.md,
+  #            .github/workflows/rescreen.yml, .github/test_review.py,
+  #            .github/test_screen.py, .github/screen.py, .github/review.md,
   #            .github/review-answer.md, or any file under .github/review/.
   #            The tests read the workflow and import the screen,
   #            .github/review/rules.py and .github/review/trim.py.
@@ -97,7 +97,7 @@ jobs:
           [ -s "$RUNNER_TEMP/changed" ] || everything "The diff against $base is empty"
           grep -qx '\.github/workflows/ci\.yml' "$RUNNER_TEMP/changed" \
             && everything "This workflow changed"
-          review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md|review-answer\.md|review/.+)$'
+          review_files='^\.github/(workflows/(review|rescreen)\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md|review-answer\.md|review/.+)$'
           # grep answers 0 when it selects a line, 1 when it selects none, 2 or more on an error.
           answer() {
             rc=0; grep "$@" "$RUNNER_TEMP/changed" || rc=$?
@@ -260,10 +260,11 @@ jobs:
           path: .dune-cache
           key: ${{ steps.dune-key.outputs.key }}
 
-  # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed and
-  # who is screened first, which jobs run on each route, which comments the review reads, and what the posted comment
-  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). It runs when the route's
-  # `review` answer is true: a change to the review workflow's own files, or to this file.
+  # The scripts of .github/workflows/review.yml and .github/workflows/rescreen.yml, run against a stand-in gh
+  # (.github/test_review.py): who is reviewed and who is screened first, which jobs run on each route, which comments
+  # the review reads, and what the posted comment can notify or link; and its screen, against stand-in services
+  # (.github/test_screen.py). It runs when the route's `review` answer is true: a change to the review workflow's own
+  # files, or to this file.
   review-workflow:
     name: Review workflow
     needs: route

@@ -139,8 +139,8 @@ FACTS = {
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
     "held": False,
-    # The workflow does not try the work again: the hold job's last try, the schedule's last try of a head, or the
-    # rescreens of a hold that settled nothing.
+    # The workflow does not try the work again: the hold job's last try, the rescreen pass's last try of a head, or
+    # the rescreens of a hold that settled nothing.
     "tries_used_up": False,
     # A catch-up closed the pull request and could not reopen it.
     "left_closed": False,
@@ -1141,7 +1141,7 @@ def suggestions(fix, diff):
 # merge conflict that went away with no push, after a change of REPO_PAIRS_IMPORT_PATHS, and when the post job could
 # not record the import check run.
 
-# The markers of a hold comment (D8): the hold of work that the schedule tries again, with its task and, for an
+# The markers of a hold comment (D8): the hold of work that the rescreen pass tries again, with its task and, for an
 # answer, its comment; and the head that the hold names.
 TRIED = re.compile(r"\n<!-- review-held-(?:limit|cap|transient) [0-9]+(?: [0-9]+(?: ([a-z]+)(?: [1-9][0-9]*)?)?)? -->"
                    r"(?:\n|$)")
@@ -1155,8 +1155,8 @@ LEFT_CLOSED = "The automated catch-up closed this pull request and could not reo
 
 
 def hold_fact(body):
-    """The fact of label_state that the hold comment body gives: held for a hold that the schedule tries again, but
-    None for such a hold of an answer, which leaves the state as it was; screen_held for a hold of the screen;
+    """The fact of label_state that the hold comment body gives: held for a hold that the rescreen pass tries again,
+    but None for such a hold of an answer, which leaves the state as it was; screen_held for a hold of the screen;
     left_closed for a catch-up that could not reopen the pull request; tries_used_up for each other hold."""
     m = TRIED.search(body)
     if m:
