@@ -4775,6 +4775,30 @@ class SoundnessTest(ReaderRunner):
                 self.assertEqual(listed, [rules.QUESTION])
                 self.assertRegex(shown, f"(?m)^- `{re.escape(path)}`")
 
+    def test_a_change_of_a_header_an_object_or_an_archive_that_a_c_stub_stanza_reads_gets_the_person_verdict(self):
+        """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". A
+        stanza that compiles a C stub with (include_dirs ../include) reads each header of that directory, one with
+        (extra_objects foo) reads foo.o, and one with (foreign_archives bar) reads libbar.a: dune 3.23 compiles the
+        stub again after a change of the header, and links the library again after a change of the object or of the
+        archive. A pull request that changes only one of them gets the person verdict, and the section names the
+        file."""
+        built = dict(self.MAIN, **{
+            "dune-project": "(lang dune 3.23)\n",
+            "stubs/dune": "(library\n (name stubs)\n (foreign_stubs (language c) (names s) (include_dirs ../include))\n"
+                          " (extra_objects foo)\n (foreign_archives bar))\n",
+            "stubs/stubs.ml": "let x = 1\n", "stubs/s.c": "#include \"h.h\"\nint f(void) { return H; }\n",
+            "stubs/foo.o": "object 1\n", "stubs/libbar.a": "archive 1\n", "include/h.h": "#define H 1\n"})
+        for path in ("include/h.h", "stubs/foo.o", "stubs/libbar.a"):
+            with self.subTest(path=path):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review({path: "changed\n"}, "pass", [],
+                                                                 "No blocking finding.", "No blocking finding.",
+                                                                 main=built)
+                self.assertSoundness(head, got, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+                self.assertRegex(shown, f"(?m)^- `{re.escape(path)}`")
+
     def test_a_head_from_an_older_main_counts_the_files_that_the_dune_rules_of_main_read(self):
         """R8: "any other file that a dune rule of the repository reads or writes". A pull request can start from an
         older commit of main. Here main got a dune rule that reads tests/placement/run.log after the commit that the
