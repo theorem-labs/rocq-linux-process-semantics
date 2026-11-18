@@ -4062,6 +4062,18 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(os.path.getsize(self.summary), 0)
                 self.assertFalse(os.path.exists(self.token_file))
 
+    def test_a_reader_request_that_anthropic_refuses_logs_its_status_and_error_code_alone(self):
+        """trim.py's ReaderError: what a public log may show of a request that a service refused is its HTTP status
+        and its error code, never the service's text. A fresh reader whose request Anthropic refuses fails the step,
+        so nothing posts, and the log names the status and the error code and holds none of Anthropic's text."""
+        text = "Service-text-4e1f: the request is not valid."
+        rc, out, got = self.post("A review of `theories/A.v`.", [], verdict="pass", reader=(
+            400, {"type": "error", "error": {"type": "invalid_request_error", "message": text}}))
+        self.assertEqual((rc, got.get("body")), (1, None), out)
+        self.assertIn("HTTP 400", out)
+        self.assertIn("error code invalid_request_error", out)
+        self.assertNotIn("Service-text-4e1f", out)
+
     def test_the_reader_signs_in_after_the_model_with_the_reviews_rule_and_the_next_step_takes_the_token(self):
         """The token comes from a step of its own, whose name starts with "Sign in" (so the hold job holds nothing
         when it fails), after the model: a new identity token, exchanged with the Review step's rule and ids. It goes to
