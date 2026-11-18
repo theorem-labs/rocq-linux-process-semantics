@@ -8466,6 +8466,30 @@ class HeadScheduleTest(Scheduled):
                     self.assertIn("::warning::#7: GitHub refused to run the failed jobs of run 10 again", out)
         self.assertEqual(self.dispatched("review", account="mallory")["route"], "screen")
 
+    def test_a_run_runs_again_only_while_the_data_that_its_gather_job_kept_is_there(self):
+        """Decision 2: the failed jobs of a run whose screen passed and whose review could not sign in run again, so that
+        the screen's verdict stands and is paid once. The review job of that run reads the pull request from the
+        artifact of its gather job, which GitHub deletes retention-days after the run made it. A run made longer ago
+        than that, less the hour that the re-run may wait and take, does not run again: its review would fail at that
+        download, and the hold job would hold the item as a review that did not finish. A run made within that time
+        runs again."""
+        (upload,) = [s for s in JOBS["gather"]["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
+        kept = int(upload["with"]["retention-days"]) * 24 * 60
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        for made in (100, 2 * 24 * 60, 7 * 24 * 60):
+            with self.subTest(made=made):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.ci(ended=made + 45)
+                self.serve(rerun, {})
+                self.ran(10, f"review {HEAD} by mallory", made=made, ended=made - 39, event="workflow_run",
+                         jobs=[attempt_job("gather"), attempt_job("screen", name="screen mallory"),
+                               attempt_job("review", "Sign in to Anthropic", name="review (screened)")])
+                rc, out, _runs = self.started()
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(["--method", "POST", rerun] in writes(self.api), made + 60 < kept, out)
+
     def test_a_draft_marked_ready_and_a_base_changed_to_main_get_a_review_at_the_next_run(self):
         """The trust job stopped the run of the head's CI run (a draft, or another base): no review while it is so,
         and one review run at the next run once it is ready, or into main, with no hour to wait."""
