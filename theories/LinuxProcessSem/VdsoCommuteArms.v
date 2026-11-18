@@ -18,14 +18,16 @@
     PURE ADDITION: this file changes no existing statement. *)
 
 From Stdlib Require Import ZArith List Bool.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs Vdso State Monad Specs VdsoCommute.
+  State Monad Specs VdsoCommute.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
 (* ---- fs/d_path.c ---- *)
-Lemma vc_getcwd_spec : forall size, vdso_commutes (getcwd_spec size).
+Lemma vc_getcwd_spec : forall buf size, vdso_commutes (getcwd_spec buf size).
 Proof. intros; unfold getcwd_spec; vdso_walk. Qed.
 
 (* ---- fs/eventfd.c ---- *)
@@ -65,10 +67,155 @@ Proof. intros; unfold ioctl_spec; vdso_walk. Qed.
 Lemma vc_flock_spec : forall fd cmd, vdso_commutes (flock_spec fd cmd).
 Proof. intros; unfold flock_spec; vdso_walk. Qed.
 
+(* ---- the walk's own refusals ---- *)
+
+(** [Sys.Fs.Namei.walk_refusals] reads the arm it wraps NEGATIVELY: a
+    refusal stands where the arm neither declines nor gives that errno
+    itself.  The two-program walk relates an arm at two running models
+    whose draws need not agree, and a negative premise does not travel
+    that way.  At ONE model it does: the reverse direction is the forward
+    one at the model's own draw ([with_vdso_same]).  So an arm that wraps
+    its walk is proved at one model ([vdso_at]), and the body under the
+    wrapper is walked as before. *)
+Definition vdso_at (P : SyscallInput -> Model -> Sys SyscallEffect) : Prop :=
+  forall v i m o, P i m i m o ->
+    P i (with_vdso v m) i (with_vdso v m) (outcome_with_vdso v o).
+
+Local Lemma bind_input_iff {A} (k : SyscallInput -> Sys A) : forall i m o,
+  bind input k i m o <-> k i i m o.
+Proof.
+  intros i m o. unfold bind, input. destruct o as [x m2 evs|]; split.
+  - intros (x0 & m1 & evs1 & evs2 & H1 & H2 & H3).
+    injection H1 as -> -> ->. cbn in H3. subst evs. exact H2.
+  - intros H. exists i, m, [], evs. split; [reflexivity|].
+    split; [exact H | reflexivity].
+  - intros [H | (x0 & m1 & evs1 & H1 & H2)]; [discriminate|].
+    injection H1 as -> -> ->. exact H2.
+  - intros H. right. exists i, m, []. split; [reflexivity | exact H].
+Qed.
+
+Local Lemma reads_iff (P : SyscallInput -> Model -> Sys SyscallEffect) :
+  forall i m o, (i0 <- input ;; m0 <- get_model ;; P i0 m0) i m o <-> P i m i m o.
+Proof.
+  intros i m o.
+  rewrite (bind_input_iff (fun i0 => m0 <- get_model ;; P i0 m0)).
+  exact (bind_get_model (fun m0 => P i m0) i m o).
+Qed.
+
+Lemma vdso_commutes_of_at : forall P, vdso_at P ->
+  vdso_commutes (i <- input ;; m <- get_model ;; P i m).
+Proof.
+  intros P HP v i m o H.
+  apply (proj1 (reads_iff P i m o)) in H.
+  apply (proj2 (reads_iff P i (with_vdso v m) (outcome_with_vdso v o))).
+  exact (HP v i m o H).
+Qed.
+
+Lemma vdso_at_of_commutes : forall P,
+  vdso_commutes (i <- input ;; m <- get_model ;; P i m) -> vdso_at P.
+Proof.
+  intros P HP v i m o H.
+  apply (proj2 (reads_iff P i m o)) in H.
+  exact (proj1 (reads_iff P i (with_vdso v m) (outcome_with_vdso v o)) (HP v i m o H)).
+Qed.
+
+Lemma vdso_at_walk_refusals : forall md (pathp : word) P, vdso_at P ->
+  vdso_at (fun i m => walk_refusals md pathp (P i m)).
+Proof.
+  intros md pathp P HP v i m o [H | (Hnu & es & e & Hw & Hin & -> & Hnot)].
+  - left. exact (HP v i m o H).
+  - right. split.
+    + intro Hu. apply Hnu.
+      pose proof (HP (m_vdso m) i (with_vdso v m) Unmodeled Hu) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+    + exists es, e. split; [exact Hw|]. split; [exact Hin|]. split; [reflexivity|].
+      intros m1 evs1 Hs. apply (Hnot (with_vdso (m_vdso m) m1) evs1).
+      pose proof (HP (m_vdso m) i (with_vdso v m) _ Hs) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+Qed.
+
+(** [Sys.Fs.Namei.getname_refusals] reads the arm it wraps negatively
+    too, and is proved the same way: at one model, and, for an arm whose
+    wrapper stands outside its own model read, as a frame of its own
+    ([vc_getname_refusals]). *)
+Lemma vdso_at_getname_refusals : forall (pathp : word) P, vdso_at P ->
+  vdso_at (fun i m => getname_refusals pathp (P i m)).
+Proof.
+  intros pathp P HP v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
+  - left. exact (HP v i m o H).
+  - right. split.
+    + intro Hu. apply Hnu.
+      pose proof (HP (m_vdso m) i (with_vdso v m) Unmodeled Hu) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+    + exists reads, e. split; [exact Hr|]. split; [exact Hin|]. split; [reflexivity|].
+      intros m1 evs1 Hs. apply (Hnot (with_vdso (m_vdso m) m1) evs1).
+      pose proof (HP (m_vdso m) i (with_vdso v m) _ Hs) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+Qed.
+
+Lemma vc_getname_refusals : forall (pathp : word) (c : Sys SyscallEffect),
+  vdso_commutes c -> vdso_commutes (getname_refusals pathp c).
+Proof.
+  intros pathp c Hc v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
+  - left. exact (Hc v i m o H).
+  - right. split.
+    + intro Hu. apply Hnu.
+      pose proof (Hc (m_vdso m) i (with_vdso v m) Unmodeled Hu) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+    + exists reads, e. split; [exact Hr|]. split; [exact Hin|]. split; [reflexivity|].
+      intros m1 evs1 Hs. apply (Hnot (with_vdso (m_vdso m) m1) evs1).
+      pose proof (Hc (m_vdso m) i (with_vdso v m) _ Hs) as H'.
+      rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
+Qed.
+
+Lemma vdso_at_record_copyins : forall (L : SyscallInput -> list (word * nat)) P,
+  vdso_at P -> vdso_at (fun i m => record_copyins (L i) (P i m)).
+Proof.
+  intros L P HP v i m o H. unfold record_copyins, bind, pure in *.
+  destruct o as [y m2 evs|].
+  - destruct H as (x & m1 & evs1 & evs2 & Hx & Hy & ->).
+    injection Hy as -> -> ->.
+    exists x, (with_vdso v m1), evs1, []. split; [exact (HP v i m _ Hx)|].
+    split; reflexivity.
+  - destruct H as [H | (x & m1 & evs1 & Hx & Hy)];
+      [left; exact (HP v i m Unmodeled H) | discriminate Hy].
+Qed.
+
+Lemma vdso_at_if : forall (b : bool) P Q, vdso_at P -> vdso_at Q ->
+  vdso_at (fun i m => if b then P i m else Q i m).
+Proof. intros b P Q HP HQ. destruct b; assumption. Qed.
+
+(** The same for a test on the input alone, which both sides read
+    unchanged: [Stat.statat_getname_runs] in [newfstatat_core_spec]. *)
+Lemma vdso_at_if_input : forall (b : SyscallInput -> bool) P Q,
+  vdso_at P -> vdso_at Q ->
+  vdso_at (fun i m => if b i then P i m else Q i m).
+Proof. intros b P Q HP HQ v i m o. destruct (b i); [apply HP|apply HQ]. Qed.
+
+Lemma vdso_at_const : forall c, vdso_commutes c -> vdso_at (fun _ _ => c).
+Proof. intros c Hc v i m o H. exact (Hc v i m o H). Qed.
+
+(** The arm at one model: its gates, its ledger, [getname_refusals] and
+    [walk_refusals], then the body walked as a specification of its own. *)
+Ltac vdso_at_walk :=
+  apply vdso_commutes_of_at;
+  repeat first
+    [ apply vdso_at_getname_refusals
+    | apply vdso_at_walk_refusals
+    | apply vdso_at_record_copyins
+    | apply vdso_at_if
+    | apply vdso_at_if_input
+    | (apply vdso_at_const; solve [vdso_walk]) ];
+  apply vdso_at_of_commutes; vdso_walk.
+
 (* ---- fs/namei.c ---- *)
+Lemma vc_mkdirat_spec : forall dirfd pathp,
+  vdso_commutes (mkdirat_spec dirfd pathp).
+Proof. intros; unfold mkdirat_spec; vdso_at_walk. Qed.
+
 Lemma vc_unlinkat_spec : forall dirfd pathp flags,
   vdso_commutes (unlinkat_spec dirfd pathp flags).
-Proof. intros; unfold unlinkat_spec; vdso_walk. Qed.
+Proof. intros; unfold unlinkat_spec; vdso_at_walk. Qed.
 
 (* ---- fs/open.c ---- *)
 Lemma vc_ftruncate_spec : forall fd len, vdso_commutes (ftruncate_spec fd len).
@@ -76,15 +223,21 @@ Proof. intros; unfold ftruncate_spec; vdso_walk. Qed.
 
 Lemma vc_faccessat_spec : forall dirfd pathp mode,
   vdso_commutes (faccessat_spec dirfd pathp mode).
-Proof. intros; unfold faccessat_spec; vdso_walk. Qed.
+Proof. intros; unfold faccessat_spec; vdso_at_walk. Qed.
 
 Lemma vc_faccessat2_spec : forall dirfd pathp mode flags,
   vdso_commutes (faccessat2_spec dirfd pathp mode flags).
-Proof. intros; unfold faccessat2_spec; vdso_walk. Qed.
+Proof. intros; unfold faccessat2_spec; vdso_at_walk. Qed.
 
 Lemma vc_openat_spec : forall dirfd pathp flags,
   vdso_commutes (openat_spec dirfd pathp flags).
-Proof. intros; unfold openat_spec; vdso_walk. Qed.
+Proof.
+  intros.
+  assert (Hc : vdso_commutes (openat_core_spec dirfd pathp flags))
+    by (unfold openat_core_spec; vdso_at_walk).
+  unfold openat_spec. apply vc_bind; [vdso_walk | intros x; cbv beta].
+  apply vc_getname_refusals. vdso_walk.
+Qed.
 
 Lemma vc_close_spec : forall fd, vdso_commutes (close_spec fd).
 Proof. intros; unfold close_spec; vdso_walk. Qed.
@@ -122,42 +275,14 @@ Proof. intros; unfold read_spec; vdso_walk. Qed.
 Lemma vc_tr_write_fault_extend : forall fs p off u,
   write_fault_extend fs p off = Some u -> vdso_commutes_tr u.
 Proof.
-  intros fs p off u H. unfold write_fault_extend in H.
-  destruct (fs_lookup fs p) as [data|]; [|discriminate H].
-  destruct (negb (modeled_zero_fill (bv_unsigned off) data)); [discriminate H|].
+  intros fs p off u H. unfold write_fault_extend in H. cbv zeta in H.
+  destruct (negb (modeled_zero_fill (bv_unsigned off) (fs_ino_data fs p)));
+    [discriminate H|].
   injection H as <-. intros c Hc. vdso_walk.
 Qed.
 
 Lemma vc_tr_write_fault_keep : vdso_commutes_tr write_fault_keep.
 Proof. intros c Hc. exact Hc. Qed.
-
-Lemma vc_tr_anon_fault_extend : forall fds id data dst u,
-  anon_fault_extend fds id data dst = Some u -> vdso_commutes_tr u.
-Proof.
-  intros fds id data dst u H. unfold anon_fault_extend in H.
-  destruct (negb (modeled_zero_fill (bv_unsigned dst) data)); [discriminate H|].
-  injection H as <-. intros c Hc. vdso_walk.
-Qed.
-
-Lemma vc_tr_anon_write_fault : forall fds id af u,
-  anon_write_fault fds id af = Some u -> vdso_commutes_tr u.
-Proof.
-  intros fds id af u H. unfold anon_write_fault in H.
-  destruct (af_append af).
-  - injection H as <-. exact vc_tr_write_fault_keep.
-  - exact (vc_tr_anon_fault_extend _ _ _ _ _ H).
-Qed.
-
-Lemma vc_tr_anon_write_place : forall fds fd id af bs u,
-  anon_write_place fds fd id af bs = Some u -> vdso_commutes_tr u.
-Proof.
-  intros fds fd id af bs u H. unfold anon_write_place in H.
-  destruct (af_append af).
-  - injection H as <-. intros c Hc. vdso_walk.
-  - destruct (negb (modeled_file_gap (af_data af) (af_off af) bs));
-      [discriminate H|].
-    injection H as <-. intros c Hc. vdso_walk.
-Qed.
 
 (** The tail every file write arm shares. *)
 Lemma vc_write_file_tail : forall mp buf count fault place,
@@ -251,12 +376,6 @@ Ltac rw_step :=
       apply vc_writev_file_arm; intros; cbn beta zeta in *
   | H : write_fault_extend _ _ _ = Some ?u |- vdso_commutes_tr ?u =>
       exact (vc_tr_write_fault_extend _ _ _ _ H)
-  | H : anon_write_fault _ _ _ = Some ?u |- vdso_commutes_tr ?u =>
-      exact (vc_tr_anon_write_fault _ _ _ _ H)
-  | H : anon_write_place _ _ _ _ _ = Some ?u |- vdso_commutes_tr ?u =>
-      exact (vc_tr_anon_write_place _ _ _ _ _ _ H)
-  | H : anon_fault_extend _ _ _ _ = Some ?u |- vdso_commutes_tr ?u =>
-      exact (vc_tr_anon_fault_extend _ _ _ _ _ H)
   | |- vdso_commutes_tr _ => tr_from_eq
   (** [pwrite64]'s arms INLINE the tail rather than calling
       [write_file_tail], so the walk meets the option itself.  Keep the
@@ -319,12 +438,20 @@ Lemma vc_ppoll_spec : forall ufds nfds tsp sig sigsetsize,
 Proof. intros; unfold ppoll_spec; vdso_walk. Qed.
 
 (* ---- fs/stat.c ---- *)
-Lemma vc_readlinkat_spec : forall dirfd, vdso_commutes (readlinkat_spec dirfd).
-Proof. intros; unfold readlinkat_spec; vdso_walk. Qed.
+Lemma vc_readlinkat_spec : forall dirfd pathp buf bufsiz,
+  vdso_commutes (readlinkat_spec dirfd pathp buf bufsiz).
+Proof. intros; unfold readlinkat_spec; vdso_at_walk. Qed.
 
-Lemma vc_newfstatat_spec : forall dirfd pathp flag,
-  vdso_commutes (newfstatat_spec dirfd pathp flag).
-Proof. intros; unfold newfstatat_spec; vdso_walk. Qed.
+Lemma vc_newfstatat_spec : forall dirfd pathp statbuf flag,
+  vdso_commutes (newfstatat_spec dirfd pathp statbuf flag).
+Proof.
+  intros.
+  assert (Hc : vdso_commutes (newfstatat_core_spec dirfd pathp statbuf flag))
+    by (unfold newfstatat_core_spec; vdso_at_walk).
+  unfold newfstatat_spec. apply vc_bind; [vdso_walk | intros x; cbv beta].
+  destruct (statat_getname_runs x pathp flag); [apply vc_getname_refusals|];
+    vdso_walk.
+Qed.
 
 Lemma vc_fstat_spec : forall fd statbuf, vdso_commutes (fstat_spec fd statbuf).
 Proof. intros; unfold fstat_spec; vdso_walk. Qed.

@@ -676,7 +676,7 @@ Definition iter_ev (bs : list byte) : list event :=
     trace so far is just a prefix. *)
 Definition eof_tail (s : InputStream) (fs : Fs.Fs) : list event :=
   match s with
-  | IEof => [ExitEv (Z_to_bv 64 0) fs]
+  | IEof => [ExitEv (Z_to_bv 64 0) (Fs.fs_observe fs)]
   | ICons _ _ => []
   end.
 
@@ -890,10 +890,10 @@ Proof.
         - rewrite <- Hg1 in Hw, Haok. eapply (read0_ok_eof cnt Hcnt); eassumption.
         - rewrite (materialize_model_accesses_no_lazy model _ Hlazy). reflexivity. }
       cbn [eof_tail].
-      replace [ExitEv (Z_to_bv 64 0) (m_fs model)]
+      replace [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))]
         with (([] : list event)
                 ++ ([] ++ [ExitEv (bv_and (Z_to_bv 64 0) (Z_to_bv 64 255))
-                             (m_fs model)]))
+                             (Fs.fs_observe (m_fs model))]))
         by (rewrite band0_255; reflexivity).
       eapply star_trans; [exact Hstar0|].
       eapply star_step; [exact HssE | exact Hstar2].

@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -200,17 +203,16 @@ Definition getdents64_no_room (count : word) : bool :=
       then have to be conditioned on the position, because a directory
       read to its end answers 0 to the very same call.
 
-    APPROXIMATION, and it is a NARROWING rather than a wrong answer.
-    Two untracked conditions sit between the -ENOTDIR and the -EINVAL —
-    [security_file_permission]'s LSM verdict and [fsnotify_file_perm]'s
-    fanotify permission response — and neither errno is documented for
-    getdents(2), so neither is offered here.  Under an LSM that denies
-    the read, or a fanotify listener that answers FAN_DENY, this spec
-    REJECTS a conforming trace on the directory arm.  ([down_read_killable]'s
-    -EINTR is a third, and is unreachable rather than approximated: it
-    fires only on a fatal signal, which kills the task before any return
-    value reaches userspace.)  The -EBADF and -ENOTDIR arms are behind
-    none of the three and are unconditional.
+    NO DENIAL SITS BETWEEN THE TWO.  [security_file_permission] and
+    [fsnotify_file_perm] run between the -ENOTDIR and the -EINVAL, and
+    the configuration of record builds neither an LSM nor fanotify
+    (SCOPE.md), so both are stubs that answer 0 and no supported kernel
+    answers this arm -EACCES or -EPERM; refusing both is exact.
+    ([down_read_killable]'s -EINTR is a third condition, and is
+    unreachable rather than approximated: it fires only on a fatal
+    signal, which kills the task before any return value reaches
+    userspace.)  The -EBADF and -ENOTDIR arms are behind none of the
+    three and are unconditional.
 
     Nothing is written on any admitted arm, so every effect is a bare
     return with five empty ledgers, and no arm reads user memory either
@@ -227,9 +229,6 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
-  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
-                                              file is still a regular file, whose
-                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
   | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
@@ -239,9 +238,9 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)
-  | Some FdUrandom => err_ret ENOTDIR       (* and [urandom_fops] (drivers/char/random.c) has
+  | Some (FdUrandom _ _) => err_ret ENOTDIR (* and [urandom_fops] (drivers/char/random.c) has
                                               none either: the same -ENOTDIR *)
-  | Some FdDir =>
+  | Some (FdDir _) =>
       if getdents64_no_room count
       then alt (e <- errno_from getdents64_errnos ;; err_ret e)  (* the removed directory *)
                (err_ret EINVAL)                                  (* [filldir64]'s own answer *)

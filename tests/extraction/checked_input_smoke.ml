@@ -68,12 +68,25 @@ let kernel_default : M.rawKernelBuild = {
    which Run.valid_execfn admits. *)
 let execfn_default = [z "97"]
 
+(* The standard root at the default working directory: "/", "/dev",
+   the two devices, "/tmp" and "/work".  Run.valid_image asks for the
+   five standard entries and for the working directory to be a folder
+   of the image. *)
+let zs l = List.map (fun i -> z (string_of_int i)) l
+let work = zs [47; 119; 111; 114; 107]
+let std_image : (Big_int_Z.big_int list * M.rawEntry) list = [
+  (zs [47], M.RawDir); (zs [47; 100; 101; 118], M.RawDir);
+  (zs [47; 100; 101; 118; 47; 110; 117; 108; 108], M.RawDevNull);
+  (zs [47; 100; 101; 118; 47; 117; 114; 97; 110; 100; 111; 109], M.RawDevUrandom);
+  (zs [47; 116; 109; 112], M.RawDir); (work, M.RawDir) ]
+
 let seed : M.rawProcInput = {
-  M.rpi_argv = []; rpi_envp = []; rpi_image_fs = []; rpi_stdin = [];
+  M.rpi_argv = []; rpi_envp = []; rpi_image_fs = std_image; rpi_cwd = work;
+  rpi_stdin = [];
   rpi_uid = z "0"; rpi_gid = z "0"; rpi_groups = []; rpi_net = [];
   rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
   rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-  rpi_urandom = []; rpi_tmp = [];
+  rpi_urandom = [];
   rpi_kernel = kernel_default; rpi_execfn = execfn_default;
   rpi_channel_reader = true; rpi_sigpipe_default = true;
   rpi_sigpipe_terminal = false }
@@ -176,13 +189,15 @@ let () =
   check "an envp byte above 255 is refused"
     (seed_refused { seed with M.rpi_envp = [[z "256"]] });
   check "a file-system byte above 255 is refused"
-    (seed_refused { seed with M.rpi_image_fs = [([z "97"], [z "256"])] });
+    (seed_refused { seed with M.rpi_image_fs =
+                      std_image @ [(work @ zs [47; 97], M.RawFile [z "256"])] });
   check "a standard-input byte above 255 is refused"
     (seed_refused { seed with M.rpi_stdin = [z "256"] });
   check "a random-device byte above 255 is refused"
     (seed_refused { seed with M.rpi_urandom = [z "256"] });
-  check "a /tmp byte above 255 is refused"
-    (seed_refused { seed with M.rpi_tmp = [([z "97"], [z "256"])] });
+  check "a byte above 255 in a file under /tmp is refused"
+    (seed_refused { seed with M.rpi_image_fs =
+                      std_image @ [(zs [47; 116; 109; 112; 47; 97], M.RawFile [z "256"])] });
   check "a peer address above 2^32 - 1 is refused"
     (seed_refused { seed with M.rpi_net =
       [{ M.rpe_addr = z "4294967296"; rpe_port = z "80"; rpe_bytes = [];
@@ -240,14 +255,17 @@ let () =
     (not (seed_refused ~reserved:[(z "4096", z "4096")] ~brk0:"8192"
             ~mbase:"12288" ~sp:"16384"
             { M.rpi_argv = [[z "112"; z "0"]]; rpi_envp = [[z "65"; z "0"]];
-              rpi_image_fs = [([z "97"], [z "1"; z "255"])];
+              rpi_image_fs =
+                std_image @ [(work @ zs [47; 97], M.RawFile [z "1"; z "255"]);
+                             (zs [47; 116; 109; 112; 47; 98], M.RawFile [z "2"])];
+              rpi_cwd = work;
               rpi_stdin = [z "0"; z "255"]; rpi_uid = z "1000";
               rpi_gid = z "1000"; rpi_groups = [z "1000"];
               rpi_net = [{ M.rpe_addr = z "2130706433"; rpe_port = z "80";
                            rpe_bytes = [z "255"]; rpe_end = M.RneRst }];
               rpi_nofile = z "1024"; rpi_sigmask = z "0"; rpi_hwcap = z "4397";
               rpi_abort_terminal = false; rpi_va_size = M.Sv48;
-              rpi_urandom = [z "7"]; rpi_tmp = [([z "98"], [z "2"])];
+              rpi_urandom = [z "7"];
               rpi_kernel =
                 { M.rkb_thp = true; rkb_vdso = z "3"; rkb_aslr = true;
                   rkb_guard = z "1"; rkb_rnd_bits = z "20"; rkb_rseq = true;
@@ -272,42 +290,111 @@ let () =
 (* the file-system image the run is launched over                     *)
 (* ----------------------------------------------------------------- *)
 
-(* "a" and "a/b": one name is a regular file and the directory the
-   other name lives under, which no Linux file system holds -- one
-   name in one directory is one inode.  Run.valid_input carries that
-   clause (Fs.fs_image_real) since revision/linux-only, and the
-   boundary refuses the image here.  Beside it "a" and "ab", which
-   differ in one byte of the second key and name two files.
+(* "/work/a" and "/work/a/b": one name is a regular file and the
+   folder the other name lives under, which no Linux file system
+   holds -- one name in one directory is one inode.  Fs.wf_fs refuses
+   an entry whose parent is not a directory, and the boundary refuses
+   the image here.  Beside it "/work/a" and "/work/ab", which differ
+   in one byte of the second key and name two files.
 
    The two roots answer the two questions apart: fs_of_raw says
    whether the image is a VALUE, image_shape_b whether it is a
    launch. *)
-let image_prefix_key =
-  [([z "97"], [z "104"]); ([z "97"; z "47"; z "98"], [z "104"])]
-let image_flat_keys =
-  [([z "97"], [z "104"]); ([z "97"; z "98"], [z "104"])]
+let work_a = work @ zs [47; 97]
+let file_h = M.RawFile [z "104"]
+let image_prefix_key = std_image @ [(work_a, file_h); (work_a @ zs [47; 98], file_h)]
+let image_two_files = std_image @ [(work_a, file_h); (work_a @ zs [98], file_h)]
+let tmp_nested =
+  std_image @ [(zs [47; 116; 109; 112; 47; 97], file_h);
+               (zs [47; 116; 109; 112; 47; 97; 47; 98], file_h)]
 
 let converts l = match M.fs_of_raw l with Some _ -> true | None -> false
 
 let () =
-  check "an image whose key is also a directory is refused"
+  check "an image whose file is also a folder is refused"
     (seed_refused { seed with M.rpi_image_fs = image_prefix_key });
   check "that image is a VALUE: fs_of_raw converts it"
     (converts image_prefix_key);
   check "the image shape test says that image is no launch"
-    (not (M.image_shape_b image_prefix_key));
-  check "the image shape test takes the two flat keys"
-    (M.image_shape_b image_flat_keys);
-  check "the image with two flat keys is converted"
-    (not (seed_refused { seed with M.rpi_image_fs = image_flat_keys }));
+    (not (M.image_shape_b image_prefix_key work));
+  check "the image shape test takes the two files"
+    (M.image_shape_b image_two_files work);
+  check "the image with two files is converted"
+    (not (seed_refused { seed with M.rpi_image_fs = image_two_files }));
   check "a non-canonical key names no file a directory can hold"
-    (not (M.image_shape_b [([z "46"; z "47"; z "97"], [z "104"])]));
+    (not (M.image_shape_b (std_image @ [(work @ zs [47; 46; 47; 97], file_h)]) work));
   check "an image byte above 255 is not a value at all"
-    (not (converts [([z "97"], [z "256"])]));
-  (* the /tmp declaration carries no reality condition in Run, so the
-     same nesting is converted there *)
-  check "the same nesting in the /tmp declaration is converted"
-    (not (seed_refused { seed with M.rpi_tmp = image_prefix_key }))
+    (not (converts [(work_a, M.RawFile [z "256"])]));
+  check "the same nesting under /tmp is refused"
+    (seed_refused { seed with M.rpi_image_fs = tmp_nested });
+  check "a working directory the image does not hold is no launch"
+    (not (M.image_shape_b std_image (work @ zs [47; 120])));
+  check "an image without /dev/null is no launch"
+    (not (M.image_shape_b
+            (List.filter (fun (_, e) -> match e with M.RawDevNull -> false | _ -> true)
+               std_image) work))
+
+(* Folders /proc and /sys in the image are a launch while the working
+   directory is /work; a working directory of /proc, or of /sys/kernel
+   below /sys, is no launch (Run.outside_proc_sysb). *)
+let proc_dir = zs [47; 112; 114; 111; 99]
+let sys_dir = zs [47; 115; 121; 115]
+let sys_kernel = sys_dir @ zs [47; 107; 101; 114; 110; 101; 108]
+let proc_sys_image =
+  std_image @ [(proc_dir, M.RawDir); (sys_dir, M.RawDir); (sys_kernel, M.RawDir)]
+
+let () =
+  check "folders /proc and /sys beside the working directory /work are a launch"
+    (M.image_shape_b proc_sys_image work);
+  check "a working directory of /proc is no launch"
+    (not (M.image_shape_b proc_sys_image proc_dir));
+  check "a working directory of /sys/kernel is no launch"
+    (not (M.image_shape_b proc_sys_image sys_kernel))
+
+(* "/work/b" is a second name of "/work/a" and "/work/l" a link whose
+   body is "a".  The second name is at the head of the list, which
+   fs_of_raw applies last, so its target is a file by then: both names
+   read back as ONE inode.  A second name of a folder, of a link or of
+   nothing is not a value, nor is one whose target the list only makes
+   after it is applied. *)
+let work_b = work @ zs [47; 98]
+let work_l = work @ zs [47; 108]
+let image_links =
+  [(work_b, M.RawName work_a)] @ std_image
+  @ [(work_a, file_h); (work_l, M.RawLink (zs [97]))]
+
+let () =
+  check "an image with a link and a second name is a launch"
+    (M.image_shape_b image_links work);
+  check "and it is converted"
+    (not (seed_refused { seed with M.rpi_image_fs = image_links }));
+  check "both names of the file hold one inode, the link its body"
+    (match M.fs_of_raw image_links with
+     | Some fs ->
+       (match M.fs_lookup fs work_a, M.fs_lookup fs work_b, M.fs_lookup fs work_l with
+        | Some (M.EFile i), Some (M.EFile j), Some (M.ELink b) ->
+          Big_int_Z.eq_big_int i j
+          && List.map Big_int_Z.int_of_big_int b = [97]
+        | _ -> false)
+     | None -> false);
+  check "two files with equal bytes are two inodes"
+    (match M.fs_of_raw (std_image @ [(work_a, file_h); (work_b, file_h)]) with
+     | Some fs ->
+       (match M.fs_lookup fs work_a, M.fs_lookup fs work_b with
+        | Some (M.EFile i), Some (M.EFile j) -> not (Big_int_Z.eq_big_int i j)
+        | _ -> false)
+     | None -> false);
+  check "a second name of a folder is not a value"
+    (not (converts ([(work_b, M.RawName work)] @ std_image)));
+  check "a second name of a link is not a value"
+    (not (converts ([(work_b, M.RawName work_l)] @ std_image
+                    @ [(work_l, M.RawLink (zs [97]))])));
+  check "a second name of nothing is not a value"
+    (not (converts ([(work_b, M.RawName (work @ zs [47; 122]))] @ std_image)));
+  check "a second name applied before its target is not a value"
+    (not (converts (std_image @ [(work_a, file_h); (work_b, M.RawName work_a)])));
+  check "a link body byte above 255 is not a value"
+    (not (converts (std_image @ [(work_l, M.RawLink [z "256"])])))
 
 let () =
   if !failures = 0 then print_endline "checked-input smoke: all checks passed"

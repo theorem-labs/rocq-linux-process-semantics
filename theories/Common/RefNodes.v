@@ -1089,9 +1089,10 @@ Proof. intros data off count. rewrite file_read_length_eq. split; lia. Qed.
 (* Pigeonhole lemmas for an admissible mmap address                         *)
 (* ========================================================================= *)
 
-(** Candidate grant addresses for a size bound [N]: [cand N j = bottomup_floor + j*2N]
-    (at or above [Mmap.bottomup_floor], so [Mmap.placement_ok]'s first
-    disjunct holds for every candidate, whatever the hint and the mmap base).
+(** Candidate grant addresses for a size bound [N]: [cand N j = bottomup_floor + j*2N],
+    each at or above [AsanCeil.bottomup_floor].  They are not NULL-hint
+    placements: that gate ([AsanCeil.placement_ok]) is Linux's own search,
+    which these addresses need not satisfy.
     An interval of size at most [N] meets at most one candidate window
     [cand N j, cand N j + n) (n <= N), so among [length l + 1] candidates one
     is free of all [length l] recorded intervals. *)

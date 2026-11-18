@@ -83,7 +83,9 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim CatSim MmapSim AllocSim AllocSim2 WallSim.
 
 Import ListNotations.
@@ -148,9 +150,10 @@ Definition t_alt {I : Type} (f : I -> TSet) : TSet := fun tr => exists i, f i tr
 (** Binary choice. *)
 Definition t_alt2 (A B : TSet) : TSet := fun tr => A tr \/ B tr.
 
-(** Terminating leaf: exit with [code], final file system [fs]. *)
+(** Terminating leaf: exit with [code], final file system [fs], which
+    the exit event reports as observed ([Fs.fs_observe]). *)
 Definition t_exit (code : word) (fs : Fs.Fs) : TSet :=
-  t_emit [ExitEv code fs] t_nil.
+  t_emit [ExitEv code (Fs.fs_observe fs)] t_nil.
 
 (** The index type of a single channel write's resolutions: the
     delivered length, any nonempty prefix of the buffer.  (For an empty
@@ -225,7 +228,7 @@ Qed.
     [CatSim]'s "prefixes of [wevents bufs ++ [ExitEv code fs]]". *)
 Lemma t_writes_ch_exit_iff : forall ch bufs code fs tr,
   t_writes_ch ch bufs (t_exit code fs) tr
-  <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code fs]).
+  <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe fs)]).
 Proof.
   intros ch bufs; induction bufs as [|buf bufs IH]; intros code fs tr.
   - cbn [wevents_ch app]. unfold t_writes_ch, fold_right, t_exit, t_emit, t_nil.
@@ -244,7 +247,7 @@ Qed.
 
 Lemma t_writes_exit_iff : forall bufs code fs tr,
   t_writes bufs (t_exit code fs) tr
-  <-> is_prefix tr (wevents bufs ++ [ExitEv code fs]).
+  <-> is_prefix tr (wevents bufs ++ [ExitEv code (Fs.fs_observe fs)]).
 Proof.
   intros bufs code fs tr. unfold t_writes.
   rewrite t_writes_ch_exit_iff, wevents_ch_fd1. reflexivity.
@@ -300,7 +303,7 @@ Lemma t_writes_ch_pick_exit_iff : forall ch bufs code fs tr,
   Forall (fun b => (1 <= length b)%nat) bufs ->
   (fold_right (t_write_ch ch) (t_exit code fs) bufs tr
    <-> exists full, wpick ch bufs full /\
-       is_prefix tr (full ++ [ExitEv code fs])).
+       is_prefix tr (full ++ [ExitEv code (Fs.fs_observe fs)])).
 Proof.
   intros ch bufs code fs tr Hall; revert tr;
     induction Hall as [|buf bufs Hnb Hall IH]; intros tr.
@@ -338,7 +341,7 @@ Lemma t_writes_pick_exit_iff : forall bufs code fs tr,
   Forall (fun b => (1 <= length b)%nat) bufs ->
   (t_writes_pick bufs (t_exit code fs) tr
    <-> exists full, wpick (Z_to_bv 64 1) bufs full /\
-       is_prefix tr (full ++ [ExitEv code fs])).
+       is_prefix tr (full ++ [ExitEv code (Fs.fs_observe fs)])).
 Proof. intros. apply t_writes_ch_pick_exit_iff. assumption. Qed.
 
 (** [MmapSim.two_traces] is the binary alternative of two write-then-exit
@@ -774,8 +777,8 @@ Proof.
   eapply (rz_emit1 (mkCfg ms model) (mkCfg ms (with_halted code model))).
   - split.
     + intros []. cbn.
-      replace [ExitEv code (m_fs model)]
-        with ([] ++ [ExitEv code (m_fs (with_halted code model))]) by reflexivity.
+      replace [ExitEv code (Fs.fs_observe (m_fs model))]
+        with ([] ++ [ExitEv code (Fs.fs_observe (m_fs (with_halted code model)))]) by reflexivity.
       apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
                (with_halted code model) [] code);
         [exact Hh | exact Hsvc

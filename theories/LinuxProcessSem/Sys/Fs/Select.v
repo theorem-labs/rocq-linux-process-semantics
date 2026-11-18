@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -318,21 +321,23 @@ Fixpoint bits_all_open (fds : list (word * FdEntry)) (z : Z) (k : nat) : bool :=
     file_operations define [->poll].  It is an ENVIRONMENT OBLIGATION,
     stated here as one: every path in the initial image names an
     ordinary file on an ordinary filesystem.  Nothing in the model
-    enforces that.  [Fs.valid_fs] requires only that the image be sorted
-    and NUL-free, and [Equivalence.strong_universal_T] quantifies over
-    every image satisfying it, so [("/proc/self/mounts", bytes)] is an
-    admissible input: [openat] would mint an ordinary [FdFile] for it and
-    this predicate would answer [true], where Linux consults
-    [mounts_poll] and reports no [EPOLLOUT].  That is a model-vs-Linux
+    enforces that.  [Fs.wf_fs] requires only that the image be a tree
+    of canonical keys, and [Equivalence.strong_universal_T] quantifies over
+    every image satisfying it, so an image whose folder "/mnt" holds a
+    FUSE mount's regular file is an admissible input: [openat] would
+    mint an ordinary [FdFile] for it and this predicate would answer
+    [true], where Linux consults [fuse_file_poll] and reports whatever
+    the daemon returns.  That is a model-vs-Linux
     fidelity gap, not a break in the equivalence -- source and target are
-    judged against the same model, so both get the same answer.
-    A run whose working directory is on tmpfs meets the obligation:
-    tmpfs regular files take
+    judged against the same model, so both get the same answer.  procfs
+    and sysfs are not reached this way: [Fs.resolve] answers [ROutside]
+    for "proc" and "sys" looked up at "/" (Fs.v, [walk_comps]), and
+    every arm declines that result.
+    A run whose image is on tmpfs meets the obligation: tmpfs regular
+    files take
     [shmem_file_operations] (mm/shmem.c shmem_get_inode), which has no
-    [->poll], and every [FdFile] is a bare name in that directory, since
-    [openat] declines a pathname with a separator (Open.v,
-    [path_has_slash]).  The directory descriptors -- the cwd, and its
-    parent through ".." -- rest on the tree-wide claim above instead.
+    [->poll], and every [FdFile] names a regular-file key of the image.
+    The directory descriptors rest on the tree-wide claim above instead.
     [ioctl] carries the identical commitment in the identical shape.
 
     Anon-inode descriptors are the one neighbouring worry that is NOT
@@ -373,7 +378,7 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                break.  Listing the kinds that ARE unconditionally
                pollable makes a new constructor a compile error
                instead. *)
-            | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir => true
+            | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdDir _) => true
             | Some (FdFileRW _ _) => true
             (* the same regular file, opened O_RDWR.  A regular file has
                no [->poll] whatever its access mode, so [vfs_poll] hands
@@ -385,12 +390,6 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                inode has, and a regular file still has none -- so
                [vfs_poll] hands back [DEFAULT_POLLMASK] here exactly as
                it does for the three kinds above *)
-            | Some (FdAnon _ _) => true
-            (* an unnamed file is a regular file too: its name is gone,
-               not its [->poll], and the regular-file table of tmpfs has
-               none ([shmem_file_operations], mm/shmem.c, v6.18.46), so
-               [vfs_poll] hands back [DEFAULT_POLLMASK] as for the file
-               kinds above *)
             | Some (FdChannel _) | Some (FdSocket _) | None => false
             (* A PIPE END IS THE [FdChannel] CASE WITH THE PEER INSIDE
                THE MODEL, and it declines for the same reason.
@@ -418,7 +417,7 @@ Fixpoint bits_all_pollable (fds : list (word * FdEntry)) (z : Z) (k : nat)
                would be [true].  It is declined until that arm is
                written; a decline here is
                [PsCoreGap], never a wrong answer. *)
-            | Some FdUrandom => false
+            | Some (FdUrandom _ _) => false
             (* FAIL-CLOSED, the same way: [urandom_fops]
                (drivers/char/random.c, v6.18.46) has no [.poll] — the
                blocking [random_fops] is the table that does — so the
@@ -1367,7 +1366,7 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
   if (fd <? 0)%Z then Some (0, 0)%Z
   else match fd_lookup fds (Z_to_bv 64 fd) with
        | None => Some (POLLNVAL, POLLNVAL)
-       | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir =>
+       | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdDir _) =>
            Some (Z.land default_pollmask events, Z.land default_pollmask events)
        | Some (FdFileRW _ _) =>
            (* the same regular file, opened O_RDWR.  A regular file has no
@@ -1382,10 +1381,6 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
               file still has none, so [vfs_poll] hands back
               [DEFAULT_POLLMASK] here exactly as it does for the three
               kinds beside it *)
-           Some (Z.land default_pollmask events, Z.land default_pollmask events)
-       | Some (FdAnon _ _) =>
-           (* an unnamed file: the regular-file answer, for the reason
-              [bits_all_pollable] gives *)
            Some (Z.land default_pollmask events, Z.land default_pollmask events)
        (* ENUMERATED ON PURPOSE, exactly as [bits_all_pollable] is and
           for the same reason: a [Some _ => true] catch-all would be
@@ -1402,7 +1397,7 @@ Definition ppoll_revents_of (fds : list (word * FdEntry)) (fd events : Z)
            (* FAIL-CLOSED, for the reason [bits_all_pollable] gives: the
               answer is [DEFAULT_POLLMASK] because [null_fops] has no
               [.poll], and it is not written yet *)
-       | Some FdUrandom => None
+       | Some (FdUrandom _ _) => None
            (* the same: [urandom_fops] has no [.poll] either *)
        | Some (FdStream id side st) =>
            (* [sock_poll] -> [unix_poll], masked by the entry's filter:

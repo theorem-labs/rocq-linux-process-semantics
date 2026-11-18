@@ -9,11 +9,11 @@
 
     ** This is NOT a validity claim about standard input
 
-    [Run.valid_input] constrains argv, envp, the initial file system,
-    the image's keys, the launching credentials, the soft descriptor
-    limit, the blocked-signal mask, the hart's AT_HWCAP word and the
-    random device's declared stream ([Run.valid_argv], [Run.valid_envp],
-    [Fs.valid_fs], [Fs.fs_keys_relative], [Run.valid_creds],
+    [Run.valid_input] constrains argv, envp, the initial file system
+    and the working directory, the launching credentials, the soft
+    descriptor limit, the blocked-signal mask, the hart's AT_HWCAP word
+    and the random device's declared stream ([Run.valid_argv],
+    [Run.valid_envp], [Run.valid_image], [Run.valid_creds],
     [Run.valid_nofile], [Run.valid_sigmask], [Run.valid_hwcap],
     [Run.valid_urandom]) — and
     deliberately none for the standard-input stream.  The argument for
@@ -140,7 +140,10 @@
     Validity does not imply it either ([valid_input_not_finite]), which
     is the mechanical form of this header's first section: the finite
     restriction is a real restriction, taken on purpose, and not a
-    consequence of anything [Run] already demands. *)
+    consequence of anything [Run] already demands.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Run.
@@ -398,20 +401,16 @@ Definition finite_input (inp : ProcInput) : Prop :=
 (** A process input with the standard-input stream and the random
     device's stream each replaced by the list of bytes it delivers.
     Field-for-field [State.ProcInput] — SAME NAMES IN THE SAME ORDER,
-    including the two ENVIRONMENT fields [State.in_urandom] and
-    [State.in_tmp] at the end — with [fin_stdin] and [fin_urandom] the
-    two that differ in TYPE: inductive where the original is
-    coinductive, which is the reason this record exists (see the header:
-    a weight function has to recurse on something).
+    including [fin_cwd] beside the image and the ENVIRONMENT field
+    [State.in_urandom] after the declarations — with [fin_stdin] and
+    [fin_urandom] the two that differ in TYPE: inductive where the
+    original is coinductive, which is the reason this record exists (see
+    the header: a weight function has to recurse on something).
 
-    [fin_image_fs] is the IMAGE, not the file system the run starts
-    with.  It feeds [State.in_image_fs], and the run's initial file
-    system is the seeded [State.in_fs] of the result — the image with
-    [fin_tmp] laid into it under absolute keys
-    ([State.fs_seed_tmp]).  The two are equal exactly when [fin_tmp] is
-    empty.  The field is named for its counterpart
-    [State.in_image_fs], so that a weight function reading it cannot
-    mistake the image for the run's file system.
+    [fin_image_fs] is the file system the run starts with, the whole
+    namespace under absolute keys, and [fin_cwd] is the working
+    directory the run is launched in ([State.in_cwd]).  The field is
+    named for its counterpart [State.in_image_fs].
 
     [fin_net] is carried ACROSS UNCHANGED, still a [State.NetQueue] and
     still coinductive, and that is deliberate.  What this record has to
@@ -456,6 +455,12 @@ Record FinProcInput := mkFinProcInput {
   fin_argv  : list (list byte);
   fin_envp  : list (list byte);
   fin_image_fs    : Fs.Fs;
+  fin_cwd         : Fs.path
+    (* the working directory, mirroring [State.in_cwd].  It is on the
+       ENVIRONMENT side -- where a process was started is a fact about
+       the launch, not about the bytes it is asked to process -- and it
+       is a list, so it adds no clause to [finite_input].  It is NOT
+       part of [fin_core] -- see there *);
   fin_stdin : list byte;
   fin_uid   : word;
   fin_gid   : word;
@@ -485,11 +490,6 @@ Record FinProcInput := mkFinProcInput {
     (* the random device's declared bytes, mirroring [State.in_urandom]:
        a list where the original is a colist, for the reason
        [fin_stdin] is.  It is NOT part of [fin_core] — see there *);
-  fin_tmp   : Fs.Fs
-    (* the run's declared private /tmp, mirroring [State.in_tmp].  It
-       is already inductive -- a [Fs.Fs] is a list -- so unlike
-       [fin_stdin] and [fin_urandom] it adds no clause to
-       [finite_input].  It is NOT part of [fin_core] -- see there *);
   fin_kernel : KernelBuild
     (* the kernel build the run was launched on, mirroring
        [State.in_kernel].  It is on the ENVIRONMENT side -- which
@@ -559,13 +559,13 @@ Record FinProcInput := mkFinProcInput {
     projections; every statement about the result goes back through
     [State.ProcInput]'s projections, which reduce. *)
 Definition to_proc_input (f : FinProcInput) : ProcInput :=
-  mkProcInput_full (fin_argv f) (fin_envp f) (fin_image_fs f)
+  mkProcInput_full (fin_argv f) (fin_envp f) (fin_image_fs f) (fin_cwd f)
               (stream_of_list (fin_stdin f))
               (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
               (fin_nofile f) (fin_sigmask f) (fin_hwcap f)
               (fin_abort_terminal f) (fin_va_size f)
               (stream_of_list_then (fin_urandom f) State.default_urandom)
-              (fin_tmp f) (fin_kernel f) (fin_execfn f)
+              (fin_kernel f) (fin_execfn f)
               (fin_channel_reader f) (fin_sigpipe_default f)
               (fin_sigpipe_terminal f).
 
@@ -724,12 +724,12 @@ Definition fin_core (f : FinProcInput) : FinCore :=
     [mkFinCore argv envp fs stdin], moves.  Widening the core is a
     separate change, if a weight over the device's bytes is ever wanted.
 
-    [fin_tmp] is the fourth, and lands on the ENVIRONMENT side for the
-    same reason and with the same consequence: what the run's private
-    /tmp already contains at launch is a fact about the launch, not the
-    input the program is asked to process, and the measure library —
-    written over [mkFinCore argv envp fs stdin] — is untouched by it.
-    Two records that differ only in the declared /tmp are one charge in
+    [fin_cwd] is the fourth, and lands on the ENVIRONMENT side for the
+    same reason and with the same consequence: where the process was
+    started is a fact about the launch, not the input the program is
+    asked to process, and the measure library — written over
+    [mkFinCore argv envp fs stdin] — is untouched by it.  Two records
+    that differ only in the working directory are one charge in
     [Measure.weight_bound_T], which over-approximates the rejected mass
     rather than under-approximating it.
 
@@ -754,11 +754,11 @@ Definition fin_core (f : FinProcInput) : FinCore :=
     launcher left SIGPIPE at SIG_DFL is the task's stance on the launch
     ([State.in_sigpipe_default]), not input the program is asked to
     process.  Two records that differ only in it are one charge in
-    [Measure.weight_bound_T], the over-approximation [fin_tmp] already
+    [Measure.weight_bound_T], the over-approximation [fin_cwd] already
     makes. *)
 Lemma fin_core_env_eq : forall f g,
   fin_core f = fin_core g ->
-  fin_tmp f = fin_tmp g ->
+  fin_cwd f = fin_cwd g ->
   fin_urandom f = fin_urandom g ->
   fin_uid f = fin_uid g -> fin_gid f = fin_gid g ->
   fin_groups f = fin_groups g -> fin_net f = fin_net g ->
@@ -774,15 +774,15 @@ Lemma fin_core_env_eq : forall f g,
   fin_sigpipe_terminal f = fin_sigpipe_terminal g ->
   f = g.
 Proof.
-  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1 kb1 xf1 cr1 sd1 st1]
-         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2 kb2 xf2 cr2 sd2 st2]
-    Hcore Htm Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva Hkb Hxf Hcr Hsd Hst.
+  intros [a1 e1 fs1 cw1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 kb1 xf1 cr1 sd1 st1]
+         [a2 e2 fs2 cw2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 kb2 xf2 cr2 sd2 st2]
+    Hcore Hcw Hr Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva Hkb Hxf Hcr Hsd Hst.
   unfold fin_core in Hcore.
-  cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
+  cbn [fin_argv fin_envp fin_image_fs fin_cwd fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
        fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size
        fin_kernel fin_execfn fin_channel_reader fin_sigpipe_default
        fin_sigpipe_terminal]
-    in Hcore, Htm, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva, Hkb, Hxf, Hcr, Hsd, Hst.
+    in Hcore, Hcw, Hr, Hu, Hg, Hgs, Hn, Hnf, Hsm, Hhc, Hab, Hva, Hkb, Hxf, Hcr, Hsd, Hst.
   injection Hcore as Ha He Hfs Hs.
   subst. reflexivity.
 Qed.
@@ -823,11 +823,12 @@ Lemma fin_core_fibre_infinite : forall f,
 Proof.
   intros f.
   exists (fun n => mkFinProcInput (fin_argv f) (fin_envp f) (fin_image_fs f)
+                     (fin_cwd f)
                      (fin_stdin f) (fin_uid f) (fin_gid f)
                      (repeat (Z_to_bv 64 0) n) (fin_net f) (fin_nofile f) (fin_sigmask f)
                      (fin_hwcap f)
                      (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f) (fin_kernel f) (fin_execfn f)
+                     (fin_urandom f) (fin_kernel f) (fin_execfn f)
                      (fin_channel_reader f) (fin_sigpipe_default f)
                      (fin_sigpipe_terminal f)).
   split; [| split].
@@ -885,20 +886,20 @@ Lemma to_proc_input_inj : forall f g,
   fin_urandom f = fin_urandom g ->
   f = g.
 Proof.
-  intros [a1 e1 fs1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 tm1 kb1 xf1 cr1 sd1 st1]
-         [a2 e2 fs2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 tm2 kb2 xf2 cr2 sd2 st2] H Hr.
+  intros [a1 e1 fs1 cw1 s1 u1 g1 gs1 n1 nf1 sm1 hc1 ab1 va1 r1 kb1 xf1 cr1 sd1 st1]
+         [a2 e2 fs2 cw2 s2 u2 g2 gs2 n2 nf2 sm2 hc2 ab2 va2 r2 kb2 xf2 cr2 sd2 st2] H Hr.
   cbn [fin_urandom] in Hr.
   unfold to_proc_input in H.
-  cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
+  cbn [fin_argv fin_envp fin_image_fs fin_cwd fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
        fin_nofile fin_sigmask fin_kernel fin_execfn fin_channel_reader
        fin_sigpipe_default fin_sigpipe_terminal]
     in H.
-  (* the constructor's order, with the seven TRAILING DECLARATION fields
-     last: argv, envp, image, stdin, the ids, the queue, the limits, the
-     declarations, then [in_urandom], [in_tmp], [in_kernel],
-     [in_execfn], [in_channel_reader], [in_sigpipe_default] and
+  (* the constructor's order, with the six TRAILING DECLARATION fields
+     last: argv, envp, image, cwd, stdin, the ids, the queue, the limits,
+     the declarations, then [in_urandom], [in_kernel], [in_execfn],
+     [in_channel_reader], [in_sigpipe_default] and
      [in_sigpipe_terminal] *)
-  injection H as Ha He Hfs Hs Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva _ Htm Hkb Hxf Hcr Hsd Hst.
+  injection H as Ha He Hfs Hcw Hs Hu Hg Hgs Hn Hnf Hsm Hhc Hab Hva _ Hkb Hxf Hcr Hsd Hst.
   apply stream_of_list_inj in Hs.
   subst. reflexivity.
 Qed.
@@ -910,23 +911,23 @@ Qed.
 Lemma to_proc_input_not_inj :
   exists f g, f <> g /\ to_proc_input f = to_proc_input g.
 Proof.
-  pose (base := mkFinProcInput [] [] []
+  pose (base := mkFinProcInput [] [] (Fs.standard_root Fs.default_cwd) Fs.default_cwd
                   [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
-                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 [] []
+                  (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48 []
                   State.default_kernel State.default_execfn true true false).
   exists base.
-  exists (mkFinProcInput [] [] []
+  exists (mkFinProcInput [] [] (Fs.standard_root Fs.default_cwd) Fs.default_cwd
             [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
             (Z_to_bv 64 0) (Z_to_bv 64 0) (Z_to_bv 64 0) false Sv48
-            [Z_to_bv 8 0] [] State.default_kernel State.default_execfn true true
+            [Z_to_bv 8 0] State.default_kernel State.default_execfn true true
             false).
   split.
   - intro Hc. apply (f_equal fin_urandom) in Hc.
     unfold base in Hc. cbn [fin_urandom] in Hc. discriminate Hc.
   - unfold to_proc_input, base.
-    cbn [fin_argv fin_envp fin_image_fs fin_stdin fin_urandom fin_uid
+    cbn [fin_argv fin_envp fin_image_fs fin_cwd fin_stdin fin_urandom fin_uid
          fin_gid fin_groups fin_net fin_nofile fin_sigmask fin_hwcap
-         fin_abort_terminal fin_va_size fin_tmp fin_kernel fin_execfn
+         fin_abort_terminal fin_va_size fin_kernel fin_execfn
          fin_channel_reader fin_sigpipe_default fin_sigpipe_terminal
          stream_of_list_then].
     unfold State.default_urandom. now rewrite <- State.stream_const_unfold.
@@ -939,18 +940,18 @@ Qed.
 Lemma finite_input_surjection : forall inp,
   finite_input inp -> exists f, inp = to_proc_input f.
 Proof.
-  (* [State.ProcInput]'s constructor order, the seven TRAILING
-     DECLARATION fields last: argv, envp, image, stdin, ids, queue,
-     limits, declarations, then [in_urandom], [in_tmp], [in_kernel],
-     [in_execfn], [in_channel_reader], [in_sigpipe_default] and
+  (* [State.ProcInput]'s constructor order, the six TRAILING
+     DECLARATION fields last: argv, envp, image, cwd, stdin, ids, queue,
+     limits, declarations, then [in_urandom], [in_kernel], [in_execfn],
+     [in_channel_reader], [in_sigpipe_default] and
      [in_sigpipe_terminal] *)
-  intros [a e fs s u g gs n nf sm hc ab va r tm kb xf cr sd st] Hfin.
+  intros [a e fs cw s u g gs n nf sm hc ab va r kb xf cr sd st] Hfin.
   unfold finite_input in Hfin. cbn [in_stdin in_urandom] in Hfin.
   destruct Hfin as [Hfin [lr Hlr]].
   destruct (finite_stream_of_list _ Hfin) as [l Hl].
-  exists (mkFinProcInput a e fs l u g gs n nf sm hc ab va lr tm kb xf cr sd st).
+  exists (mkFinProcInput a e fs cw l u g gs n nf sm hc ab va lr kb xf cr sd st).
   unfold to_proc_input.
-  cbn [fin_argv fin_envp fin_image_fs fin_tmp fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
+  cbn [fin_argv fin_envp fin_image_fs fin_cwd fin_stdin fin_urandom fin_uid fin_gid fin_groups fin_net
        fin_nofile fin_sigmask fin_hwcap fin_abort_terminal fin_va_size
        fin_kernel fin_execfn fin_channel_reader fin_sigpipe_default
        fin_sigpipe_terminal].
@@ -1009,10 +1010,11 @@ Qed.
     shape as much as a lemma. *)
 Lemma valid_input_stdin_irrelevant : forall inp s,
   valid_input inp ->
-  valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp) s
+  valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
+                 (in_cwd inp) s
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+                 (in_urandom inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp)).
 Proof. intros inp s H. exact H. Qed.
@@ -1032,10 +1034,10 @@ Lemma valid_input_urandom_endless_irrelevant : forall inp r,
   valid_input inp ->
   State.stream_infinite r ->
   valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
-                 (in_stdin inp)
+                 (in_cwd inp) (in_stdin inp)
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 r (in_tmp inp) (in_kernel inp) (in_execfn inp)
+                 r (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp)).
 Proof.
@@ -1063,10 +1065,10 @@ Qed.
 Lemma valid_fin_input_stdin_irrelevant : forall f l,
   valid_fin_input f ->
   valid_fin_input (mkFinProcInput (fin_argv f) (fin_envp f) (fin_image_fs f)
-                     l
+                     (fin_cwd f) l
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     (fin_urandom f) (fin_tmp f) (fin_kernel f) (fin_execfn f)
+                     (fin_urandom f) (fin_kernel f) (fin_execfn f)
                      (fin_channel_reader f) (fin_sigpipe_default f)
                      (fin_sigpipe_terminal f)).
 Proof. intros f l H. exact H. Qed.
@@ -1078,40 +1080,13 @@ Proof. intros f l H. exact H. Qed.
     task can still write whatever prefix it means.  It takes a step
     rather than holding by conversion, because the random conjunct is
     about a different stream on each side. *)
-(** The declared /tmp is not constrained EITHER, which takes one more
-    word to say than stdin's and the device's do, because
-    [Run.valid_input]'s [Fs.valid_fs] clause reads the SEEDED image
-    ([State.in_fs]) and the seeding reads [in_tmp].  What is true is
-    this: given an image in the
-    canonical form, EVERY declared /tmp yields a valid input.  No table
-    a launch could present is excluded, which is
-    [State.fs_seed_tmp_valid]. *)
-Lemma valid_input_tmp_arbitrary : forall inp t,
-  Fs.valid_fs (in_image_fs inp) ->
-  valid_input inp ->
-  valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
-                 (in_stdin inp)
-                 (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
-                 (in_nofile inp) (in_sigmask inp) (in_hwcap inp)
-                 (in_abort_terminal inp) (in_va_size inp) (in_urandom inp) t
-                 (in_kernel inp) (in_execfn inp)
-                 (in_channel_reader inp) (in_sigpipe_default inp)
-                 (in_sigpipe_terminal inp)).
-Proof.
-  intros inp t Him H. unfold valid_input in H |- *.
-  destruct H as (Ha & He & _ & Hrest).
-  refine (conj Ha (conj He (conj _ Hrest))).
-  unfold in_fs. cbn [in_image_fs in_tmp].
-  apply fs_seed_tmp_valid. exact Him.
-Qed.
-
 Lemma valid_fin_input_urandom_irrelevant : forall f l,
   valid_fin_input f ->
   valid_fin_input (mkFinProcInput (fin_argv f) (fin_envp f) (fin_image_fs f)
-                     (fin_stdin f)
+                     (fin_cwd f) (fin_stdin f)
                      (fin_uid f) (fin_gid f) (fin_groups f) (fin_net f)
                      (fin_nofile f) (fin_sigmask f) (fin_hwcap f) (fin_abort_terminal f) (fin_va_size f)
-                     l (fin_tmp f) (fin_kernel f) (fin_execfn f)
+                     l (fin_kernel f) (fin_execfn f)
                      (fin_channel_reader f) (fin_sigpipe_default f)
                      (fin_sigpipe_terminal f)).
 Proof.
@@ -1131,8 +1106,9 @@ Qed.
    Neither quantifier is empty
    ------------------------------------------------------------------------- *)
 
-(** THE WITNESS THE TWO PINS BELOW EXHIBIT: one empty argument, no
-    environment, an empty image and an empty /tmp, the launching ids at
+(** THE WITNESS THE PINS BELOW EXHIBIT: one empty argument, no
+    environment, the standard root image ([Fs.standard_root]) with its
+    default working directory, the launching ids at
     zero, the quiet network, the default descriptor limit, an empty
     blocked mask, the V-less capability word, the abort declaration off,
     Sv48, an empty random declaration — which denotes
@@ -1150,21 +1126,22 @@ Qed.
     DOWNSTREAM of this one: a claim about this file's quantifiers cannot
     rest on a fixture this file cannot see. *)
 Definition inhabited_fin_input : FinProcInput :=
-  mkFinProcInput [[]] [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
+  mkFinProcInput [[]] [] (Fs.standard_root Fs.default_cwd) Fs.default_cwd []
+                 (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
                  default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc
-                 false Sv48 [] [] State.default_kernel State.default_execfn
+                 false Sv48 [] State.default_kernel State.default_execfn
                  true true false.
 
-(** THE FINITE-RECORD QUANTIFIER IS NOT EMPTY, which is the one the
-    classifier and gated-size shapes are written over. *)
-Lemma valid_fin_input_inhabited : exists f, valid_fin_input f.
+(** THE WITNESS IS VALID.  Named on its own, beside the existential
+    below, for a consumer that needs to know which input it is: its
+    argv is the one empty argument. *)
+Lemma inhabited_fin_input_valid : valid_fin_input inhabited_fin_input.
 Proof.
-  exists inhabited_fin_input.
   unfold valid_fin_input, to_proc_input, inhabited_fin_input,
          valid_input, valid_argv, valid_envp.
-  cbn [fin_argv fin_envp fin_image_fs fin_stdin fin_uid fin_gid fin_groups
+  cbn [fin_argv fin_envp fin_image_fs fin_cwd fin_stdin fin_uid fin_gid fin_groups
        fin_net fin_nofile fin_sigmask fin_hwcap fin_abort_terminal
-       fin_va_size fin_urandom fin_tmp fin_kernel fin_execfn fin_sigpipe_default
+       fin_va_size fin_urandom fin_kernel fin_execfn fin_sigpipe_default
        fin_sigpipe_terminal
        in_argv in_envp in_fs in_nofile in_sigmask in_hwcap
        in_abort_terminal in_sigpipe_default in_sigpipe_terminal in_va_size
@@ -1176,6 +1153,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
+  all: try valid_image_vm.
   all: try (unfold valid_urandom; cbn [in_urandom];
             exact State.default_urandom_infinite).
   (* [Run.valid_launch]'s first half: "a" is a name [getname_flags]
@@ -1194,6 +1172,11 @@ Proof.
   all: try (unfold launch_bytes, e2big_limit, State.default_execfn;
             cbn [in_argv in_envp in_execfn]; vm_compute; discriminate).
 Qed.
+
+(** THE FINITE-RECORD QUANTIFIER IS NOT EMPTY, which is the one the
+    classifier and gated-size shapes are written over. *)
+Lemma valid_fin_input_inhabited : exists f, valid_fin_input f.
+Proof. exists inhabited_fin_input. exact inhabited_fin_input_valid. Qed.
 
 (** ...and so THE TWO CLAUSES ARE SATISFIABLE TOGETHER, which is what
     this file's header and [finite_input]'s own note claim.  Read it as
@@ -1218,23 +1201,23 @@ Qed.
     Stated from a hypothesis rather than on a concrete input, because
     exhibiting a valid input from nothing means building an argv, an
     envp and a file system that satisfy [Run.valid_argv],
-    [Run.valid_envp] and [Fs.valid_fs] — example-side work, in the spirit
+    [Run.valid_envp] and [Run.valid_image] — example-side work, in the spirit
     of the fixtures in theories/LinuxProcessSem/Checks/Cases/Prelude.v,
     and not needed to make this point. *)
 Lemma valid_input_not_finite : forall inp,
   valid_input inp ->
   valid_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
-                 all_zeros
+                 (in_cwd inp) all_zeros
                  (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                  (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                 (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+                 (in_urandom inp) (in_kernel inp) (in_execfn inp)
                  (in_channel_reader inp) (in_sigpipe_default inp)
                  (in_sigpipe_terminal inp))
   /\ ~ finite_input (mkProcInput_full (in_argv inp) (in_envp inp) (in_image_fs inp)
-                      all_zeros
+                      (in_cwd inp) all_zeros
                       (in_uid inp) (in_gid inp) (in_groups inp) (in_net inp)
                       (in_nofile inp) (in_sigmask inp) (in_hwcap inp) (in_abort_terminal inp) (in_va_size inp)
-                      (in_urandom inp) (in_tmp inp) (in_kernel inp) (in_execfn inp)
+                      (in_urandom inp) (in_kernel inp) (in_execfn inp)
                       (in_channel_reader inp) (in_sigpipe_default inp)
                       (in_sigpipe_terminal inp)).
 Proof.

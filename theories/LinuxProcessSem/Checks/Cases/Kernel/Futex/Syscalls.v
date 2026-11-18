@@ -22,7 +22,7 @@ Definition robust_list_input (head len : word) : SyscallInput :=
   mkInput 99 [head; len; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
 
 Definition robust_list_model : Model :=
-  mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+  mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** Registration checks the full 64-bit length, but never dereferences
     the head.  THE ANSWER IS LINUX'S ALONE: the -ENOSYS QEMU user mode

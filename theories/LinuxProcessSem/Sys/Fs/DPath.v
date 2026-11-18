@@ -8,145 +8,180 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Export
-  Syscall Uapi.
+  Syscall Uapi Uaccess.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
 
-(** getcwd's injectable failures: the three answers that depend on
-    kernel or file-system state this model does not carry, all of them
-    decided BEFORE the size comparison and therefore live on every arm
-    below.
+(** getcwd's one injectable failure.
 
     - ENOMEM — [__getname()], the very first statement, is a
       [GFP_KERNEL] allocation out of [names_cachep] and can fail.  It
-      is the only error that returns without the RCU section running
-      at all.
-    - ENOENT — [d_unlinked(pwd.dentry)]: the caller's working directory
-      has been removed from the dcache hash and is not its own root.
-      Another process rmdir'ing the directory this one sits in produces
-      it.  Note it is NOT the unreachable case: a working directory
-      outside the caller's root is a SUCCESS returning a string prefixed
-      "(unreachable)".
-    - ENAMETOOLONG — the assembled path did not fit [PATH_MAX], which
-      [prepend]/[prepend_char] signal by driving the buffer's [len] to
-      -1.  Reachable by nesting directories with relative [mkdir]s until
-      the absolute path exceeds 4096 bytes.
+      is the only error that returns without the RCU section running at
+      all, and the only one this model cannot decide from its own
+      state.
 
-    (Linux v6.18.46, commit 1f99e9ab748f, fs/d_path.c,
-    [SYSCALL_DEFINE2(getcwd)].)
+    (Linux v6.18.46, fs/d_path.c:416-419, [SYSCALL_DEFINE2(getcwd)].)
 
-    EFAULT is deliberately absent: it can only be reached AFTER the size
-    comparison, which the modeled band below never gets past. *)
-Definition getcwd_errnos : list Z := [ENOMEM; ENOENT; ENAMETOOLONG].
+    ENOENT IS GONE, and the namespace is what removed it.  It is
+    [d_unlinked(pwd.dentry)] (fs/d_path.c:424-426): the working
+    directory has been removed from the dcache hash by someone else.
+    Nothing inside the run can
+    produce it — [Fs.Namei]'s rmdir DECLINES the cwd, an ancestor of the
+    cwd and a directory an open [State.FdDir] names, so no modeled step
+    reaches a state whose cwd is unlinked — and nothing outside the run
+    can either, under the image-wide "no concurrent writer" premise
+    [Fs]'s header states.  Injecting it would be admitting an answer no
+    reachable state justifies.
+
+    ENAMETOOLONG IS GONE FROM THIS LIST TOO, and for the opposite
+    reason: it is now DERIVED rather than injected.  The assembled
+    length is [length (m_cwd m) + 1], which the model holds, so the arm
+    below compares it against PATH_MAX itself and answers
+    -ENAMETOOLONG when it does not fit.  [Run.valid_input]'s [in_cwd]
+    bound makes that branch unreachable from a valid input, but the
+    spec is a statement about every [Model], so the branch is written
+    rather than assumed away.
+
+    EFAULT is not injectable either: it is the [copy_to_user] below,
+    decided by the destination range. *)
+Definition getcwd_errnos : list Z := [ENOMEM].
+
+(** The bytes [getcwd] delivers for the working directory [cwd]: the
+    path itself and the terminating NUL.  The kernel builds them
+    backwards into a [PATH_MAX] page — [prepend_char(&b, 0)] writes the
+    NUL first and [prepend_path] prepends the components — and hands
+    the whole run to one [copy_to_user], so the delivered string is the
+    absolute path followed by exactly one NUL. *)
+Definition getcwd_bytes (cwd : Fs.path) : list byte :=
+  cwd ++ [Fs.path_nul_byte].
+
+(** The value [getcwd] returns on success and compares against [size]:
+    the length of the string INCLUDING the terminating NUL.  The
+    comment above [SYSCALL_DEFINE2(getcwd)] states the convention and
+    the line [error = len;] is where it happens; [len = PATH_MAX -
+    b.len] counts the NUL because [prepend_char(&b, 0)] consumed a byte
+    for it. *)
+Definition getcwd_len (cwd : Fs.path) : nat := S (length cwd).
 
 (** [getcwd buf size]: copy the caller's working directory out, and
-    return its length INCLUDING the terminating NUL (not 0 — the comment
-    above [SYSCALL_DEFINE2(getcwd)] states the convention, and line
-    [error = len;] is where it happens).
+    return its length INCLUDING the terminating NUL.
 
-    THERE IS NO WORKING DIRECTORY IN THIS MODEL, and that is a fact
-    about the representation rather than a gap in the bookkeeping.
-    [State.Model] has no pwd field; [Fs.Fs] is a flat association list
-    from an UNINTERPRETED byte-string path to that file's bytes, with no
-    root, no directories and no resolution; and every modeled path-taking
-    syscall ([Fs.Open.openat_spec], [Fs.Stat.newfstatat_spec],
-    [Fs.Namei.unlinkat_spec]) declines any dirfd but AT_FDCWD and then
-    looks the name up in that map directly.  So the working directory is
-    not an untracked value that could be threaded through later — there
-    is no term in the model a directory could be, and the string getcwd
-    would return is not a function of any modeled state.  Every outcome
-    that would carry that string is therefore [unmodeled], fail closed.
-    (This paragraph stops being true the moment [Fs] grows directories
-    and [State.Model] a pwd field: at that point the success arm and the
-    -EFAULT arm below it become derivable and the decline should go.)
+    THE WORKING DIRECTORY IS NOW A TERM IN THE MODEL, and that is what
+    lifted this arm off its decline.  [State.m_cwd] is the absolute
+    canonical key [Run.valid_input] declares and [init_model] copies in,
+    and nothing writes it afterwards — there is no chdir, no fchdir and
+    no [CLONE_FS] arm in this model.  So the string this call returns is
+    a function of modeled state, where before R22 it was not a function
+    of anything at all.  The answer is the DECLARED working directory,
+    which is the maintainer's ruling on issue #1011, section 15,
+    question 9.
 
-    WHAT IS LEFT IS THE BAND WHERE THE WORKING DIRECTORY CANNOT MATTER.
-    Call [len] the quantity the kernel compares against [size] and
-    returns on success.  For [size <= 1], [len > size] holds for EVERY
-    possible working directory, so no success and no -EFAULT is
-    reachable and the answer is -ERANGE or one of the three injectable
-    errnos above.  The argument, in the kernel's own order, reading
-    [SYSCALL_DEFINE2(getcwd)], [prepend_path], [__prepend_path],
-    [prepend], [prepend_char] and [prepend_name] in Linux v6.18.46,
-    commit 1f99e9ab748f, fs/d_path.c:
+    THE ANSWER IS EXACT rather than approximate, on the one premise the
+    declaration carries.  The kernel assembles the path by walking
+    dentries from the working directory up to the caller's root, and the
+    model's [m_cwd] is that walk's result already spelled out.  The two
+    agree exactly when the run's root is the filesystem root, which is
+    the same premise every other absolute key in the image rests on: the
+    model has one namespace and no mount tree.  A chroot or a bind mount
+    that made the declared key unreachable from the caller's root would
+    make Linux answer a DIFFERENT string with a "(unreachable)" prefix,
+    and the model would then be wrong rather than narrower — which is
+    why the premise is written here instead of left to the reader.
 
-    - [DECLARE_BUFFER(b, page, PATH_MAX)] starts [b.len] at PATH_MAX.
-    - [prepend_char(&b, 0)] writes the terminating NUL first, taking
-      [b.len] to PATH_MAX - 1.
-    - [prepend_path] either OVERFLOWS — [prepend]/[prepend_char] set
-      [b.len] to -1 — or returns having consumed at least one more byte:
-      its tail is [if (b.len == p->len) prepend_char(&b, '/');], so a
-      working directory equal to the root still costs the "/".  Hence
-      [b.len <= PATH_MAX - 2] on every non-overflow path.  That step
-      needs [b.len] never to RISE, since the "/" fires only on
-      equality.  For a non-negative [namelen], [prepend] and
-      [prepend_char] only ever lower it or set it to -1, and
-      [prepend_path]'s own two writes — [b = *p] at [restart:], and the
-      same assignment again when [__prepend_path] answered 3 — restore
-      it to exactly [p->len] rather than above it.
-      So the only input that could raise it is a NEGATIVE [namelen]:
-      [prepend_name] reads a [u32 dlen] out of [d_name.len] and passes
-      it into [prepend]'s [int], so a length at or above 2^31 would
-      make [p->len -= namelen] increase [p->len] instead.  [struct
-      qstr] carries no bound of its own, and neither does the path walk
-      — fs/namei.c has no NAME_MAX check at all, which [Uapi.NAME_MAX]
-      already records and [Namei.unlinkat_spec] already leans on.  The
-      bound that does hold is the ALLOCATION's, and it covers every
-      dentry however the name was built: [__d_alloc] (fs/dcache.c)
-      stores it inline or through a [kmalloc] sized from [name->len],
-      and KMALLOC_MAX_SIZE is 4 MiB on riscv64 (MAX_PAGE_ORDER 10,
-      PAGE_SHIFT 12), so a 2^31-byte name fails the allocation instead
-      of reaching a dentry.  The one name written outside [__d_alloc] —
-      [d_mark_tmpfile]'s [sprintf] of an inode number into the inline
-      buffer — is bounded by its own format.  A merely LARGE [dlen] is
-      harmless in any case: [prepend] takes its overflow branch,
-      [b.len] becomes -1, and the [len > PATH_MAX] guard below catches
-      it.  Only a [dlen] at or above 2^31 would put [len] below 2
-      without tripping that guard, and no dentry can hold one.
-    - [len = PATH_MAX - b.len], so [len >= 2] when the buffer held, and
-      [len = PATH_MAX + 1] when it did not.
-    - the overflow is caught FIRST, by [if (len > PATH_MAX) error =
-      -ENAMETOOLONG;], so [len > size] is only ever evaluated with
-      [len] in [2, PATH_MAX].
+    THE ORDER IS THE KERNEL'S, reading [SYSCALL_DEFINE2(getcwd)] in
+    Linux v6.18.46, fs/d_path.c:412-448:
 
-    So [size] of 0 or 1 is -ERANGE, whatever the working directory is.
-    A working directory outside the caller's root does not weaken this.
-    [__prepend_path] answers 1 (absolute root), 2 (detached) or 3
-    (escaped mid-walk); getcwd keys on [> 0] rather than on any one of
-    them and prepends the 13-byte literal "(unreachable)" for all
-    three.  On the 3, [prepend_path] additionally resets the buffer
-    ([if (unlikely(error == 3)) b = *p;]) before the "/" test — so
-    [len] is exactly 15 there, and at least 15 on the other two.
+    - [__getname()] first (416-419), whose failure is -ENOMEM and the
+      only injectable answer left;
+    - then [d_unlinked(pwd.dentry)]'s -ENOENT (424-426), which no
+      reachable state of this model satisfies (see [getcwd_errnos]);
+    - then the path is built into a KERNEL page (429-433), so nothing
+      about [buf] has been looked at yet;
+    - then [len > PATH_MAX] is -ENAMETOOLONG (437-438);
+    - then [len > size] is -ERANGE (439-440);
+    - then, and only then, one [copy_to_user] (441-442).
 
-    ORDER, AND WHAT IT MEANS FOR [buf].  The kernel's sequence is
-    ENOMEM, then ENOENT, then the whole path is built into a KERNEL
-    page, then ENAMETOOLONG, then ERANGE, and only then a single
-    [copy_to_user].  There is no [access_ok] and no probe of [buf]
-    anywhere earlier.  So [buf] is not an argument of this spec at all
-    — a spec that consulted [in_wmem] here would answer -EFAULT where
-    Linux answers -ERANGE, and [getcwd(NULL, 0)] really is -ERANGE.
-    The -EINVAL that POSIX documents for a zero size is glibc's own and
-    never reaches the kernel: [sysdeps/unix/sysv/linux/getcwd.c]
-    answers a zero [size] with a non-null [buf] before issuing the
-    call, and substitutes PATH_MAX when [buf] is null.  That half is
-    not pinned to a glibc version because nothing here rests on it;
-    what does is that the syscall body has no -EINVAL arm at all,
-    which is read from the fs/d_path.c above.
+    WHY [buf] IS NOT CONSULTED BEFORE THE SIZE TEST.  There is no
+    [access_ok] and no probe of [buf] anywhere earlier, so
+    [getcwd(NULL, 0)] really is -ERANGE and a spec that answered -EFAULT
+    for it would be wrong.  The -EINVAL POSIX documents for a zero size
+    is glibc's own — [sysdeps/unix/sysv/linux/getcwd.c] answers it
+    before issuing the call — and the syscall body has no -EINVAL arm at
+    all.
 
-    Nothing is written on any admitted arm, so the effect is a bare
-    return with five empty ledgers.
+    THE DELIVERY, and its two failures.  [copy_to_user] checks the whole
+    range before a byte moves, so a destination outside the user address
+    space is -EFAULT with nothing written ([State.access_okb]).  A range
+    that passes that test and then faults mid-copy leaves a partially
+    written buffer this model has no vocabulary for, and that is
+    [unmodeled] — the same shape [Fs.Stat.fstat_file_spec] and
+    [Kernel.Sys.uname_spec] decline for the same reason.
 
-    -ERANGE and the three injectable errnos are offered as an [alt]
-    rather than ranked, because they are not a priority ordering over
-    one state: in any single run exactly one of them applies, and which
-    one is decided by allocator, dcache and directory-depth conditions
-    the model does not carry. *)
-Definition getcwd_spec (size : word) : Sys SyscallEffect :=
-  if (1 <? bv_unsigned size)%Z then unmodeled   (* the cwd would decide it: fail closed *)
-  else alt (e <- errno_from getcwd_errnos ;; err_ret e) (err_ret ERANGE).
+    EACH DETERMINISTIC ANSWER IS OFFERED BESIDE THE -ENOMEM as an [alt]
+    rather than ranked against it: [__getname()] runs before any of
+    them, so in any single run exactly one applies, and which one is
+    decided by an allocator condition the model does not carry.
+
+    THE PARTIAL-COPY DECLINE IS HOISTED ABOVE THAT [alt], and the
+    position is forced rather than stylistic.  [alt c unmodeled] admits
+    BOTH an injected errno and [Unmodeled], which is two verdicts where
+    an executable checker can give one; putting the decline outside
+    makes the whole call [Unmodeled] in that state.  The cost is that a
+    run whose destination faults mid-copy no longer admits the -ENOMEM
+    it could have answered instead — a narrowing, which is the safe
+    direction, and the state is one no example reaches. *)
+Definition getcwd_spec (buf size : word) : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  let cwd := m_cwd m in
+  let bs := getcwd_bytes cwd in
+  let len := getcwd_len cwd in
+  let inject := (e <- errno_from getcwd_errnos ;; err_ret e) in
+  if Nat.ltb path_max len then alt inject (err_ret ENAMETOOLONG)
+    (* the assembled path did not fit the PATH_MAX page.  Not reachable
+       from a valid input — [Run.valid_input] bounds [in_cwd] — but this
+       is a statement about every [Model] *)
+  else if (bv_unsigned size <? Z.of_nat len)%Z then
+    alt inject (err_ret ERANGE)
+    (* [len > size]: the caller's buffer is too small, whatever it
+       points at *)
+  else if negb (access_okb buf (Z.of_nat len)) then
+    alt inject (err_ret EFAULT)
+    (* [copy_to_user]'s own range test, before a byte moves *)
+  else
+    match read_bytes_map (in_wmem i) buf (len_word bs) with
+    | None => unmodeled
+        (* a [copy_to_user] that commits a prefix and then faults: a
+           half-written buffer the model cannot describe *)
+    | Some _ =>
+        alt inject
+            (pure (mkEffect (Z_to_bv 64 (Z.of_nat len))
+                     (delivered_writes buf bs) []))
+    end.
+
+(** THE BAND EVERY CALLER THAT CANNOT SEE THE DESTINATION READS THIS
+    ARM THROUGH: a buffer too small for the string reduces the whole
+    call to the injected -ENOMEM beside the deterministic -ERANGE,
+    whatever [buf] points at and whatever the working directory is.
+    [Checks.SpuriousCfg] is the consumer — it asks which answers a
+    configuration may refuse, and this is what says the -ERANGE is
+    always one of them. *)
+Lemma getcwd_spec_erange_band : forall buf size i m o,
+  Nat.ltb path_max (getcwd_len (m_cwd m)) = false ->
+  (bv_unsigned size <? Z.of_nat (getcwd_len (m_cwd m)))%Z = true ->
+  (getcwd_spec buf size i m o
+   <-> alt (e <- errno_from getcwd_errnos ;; err_ret e) (err_ret ERANGE) i m o).
+Proof.
+  intros buf size i m o Hlen Hsize.
+  unfold getcwd_spec. rewrite bind_input_model. cbv zeta.
+  now rewrite Hlen, Hsize.
+Qed.

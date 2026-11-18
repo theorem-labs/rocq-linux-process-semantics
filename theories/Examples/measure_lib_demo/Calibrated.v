@@ -70,7 +70,7 @@ Proof. apply Qlt_le_weak. reflexivity. Qed.
     difference between the two. *)
 Definition calib_argv : list (list byte) := [[Z_to_bv 8 119; Z_to_bv 8 99]].
 Definition calib_envp : list (list byte) := [].
-Definition calib_fs : Fs.Fs := [].
+Definition calib_fs : Fs.Fs := Fs.fs_empty.
 
 Definition calib_cd : CoreDistribution :=
   calibrated_mixture calib_p calib_argv calib_envp calib_fs
@@ -208,9 +208,9 @@ Qed.
     fifteen-sixteenths cannot see, which is the whole reason to mix
     rather than to declare the stdin-only family alone. *)
 Lemma calib_envp_component_carries_mass :
-  cd_weight (stdin_geometric calib_p [] [] [] calib_p_nonneg calib_p_le_1)
+  cd_weight (stdin_geometric calib_p [] [] Fs.fs_empty calib_p_nonneg calib_p_le_1)
     envp_example_named = 0%Q
-  /\ (0 < cd_weight (calibrated_mixture calib_p [] [] []
+  /\ (0 < cd_weight (calibrated_mixture calib_p [] [] Fs.fs_empty
                        calib_p_nonneg calib_p_le_1) envp_example_named)%Q.
 Proof.
   exact (calibrated_mixture_envp_bites calib_p calib_p_nonneg calib_p_le_1

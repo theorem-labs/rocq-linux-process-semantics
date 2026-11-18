@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -80,7 +83,7 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       file description layer fixes both. *)
 Definition dup_modeled_entry (e : FdEntry) : bool :=
   match e with
-  | FdChannel _ | FdDir => true
+  | FdChannel _ | FdDir _ => true
   | FdFile _ _ | FdFileW _ _ | FdSocket _ => false
   (* AN APPEND FD DECLINES WITH THEM, and this one is a CHOICE rather
      than the [FdFile] argument repeated.  A write through an
@@ -151,7 +154,7 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      read the same stream in the same order, exactly as two [struct
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
-  | FdUrandom => true
+  | FdUrandom _ _ => true
   (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
      own.  [State.stream_peer] finds an end's peer by scanning the fd
      table, and [unix_release_sock] runs at the LAST [fput] of a socket
@@ -173,14 +176,6 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      shared socket declines anyway, so copying it would buy nothing,
      and a decline keeps one rule for every socket kind *)
   | FdDgram _ => false
-  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
-     carries the descriptor's [f_pos] ([State.af_off]), which read, write
-     and lseek rewrite in place, so a copied entry would split the one
-     offset two Linux descriptors on one [struct file] share.  It carries
-     the file's contents too, which [State.anon_update] keeps in step
-     across entries; it is the offset that has no such keeper.
-     [State.FdAnon]'s note relies on this decline. *)
-  | FdAnon _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE

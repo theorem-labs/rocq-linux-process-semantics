@@ -15,6 +15,25 @@ Read [`../Common/README.md`](../Common/README.md) for the proof library.
 | Example | Program | Main library lemma |
 | --- | --- | --- |
 | `rwx_flag_ns` | Store a byte and exit with it. The source has one segment that is writable and executable. | `CatSim.cat_omni_strong_equiv_te` |
+| `modprint_ns` | Print `argc` modulo a divisor loaded at run time, as one digit and a newline. | `ShapeAlg.cat_omni_strong_equiv_alg` |
+| `conditional_bug_ns` | Branch on the first byte of `argv[1]`: exit, print `hello`, or read unmapped memory. | `CatSim.cat_omni_strong_equiv_te`, `ErrEscape.err_escape_omni_strong_equiv`, `WallSim.wall_omni_strong_equiv` |
+| `cat1024_ns` | Copy standard input to standard output through a 1024-byte buffer. | `StreamSim.stream_omni_strong_equiv` |
+| `tail1_ns` | Read all of standard input, then write its last line. | `DrainSim.drain_omni_strong_equiv` |
+| `brk_rev_ns` | Write `argv[1]` reversed into a buffer that `brk` allocates. | `ShapeAlg.shape_omni_strong_equiv` |
+| `cp_ns` | Copy the file `argv[1]` to `argv[2]` through a 1024-byte buffer. | `FileSimLoop.floop_omni_strong_equiv` |
+| `headcp_ns` | Copy at most the first 128 bytes of the file `argv[1]` to `argv[2]`. | `FileSim.fout_omni_strong_equiv` |
+
+`cp_ns` and `headcp_ns` prove their statement under one hypothesis,
+`operands_inside_model` in their `Proof.v`: the walk of each operand they
+open does not end outside the model. The model declines an open whose
+walk reaches the name `proc` or `sys` at the root (`Fs.ROutside`: /proc
+and /sys are not in the model), and an open of a device entry that is
+not at its own name (`Sys.Fs.Open.dev_at_home`). `Run.valid_input`
+admits both. Each `Proof.v` proves that the hypothesis is equivalent to
+"the model answers the open of each operand"
+(`operands_inside_model_iff`), and the generated `Checker.v` ascribes
+`Equivalence.SPEC_ON` with this hypothesis and a witness. Only the
+examples in `tools/gen_checker.py`'s `SPEC_ON` list can do this.
 
 Two directories are not equivalence proofs:
 
@@ -225,6 +244,16 @@ Follow these rules:
   `(in_uid inp)` and `(in_hwcap inp)`.
 - `Common/ArgvEnv.v` proves this scaffolding once. Instantiate it rather
   than writing `argcN`, `bsb_nw`, `envp_ptr` and the read-backs again.
+- A run executes over `Run.run_segments`: the image's segments followed
+  by the vDSO pair. State the derivations of a section over
+  `segs ++ vt`, with `Variable vt : list Segment` for the pair, or prove
+  them over the image's own segments and lift them to the run.
+  `Common/RunSegmentsLift.v` has both directions: `fetch_word_app`,
+  `store_ok_app` and `rdn_lift` for single facts, and `msteps_run`,
+  `to_wexit_run` and `to_wallexit_run` for a whole derivation.
+- `PropExec.mkst` takes an `FPState` instance. Give the per-binary file
+  `#[local] Instance` of the state at process entry (`fx0`). A helper
+  section that is used by both binaries takes `Context {fx : FPState}`.
 
 The section then builds the initial memory in layers: `wrap_mem` for the
 initial stack, then `wbytes` for each store of the start code.
@@ -332,7 +361,7 @@ not count. Peel it as above: the guard stops the peel at
 every other one sits in the context where `assumption` finds it. Where
 only one clause is wanted, take it from its accessor lemma —
 `Run.valid_input_va_size`, `Run.valid_input_abort_terminal`,
-`Run.valid_input_image_real`, `Run.valid_input_urandom`,
+`Run.valid_input_image`, `Run.valid_input_urandom`,
 `Run.valid_input_vdso`, `Run.valid_input_hwcap_rv64gc_word` — which no
 insertion can move. The kernel accessors are the ones a start-up proof
 wants: `Run.valid_input` fixes eight fields of the build at

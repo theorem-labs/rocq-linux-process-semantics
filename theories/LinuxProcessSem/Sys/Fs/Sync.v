@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -236,7 +239,7 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
                                                      -EINVAL], before the [datasync] read — the
                                                      pipe argument above, on a table the model
                                                      knows exactly *)
-  | Some FdUrandom => err_ret EINVAL              (* nor on /dev/urandom: [urandom_fops]
+  | Some (FdUrandom _ _) => err_ret EINVAL        (* nor on /dev/urandom: [urandom_fops]
                                                      (drivers/char/random.c, v6.18.46) lists
                                                      [.read_iter], [.write_iter], [.unlocked_ioctl],
                                                      [.compat_ioctl], [.fasync], [.llseek],
@@ -250,11 +253,5 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdFileRW _ _) => ret_only (Z_to_bv 64 0) (* and opened O_RDWR: it reads no access mode
                                                       either, which is why the read-only arm
                                                       above is not an error *)
-  | Some (FdAnon _ _) => ret_only (Z_to_bv 64 0)   (* the [FdFile] answer carries over unchanged:
-                                                      [vfs_fsync_range] (fs/sync.c) reads
-                                                      [f_op->fsync], which an unnamed file keeps
-                                                      from its regular-file table, and nothing
-                                                      about a name; on a tmpfs /tmp that is
-                                                      [noop_fsync] (mm/shmem.c, v6.18.46) *)
-  | Some FdDir         => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
+  | Some (FdDir _)     => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
   end.

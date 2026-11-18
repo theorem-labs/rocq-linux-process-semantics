@@ -199,8 +199,8 @@ Open Scope sys_scope.
     exactly Linux's.  That is the walk, not a claim about the whole
     tree: a caller reaching [do_eventfd] through some path not
     enumerated here is outside what was checked.  [security_file_alloc]
-    inside [alloc_empty_file] is an LSM hook, and the model describes a
-    kernel with no LSM denying it, as everywhere else.
+    inside [alloc_empty_file] is the stub of include/linux/security.h
+    that answers 0: the configuration of record builds no LSM (SCOPE.md).
 
     CONFIG_EVENTFD IS ASSUMED ON.  fs/Makefile builds eventfd.c under
     [obj-$(CONFIG_EVENTFD)] and kernel/sys_ni.c carries

@@ -45,7 +45,10 @@
     - run level: the exit-0 image must-exits under forced-only exactly
       as it does under may-fail, and the undecodable image refutes the
       predicate under forced-only as it does under may-fail — the two
-      witnesses [MustExit]'s header points at, at the other reading. *)
+      witnesses [MustExit]'s header points at, at the other reading.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -87,7 +90,7 @@ Definition errno_eff (e : Z) : SyscallEffect := mkEffect (errno_ret e) [] [].
 
 (** The model every check below starts from: the demo process with an
     empty file system and end of input. *)
-Definition m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (* =========================================================================
    PART 2 — which families a configuration turns off
@@ -135,38 +138,51 @@ Proof. intros cfg. vm_compute. reflexivity. Qed.
    ========================================================================= *)
 
 Lemma getcwd_dispatch : forall m o,
-  syscall_spec getcwd_i m o <-> getcwd_spec (in_arg getcwd_i 1) getcwd_i m o.
+  syscall_spec getcwd_i m o <->
+  getcwd_spec (in_arg getcwd_i 0) (in_arg getcwd_i 1) getcwd_i m o.
 Proof.
   intros m o. unfold syscall_spec, dispatch.
   assert (E : bv_unsigned (in_sysno getcwd_i) = 17%Z) by (vm_compute; reflexivity).
   rewrite E. reflexivity.
 Qed.
 
-Lemma getcwd_size_in_band : (1 <? bv_unsigned (in_arg getcwd_i 1))%Z = false.
+(** THE BAND THIS INPUT SITS IN.  [getcwd_i] has every register zero,
+    so [size] is zero, and [m0]'s working directory is the fixture
+    default, so the string it would deliver is longer than that — the
+    -ERANGE branch, whatever [buf] points at.  Both halves are
+    computations rather than assumptions about the layout. *)
+Lemma getcwd_m0_len_fits :
+  Nat.ltb path_max (getcwd_len (m_cwd m0)) = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Every answer [getcwd] admits here: -ERANGE, or one of the injected
-    three; the model is untouched and nothing is emitted. *)
-Lemma getcwd_admits : forall m e,
+Lemma getcwd_size_in_band :
+  (bv_unsigned (in_arg getcwd_i 1) <? Z.of_nat (getcwd_len (m_cwd m0)))%Z = true.
+Proof. vm_compute. reflexivity. Qed.
+
+(** Every answer [getcwd] admits here: -ERANGE, or the injected
+    -ENOMEM; the model is untouched and nothing is emitted. *)
+Lemma getcwd_admits : forall e,
   In e (ERANGE :: getcwd_errnos) ->
-  syscall_spec getcwd_i m (Ok (errno_eff e) m []).
+  syscall_spec getcwd_i m0 (Ok (errno_eff e) m0 []).
 Proof.
-  intros m e Hin. apply getcwd_dispatch. unfold getcwd_spec.
-  rewrite getcwd_size_in_band.
+  intros e Hin. apply getcwd_dispatch.
+  apply (getcwd_spec_erange_band _ _ _ _ _
+           getcwd_m0_len_fits getcwd_size_in_band).
   destruct Hin as [<- | Hin].
   - apply alt_r. reflexivity.
   - apply alt_l. unfold errno_from, bind, choose.
-    exists e, m, [], [].
+    exists e, m0, [], [].
     split; [exists e; split; [exact Hin | reflexivity] |].
     split; reflexivity.
 Qed.
 
-Lemma getcwd_only : forall m eff m' evs,
-  syscall_spec getcwd_i m (Ok eff m' evs) ->
-  m' = m /\ evs = [] /\ exists e, In e (ERANGE :: getcwd_errnos) /\ eff = errno_eff e.
+Lemma getcwd_only : forall eff m' evs,
+  syscall_spec getcwd_i m0 (Ok eff m' evs) ->
+  m' = m0 /\ evs = [] /\ exists e, In e (ERANGE :: getcwd_errnos) /\ eff = errno_eff e.
 Proof.
-  intros m eff m' evs H. apply (proj1 (getcwd_dispatch m _)) in H. unfold getcwd_spec in H.
-  rewrite getcwd_size_in_band in H.
+  intros eff m' evs H. apply (proj1 (getcwd_dispatch m0 _)) in H.
+  apply (getcwd_spec_erange_band _ _ _ _ _
+           getcwd_m0_len_fits getcwd_size_in_band) in H.
   unfold alt, errno_from, bind, choose, err_ret, ret_only, pure in H.
   sys_destruct;
     (split; [reflexivity | split; [reflexivity |]]);
@@ -261,7 +277,7 @@ Proof.
     end.
     match goal with
     | [ Hspec : syscall_spec _ _ (Ok _ _ _) |- _ ] =>
-        destruct (getcwd_only _ _ _ _ Hspec) as (Hm & Hevs & e & Hin & Heff); subst
+        destruct (getcwd_only _ _ _ Hspec) as (Hm & Hevs & e & Hin & Heff); subst
     end.
     destruct Hin as [<- | Hin].
     + (* -ERANGE lands elsewhere: a0 differs *)
@@ -275,7 +291,7 @@ Proof.
       end.
       split; [exact getcwd_off_under_forced_only |].
       split.
-      * destruct Hin as [<- | [<- | [<- | []]]]; vm_compute; reflexivity.
+      * destruct Hin as [<- | []]; vm_compute; reflexivity.
       * exists (errno_eff ERANGE), m0, []. split.
         { apply getcwd_admits. left. reflexivity. }
         { vm_compute. reflexivity. }
@@ -495,7 +511,7 @@ Proof.
     apply must_exit_at_cfg_running.
     + cbn [cfg_model]. exact Hh.
     + exists ([] ++ [ExitEv (bv_and (in_arg (sys_input segs ms x8) 0)
-                                    (Z_to_bv 64 255)) (m_fs m')]),
+                                    (Z_to_bv 64 255)) (Fs.fs_observe (m_fs m'))]),
         (SNext (mkCfg ms m')).
       eapply sstep_cfg_exit; [exact Hh | exact Hsvc | | | ].
       * subst m'. exact (exit_dispatch_admits _ model Hno).
@@ -727,53 +743,89 @@ Proof.
   apply alt_r. eapply bind_ok0; [apply modify_ok |]. apply pure_ok.
 Qed.
 
-(** [faccessat2]: -ENOMEM and -EACCES are admitted only by
-    [Fs.Open.access_exists_spec], which admits 0 beside them. *)
-Lemma faccessat2_success_beside_refusal :
+(** [faccessat2]: -ENOMEM and -EACCES come from
+    [Fs.Open.access_exists_spec], which admits 0 beside them, and from
+    the walk's own refusals ([Fs.Namei.walk_refusals]), which stand only
+    beside a body that does not decline.  Such a body always has an
+    answer that is neither: [faccessat_body_answer]. *)
+Local Ltac fixed_answer :=
+  do 3 eexists; split; [apply pure_ok | split; [reflexivity | vm_compute; reflexivity]].
+
+Local Lemma faccessat_body_answer : forall md dirfd pathp i m,
+  ~ faccessat_body_spec md dirfd pathp i m i m Unmodeled ->
+  exists core m2 evs2,
+    faccessat_body_spec md dirfd pathp i m i m (Ok core m2 evs2)
+    /\ eff_copyins core = []
+    /\ ret_in_errnos faccessat_errnos (eff_ret core) = false.
+Proof.
+  intros md dirfd pathp i m Hnu.
+  unfold faccessat_body_spec in Hnu |- *.
+  destruct (read_cstr (in_mem i) pathp) as [p| |]; cbv iota in Hnu |- *;
+    [| fixed_answer | fixed_answer].
+  destruct (path_eqb p []); cbv iota in Hnu |- *; [fixed_answer|].
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in Hnu |- *;
+    [exfalso; apply Hnu; apply unmodeled_intro|].
+  destruct (Fs.resolve md (m_fs m) (m_cwd m) p) as [[r lk] ts];
+    cbv iota zeta in Hnu |- *.
+  destruct r; cbv iota in Hnu |- *;
+    try fixed_answer; try (exfalso; apply Hnu; apply unmodeled_intro).
+  exists (mkEffect (Z_to_bv 64 0) [] []), m, []. split.
+  - unfold access_exists_spec. apply alt_r. apply pure_ok.
+  - split; [reflexivity | vm_compute; reflexivity].
+Qed.
+
+Local Lemma faccessat_body_ok_not_unmodeled : forall md dirfd pathp i m core m2 evs2,
+  faccessat_body_spec md dirfd pathp i m i m (Ok core m2 evs2) ->
+  ~ faccessat_body_spec md dirfd pathp i m i m Unmodeled.
+Proof.
+  intros md dirfd pathp i m core m2 evs2 H Hu.
+  unfold faccessat_body_spec, access_exists_spec in H, Hu.
+  destruct (read_cstr (in_mem i) pathp) as [p| |]; cbv iota in H, Hu;
+    [|sys_unfold; inv_ok|sys_unfold; inv_ok].
+  destruct (path_eqb p []); cbv iota in H, Hu; [sys_unfold; inv_ok|].
+  destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H, Hu; [sys_unfold; inv_ok|].
+  destruct (Fs.resolve md (m_fs m) (m_cwd m) p) as [[r lk] ts]; cbv iota zeta in H, Hu.
+  destruct r; cbv iota in H, Hu; try (sys_unfold; inv_ok; fail).
+  all: sys_unfold; inv_ok.
+Qed.
+
+Lemma faccessat2_answer_beside_refusal :
     forall dirfd pathp mode flags i m eff m' evs,
   faccessat2_spec dirfd pathp mode flags i m (Ok eff m' evs) ->
   ret_in_errnos faccessat_errnos (eff_ret eff) = true ->
-  faccessat2_spec dirfd pathp mode flags i m
-    (Ok (with_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
-           (mkEffect (Z_to_bv 64 0) [] []))
-        m []).
+  exists eff' m'' evs',
+    faccessat2_spec dirfd pathp mode flags i m (Ok eff' m'' evs')
+    /\ ret_in_errnos faccessat_errnos (eff_ret eff') = false.
 Proof.
   intros dirfd pathp mode flags i m eff m' evs H Hr.
   unfold faccessat2_spec in H |- *.
   apply input_bind_ok_inv in H. cbv beta in H.
   apply get_model_bind_ok_inv in H. cbv beta iota in H.
-  eapply bind_ok0; [apply input_ok |]. cbv beta.
-  eapply bind_ok0; [apply get_model_ok |]. cbv beta iota.
   (* the mode and flag gates: two -EINVALs, then two declines *)
   case_if H; [refute_ret H Hr |].
   case_if H; [refute_ret H Hr |].
   case_if H; [refute_unmodeled H |].
   case_if H; [refute_unmodeled H |].
-  (* the pathname copy-in, around the body faccessat shares *)
-  apply record_copyins_ok_inv in H. destruct H as (core & Hcore & ->).
-  cbn [eff_ret with_copyins] in Hr.
-  apply record_copyins_ok_empty; [reflexivity |].
-  unfold faccessat_body_spec in Hcore |- *.
-  destruct (read_cstr (in_mem i) pathp) as [p | |] eqn:Hcs;
-    cbv iota in Hcore |- *; [| refute_ret Hcore Hr | refute_ret Hcore Hr].
-  (* the empty pathname: -ENOENT *)
-  case_if Hcore; [refute_ret Hcore Hr |].
-  (* a dirfd other than AT_FDCWD: declined *)
-  case_if Hcore; [refute_unmodeled Hcore |].
-  (* "." and "..": the arm that can succeed *)
-  case_if Hcore; [unfold access_exists_spec; apply alt_r; apply pure_ok |].
-  case_if Hcore; [unfold access_exists_spec; apply alt_r; apply pure_ok |].
-  (* a slash, an over-long name, an implied directory: declined *)
-  case_if Hcore; [refute_unmodeled Hcore |].
-  case_if Hcore; [refute_unmodeled Hcore |].
-  case_if Hcore; [refute_unmodeled Hcore |].
-  (* a present name: the arm that can succeed; an absent one: -ENOENT *)
-  match type of Hcore with
-  | context [match ?x with Some _ => _ | None => _ end] => destruct x eqn:Hlk
-  end;
-  cbv iota in Hcore |- *.
-  - unfold access_exists_spec. apply alt_r. apply pure_ok.
-  - refute_ret Hcore Hr.
+  (* [getname_flags]' own refusals, then the pathname copy-in, around the
+     walk's refusals and the body: whichever of them gave [eff], the body
+     does not decline *)
+  assert (Hnu : ~ faccessat_body_spec (access_walk_mode flags) dirfd pathp i m i m
+                    Unmodeled).
+  { destruct H as [H | (Hnu0 & _)].
+    - apply record_copyins_ok_inv in H. destruct H as (core & Hcore & _).
+      destruct Hcore as [Hs | (Hnu & _)];
+        [exact (faccessat_body_ok_not_unmodeled _ _ _ _ _ _ _ _ Hs) | exact Hnu].
+    - intro Hu. apply Hnu0.
+      apply record_copyins_unmodeled. apply walk_refusals_intro. exact Hu. }
+  destruct (faccessat_body_answer _ _ _ _ _ Hnu) as (core' & m2 & evs2 & Hs & Hci & Hr').
+  exists (with_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] core'),
+    m2, evs2.
+  split; [|exact Hr'].
+  eapply bind_ok0; [apply input_ok |]. cbv beta.
+  eapply bind_ok0; [apply get_model_ok |]. cbv beta iota.
+  apply getname_refusals_intro.
+  apply record_copyins_ok_empty; [exact Hci |].
+  apply walk_refusals_intro. exact Hs.
 Qed.
 
 (** [getdents64]: -ENOENT is admitted only on a directory whose buffer
@@ -827,11 +879,11 @@ Proof.
   intros i m eff m' evs E Hspec Hr.
   rewrite (faccessat2_refusal_b _ _ _ E) in Hr.
   apply (faccessat2_dispatch _ _ _ E) in Hspec.
-  pose proof (faccessat2_success_beside_refusal _ _ _ _ _ _ _ _ _ Hspec Hr) as Hw.
-  do 3 eexists. split.
+  destruct (faccessat2_answer_beside_refusal _ _ _ _ _ _ _ _ _ Hspec Hr)
+    as (eff' & m'' & evs' & Hw & Hr').
+  exists eff', m'', evs'. split.
   - apply (faccessat2_dispatch _ _ _ E). exact Hw.
-  - rewrite (faccessat2_refusal_b _ _ _ E). cbn [eff_ret with_copyins].
-    vm_compute. reflexivity.
+  - rewrite (faccessat2_refusal_b _ _ _ E). exact Hr'.
 Qed.
 
 Lemma getdents64_refusal_avoidable : forall i m eff m' evs,
@@ -964,7 +1016,7 @@ Proof. apply spurious_refusal_may_fail. Qed.
 
 (** The same for an unmap of ONE WHOLE mapping, the arm Linux answers
     -ENOMEM at in [do_vmi_align_munmap] (mm/vma.c, Linux v6.18.46):
-    [Checks.Cases.Mm.Mmap.one_map_model]'s single mapping, unmapped
+    [Checks.Cases.Prelude.one_map_model]'s single mapping, unmapped
     whole ([Checks.Cases.Mm.Mmap.munmap_whole_mapping_enomem]).  Under
     may-fail the refusal stays; forced-only and [alloc_only_cfg false]
     both remove it, so neither of those two readings changes. *)

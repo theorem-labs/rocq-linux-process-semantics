@@ -1,0 +1,12 @@
+# Extra flags for this example only, appended after SOURCE_CFLAGS (so a
+# later flag wins).  See the Makefile's source-images recipe.
+#
+# -fbuiltin cancels the default -fno-builtin *for this example alone*: gcc
+# then recognizes the program's slen() loop as the strlen idiom again and
+# calls musl's strlen, whose word-at-a-time SWAR scan reads eight bytes at
+# a time past the terminating NUL.  That walk is proved in
+# Common/MuslStrlen.v and in this example's own source proof, and it is
+# worth keeping machine-checked against an image that really contains it
+# rather than only in git history -- the other examples show the byte loop
+# the C source actually writes.
+-fbuiltin

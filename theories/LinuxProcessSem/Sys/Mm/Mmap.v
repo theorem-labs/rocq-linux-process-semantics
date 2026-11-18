@@ -939,7 +939,8 @@ Definition mmap_off_aligned_b (off : word) : bool :=
     between [ksys_mmap_pgoff]'s fall-through and [do_mmap]'s
     [if (!len) return -EINVAL] reads [addr] or [off] at all; the only
     reader of [prot] before it is the LSM hook [security_mmap_file] in
-    [vm_mmap_pgoff] (mm/util.c), which this model does not describe.
+    [vm_mmap_pgoff] (mm/util.c), the stub that answers 0 in the
+    configuration of record, which builds no LSM (SCOPE.md).
     [do_mmap] validates MAP_TYPE only in its [switch (flags & MAP_TYPE)],
     well after the length.  And the one argument
     check that DOES precede all of this — riscv's
@@ -975,8 +976,9 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    to [PAGE_ALIGN(mmap_min_addr)] for a nonzero hint below it.  So a
    hint of 1 to 4095 ROUNDS DOWN TO ZERO and is no hint at all.
    [hint_address] below is the rounding; the raise never fires at the
-   [mmap_min_addr] of 4096 that SCOPE.md assumes, and SCOPE.md names
-   the SELinux default of 65536 as outside the model.
+   [mmap_min_addr] of 4096 that SCOPE.md assumes.  The configuration of
+   record builds no LSM, so that value is the [vm.mmap_min_addr] sysctl
+   at boot, and SCOPE.md names a raised sysctl as outside its assumption.
 
    (3) TRANSPARENT HUGE PAGES.  [__get_unmapped_area] (mm/mmap.c) sends
    a PRIVATE anonymous request — no file and no MAP_SHARED, so the
@@ -995,8 +997,9 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    [thp_align] below is that arithmetic: the least multiple of
    PMD_SIZE strictly above [ret].  Whether the kernel was built with it
    is a fact about the image, so it is an input: [State.KernelBuild]'s
-   [kb_thp].  The riscv defconfig does not set it; distribution
-   kernels do.
+   [kb_thp].  The configuration of record does not set it (SCOPE.md), so
+   only [kb_thp = false] is a supported kernel's placement; the other is
+   admitted all the same, a priority-2 gap ("Known gaps in precision").
 
    (4) THE SEARCH.  [arch_get_mmap_end] is STACK_TOP_MAX and
    [arch_get_mmap_base] is [mm->mmap_base], whatever the hint
@@ -1096,9 +1099,9 @@ Definition mmap_plain_anon_b (flags : word) : bool :=
    - R-c, the stack's guard gap.  Linux keeps [stack_guard_gap] bytes
      free below the stack and refuses a hint whose range ends inside
      them (include/linux/mm.h, [vm_start_gap] through
-     [stack_guard_start_gap]; mm/mmap.c:757-759, the hint test of
-     [generic_get_unmapped_area_topdown], Linux v6.18.46, commit
-     1f99e9ab748f).  The HINT half is
+     [stack_guard_start_gap]; the hint test of
+     [generic_get_unmapped_area_topdown], mm/mmap.c:757-759, Linux
+     v6.18.46, commit 1f99e9ab748f).  The HINT half is
      DECLINED, by [place_declined_b], which reads the gap off the
      run's kernel build.  The BRK half is open, for the reason
      SCOPE.md's entry gives: [brk_grow_ok] tests the installed pages
@@ -1186,12 +1189,13 @@ Definition thp_align (ret : Z) : Z :=
 (** [round_hint_to_min]'s rounding (mm/mmap.c): [hint &= PAGE_MASK].
     A hint of 1 to 4095 becomes 0, which is no hint.  The raise to
     [PAGE_ALIGN(mmap_min_addr)] is not here because SCOPE.md assumes
-    [mmap_min_addr] is 4096, at which it never fires.  ON A KERNEL
-    WHOSE [mmap_min_addr] IS HIGHER this is not Linux: with the
-    SELinux default of 65536 (security/Kconfig, LSM_MMAP_MIN_ADDR;
-    security/min_addr.c, [update_mmap_min_addr]) a page-aligned hint
-    in [[0x1000, 0x10000)] is raised to 0x10000, and this rounding
-    keeps it.  SCOPE.md names such a kernel as outside the model. *)
+    [mmap_min_addr] is 4096, at which it never fires.  AFTER A WRITER
+    RAISES THE [vm.mmap_min_addr] SYSCTL this is not Linux: at 65536 a
+    page-aligned hint in [[0x1000, 0x10000)] is raised to 0x10000
+    (security/min_addr.c, [update_mmap_min_addr]), and this rounding
+    keeps it.  SCOPE.md names such a run as outside its assumption; the
+    configuration of record builds no LSM, so no
+    [CONFIG_LSM_MMAP_MIN_ADDR] raises the floor at boot. *)
 Definition hint_address (hint : word) : Z :=
   page_round_down_Z (bv_unsigned hint).
 
@@ -1253,7 +1257,7 @@ Definition linux_place (h : VmMaps) (thp : bool) (hint : word) (nZ a : Z)
     CASE 2, A HINT INSIDE THE STACK'S GUARD GAP (SCOPE.md's R-c).
     Linux keeps [stack_guard_gap] bytes free below a VM_GROWSDOWN VMA:
     the first gap test above is [addr + len <= vm_start_gap(vma)]
-    (mm/mmap.c:758), and [vm_start_gap] subtracts the gap from the
+    (mm/mmap.c:757), and [vm_start_gap] subtracts the gap from the
     start of a growsdown VMA (include/linux/mm.h, through
     [stack_guard_start_gap]).  The gap is [256UL << PAGE_SHIFT] by
     default and any page count the [stack_guard_gap=] boot parameter
@@ -1881,25 +1885,23 @@ Definition mmap_fixed_rw_span_budget_ok (flags : word) (m : Model)
    sub-case's answers are the MAP_FIXED free-range sub-case's, for the
    reasons given there.
 
-   WHY -EEXIST IS FORCED, under the scope README.md states.  The target
-   is any variant of Linux, and the variants differ on this bit in one
-   way only: a kernel from before the bit existed ignores it, treats
-   [addr] as a hint and answers a placement (the bit reached Linux in
-   v4.17).  Every supported kernel has it — README.md's scope section
-   states the floor this relies on, stable kernels from v4.17 on — and
+   WHY -EEXIST IS FORCED, under the scope README.md states.  The
+   supported kernels are v6.16 to v6.18.46, and the bit reached Linux in
+   v4.17 (a kernel from before it ignores the bit, treats [addr] as a
+   hint and answers a placement, but none such is supported), so every
+   supported kernel has it, and
    on every one of them an occupied range answers -EEXIST
    (or the map-count -ENOMEM above), whatever the layout, address-space
    size or randomisation: [find_vma_intersection] reads the VMA tree and
-   nothing else.  QEMU's user-mode emulation agrees: [target_mmap]
-   (linux-user/mmap.c, read at QEMU 8.2.2) answers EEXIST for a
-   MAP_FIXED_NOREPLACE request whose guest range is not empty.  (It can
-   also answer EEXIST on a range the GUEST has free: without
-   [reserved_va] it keeps the bit on the host mmap and a host-side
-   collision comes back as EEXIST, linux-user/mmap.c:655-659 and
-   :738-745 at the same version — a second free-range residual beside
-   the vdso one below.)  The
+   nothing else.  QEMU user mode, which is not a supported
+   implementation, answers EEXIST there too ([target_mmap],
+   linux-user/mmap.c, read at QEMU 8.2.2), and also on some ranges the
+   GUEST has free: without [reserved_va] it keeps the bit on the host
+   mmap and a host-side collision comes back as EEXIST
+   (linux-user/mmap.c:655-659 and :738-745 at the same version), which
+   SCOPE.md's "Where QEMU user mode differs" lists.  The
    refusal is therefore not a placement choice the statement quantifies
-   over but a point every admitted implementation reaches, so a
+   over but a point every supported kernel reaches, so a
    statement over a program that meets it must reproduce it on the
    target side: [Equivalence.equiv] compares whole trace sets, and the
    source's set contains the -EEXIST trace.
@@ -2606,7 +2608,7 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
          difference is Linux's.  [place_declined_b] declines a HINTED
          call whose range ends within [stack_guard_gap] of the run's
          [alloc_top], because Linux's hint test subtracts that gap from
-         the stack's start (mm/mmap.c:758, [vm_start_gap]) and this
+         the stack's start (mm/mmap.c:757, [vm_start_gap]) and this
          ledger cannot say where the stack starts.  MAP_FIXED takes no
          such test: [generic_get_unmapped_area_topdown] returns [addr]
          at [if (flags & MAP_FIXED) return addr;] (mm/mmap.c:750-751),

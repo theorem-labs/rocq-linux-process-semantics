@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -31,7 +34,7 @@ Definition statat_absent_input : SyscallInput :=
     (fun _ => None).
 
 Definition statat_absent_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** Which reason from the top of [Checks/Examples.v]: the third and the
     fourth together.  A copy-in ledger is MODEL-INTERNAL STATE that no
@@ -71,6 +74,214 @@ Example newfstatat_pathname_copyin_is_charged :
      = CheckOk statat_absent_model [].
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
+(** A NAME THE WALK DOES NOT FIND IN THE /dev SUBTREE IS -ENOENT, as it
+    is anywhere else.  The image describes /dev completely at launch and
+    the kernel makes no device node during the run ([Fs.dev_dir] carries
+    the argument; in Linux v6.18.46 a devtmpfs node is made by
+    [devtmpfs_create_node], drivers/base/devtmpfs.c:129-154, when a
+    driver-core device is registered), so a name the image does not hold
+    under /dev is one the guest does not have.  A success is refused
+    beside it, and the twin under /tmp gives the same answer. *)
+Definition statat_ns_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof).
+
+Definition statat_devpts_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input
+       (Fs.fs_set (demo_fs [])
+          (Fs.child_key Fs.dev_dir
+             (map (fun z => Z_to_bv 8 z) [112; 116; 115]%Z)) EDir)
+       IEof).
+
+Definition statat_mem (bs : list Z) : word -> option byte :=
+  fun a => if (0x2000 <=? bv_unsigned a)%Z
+           then nth_error (map (fun z => Z_to_bv 8 z) (bs ++ [0%Z]))
+                  (Z.to_nat (bv_unsigned a - 0x2000))
+           else None.
+
+Example newfstatat_under_dev_absent_is_enoent :
+  check_syscall
+    (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+       (statat_mem [47; 100; 101; 118; 47; 122; 101; 114; 111]%Z)
+       (fun _ => None))
+    (with_copyins [(0x2000, 10%nat)] (mkEffect (errno_ret ENOENT) [] []))
+    statat_ns_model
+  = CheckOk statat_ns_model []
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+          (statat_mem [47; 100; 101; 118; 47; 122; 101; 114; 111]%Z)
+          (fun _ => None))
+       (with_copyins [(0x2000, 10%nat)] (mkEffect 0 [] []))
+       statat_ns_model
+     = CheckReject
+  (* one level down, under a DECLARED /dev/pts, the same *)
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+          (statat_mem [47; 100; 101; 118; 47; 112; 116; 115; 47; 48]%Z)
+          (fun _ => None))
+       (with_copyins [(0x2000, 11%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_devpts_model
+     = CheckOk statat_devpts_model []
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+          (statat_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z)
+          (fun _ => None))
+       (with_copyins [(0x2000, 10%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       statat_ns_model
+     = CheckOk statat_ns_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** [getname_flags]' -ENOMEM beside its own answers and every answer
+    past them: the name is allocated before a byte is copied
+    (fs/namei.c:146-148, Linux v6.18.46), so that -ENOMEM carries no
+    copy-in ([Fs.Namei.getname_refusals]).  [newfstatat] without
+    AT_EMPTY_PATH fetches with plain [getname]
+    (include/linux/fs.h:2952-2953), so the empty name's -ENOENT, an
+    unmapped pointer's -EFAULT and an absent name's -ENOENT admit it.
+    Under AT_EMPTY_PATH, [__getname_maybe_null] goes on to
+    [getname_flags] once the lead byte reads and is not NUL
+    (fs/namei.c:231-236), so a name that faults on its SECOND byte
+    admits it too.  [readlinkat] fetches with [getname_flags] under
+    LOOKUP_EMPTY (fs/stat.c:569, :575), which lets the empty name
+    through only after the allocation, so its -ENOENT (593) admits it. *)
+Example newfstatat_getname_enomem_copies_nothing :
+  let call (nr : word) a2 a3 mp := check_syscall
+        (mkInput nr [AT_FDCWD; 0x2000; a2; a3; 0; 0] mp (fun _ => None))
+        (mkEffect (errno_ret ENOMEM) [] []) statat_ns_model in
+  call 79 0 0 (statat_mem []) = CheckOk statat_ns_model []
+  /\ call 79 0 0 (fun _ => None) = CheckOk statat_ns_model []
+  /\ call 79 0 0 (statat_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z)
+     = CheckOk statat_ns_model []
+  /\ call 79 0 (Z_to_bv 64 AT_EMPTY_PATH)
+       (fun a => if bv_eqb a 0x2000 then Some 102 else None)
+     = CheckOk statat_ns_model []
+  /\ call 78 0 16 (statat_mem []) = CheckOk statat_ns_model [].
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** ...and not with the copy-in on a name no answer reads and then
+    fails for memory: the empty one, an unmapped one, and the one whose
+    second byte faults. *)
+Example newfstatat_getname_enomem_with_the_copyin_rejected :
+  check_syscall
+    (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (statat_mem []) (fun _ => None))
+    (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+    statat_ns_model
+  = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (fun a => if bv_eqb a 0x2000 then Some 102 else None) (fun _ => None))
+       (with_copyins [(0x2000, 2%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 0x2000; 0; 16; 0; 0] (statat_mem []) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** ...and where [getname_flags] is not reached, no -ENOMEM.  Under
+    AT_EMPTY_PATH a lead byte that faults is [__getname_maybe_null]'s
+    own -EFAULT (fs/namei.c:231-232) and a NUL one is no name at all
+    (233-234), both before anything is allocated: the first answers
+    -EFAULT alone, and the second stats the working folder, here into a
+    [statbuf] above the user range, so [cp_new_stat]'s -EFAULT stands
+    alone (fs/stat.c:542-546).  A [bufsiz] of 0 is [do_readlinkat]'s
+    -EINVAL ahead of [getname_flags] (fs/stat.c:571-572).  And on the
+    empty name the walk's -EACCES is refused: no component is walked. *)
+Example newfstatat_getname_enomem_needs_getname :
+  check_syscall
+    (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+       (fun _ => None) (fun _ => None))
+    (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    statat_ns_model
+  = CheckOk statat_ns_model []
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (fun _ => None) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] [])
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; Z_to_bv 64 (2 ^ 63); Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (statat_mem []) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       statat_ns_model
+     = CheckOk statat_ns_model []
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; Z_to_bv 64 (2 ^ 63); Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (statat_mem []) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; Z_to_bv 64 (2 ^ 63); Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (statat_mem []) (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] [])
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (statat_mem []) (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] [])
+       statat_ns_model
+     = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (statat_mem []) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret EACCES) [] []))
+       statat_ns_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** A NULL PATHNAME UNDER AT_EMPTY_PATH IS DECLINED
+    ([Stat.statat_null_name]).  [getname_maybe_null] returns NULL for it
+    without loading a byte (include/linux/fs.h:2955-2956, Linux
+    v6.18.46), so [vfs_fstatat] stats the working folder for AT_FDCWD
+    (the NULL name is "" to the walk, [__set_nameidata], fs/namei.c:668,
+    Linux v6.18.46) and the descriptor itself for a dfd of 0 or more
+    (fs/stat.c:372-373, Linux v6.18.46), whatever address 0 holds.
+    Declined with address 0 unmapped, where the body would answer
+    -EFAULT; with a NUL there, where it would stat the folder; and beside
+    AT_SYMLINK_NOFOLLOW with dirfd 3.  Without AT_EMPTY_PATH the same
+    NULL is plain getname's -EFAULT, from [getname_flags]
+    (fs/namei.c:161-165, Linux v6.18.46), still answered with its one
+    attempted byte. *)
+Example newfstatat_null_name_under_at_empty_path_declines :
+  check_syscall
+    (mkInput 79 [AT_FDCWD; 0; 0x3000; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+       (fun _ => None) (fun _ => None))
+    (with_copyins [(0, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+    statat_ns_model
+  = CheckUnmodeled
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0; 0x3000; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+          (fun a => if bv_eqb a 0 then Some 0 else None) (fun _ => None))
+       (mkEffect 0 [] [])
+       statat_ns_model
+     = CheckUnmodeled
+  /\ check_syscall
+       (mkInput 79 [3; 0; 0x3000; Z_to_bv 64 (AT_EMPTY_PATH + AT_SYMLINK_NOFOLLOW)%Z; 0; 0]
+          (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] [])
+       statat_ns_model
+     = CheckUnmodeled
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0; 0x3000; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (with_copyins [(0, 1%nat)] (mkEffect (errno_ret EFAULT) [] []))
+       statat_ns_model
+     = CheckOk statat_ns_model [].
+Proof. split_conj; check_eq. Qed.
+
 (* -------------------------------------------------------------------------
    fstat (80) — the delivered struct stat
 
@@ -91,15 +302,16 @@ Proof. vm_compute. repeat split; reflexivity. Qed.
 (** "f", nine bytes long: a length no neighbouring member of the struct
     below coincides with, so a rejection at [st_size] cannot be a
     rejection at [st_blocks] or [st_nlink] read through a wrong
-    offset. *)
+    offset.  The file is inode 1 of an image holding nothing else, and
+    descriptor 3 holds it. *)
 Definition fstat_path : Fs.path := [Z_to_bv 8 102].
 Definition fstat_data : list byte := repeat (Z_to_bv 8 65) 9.
 Definition fstat_data_grown : list byte := repeat (Z_to_bv 8 65) 12.
 
 Definition fstat_model_of (d : list byte) : Model :=
-  with_fds [(Z_to_bv 64 3, FdFile fstat_path (Z_to_bv 64 0))]
+  with_fds [(Z_to_bv 64 3, FdFile 1 (Z_to_bv 64 0))]
     (init_model [] 0 0 demo_sp demo_limit
-       (demo_input [(fstat_path, d)] IEof)).
+       (demo_input (Fs.fs_create_file Fs.fs_empty fstat_path d) IEof)).
 
 Definition fstat_model : Model := fstat_model_of fstat_data.
 Definition fstat_model_grown : Model := fstat_model_of fstat_data_grown.
@@ -108,18 +320,19 @@ Definition fstat_model_grown : Model := fstat_model_of fstat_data_grown.
     descriptor instead of a read-only one.  The pair of examples below is
     the whole difference the fourth file kind makes to [fstat]: none. *)
 Definition fstat_model_rw : Model :=
-  with_fds [(Z_to_bv 64 3, FdFileRW fstat_path (Z_to_bv 64 0))]
+  with_fds [(Z_to_bv 64 3, FdFileRW 1 (Z_to_bv 64 0))]
     (init_model [] 0 0 demo_sp demo_limit
-       (demo_input [(fstat_path, fstat_data)] IEof)).
+       (demo_input (Fs.fs_create_file Fs.fs_empty fstat_path fstat_data) IEof)).
 
-(** A descriptor on a path the map does not hold.  No run builds it:
-    [unlinkat] never removes a key a descriptor still names -- the
-    working-directory arm declines that removal, and the /tmp arm turns
-    each such descriptor into a [State.FdAnon] first
-    ([Fs.Namei.unlink_open_tmp_spec]). *)
+(** The same file after [unlinkat] removed its only name while
+    descriptor 3 holds it: the inode keeps its row ([Fs.fs_unlink_file])
+    and no name. *)
 Definition fstat_model_unlinked : Model :=
-  with_fds [(Z_to_bv 64 3, FdFile fstat_path (Z_to_bv 64 0))]
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+  with_fs (Fs.fs_unlink_file (m_fs fstat_model) fstat_path 1 true) fstat_model.
+
+(** The pin a first [fstat] of inode 1 leaves. *)
+Definition pin1 (bs : list byte) (m : Model) : Model :=
+  with_statpin (IdIno 1) (mkStatPin bs None) m.
 
 (** A 128-byte writable landing zone at 4096, and the same zone one byte
     shy — the shape that separates [copy_to_user]'s -EFAULT from the
@@ -138,12 +351,13 @@ Definition fstat_input : SyscallInput :=
     are the ones the examples vary; everything else is a plausible
     constant (an ext4-ish [st_dev], one link, the [demo_input] user, no
     [st_rdev], a 4096-byte block size) and none of it is claimed to be
-    what any kernel would report. *)
-Definition stat_of (ino mode size blocks tim : Z) : list byte :=
+    what any kernel would report except the one link, which is the
+    count of a file with one name. *)
+Definition stat_of_nl (ino mode nlink size blocks tim : Z) : list byte :=
   Z_to_le_bytes 8 2049                                   (* st_dev *)
   ++ Z_to_le_bytes 8 ino                                 (* st_ino *)
   ++ Z_to_le_bytes 4 mode                                (* st_mode *)
-  ++ Z_to_le_bytes 4 1                                   (* st_nlink *)
+  ++ Z_to_le_bytes 4 nlink                               (* st_nlink *)
   ++ Z_to_le_bytes 4 1000                                (* st_uid *)
   ++ Z_to_le_bytes 4 1000                                (* st_gid *)
   ++ Z_to_le_bytes 8 0                                   (* st_rdev *)
@@ -157,9 +371,13 @@ Definition stat_of (ino mode size blocks tim : Z) : list byte :=
   ++ Z_to_le_bytes 8 tim ++ Z_to_le_bytes 8 0            (* st_ctime *)
   ++ Z_to_le_bytes 8 0.                                  (* __unused4/5 *)
 
+Definition stat_of (ino mode size blocks tim : Z) : list byte :=
+  stat_of_nl ino mode 1 size blocks tim.
+
 (** The truthful answer for the nine-byte file: a regular file of length
-    nine.  Nothing but the width, the padding, the type's validity and
-    the length is checked, so every other member here is free. *)
+    nine with one link.  Nothing but the width, the padding, the type's
+    validity, the length and the link count is checked, so every other
+    member here is free. *)
 Definition stat_truthful : list byte := stat_of 4711 S_IFREG 9 8 1700000000.
 
 (* ---- the accepting controls -------------------------------------------- *)
@@ -168,22 +386,20 @@ Definition stat_truthful : list byte := stat_of 4711 S_IFREG 9 8 1700000000.
     answer is admitted and BECOMES the pin. *)
 Example fstat_first_answer_pins :
   check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] []) fstat_model
-  = CheckOk (with_statpin fstat_path stat_truthful fstat_model) [].
+  = CheckOk (pin1 stat_truthful fstat_model) [].
 Proof. check_eq. Qed.
 
-(** The model does NOT claim the file is regular, and this is the case
-    that says so.  Offered S_IFCHR with [st_size] 0 — which is the true
-    answer for a character device at a path this model resolves and
-    holds nine bytes for — the checker ACCEPTS.  Rejecting
-    it is the false rejection the conditional in [Uapi.stat_size_ok]
-    exists to avoid, and this example is what would fail if the
-    implication were ever strengthened to an assertion. *)
-Example fstat_character_device_answer_admitted :
+(** A FILE IS REPORTED AS A FILE.  The entry is an [Fs.EFile], which is
+    a regular file ([Fs.Stat.fstat_file_spec] says why), so S_IFCHR with
+    [st_size] 0 for the nine-byte file is inadmissible: [generic_fillattr]
+    copies [i_mode] (fs/stat.c:90, Linux v6.18.46).  The accepting
+    control is [fstat_first_answer_pins] just above: the same call with
+    S_IFREG and nine bytes. *)
+Example fstat_character_device_answer_for_a_file_rejected :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4711 S_IFCHR 0 0 1700000000)] []) fstat_model
-  = CheckOk (with_statpin fstat_path (stat_of 4711 S_IFCHR 0 0 1700000000)
-               fstat_model) [].
-Proof. check_eq. Qed.
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
 
 (* ---- the read-write descriptor answers as the other file kinds do ------- *)
 
@@ -198,7 +414,7 @@ Proof. check_eq. Qed.
     kind it does not recognise. *)
 Example fstat_read_write_fd_answers_as_a_file :
   check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] []) fstat_model_rw
-  = CheckOk (with_statpin fstat_path stat_truthful fstat_model_rw) [].
+  = CheckOk (pin1 stat_truthful fstat_model_rw) [].
 Proof. check_eq. Qed.
 
 (** …and the length obligation BITES through the read-write descriptor
@@ -214,10 +430,10 @@ Proof. vm_compute. reflexivity. Qed.
 
 (* ---- what the length obligation rejects -------------------------------- *)
 
-(** …and the implication still BITES on the arm it is about.  Eight
-    bytes where the map holds nine, under the kernel's own S_IFREG:
-    inadmissible.  Paired with the control above, this attributes the
-    rejection to the length rather than to the type. *)
+(** …and the length BITES on the arm it is about.  Eight bytes where
+    the map holds nine, under S_IFREG: inadmissible.  Paired with the
+    control above, this attributes the rejection to the length rather
+    than to the type. *)
 Example fstat_wrong_size_under_ifreg_rejected :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4711 S_IFREG 8 8 1700000000)] []) fstat_model
@@ -230,15 +446,15 @@ Proof. vm_compute. reflexivity. Qed.
     tracks the map while the identity does not. *)
 Example fstat_stale_size_after_growth_rejected :
   check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] [])
-    (with_statpin fstat_path stat_truthful fstat_model_grown)
+    (pin1 stat_truthful fstat_model_grown)
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
 Example fstat_grown_size_admitted :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4711 S_IFREG 12 8 1700000042)] [])
-    (with_statpin fstat_path stat_truthful fstat_model_grown)
-  = CheckOk (with_statpin fstat_path stat_truthful fstat_model_grown) [].
+    (pin1 stat_truthful fstat_model_grown)
+  = CheckOk (pin1 stat_truthful fstat_model_grown) [].
 Proof. check_eq. Qed.
 
 (* ---- what the padding and the type bits reject -------------------------- *)
@@ -291,21 +507,21 @@ Proof. vm_compute. reflexivity. Qed.
     [choose] would have dropped. *)
 Example fstat_pinned_repeat_admitted :
   check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] [])
-    (with_statpin fstat_path stat_truthful fstat_model)
-  = CheckOk (with_statpin fstat_path stat_truthful fstat_model) [].
+    (pin1 stat_truthful fstat_model)
+  = CheckOk (pin1 stat_truthful fstat_model) [].
 Proof. check_eq. Qed.
 
 Example fstat_pinned_inode_defector_rejected :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4712 S_IFREG 9 8 1700000000)] [])
-    (with_statpin fstat_path stat_truthful fstat_model)
+    (pin1 stat_truthful fstat_model)
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
 
 Example fstat_inode_defector_is_itself_admissible_first :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4712 S_IFREG 9 8 1700000000)] []) fstat_model
-  = CheckOk (with_statpin fstat_path (stat_of 4712 S_IFREG 9 8 1700000000)
+  = CheckOk (pin1 (stat_of 4712 S_IFREG 9 8 1700000000)
                fstat_model) [].
 Proof. check_eq. Qed.
 
@@ -318,9 +534,129 @@ Proof. check_eq. Qed.
 Example fstat_pinned_new_times_and_blocks_admitted :
   check_syscall fstat_input
     (mkEffect 0 [(4096, stat_of 4711 S_IFREG 9 16 1700000099)] [])
-    (with_statpin fstat_path stat_truthful fstat_model)
-  = CheckOk (with_statpin fstat_path stat_truthful fstat_model) [].
+    (pin1 stat_truthful fstat_model)
+  = CheckOk (pin1 stat_truthful fstat_model) [].
 Proof. check_eq. Qed.
+
+(* ---- the set-id bits: a write or truncate clears them, nothing sets them - *)
+
+(** The nine-byte file with the permission bits [perm] beside S_IFREG.
+    The modes below are written in decimal: 2541 is 04755, 493 is 0755,
+    3565 is 06755, 1517 is 02755, 3492 is 06644, 1444 is 02644, 2468 is
+    04644, 420 is 0644 and 384 is 0600. *)
+Definition stat_perm (perm : Z) : list byte := stat_of 4711 (S_IFREG + perm)%Z 9 8 1700000000.
+
+(** A WRITE OR A TRUNCATE CLEARS S_ISUID, so a later stat of a file
+    pinned as 04755 may report 0755.  [file_remove_privs] (a write,
+    [shmem_file_write_iter], mm/shmem.c:3500, Linux v6.18.46) and
+    [do_truncate] (fs/open.c:55-60) take their mask from
+    [setattr_should_drop_suidgid] (fs/attr.c:63-79), which names S_ISUID
+    whenever it is set and the caller lacks CAP_FSETID, and
+    [notify_change] clears it (fs/attr.c:489-494); [generic_fillattr]
+    reports the new mode (fs/stat.c:90).  The stat that shows the drop
+    becomes the pin ([Fs.Stat.file_pin_after]).  Before the drop was
+    admitted the model rejected this answer, and with it the true trace
+    stat, write, stat of a setuid file. *)
+Example fstat_setuid_cleared_after_the_pin_admitted :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 493)] [])
+    (pin1 (stat_perm 2541) fstat_model)
+  = CheckOk (pin1 (stat_perm 493) (pin1 (stat_perm 2541) fstat_model)) [].
+Proof. check_eq. Qed.
+
+(** …and the spec itself admits it: [check_syscall_sound_ok] carries the
+    checker's verdict to [Specs.syscall_spec]. *)
+Example fstat_spec_admits_a_setuid_drop :
+  syscall_spec fstat_input (pin1 (stat_perm 2541) fstat_model)
+    (Ok (mkEffect 0 [(4096, stat_perm 493)] [])
+        (pin1 (stat_perm 493) (pin1 (stat_perm 2541) fstat_model)) []).
+Proof. apply check_syscall_sound_ok. exact fstat_setuid_cleared_after_the_pin_admitted. Qed.
+
+(** S_ISGID GOES WITH THE GROUP BITS.  Under S_IXGRP
+    [setattr_should_drop_sgid] names it whenever it is set (fs/attr.c:33-45),
+    so 06755 and 02755 may report 0755.  Without S_IXGRP it names it
+    only for a caller outside the file's group ([in_group_or_capable],
+    fs/inode.c:2910-2918), and the model knows neither the caller's
+    groups nor its capabilities: 06644 may report 02644 (a caller in the
+    group) or 0644 (one outside it), and the mode unchanged (a caller
+    with CAP_FSETID, or no write at all). *)
+Example fstat_setgid_cleared_as_the_group_bits_say_admitted :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 493)] [])
+    (pin1 (stat_perm 3565) fstat_model)
+  = CheckOk (pin1 (stat_perm 493) (pin1 (stat_perm 3565) fstat_model)) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 493)] [])
+       (pin1 (stat_perm 1517) fstat_model)
+     = CheckOk (pin1 (stat_perm 493) (pin1 (stat_perm 1517) fstat_model)) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 1444)] [])
+       (pin1 (stat_perm 3492) fstat_model)
+     = CheckOk (pin1 (stat_perm 1444) (pin1 (stat_perm 3492) fstat_model)) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 420)] [])
+       (pin1 (stat_perm 3492) fstat_model)
+     = CheckOk (pin1 (stat_perm 420) (pin1 (stat_perm 3492) fstat_model)) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 3492)] [])
+       (pin1 (stat_perm 3492) fstat_model)
+     = CheckOk (pin1 (stat_perm 3492) fstat_model) [].
+Proof. split_conj; check_eq. Qed.
+
+(** …but ONE KILL TAKES S_ISUID WITH S_ISGID.  The mask that names
+    S_ISGID names S_ISUID too when it is set ([setattr_should_drop_suidgid],
+    fs/attr.c:63-79), and under S_IXGRP the two go together.  So a set-id
+    file never reports S_ISGID dropped beside a kept S_ISUID, and under
+    S_IXGRP never S_ISUID dropped beside a kept S_ISGID. *)
+Example fstat_setgid_dropped_without_setuid_rejected :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 2468)] [])
+    (pin1 (stat_perm 3492) fstat_model)
+  = CheckReject
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 2541)] [])
+       (pin1 (stat_perm 3565) fstat_model)
+     = CheckReject
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 1517)] [])
+       (pin1 (stat_perm 3565) fstat_model)
+     = CheckReject.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** NO MODELED SYSCALL SETS A SET-ID BIT: there is no [chmod] arm, so a
+    later stat that reports S_ISUID or S_ISGID the pin does not have is
+    refused. *)
+Example fstat_setuid_set_against_the_pin_rejected :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 2541)] [])
+    (pin1 (stat_perm 493) fstat_model)
+  = CheckReject
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 1444)] [])
+       (pin1 (stat_perm 420) fstat_model)
+     = CheckReject.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** THE REST OF THE MODE IS HELD WHOLE: 0644 then 0600 is refused, and
+    so is a drop of S_ISUID that also takes the group and other bits. *)
+Example fstat_permission_bits_held_against_the_pin :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 384)] [])
+    (pin1 (stat_perm 420) fstat_model)
+  = CheckReject
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 448)] [])
+       (pin1 (stat_perm 2541) fstat_model)
+     = CheckReject.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** …and so is every other stable member: a drop of S_ISUID does not
+    let [st_ino] move with it. *)
+Example fstat_setuid_cleared_with_another_inode_rejected :
+  check_syscall fstat_input
+    (mkEffect 0 [(4096, stat_of 4712 (S_IFREG + 493)%Z 9 8 1700000000)] [])
+    (pin1 (stat_perm 2541) fstat_model)
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A BIT ONCE SHOWN CLEARED STAYS CLEARED.  The stat that showed the
+    drop is the pin now, so a stat after it may not show S_ISUID again,
+    and the mode it showed is admitted with the model left as it is. *)
+Example fstat_setuid_once_cleared_stays_cleared :
+  check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 2541)] [])
+    (pin1 (stat_perm 493) (pin1 (stat_perm 2541) fstat_model))
+  = CheckReject
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_perm 493)] [])
+       (pin1 (stat_perm 493) (pin1 (stat_perm 2541) fstat_model))
+     = CheckOk (pin1 (stat_perm 493) (pin1 (stat_perm 2541) fstat_model)) [].
+Proof. split_conj; check_eq. Qed.
 
 (* ---- the write itself: width, address and the empty copy-in ledger ------ *)
 
@@ -373,38 +709,58 @@ Example fstat_one_byte_short_is_unmodeled :
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
-(** A descriptor whose path the map no longer holds is declined, as
-    [Stat.fstat_file_spec] says, for a [Model] no run builds (see
-    [fstat_model_unlinked]).  What the /tmp arm's removal of an open name
-    really leaves is an unnamed file, whose [fstat] is
-    [Stat.fstat_anon_spec]'s, with [st_nlink] 0. *)
-Example fstat_unlinked_path_is_unmodeled :
-  check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] [])
+(** A FILE UNLINKED WHILE OPEN IS STILL A REGULAR FILE OF ITS LENGTH,
+    WITH NO LINK.  [generic_fillattr] copies [i_nlink] (fs/stat.c:91,
+    Linux v6.18.46), and [vfs_unlink]'s [drop_nlink] has taken it to 0
+    ([shmem_unlink], mm/shmem.c:4006-4019), while the inode lives on under the
+    descriptor until the last [iput] ([iput_final], fs/inode.c:1874-1915).
+    So the answer with [st_nlink] 0 and the nine bytes' length is
+    admitted, and the one-link answer the file gave before is refused. *)
+Example fstat_unlinked_open_file_has_no_link :
+  check_syscall fstat_input
+    (mkEffect 0 [(4096, stat_of_nl 4711 S_IFREG 0 9 8 1700000000)] [])
     fstat_model_unlinked
-  = CheckUnmodeled.
-Proof. vm_compute. reflexivity. Qed.
+  = CheckOk (pin1 (stat_of_nl 4711 S_IFREG 0 9 8 1700000000)
+               fstat_model_unlinked) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] [])
+       fstat_model_unlinked
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** ...and the link count FOLLOWS the names: a second name for the same
+    inode makes it 2 ([vfs_link]'s [inc_nlink] through [shmem_link],
+    mm/shmem.c:3965-3995), so the one-link answer is refused there too. *)
+Example fstat_two_names_two_links :
+  let m := with_fs (Fs.fs_set (m_fs fstat_model) [Z_to_bv 8 103] (EFile 1))
+             fstat_model in
+  check_syscall fstat_input
+    (mkEffect 0 [(4096, stat_of_nl 4711 S_IFREG 2 9 8 1700000000)] []) m
+  = CheckOk (pin1 (stat_of_nl 4711 S_IFREG 2 9 8 1700000000) m) []
+  /\ check_syscall fstat_input (mkEffect 0 [(4096, stat_truthful)] []) m
+     = CheckReject.
+Proof. split; check_eq. Qed.
 
 (* ---- the pin dies with the file it identifies -------------------------- *)
 
-(** [unlinkat] destroys the inode, and Linux gives the NEXT file created
-    at that name a different one — so a pin that outlived the removal
-    would reject the conforming trace `create f; fstat; unlink f;
-    create f; fstat`.  [State.with_fs] drops it, and these two say that
-    it drops the right ones: gone when the key goes, kept when the same
-    key is merely rewritten.  Neither is reachable from a checker
-    verdict, because the second create puts the key back before any
-    [fstat] can look — the two states differ only in a field no
-    syscall reports. *)
+(** [unlinkat] destroys the inode once no descriptor holds it, and Linux
+    gives the NEXT file created at that name a different one -- so a pin
+    that outlived the removal would reject the conforming trace
+    `create f; fstat; close; unlink f; create f; fstat`.  [State.with_fs]
+    drops it, and these two say that it drops the right ones: gone when
+    the inode has neither a name nor a row, kept when the same inode is
+    merely rewritten.  Neither is reachable from a checker verdict,
+    because the second create makes a file before any [fstat] can look
+    -- the two states differ only in a field no syscall reports. *)
 
 Example fstat_pin_dies_with_the_file :
-  m_statpins (with_fs [] (with_statpin fstat_path stat_truthful fstat_model))
+  m_statpins (with_fs Fs.fs_empty (pin1 stat_truthful fstat_model))
   = [].
 Proof. vm_compute. reflexivity. Qed.
 
 Example fstat_pin_survives_a_rewrite :
-  m_statpins (with_fs [(fstat_path, fstat_data_grown)]
-                (with_statpin fstat_path stat_truthful fstat_model))
-  = [(fstat_path, stat_truthful)].
+  m_statpins (with_fs (Fs.fs_set_ino_data (m_fs fstat_model) 1 fstat_data_grown)
+                (pin1 stat_truthful fstat_model))
+  = [(IdIno 1, mkStatPin stat_truthful None)].
 Proof. vm_compute. reflexivity. Qed.
 
 (** …and the consequence at the checker: with the pin gone, the file
@@ -412,14 +768,500 @@ Proof. vm_compute. reflexivity. Qed.
     stat may.  Read beside [fstat_pinned_inode_defector_rejected], which
     is the same struct against a live pin, this is what says the
     rejection there is about the file's identity and not about the
-    number. *)
+    number.  (The model hands the new file the number 1 again: its
+    numbers are its own, and [st_ino] is the environment's.) *)
 Example fstat_recreated_file_takes_a_new_inode :
+  let m := with_fs (Fs.fs_create_file Fs.fs_empty fstat_path fstat_data)
+             (with_fs Fs.fs_empty (pin1 stat_truthful fstat_model)) in
   check_syscall fstat_input
-    (mkEffect 0 [(4096, stat_of 4712 S_IFREG 9 8 1700000000)] [])
-    (with_fs [(fstat_path, fstat_data)]
-       (with_fs [] (with_statpin fstat_path stat_truthful fstat_model)))
-  = CheckOk (with_statpin fstat_path (stat_of 4712 S_IFREG 9 8 1700000000)
-               (with_fs [(fstat_path, fstat_data)]
-                  (with_fs [] (with_statpin fstat_path stat_truthful
-                                 fstat_model)))) [].
+    (mkEffect 0 [(4096, stat_of 4712 S_IFREG 9 8 1700000000)] []) m
+  = CheckOk (pin1 (stat_of 4712 S_IFREG 9 8 1700000000) m) [].
 Proof. check_eq. Qed.
+
+(* ------------------------------------------------------- readlinkat (78) *)
+
+(** THIS ARM HAD NO WORKED EXAMPLE AT ALL, and that is how it kept
+    answering -EINVAL for a trailing separator on a regular file where
+    Linux answers -ENOTDIR.  It was rewritten from a blanket -EINVAL to
+    a full match on the walk and arrived with no pin to hold any row of
+    it down.  One example per row now, and the two that changed carry
+    the rejecting half as well. *)
+
+Definition rl_mem (bs : list Z) : word -> option byte :=
+  fun a => if (8192 <=? bv_unsigned a)%Z
+           then nth_error (map (fun z => Z_to_bv 8 z) (bs ++ [0%Z]))
+                  (Z.to_nat (bv_unsigned a - 8192))
+           else None.
+
+Definition rl_file : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([102], SFile [104; 105])]) IEof).
+
+Definition rl_dir : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([100], SDir)]) IEof).
+
+Definition rl_empty : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof).
+
+(** A RESOLVED ENTRY IS -EINVAL, because no entry kind here is a
+    symlink.  That is the row the pre-namespace arm answered to
+    everything. *)
+Example readlinkat_found_file_is_einval :
+  check_syscall
+    (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102]%Z)
+       (fun _ => None))
+    (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+    rl_file
+  = CheckOk rl_file []
+  (* a DIRECTORY is the same -EINVAL, and for the same reason *)
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [100]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_dir
+     = CheckOk rl_dir [].
+Proof. split; check_eq. Qed.
+
+(** THE TRAILING SEPARATOR IS THE CELL THE ARM WAS MISSING.
+    [do_readlinkat] reaches [path_lookupat], whose closing
+    LOOKUP_DIRECTORY test answers -ENOTDIR for a component that cannot
+    be looked up in, and [lookup_last] is what sets that flag for a
+    LAST_NORM component a separator follows.  So "f/" on a regular file
+    is -ENOTDIR, and the -EINVAL the arm used to give is rejected.  A
+    DIRECTORY with a separator keeps its -EINVAL, which is what says the
+    cell reads the ENTRY and not the separator alone. *)
+Example readlinkat_trailing_separator_needs_a_directory :
+  check_syscall
+    (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102; 47]%Z)
+       (fun _ => None))
+    (with_copyins [(8192, 3%nat)] (mkEffect (errno_ret ENOTDIR) [] []))
+    rl_file
+  = CheckOk rl_file []
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102; 47]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 3%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_file
+     = CheckReject
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [100; 47]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 3%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_dir
+     = CheckOk rl_dir [].
+Proof. split; [|split]; check_eq. Qed.
+
+(** A NAME THE WALK DOES NOT FIND IN THE /dev SUBTREE IS -ENOENT for
+    [readlinkat] too, as anywhere else: the image describes /dev
+    completely at launch ([Fs.dev_dir]).  A link body for it is
+    refused, the same name under /tmp gives the same -ENOENT, and the
+    declared device is an ordinary -EINVAL. *)
+Example readlinkat_under_dev_absent_is_enoent :
+  check_syscall
+    (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0]
+       (rl_mem [47; 100; 101; 118; 47; 122; 101; 114; 111]%Z) (fun _ => None))
+    (with_copyins [(8192, 10%nat)] (mkEffect (errno_ret ENOENT) [] []))
+    rl_empty
+  = CheckOk rl_empty []
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0]
+          (rl_mem [47; 100; 101; 118; 47; 122; 101; 114; 111]%Z) (fun _ => None))
+       (with_copyins [(8192, 10%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_empty
+     = CheckReject
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0]
+          (rl_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 10%nat)] (mkEffect (errno_ret ENOENT) [] []))
+       rl_empty
+     = CheckOk rl_empty []
+  (* and the declared device is still an ordinary -EINVAL, because it is
+     found and is not a symlink *)
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0]
+          (rl_mem [47; 100; 101; 118; 47; 110; 117; 108; 108]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 10%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_empty
+     = CheckOk rl_empty [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE WALK'S OTHER OUTCOMES each get their own errno, where the
+    pre-namespace arm gave -EINVAL to all of them: an absent last
+    component is -ENOENT and a non-directory in the PREFIX is
+    -ENOTDIR. *)
+Example readlinkat_walk_outcomes :
+  check_syscall
+    (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102]%Z)
+       (fun _ => None))
+    (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret ENOENT) [] []))
+    rl_empty
+  = CheckOk rl_empty []
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102; 47; 120]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 4%nat)] (mkEffect (errno_ret ENOTDIR) [] []))
+       rl_file
+     = CheckOk rl_file []
+  (* and -EINVAL is rejected on both, which is what says the arm stopped
+     answering it to everything *)
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 64; 0; 0] (rl_mem [102]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_empty
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** A NONPOSITIVE bufsiz IS -EINVAL AHEAD OF THE PATHNAME, so that arm
+    carries NO copy-in — [do_readlinkat]'s first statement runs before
+    [getname_flags].  The ledger is what pins the ordering: with the
+    range attached the same call is rejected. *)
+Example readlinkat_nonpositive_bufsiz_records_no_copyin :
+  check_syscall
+    (mkInput 78 [AT_FDCWD; 8192; 4096; 0; 0; 0] (rl_mem [102]%Z)
+       (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) rl_file
+  = CheckOk rl_file []
+  /\ check_syscall
+       (mkInput 78 [AT_FDCWD; 8192; 4096; 0; 0; 0] (rl_mem [102]%Z)
+          (fun _ => None))
+       (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EINVAL) [] []))
+       rl_file
+     = CheckReject.
+Proof. split; check_eq. Qed.
+
+(* ----------------------------------------- links, names and identities *)
+
+(** A run of calls, each accepted with no event, then the verdict of the
+    last one. *)
+Fixpoint st_seq (steps : list (SyscallInput * SyscallEffect)) (m : Model)
+    : check_result :=
+  match steps with
+  | [] => CheckOk m []
+  | [(i, e)] => check_syscall i e m
+  | (i, e) :: r =>
+      match check_syscall i e m with
+      | CheckOk m' [] => st_seq r m'
+      | c => c
+      end
+  end.
+
+Definition st_ok (c : check_result) : Prop :=
+  match c with CheckOk _ _ => True | _ => False end.
+
+(** [newfstatat(AT_FDCWD, <bs>, 4096, flag)] answering [eff]. *)
+Definition st_stat_eff (bs : list Z) (flag : Z) (eff : SyscallEffect)
+    : SyscallInput * SyscallEffect :=
+  (mkInput 79 [AT_FDCWD; 0x2000; 4096; Z_to_bv 64 flag; 0; 0] (statat_mem bs) stat_out,
+   with_copyins [(0x2000, S (length bs))] eff).
+
+Definition st_stat (bs : list Z) (flag : Z) (out : list byte)
+    : SyscallInput * SyscallEffect :=
+  st_stat_eff bs flag (mkEffect 0 [(4096, out)] []).
+
+(** A pathname call [nr(AT_FDCWD, <bs>, a2)] answering [eff]. *)
+Definition st_call (nr : word) (bs : list Z) (a2 : word) (eff : SyscallEffect)
+    : SyscallInput * SyscallEffect :=
+  (mkInput nr [AT_FDCWD; 0x2000; a2; 0; 0; 0] (statat_mem bs) (fun _ => None),
+   with_copyins [(0x2000, S (length bs))] eff).
+
+(** "tmp000000.flac", nine bytes (inode 1), a regular file of the
+    working folder, and the record a kernel hands back for it: S_IFREG
+    with the permission bits 0644, nine bytes, one link, [st_ino]
+    4711. *)
+Definition st_flac_name : list Z :=
+  [116; 109; 112; 48; 48; 48; 48; 48; 48; 46; 102; 108; 97; 99]%Z.
+
+Definition st_flac : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [(map (fun z => Z_to_bv 8 z) st_flac_name, SFile fstat_data)])
+       IEof).
+
+Definition st_flac_stat : list byte := stat_of 4711 (S_IFREG + 420)%Z 9 8 1700000000.
+
+(** NEWFSTATAT OF A REGULAR FILE NAMED RELATIVE TO THE WORKING FOLDER
+    DELIVERS THE FILE'S RECORD.  [vfs_fstatat] (fs/stat.c:365-379, Linux
+    v6.18.46) fetches the name and calls [vfs_statx] (fs/stat.c:341-363),
+    which takes the flag word 0 (348-350) and asks for the last link to
+    be followed ([statx_lookup_flags], fs/stat.c:284-294).  The name is
+    resolved by [filename_lookup] (fs/namei.c:2697-2716), and a relative
+    name starts at the working directory ([path_init],
+    fs/namei.c:2589-2604).  The record is the inode's
+    ([generic_fillattr], fs/stat.c:82-113: the inode number at 89, the
+    mode at 90, the size at 95), and [cp_new_stat] (fs/stat.c:470-507)
+    copies it out, so the call returns 0 (536-547).  The first record is
+    admitted and becomes the inode's pin, and a second stat must repeat
+    its [st_ino].  A record with a size other than nine, or a type other
+    than S_IFREG, is refused, and so is -ENOENT, the answer for a name
+    the folder does not hold. *)
+Example newfstatat_relative_regular_file_delivers_its_stat :
+  st_seq [st_stat st_flac_name 0 st_flac_stat] st_flac
+  = CheckOk (pin1 st_flac_stat st_flac) []
+  /\ st_ok (st_seq [st_stat st_flac_name 0 st_flac_stat;
+                    st_stat st_flac_name 0 st_flac_stat] st_flac)
+  /\ st_seq [st_stat st_flac_name 0 st_flac_stat;
+             st_stat st_flac_name 0 (stat_of 4712 (S_IFREG + 420)%Z 9 8 1700000000)] st_flac
+     = CheckReject
+  /\ st_seq [st_stat st_flac_name 0 (stat_of 4711 (S_IFREG + 420)%Z 8 8 1700000000)] st_flac
+     = CheckReject
+  /\ st_seq [st_stat st_flac_name 0 (stat_of 4711 (S_IFDIR + 493)%Z 9 8 1700000000)] st_flac
+     = CheckReject
+  /\ st_seq [st_stat_eff st_flac_name 0 (mkEffect (errno_ret ENOENT) [] [])] st_flac
+     = CheckReject.
+Proof. vm_compute. split_conj; try exact I; check_eq. Qed.
+
+(** "f" nine bytes (inode 1), "l" -> "f". *)
+Definition st_links : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([102], SFile fstat_data); ([108], SLink [102])]) IEof).
+
+(** NEWFSTATAT WITH AT_SYMLINK_NOFOLLOW ON A LINK IS THE LINK: S_IFLNK,
+    with [st_size] the body's length ([generic_fillattr]'s mode and size,
+    fs/stat.c:90 and :95, on the link's own inode, whose [i_size] tmpfs
+    sets to the body's length, mm/shmem.c:4140, :4158).  Without the
+    flag it is the file the link names, and -ELOOP stands beside that
+    answer because a link was followed ([pick_link], fs/namei.c:1927-1929);
+    beside the unfollowed one it is refused. *)
+Example newfstatat_nofollow_on_a_link_is_the_link :
+  st_ok (st_seq [st_stat [108]%Z AT_SYMLINK_NOFOLLOW
+                   (stat_of_nl 4800 S_IFLNK 1 1 0 1700000000)] st_links)
+  /\ st_seq [st_stat [108]%Z AT_SYMLINK_NOFOLLOW
+               (stat_of_nl 4800 S_IFLNK 1 9 0 1700000000)] st_links = CheckReject
+  /\ st_seq [st_stat [108]%Z AT_SYMLINK_NOFOLLOW stat_truthful] st_links = CheckReject
+  /\ st_seq [st_stat_eff [108]%Z AT_SYMLINK_NOFOLLOW (mkEffect (errno_ret ELOOP) [] [])]
+       st_links = CheckReject
+  (* followed, it is the file *)
+  /\ st_ok (st_seq [st_stat [108]%Z 0 stat_truthful] st_links)
+  /\ st_seq [st_stat [108]%Z 0 (stat_of_nl 4800 S_IFLNK 1 1 0 1700000000)] st_links
+     = CheckReject
+  /\ st_seq [st_stat_eff [108]%Z 0 (mkEffect (errno_ret ELOOP) [] [])] st_links
+     = CheckOk st_links [].
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** "f" (inode 1) and "g", a second name of the same inode. *)
+Definition st_two : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (Fs.fs_set (demo_fs [([102], SFile fstat_data)]) (wk [103]) (EFile 1))
+       IEof).
+
+(** TWO NAMES OF ONE FILE GIVE ONE [st_ino] AND [st_nlink] 2: the pin is
+    the inode's ([State.IdIno]), so a stat of "g" after a stat of "f"
+    must report the pair "f" reported, and the link count is the names'
+    ([vfs_link]'s [inc_nlink] through [shmem_link], mm/shmem.c:3965-3995;
+    [generic_fillattr]'s [nlink], fs/stat.c:91). *)
+Example two_names_give_one_st_ino_and_two_links :
+  st_ok (st_seq [st_stat [102]%Z 0 (stat_of_nl 4711 S_IFREG 2 9 8 1700000000);
+                 st_stat [103]%Z 0 (stat_of_nl 4711 S_IFREG 2 9 8 1700000000)] st_two)
+  /\ st_seq [st_stat [102]%Z 0 (stat_of_nl 4711 S_IFREG 2 9 8 1700000000);
+             st_stat [103]%Z 0 (stat_of_nl 4712 S_IFREG 2 9 8 1700000000)] st_two
+     = CheckReject
+  /\ st_seq [st_stat [103]%Z 0 (stat_of_nl 4711 S_IFREG 1 9 8 1700000000)] st_two
+     = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** UNLINKING ONE OF TWO NAMES KEEPS THE DATA UNDER THE OTHER, WITH ONE
+    LINK: [vfs_unlink]'s [drop_nlink] ([shmem_unlink], mm/shmem.c:4006-4019)
+    takes the count from 2 to 1 and the inode stays. *)
+Example unlinking_one_of_two_names_keeps_the_other :
+  match (let '(i, e) := st_call 35 [102]%Z 0 (mkEffect 0 [] []) in
+         check_syscall i e st_two) with
+  | CheckOk m [] =>
+      file_at (m_fs m) (wk [103]) = Some fstat_data
+      /\ Fs.fs_lookup (m_fs m) (wk [102]) = None
+  | _ => False
+  end
+  /\ st_ok (st_seq [st_call 35 [102]%Z 0 (mkEffect 0 [] []);
+                    st_stat [103]%Z 0 (stat_of_nl 4711 S_IFREG 1 9 8 1700000000)] st_two)
+  /\ st_seq [st_call 35 [102]%Z 0 (mkEffect 0 [] []);
+             st_stat [103]%Z 0 (stat_of_nl 4711 S_IFREG 2 9 8 1700000000)] st_two
+     = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FILE UNLINKED WHILE OPEN STAYS READABLE through its descriptor, and
+    "/proc/self/fd/3" opens it again, on the same inode ([proc_fd_link]
+    hands back the open file's own path, fs/proc/fd.c, and following it
+    reopens that dentry).  [fstat_unlinked_open_file_has_no_link] above
+    is its [st_nlink] 0. *)
+Example unlinked_open_file_reads_and_reopens :
+  match check_syscall (mkInput 63 [3; 4096; 9; 0; 0; 0] (fun _ => None) stat_out)
+          (mkEffect 9 [(4096, fstat_data)] []) fstat_model_unlinked with
+  | CheckOk _ [] => True
+  | _ => False
+  end
+  /\ match check_syscall
+             (mkInput 56 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+                (statat_mem [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 51]%Z)
+                (fun _ => None))
+             (with_copyins [(0x2000, 16%nat)] (mkEffect 0 [] [])) fstat_model_unlinked with
+     | CheckOk m [] => fd_lookup (m_fds m) 0 = Some (FdFile 1 (Z_to_bv 64 0))
+     | _ => False
+     end.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FOLDER'S [st_nlink] UNDER BOTH RULES ACROSS [mkdirat].  "d" is an
+    empty folder: 2 under the counting rule (tmpfs's [inc_nlink] at
+    mm/shmem.c:3133-3134 over [inode_init_always]'s 1, fs/inode.c:242;
+    ramfs's [ramfs_get_inode], fs/ramfs/inode.c:82) and 1 under the fixed one
+    (btrfs, fs/btrfs/inode.c:7020-7031), which no supported kernel
+    gives ([Fs.DirLinks]).  The first stat that
+    tells them apart chooses the rule and the pin keeps it: after
+    "d/e" is made, a counting folder reports 3 ([shmem_mkdir]'s
+    [inc_nlink(dir)], mm/shmem.c:3952) and a fixed one still 1. *)
+Definition st_dir : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs [([100], SDir)]) IEof).
+
+Definition dir_stat (nl : Z) : list byte := stat_of_nl 4711 S_IFDIR nl 4096 8 1700000000.
+
+Definition mkdir_d_e : SyscallInput * SyscallEffect :=
+  st_call 34 [100; 47; 101]%Z 493 (mkEffect 0 [] []).
+
+Example folder_link_count_under_both_rules :
+  st_ok (st_seq [st_stat [100]%Z 0 (dir_stat 2); mkdir_d_e;
+                 st_stat [100]%Z 0 (dir_stat 3)] st_dir)
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat 2); mkdir_d_e;
+             st_stat [100]%Z 0 (dir_stat 1)] st_dir = CheckReject
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat 2); mkdir_d_e;
+             st_stat [100]%Z 0 (dir_stat 2)] st_dir = CheckReject
+  /\ st_ok (st_seq [st_stat [100]%Z 0 (dir_stat 1); mkdir_d_e;
+                    st_stat [100]%Z 0 (dir_stat 1)] st_dir)
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat 1); mkdir_d_e;
+             st_stat [100]%Z 0 (dir_stat 3)] st_dir = CheckReject
+  (* a count neither rule gives is refused at the first stat *)
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat 5)] st_dir = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FOLDER REMOVED AND MADE AGAIN AT ONE NAME IS A NEW FOLDER, and the
+    stat pin of the old one dies with it.  [shmem_rmdir] drops the
+    folder's last link (mm/shmem.c:4032-4040, Linux v6.18.46) and the
+    inode is freed at its last [iput] ([iput_final], fs/inode.c:1874-1915);
+    [mkdirat] then makes a fresh inode through [shmem_get_inode], whose
+    number [shmem_reserve_inode] hands out anew (mm/shmem.c:3084, :3088,
+    :3094).  So the second folder may report any [st_ino], and a pin kept
+    on the key ([State.StatId]'s [IdDir]) would refuse the conforming
+    trace `stat d; rmdir d; mkdir d; stat d`; [State.statpins_restrict]
+    drops it when the key stops holding a folder.  The control: with the
+    folder left in place, the second stat must repeat the pinned
+    [st_ino]. *)
+Definition dir_stat_ino (ino nl : Z) : list byte :=
+  stat_of_nl ino S_IFDIR nl 4096 8 1700000000.
+
+Definition rmdir_d : SyscallInput * SyscallEffect :=
+  st_call 35 [100]%Z (Z_to_bv 64 AT_REMOVEDIR) (mkEffect 0 [] []).
+
+Definition mkdir_d : SyscallInput * SyscallEffect :=
+  st_call 34 [100]%Z 493 (mkEffect 0 [] []).
+
+Example folder_pin_dies_with_rmdir_then_mkdir :
+  st_ok (st_seq [st_stat [100]%Z 0 (dir_stat_ino 4711 2); rmdir_d; mkdir_d;
+                 st_stat [100]%Z 0 (dir_stat_ino 4712 2)] st_dir)
+  (* the same number again is admitted too: nothing ties the new folder
+     to the old *)
+  /\ st_ok (st_seq [st_stat [100]%Z 0 (dir_stat_ino 4711 2); rmdir_d; mkdir_d;
+                    st_stat [100]%Z 0 (dir_stat_ino 4711 2)] st_dir)
+  (* the control: the folder left in place keeps its st_ino *)
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat_ino 4711 2);
+             st_stat [100]%Z 0 (dir_stat_ino 4712 2)] st_dir = CheckReject
+  (* and between the rmdir and the mkdir the name is gone *)
+  /\ st_seq [st_stat [100]%Z 0 (dir_stat_ino 4711 2); rmdir_d;
+             st_stat [100]%Z 0 (dir_stat_ino 4711 2)] st_dir = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** THE TRUE TRACE, stat, truncate, stat, of a setuid file through a
+    read-write descriptor.  [ftruncate(3, 9)] keeps the length and still
+    drops S_ISUID: [do_ftruncate] calls [do_truncate] whatever the
+    length (fs/open.c:195), and [do_truncate] asks
+    [dentry_needs_remove_privs] first (fs/open.c:55-60).  So the second
+    stat may report 0755, or 04755 again for a caller with CAP_FSETID; a
+    stat after the drop may not report 04755, and no truncate sets the
+    bit on a file the first stat saw without it. *)
+Definition st_fstat (out : list byte) : SyscallInput * SyscallEffect :=
+  (fstat_input, mkEffect 0 [(4096, out)] []).
+
+Definition st_ftruncate (len : word) : SyscallInput * SyscallEffect :=
+  (mkInput 46 [3; len; 0; 0; 0; 0] (fun _ => None) (fun _ => None), mkEffect 0 [] []).
+
+Example fstat_setuid_cleared_across_an_ftruncate :
+  st_ok (st_seq [st_fstat (stat_perm 2541); st_ftruncate 9; st_fstat (stat_perm 493)]
+           fstat_model_rw)
+  /\ st_ok (st_seq [st_fstat (stat_perm 2541); st_ftruncate 9; st_fstat (stat_perm 2541)]
+              fstat_model_rw)
+  /\ st_seq [st_fstat (stat_perm 2541); st_ftruncate 9; st_fstat (stat_perm 493);
+             st_fstat (stat_perm 2541)] fstat_model_rw = CheckReject
+  /\ st_seq [st_fstat (stat_perm 493); st_ftruncate 9; st_fstat (stat_perm 2541)]
+       fstat_model_rw = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FOLDER'S S_ISGID IS HELD: only a regular file's set-id bits are
+    ever cleared ([setattr_should_drop_suidgid] tests S_ISREG,
+    fs/attr.c:63-79, and so does [file_remove_privs_flags],
+    fs/inode.c:2253), and a setgid folder is the common kind.  "d"
+    pinned as 02755 may not report 0755, and repeats 02755. *)
+Example folder_setgid_is_held :
+  st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 8 1700000000);
+          st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 493)%Z 2 4096 8 1700000000)] st_dir
+  = CheckReject
+  /\ st_ok (st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 8 1700000000);
+                    st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 8 1700000000)]
+              st_dir).
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** READLINKAT COPIES THE BODY UP TO [bufsiz] AND NO NUL ([readlink_copy],
+    fs/namei.c:5419-5429), the body read to its first NUL (:5469).  The
+    empty pathname names the working folder, which is not a link:
+    -ENOENT ([do_readlinkat]). *)
+Definition rl_link : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([108], SLink [97; 98; 99]); ([110], SLink [97; 98; 0; 99])])
+       IEof).
+
+Definition rl_call (bs : list Z) (bufsiz : word) (eff : SyscallEffect) : check_result :=
+  check_syscall (mkInput 78 [AT_FDCWD; 8192; 4096; bufsiz; 0; 0] (rl_mem bs) stat_out)
+    (with_copyins [(8192, S (length bs))] eff) rl_link.
+
+Example readlinkat_copies_the_body_up_to_bufsiz :
+  rl_call [108]%Z 64 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckOk rl_link []
+  /\ rl_call [108]%Z 2 (mkEffect 2 [(4096, [97; 98])] []) = CheckOk rl_link []
+  /\ rl_call [108]%Z 2 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckReject
+  (* no NUL is written after the body *)
+  /\ rl_call [108]%Z 64 (mkEffect 4 [(4096, [97; 98; 99; 0])] []) = CheckReject
+  (* the body is read to its first NUL *)
+  /\ rl_call [110]%Z 64 (mkEffect 2 [(4096, [97; 98])] []) = CheckOk rl_link []
+  /\ rl_call []%Z 64 (mkEffect (errno_ret ENOENT) [] []) = CheckOk rl_link [].
+Proof. split_conj; check_eq. Qed.
+
+(** [bufsiz] IS AN [int]: [do_readlinkat] (fs/stat.c:563-572, Linux
+    v6.18.46) takes [int bufsiz] and opens with [if (bufsiz <= 0) return
+    -EINVAL;], before [getname_flags].  So a register whose low half is
+    0xFFFFFFFF (-1) or 0x80000000 (INT_MIN) is -EINVAL with no copy-in and
+    nothing written to [buf], and a copy of the body there is refused;
+    0x7FFFFFFF, the largest [int], copies a short body whole. *)
+Example readlinkat_negative_int_bufsiz_is_einval :
+  check_syscall (mkInput 78 [AT_FDCWD; 8192; 4096; 4294967295; 0; 0] (rl_mem [108]%Z) stat_out)
+    (mkEffect (errno_ret EINVAL) [] []) rl_link = CheckOk rl_link []
+  /\ check_syscall (mkInput 78 [AT_FDCWD; 8192; 4096; 2147483648; 0; 0] (rl_mem [108]%Z) stat_out)
+    (mkEffect (errno_ret EINVAL) [] []) rl_link = CheckOk rl_link []
+  /\ rl_call [108]%Z 4294967295 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckReject
+  /\ rl_call [108]%Z 2147483648 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckReject
+  /\ rl_call [108]%Z 2147483647 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckOk rl_link [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE LARGEST [int] [bufsiz], 0x7FFFFFFF, on a three-byte link body
+    copies the body whole, three bytes and no NUL: [readlink_copy] copies
+    [min(len, buflen)] (fs/namei.c:5419-5429, Linux v6.18.46).  The
+    register's high half is not read ([do_readlinkat]'s [int bufsiz],
+    fs/stat.c:563-564), so 0xFFFFFFFF7FFFFFFF answers the same; on the
+    body with an inner NUL two bytes are copied ([strlen],
+    fs/namei.c:5469); and a two-byte answer on the three-byte body is
+    refused.  Each is decided by [vm_compute] through the checker, which
+    is what [Stat.readlink_count] is written for: it never builds a
+    [nat] as large as [bufsiz]. *)
+Example readlinkat_largest_int_bufsiz_copies_a_short_body :
+  rl_call [108]%Z 2147483647 (mkEffect 3 [(4096, [97; 98; 99])] []) = CheckOk rl_link []
+  /\ rl_call [108]%Z 18446744071562067967 (mkEffect 3 [(4096, [97; 98; 99])] [])
+     = CheckOk rl_link []
+  /\ rl_call [110]%Z 2147483647 (mkEffect 2 [(4096, [97; 98])] []) = CheckOk rl_link []
+  /\ rl_call [108]%Z 2147483647 (mkEffect 2 [(4096, [97; 98])] []) = CheckReject.
+Proof. split_conj; check_eq. Qed.

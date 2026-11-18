@@ -1,9 +1,8 @@
-(** * LinuxProcessSem.Checks.Cases.Net.CurlCalls — worked examples over the calls beside the pair that curl_fuzzer_proto_http makes: eventfd2 (19), socket (198) for a datagram socket, ioctl (29) SIOCGIFINDEX, and rt_sigaction (134) for SIGPIPE
+(** * LinuxProcessSem.Checks.Cases.Net.BesidePairCalls — worked examples over calls a program makes beside a socket pair: eventfd2 (19), socket (198) for a datagram socket, ioctl (29) SIOCGIFINDEX, and rt_sigaction (134) for SIGPIPE
 
-    The acceptance cases A5 (the four call groups beside the pair) and A6
-    of dispatch://OSSV-287, spec version 5.  Linux v6.18.46 (commit
-    1f99e9ab748f) throughout: fs/eventfd.c, net/socket.c,
-    net/core/dev_ioctl.c, kernel/signal.c.
+    The four call groups beside the pair of [Checks.Cases.Net.StreamPair].
+    Linux v6.18.46 (commit 1f99e9ab748f) throughout: fs/eventfd.c,
+    net/socket.c, net/core/dev_ioctl.c, kernel/signal.c.
 
     PART 1 names no constructor that this change adds: every Example is
     stated through [check_syscall] and [syscall_spec_witness] alone, so
@@ -29,7 +28,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
 
 (** The start: [init_model]'s three channels, the default launch (SIGPIPE
     at SIG_DFL), so the next descriptor is 3. *)
-Definition cc_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition cc_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** A memory view from a list of regions, each a base address and its
     bytes. *)
@@ -63,12 +62,12 @@ Definition fildes_a : Z := 0x9600.
 Definition cc_wmem : word -> option byte :=
   region_mem (map (fun a => (a, zeros 64)) [buf_a; act_a; oact_a; ifr_a; pfd_a; set_a; fildes_a]).
 
-Definition w (z : Z) : word := Z_to_bv 64 z.
+Local Definition w (z : Z) : word := Z_to_bv 64 z.
 
 Definition mk (sysno : Z) (args : list Z) (rs : list (Z * list byte)) : SyscallInput :=
   mkInput (w sysno) (map w args) (region_mem rs) cc_wmem.
 
-Definition le (n : nat) (z : Z) : list byte := Z_to_le_bytes n z.
+Local Definition le (n : nat) (z : Z) : list byte := Z_to_le_bytes n z.
 
 (** A [struct sigaction] for [act]. *)
 Definition sigact (handler flags mask : Z) : list byte := le 8 handler ++ le 8 flags ++ le 8 mask.
@@ -130,10 +129,10 @@ Definition answer (steps : list (SyscallInput * option SyscallEffect)) (i : Sysc
 Definition errno_eff (e : Z) : SyscallEffect := mkEffect (errno_ret e) [] [].
 
 (* =========================================================================
-   PART 1 — the eventfd (R10)
+   PART 1 — the eventfd
    ========================================================================= *)
 
-(** eventfd2(0, EFD_CLOEXEC | EFD_NONBLOCK), curl's multi wakeup: fd 3. *)
+(** eventfd2(0, EFD_CLOEXEC | EFD_NONBLOCK), a program's wakeup eventfd: fd 3. *)
 Definition efd_create : SyscallInput * option SyscallEffect :=
   (mk 19 [0; 0x80000 + 0x800]%Z [], Some (mkEffect (w 3) [] [])).
 
@@ -145,8 +144,8 @@ Definition efd_write (v : Z) : SyscallInput * option SyscallEffect :=
   (mk 64 [3; buf_a; 8]%Z [(buf_a, le 8 v)],
    Some (with_copyins [(w buf_a, 8%nat)] (mkEffect (w 8) [] []))).
 
-(** A zero counter on a non-blocking eventfd: -EAGAIN, as the census
-    shows; a read claiming 8 bytes is refused. *)
+(** A zero counter on a non-blocking eventfd: -EAGAIN, as a read before
+    any write gets; a read claiming 8 bytes is refused. *)
 Example efd_zero_counter_read_is_eagain :
   is_ok (after [efd_create] efd_read_in (errno_eff EAGAIN)) = true
   /\ after [efd_create] efd_read_in (mkEffect (w 8) [(w buf_a, le 8 0)] []) = Some CheckReject.
@@ -178,10 +177,10 @@ Example efd_getfl_and_ppoll :
 Proof. split; check_eq. Qed.
 
 (* =========================================================================
-   PART 1 — the datagram socket and SIOCGIFINDEX (R11)
+   PART 1 — the datagram socket and SIOCGIFINDEX
    ========================================================================= *)
 
-(** socket(AF_INET6, SOCK_DGRAM, 0) — curl's IPv6 probe — then close. *)
+(** socket(AF_INET6, SOCK_DGRAM, 0) — the IPv6 probe — then close. *)
 Example dgram_probe_socket_then_close :
   is_ok (after [(mk 198 [10; 2; 0]%Z [], Some (mkEffect (w 3) [] []))]
                (mk 57 [3]%Z []) (mkEffect 0 [] [])) = true.
@@ -208,7 +207,7 @@ Example siocgifindex_other_name_declines :
 Proof. check_eq. Qed.
 
 (* =========================================================================
-   PART 1 — rt_sigaction(SIGPIPE) (R12)
+   PART 1 — rt_sigaction(SIGPIPE)
    ========================================================================= *)
 
 (** rt_sigaction(SIGPIPE, act, oact, 8) with [act] = {SIG_IGN, SA_RESTART,

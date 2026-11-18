@@ -36,11 +36,11 @@ Open Scope sys_scope.
     this path, and the model is right to ignore all of them.
 
     Sharing the relation means sharing its bound: the value this answers
-    is inside [PID_MAX_ENVELOPE], whose own argument runs across
-    v6.12..v6.16 (see there).  The JOINT claim — that [getpid] answers a
-    value in that envelope — therefore holds on v6.12..v6.16, the
-    intersection, even though [getpid]'s own body is unchanged over the
-    wider range quoted above.
+    is inside [PID_MAX_ENVELOPE], whose own argument holds at every
+    supported kernel, v6.16 to v6.18.46 (see there).  The JOINT claim —
+    that [getpid] answers a value in that envelope — therefore holds
+    there too, and [getpid]'s own body is the same at v6.16, v6.17 and
+    v6.18.46 as over the wider range quoted above.
 
     IT IS THE SAME NUMBER [set_tid_address] RETURNS, and the model
     shares the relation rather than restating it, so the two can never
@@ -98,17 +98,17 @@ Open Scope sys_scope.
     [Fork.set_tid_address_spec] above); [getpid] only gives a second way to
     observe it.
 
-    Residual infidelity, stated rather than modeled: [SYSCALL_DEFINE0]
-    emits [ALLOW_ERROR_INJECTION(..., ERRNO)] — the generic one and
-    riscv's alike, as [__SYSCALL_DEFINEx] does for every other number
-    here (Linux v6.10-v6.16, include/linux/syscalls.h,
-    [SYSCALL_DEFINE0]).  So on a kernel built with
-    [CONFIG_FUNCTION_ERROR_INJECTION] and running a BPF program that
-    calls [bpf_override_return], any of these calls can be made to
-    return an errno.  It bites hardest on the relation shared with
-    [set_tid_address], whose spec admits no errno at all, so an injected
-    one would make the model REJECT a real kernel's answer.  The model
-    describes a kernel with no such override attached. *)
+    No return override reaches these calls.  [SYSCALL_DEFINE0] emits
+    [ALLOW_ERROR_INJECTION(..., ERRNO)] — the generic one and riscv's
+    alike, as [__SYSCALL_DEFINEx] does for every other number here
+    (Linux v6.10-v6.16, include/linux/syscalls.h, [SYSCALL_DEFINE0]) —
+    but the macro expands to nothing without
+    [CONFIG_FUNCTION_ERROR_INJECTION], which depends on [CONFIG_KPROBES],
+    and the configuration of record sets neither (SCOPE.md, "The
+    configuration of record").  So no BPF program can make any of these
+    calls return an errno, and the relation shared with
+    [set_tid_address], whose spec admits no errno at all, rejects no
+    supported kernel's answer. *)
 Definition getpid_spec : Sys SyscallEffect := set_tid_address_spec.
 
 (** [gettid]: returns the caller's THREAD id.  Like [getpid] it takes no
@@ -163,13 +163,12 @@ Definition getpid_spec : Sys SyscallEffect := set_tid_address_spec.
     reason given above: whichever runs first pins the identity and the
     others return it.
 
-    The residual infidelity stated for [getpid] — [SYSCALL_DEFINE0]'s
+    What is said for [getpid] of [SYSCALL_DEFINE0]'s
     [ALLOW_ERROR_INJECTION(..., ERRNO)]
     (include/linux/syscalls.h, [SYSCALL_DEFINE0], Linux v6.18.46,
-    commit 1f99e9ab748f) —
-    covers this number too, and on the same shared relation, which
-    admits no errno at all.  The model describes a kernel with no such
-    override attached. *)
+    commit 1f99e9ab748f) covers this number too: in the configuration
+    of record the macro expands to nothing, so no override answers for
+    the shared relation, which admits no errno at all. *)
 Definition gettid_spec : Sys SyscallEffect := set_tid_address_spec.
 
 (** [setsid()]: makes the caller a session leader, or fails -EPERM.
@@ -414,11 +413,16 @@ Definition rlim64_wf (bs : list byte) : bool :=
 
         [new_rlim]'s [copy_from_user]               -EFAULT
         [pid] / [find_task_by_vpid]                 -ESRCH
-        [check_prlimit_permission]                  -EPERM (and its LSM)
+        [check_prlimit_permission]                  -EPERM
         [do_prlimit]: [resource >= RLIM_NLIMITS]    -EINVAL
         [do_prlimit]: [rlim_cur > rlim_max]         -EINVAL
-        [do_prlimit]: [capable]/[security_task_setrlimit]  -EPERM
+        [do_prlimit]: [capable]                     -EPERM
         [old_rlim]'s [copy_to_user]                 -EFAULT
+
+    The two LSM hooks on that path, [security_task_prlimit] in
+    [check_prlimit_permission] and [security_task_setrlimit] in
+    [do_prlimit], are stubs that answer 0: the configuration of record
+    builds no LSM (SCOPE.md).
 
     The pointer read is FIRST on the kernel and does not appear in the
     enumeration at all; (3) below is where that gap is stated and
@@ -506,24 +510,24 @@ Definition rlim64_wf (bs : list byte) : bool :=
           RAISING is the case the model genuinely cannot decide:
           [do_prlimit] consults [capable(CAP_SYS_RESOURCE)] exactly when
           [new_rlim->rlim_max > rlim->rlim_max], and this model carries no
-          credentials, the same gap the [rw_verify_area] note above names
-          for its LSM denial and the [mmap] note for [security_mmap_addr]'s
-          -EPERM.
+          credentials, the same gap the [mmap] note names for
+          [security_mmap_addr]'s -EPERM, which with no LSM built is
+          [cap_mmap_addr]'s capability test.
           LOWERING IS A DELIBERATE BOUND, NOT A NECESSITY, and it is worth
           saying which it is.  [security_task_setrlimit] runs on every set,
-          but its SELinux implementation ([selinux_task_setrlimit]) consults
-          the AVC only when [rlim_max] CHANGES, so an unchanged hard limit is
-          unconditionally 0 there — this arm is better founded than "the hook
-          might refuse".  AppArmor is the real counterexample:
+          and in the configuration of record, which builds no LSM
+          (SCOPE.md), it is the stub of include/linux/security.h that
+          answers 0, so a lowering set is exactly as decidable as an
+          unchanged one.  (No supported kernel builds the LSMs that would
+          decide otherwise: SELinux's [selinux_task_setrlimit] consults the
+          AVC only when [rlim_max] CHANGES, while AppArmor's
           [apparmor_task_setrlimit] can deny a set that leaves [rlim_max]
-          alone, and what covers that is this model's standing position that
-          it has no LSM at all, not anything special about the arm.  Under
-          that position a lowering set is exactly as decidable as an
-          unchanged one.  It is declined because nothing
+          alone.)  It is declined because nothing
           needs it — dropbear writes the hard limit back untouched — and
-          because the narrower arm is the one that stays true if this model
-          ever acquires an LSM, whereas an arm admitting lowering would
-          have to be withdrawn.  [tests/prlimit64_spec.c]'s [set-lower]
+          because the narrower arm is the one that stays true were the
+          configuration of record ever to build an LSM, whereas an arm
+          admitting lowering would have to be withdrawn.
+          [testing/syscall-check/tests/prlimit64_spec.c]'s [set-lower]
           mode pins the kernel's own answer on the outside of that bound.
         - A write before any read is [unmodeled]: with [m_rlimit_core]
           still [None] the recorded hard limit does not exist, so the
@@ -648,8 +652,9 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
    release tag from v6.10 through v6.18, so no line here is one release's
    answer.
 
-   TWO STANDING ASSUMPTIONS about the environment, both needed and both
-   stated once here rather than repeated per syscall:
+   TWO STANDING PREMISES, both needed and both stated once here rather
+   than repeated per syscall; the first is about the environment, the
+   second is a fact of the configuration of record:
 
    - THE INIT USER NAMESPACE.  [make_kuid]/[make_kgid] are then the
      identity on the value, and every "is this id valid" test reduces to
@@ -657,14 +662,14 @@ Definition prlimit64_spec (pid resource new_rlim old_rlim : word)
      kernel/user_namespace.c, [make_kuid]; include/linux/uidgid.h,
      [INVALID_UID]).  This is what makes [setresuid]'s and [setresgid]'s
      -EINVAL UNREACHABLE, below.
-   - A CAPABILITY-ONLY LSM.  [security_task_fix_setuid] is then
-     [cap_task_fix_setuid], which returns 0 for every flag these calls
-     pass, and [security_task_fix_setgid] has no capability-LSM hook at
-     all and takes its default of 0 (Linux v6.18.46,
-     security/commoncap.c, [cap_task_fix_setuid];
-     include/linux/lsm_hook_defs.h).  A kernel running SELinux, AppArmor
-     or Smack can deny where this model permits, and is outside the
-     window.
+   - NO LSM BUT CAPABILITIES.  The configuration of record builds no LSM
+     (SCOPE.md), so [security_task_fix_setuid] is the stub of
+     include/linux/security.h that returns [cap_task_fix_setuid]'s
+     answer, 0 for every flag these calls pass, and
+     [security_task_fix_setgid] is the stub that answers 0 (Linux
+     v6.18.46, security/commoncap.c, [cap_task_fix_setuid]).  No
+     SELinux, AppArmor or Smack policy can deny where this model
+     permits.
 
    [State.creds_privileged] carries the third and largest assumption, the
    one that lets an effective uid stand in for a capability set.
@@ -1159,20 +1164,15 @@ Definition prctl_modeled_options : list Z := [PR_CAPBSET_READ].
     syscall's options across two files would make that map lie about
     which file a number is answered in.
 
-    WHICH HOOK ANSWERS IS A PRECONDITION, and it is this model's
-    standing one rather than a new assumption.  [security_task_prctl]
-    walks EVERY registered [task_prctl] hook and keeps the first
-    non-[-ENOSYS] answer, breaking out as soon as one is nonzero
-    (security/security.c).  Capability's is registered by
-    [capability_init] and is not optional -- commoncap is the
-    implementation of capabilities, not an LSM a build may leave out --
-    so the arm above always runs, and its 1 or its -EINVAL is nonzero
-    and ends the walk.  What a SECOND hook would do is what this model
-    already declines to describe anywhere: [prlimit64]'s note names the
-    same position for [security_task_setrlimit], and [Mm.Mmap]'s for
-    [security_mmap_addr].  A kernel running an LSM that also claims this
-    option is outside the model, exactly as one whose AppArmor refuses
-    an unchanged rlimit is.
+    WHICH HOOK ANSWERS IS SETTLED BY THE CONFIGURATION OF RECORD, which
+    builds no LSM (SCOPE.md).  [security_task_prctl] is then the stub of
+    include/linux/security.h that returns [cap_task_prctl]'s answer and
+    walks no hook table, so the arm above always runs and its 1 or its
+    -EINVAL is the answer.  ([cap_task_prctl] is built whatever the LSM
+    options say: security/Makefile builds commoncap.c unconditionally.
+    With an LSM built, security/security.c's [security_task_prctl]
+    would walk every registered [task_prctl] hook and keep the first
+    non-[-ENOSYS] answer; no supported kernel has one.)
 
     ORDER IS BEHAVIOR, and this one has exactly two steps.
     [cap_task_prctl] tests [cap_valid(arg2)] and nothing else before

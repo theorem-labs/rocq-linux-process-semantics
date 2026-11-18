@@ -3,8 +3,7 @@
     Mirrors the choice arms of [Sys/Fs/Select.v], which answers to Linux
     fs/select.c ([poll_select_finish], [do_select], [do_pollfd]) and
     net/unix/af_unix.c ([unix_poll], [unix_writable]), v6.18.46 (commit
-    1f99e9ab748f).  The cases replay the census shapes of the design
-    dispatch://OSSV-287/artifact/d1d3-design-md:
+    1f99e9ab748f).  The cases cover two shapes:
 
     - D1 (PART 1): a return under a real timeout that did not run out.
       [poll_select_finish] writes the remaining time to [*tsp]; the model
@@ -37,7 +36,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    ========================================================================= *)
 
 (** The start: [init_model]'s three channels, so the pair takes 3 and 4. *)
-Definition pc_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition pc_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 Fixpoint region_byte (rs : list (Z * list byte)) (a : Z) : option byte :=
   match rs with
@@ -51,7 +50,7 @@ Definition region_mem (rs : list (Z * list byte)) : word -> option byte :=
   fun a => region_byte rs (bv_unsigned a).
 
 Definition zeros (n : nat) : list byte := repeat (Z_to_bv 8 0) n.
-Definition w (z : Z) : word := Z_to_bv 64 z.
+Local Definition w (z : Z) : word := Z_to_bv 64 z.
 
 (** Addresses: the [int sv[2]] of socketpair, a write source, the
     [struct pollfd] array (room for two entries), a [struct
@@ -178,7 +177,7 @@ Definition pselect_eff (to : bool) (r v : Z) (rem : option (list byte)) : Syscal
    PART 1 — D1: the remaining time under a real timeout
    ========================================================================= *)
 
-(** D1, THE CENSUS CASE.  3 has written one byte to 4, so 4 is readable;
+(** D1, THE TRACED CASE.  3 has written one byte to 4, so 4 is readable;
     ppoll asks POLLIN on it with a timeout of {0, 100000000} and returns
     1 with [revents] POLLIN.  [poll_select_finish] (fs/select.c) then
     writes [end_time - ktime_get_ts64()] to [*tsp], clamped at 0: a
@@ -253,7 +252,7 @@ Example d1_pselect6_errno_under_a_deadline_writes_a_remaining_time :
               (mkEffect (errno_ret EBADF) [] [])) = Some CheckReject.
 Proof. split; check_eq. Qed.
 
-(** The witness of the census call is an answer the checker accepts. *)
+(** The witness of D1's ppoll is an answer the checker accepts. *)
 Example d1_witness_is_accepted :
   witness_accepted written (ppoll_in 4 1 (Some (0, 100000000)%Z)).
 Proof. check_eq. Qed.
@@ -262,7 +261,7 @@ Proof. check_eq. Qed.
    PART 2 — D3: POLLOUT in the truesize band, and EPOLLERR after a close
    ========================================================================= *)
 
-(** D3, THE CENSUS CASE.  After 3 wrote one byte, 3's [sk_wmem_alloc] is
+(** D3, THE TRACED CASE.  After 3 wrote one byte, 3's [sk_wmem_alloc] is
     1 plus the truesize of that skb, and [unix_writable] asks whether four
     times it is at most [sk_sndbuf].  The model does not carry truesize,
     so on 3 (the writer's end) POLLOUT is a choice: return 0 with
@@ -312,7 +311,7 @@ Example d3_ppoll_band_under_a_deadline :
            (ppoll_eff true 0 [0]%Z (Some (ts 0 40000000))) = Some CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
-(** THE FALLOUT THE DESIGN NAMES.  After 3 closes, 4's peer left
+(** EPOLLERR AFTER A CLOSE.  After 3 closes, 4's peer left
     SHUTDOWN_MASK (HUP, RDHUP, IN).  The close does not record whether it
     also left [sk_err]; the first ppoll that shows it records what it
     showed ([Fs.Select.ppoll_record]).  EPOLLERR is in every filter.  So
@@ -325,7 +324,7 @@ Example d3_ppoll_peer_closed_answers_with_epollerr_set_or_clear :
   /\ after closed (ppoll_in 4 1 None) (ppoll_eff false 1 [16]%Z None) = Some CheckReject.
 Proof. split; [|split]; check_eq. Qed.
 
-(** The witness of the census call is an answer the checker accepts. *)
+(** The witness of D3's ppoll is an answer the checker accepts. *)
 Example d3_witness_is_accepted :
   witness_accepted written (ppoll_in 3 4 (Some (0, 0)%Z)).
 Proof. check_eq. Qed.

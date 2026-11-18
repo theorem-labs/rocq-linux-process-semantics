@@ -1,6 +1,5 @@
 (** * LinuxProcessSem.Checks.Cases.Fs.TmpFile — worked examples over the unnamed temporary file: openat (56) of /tmp with O_RDWR|O_CREAT|O_EXCL, unlinkat (35) of the open name, and the reopen through /proc/self/fd/N
 
-    The acceptance case A9 of dispatch://OSSV-287 (spec version 9).
     Linux v6.18.46 (commit 1f99e9ab748f) throughout: fs/namei.c,
     fs/proc/fd.c, fs/open.c, fs/read_write.c, fs/stat.c.  musl's
     [tmpfile()] (src/stdio/tmpfile.c) makes the sequence of PART 1.
@@ -28,8 +27,10 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    Fixtures
    ========================================================================= *)
 
-(** The start: [init_model]'s three channels, so the next descriptor is 3. *)
-Definition tf_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+(** The start: [init_model]'s three channels, so the next descriptor is
+    3, over the standard root, whose /tmp is a folder of the image. *)
+Definition tf_m0 : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof).
 
 Fixpoint region_byte (rs : list (Z * list byte)) (a : Z) : option byte :=
   match rs with
@@ -62,7 +63,7 @@ Definition st_a : Z := 0xA500.
 Definition tf_wmem : word -> option byte :=
   region_mem [(dst_a, zeros 64); (ws_a, zeros 8); (st_a, zeros 128)].
 
-Definition w (z : Z) : word := Z_to_bv 64 z.
+Local Definition w (z : Z) : word := Z_to_bv 64 z.
 Definition at_fdcwd : Z := (2 ^ 64 - 100)%Z.
 
 Definition tmp_name : list Z := [47; 116; 109; 112; 47; 116; 109; 112; 102; 105; 108; 101; 95; 97; 98; 99; 100; 101; 102]%Z.   (* "/tmp/tmpfile_abcdef" *)
@@ -262,13 +263,17 @@ Example a9_two_fstats_agree :
   end.
 Proof. vm_compute. split; reflexivity. Qed.
 
-(** The declining case: readv of 8 bytes on the unnamed file (one iovec
-    at [src_a] naming [dst_a]). *)
-Example a9_readv_on_the_unnamed_file_declines :
-  match run_steps tf_m0 tmpfile_and_write with
-  | Some m => syscall_spec_witness (mk 65 [3; src_a; 1]%Z [(src_a, Z_to_le_bytes 8 dst_a ++ Z_to_le_bytes 8 8)]) m = Unmodeled
-  | None => False
-  end.
+(** readv of 8 bytes on the file unlinked while open (one iovec at
+    [src_a] naming [dst_a]) is ANSWERED: it delivers the five bytes the
+    pwritev2 wrote, from the descriptor's offset 0.  The lost name
+    changes nothing for a descriptor that holds the inode: the inode is
+    freed only at the last [iput] ([iput_final], fs/inode.c:1874-1915),
+    and [do_readv] reads through the descriptor's file (fs/read_write.c). *)
+Example a9_readv_on_the_unlinked_file_answers :
+  option_map eff_ret
+    (answer tmpfile_and_write
+       (mk 65 [3; src_a; 1]%Z [(src_a, Z_to_le_bytes 8 dst_a ++ Z_to_le_bytes 8 8)]))
+  = Some (w 5).
 Proof. check_eq. Qed.
 
 (** CONTROL, true at the base as well: /proc/self/fd/03 declines. *)
@@ -276,27 +281,38 @@ Example a9_proc_fd_with_a_leading_zero_declines :
   syscall_spec_witness (proc_open_in [48; 51]%Z 32768 0) tf_m0 = Unmodeled.
 Proof. check_eq. Qed.
 
-(** CONTROL, true at the base as well: the working-directory arm still
-    declines the removal of a name that a descriptor holds.  "f" is
-    created at 3 with O_WRONLY|O_CREAT|O_TRUNC (577) and stays open. *)
-Example a9_working_directory_removal_of_an_open_name_declines :
+(** The removal of a name that a descriptor holds, in the working
+    directory: the name goes and the inode keeps its row while the
+    descriptor holds it ([Fs.fs_unlink_file]), as under /tmp.  "f" is
+    created at 3 with O_WRONLY|O_CREAT|O_TRUNC (577) and stays open; the
+    checker accepts the unlink's 0, the name is gone afterwards, and
+    descriptor 3 still holds the file's inode, which no name reaches. *)
+Example a9_working_directory_removal_of_an_open_name_is_answered :
   match run_steps tf_m0 [(mk 56 [at_fdcwd; tmp_a; 577; 420]%Z [(tmp_a, cstr [102]%Z)], Some (with_copyins [(w tmp_a, 2%nat)] (ok_eff 3)))] with
-  | Some m => syscall_spec_witness (mk 35 [at_fdcwd; tmp_a; 0]%Z [(tmp_a, cstr [102]%Z)]) m = Unmodeled
+  | Some m =>
+      match check_syscall (mk 35 [at_fdcwd; tmp_a; 0]%Z [(tmp_a, cstr [102]%Z)])
+              (with_copyins [(w tmp_a, 2%nat)] (ok_eff 0)) m with
+      | CheckOk m' _ =>
+          Fs.fs_lookup (m_fs m') (wk [Z_to_bv 8 102]) = None
+          /\ fd_lookup (m_fds m') 3 = Some (FdFileW 1 (Z_to_bv 64 0))
+          /\ Fs.fs_ino_names (m_fs m') 1 = 0%nat
+          /\ Fs.itab_find (Fs.fs_inodes (m_fs m')) 1 = Some (Fs.mkInode [] 0)
+      | _ => False
+      end
   | None => False
   end.
-Proof. check_eq. Qed.
+Proof. vm_compute. split_conj; reflexivity. Qed.
 
 (* =========================================================================
-   PART 3 — A10: three sequences of the curl_fuzzer_proto_file census
+   PART 3 — A10: three traced sequences on the temporary file
    ========================================================================= *)
 
-(** The census of curl_fuzzer_proto_file (dispatch://OSSV-287/artifact/a10-summary-md,
-    sections 3 and 5) gives every call made on the temporary file and on
-    the descriptors its /proc/self/fd/N reopens return.  The sequences
-    below are those calls, in order, for three of its scenarios; the calls
-    on other descriptors (the eventfds, /dev/null, the IPv6 probe) are
-    left out, and the descriptor numbers are the model's: the temporary
-    file at 3, the read reopen at 4, the write reopen at 5. *)
+(** The sequences below are the calls one traced program makes on its
+    temporary file and on the descriptors its /proc/self/fd/N reopens
+    return, in order, for three of its scenarios; the calls on other
+    descriptors (the eventfds, /dev/null, the IPv6 probe) are left out,
+    and the descriptor numbers are the model's: the temporary file at 3,
+    the read reopen at 4, the write reopen at 5. *)
 
 Definition lseek_in (fd off whence : Z) : SyscallInput := mk 62 [fd; off; whence]%Z [].
 Definition read_n_in (fd n : Z) : SyscallInput := mk 63 [fd; dst_a; n]%Z [].
@@ -360,10 +376,10 @@ Example a10_upload_resume_appends :
                (read_in 5) (read_ok (bytes_of [115; 105; 110; 107; 45; 97; 110; 100; 45; 117; 112; 108; 111; 97; 100]%Z))) = true.
 Proof. check_eq. Qed.
 
-(** One more call of the census, on another descriptor: curl's multi
-    wait polls its wakeup eventfd for POLLIN with a timeout and gets 0
-    (census shape 33).  This holds since wave two, which added the
-    eventfd; it is a CONTROL of the fail-before run, true at its base. *)
+(** One more call of the same program, on another descriptor: it polls
+    its wakeup eventfd for POLLIN with a timeout and gets 0.  The run
+    makes no temporary-file call, so it is a CONTROL of the fail-before
+    run, true at its base. *)
 Definition ppoll_eventfd_in : SyscallInput :=
   mk 73 [ws_a; 1; st_a; 0; 8]%Z
      [(ws_a, Z_to_le_bytes 4 3 ++ Z_to_le_bytes 2 1 ++ Z_to_le_bytes 2 0);
@@ -376,16 +392,18 @@ Proof. check_eq. Qed.
    PART 2 — the states the calls produce
    ========================================================================= *)
 
-(** After the removal the name is gone from the file system, which is the
-    file system the exit event carries, and descriptor 3 holds the file. *)
+(** After the removal the name is gone from the file system, and
+    descriptor 3 still holds the file: the read-write kind the create
+    minted, on an inode that keeps its (empty) row.  What an exit would
+    report ([Fs.fs_observe]) is the image the run started with, since no
+    name reaches that inode any more. *)
 Example removal_leaves_no_name_and_keeps_the_file :
   match run_steps tf_m0 [(create_in, Some (at_tmp (ok_eff 3))); (unlink_in, Some (at_tmp (ok_eff 0)))] with
   | Some m =>
       fs_lookup (m_fs m) (bytes_of tmp_name) = None
-      /\ match fd_lookup (m_fds m) 3 with
-         | Some (FdAnon _ af) => af_data af = [] /\ af_rd af = true /\ af_wr af = true
-         | _ => False
-         end
+      /\ fd_lookup (m_fds m) 3 = Some (FdFileRW 1 (Z_to_bv 64 0))
+      /\ Fs.fs_ino_data (m_fs m) 1 = []
+      /\ Fs.fs_observe (m_fs m) = Fs.fs_observe (m_fs tf_m0)
   | None => False
   end.
 Proof. vm_compute. repeat split; reflexivity. Qed.

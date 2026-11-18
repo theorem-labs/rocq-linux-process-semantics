@@ -27,10 +27,14 @@
     errno-returning [Ok] versus the fail-closed [Unmodeled] — and the source
     side of [Equivalence.strong_equiv] requires the model to cover the
     source everywhere, so that its equivalence claim cannot be satisfied
-    by a semantics too weak to follow the binary. *)
+    by a semantics too weak to follow the binary.
 
-From Stdlib Require Import ZArith NArith List String.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso.
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
+
+From Stdlib Require Import ZArith NArith List String Lia.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 Local Open Scope bool_scope.
@@ -319,11 +323,11 @@ Definition vdso_segments (kb : KernelBuild) (sp mbase : word) : list Segment :=
     let im := vdso_image_of kb in
     [ {| seg_base  := Z.to_N base;
          seg_size  := Z.to_N (vdso_vvar_pages * page_size);
-         seg_perms := "r--"%string;
+         seg_perms := seg_perms_ro;
          seg_bytes := []; seg_kind := SegVdsoVvar |}
     ; {| seg_base  := Z.to_N (bv_unsigned (vdso_text_base kb sp mbase));
          seg_size  := Z.to_N (vdso_text_pages kb * page_size);
-         seg_perms := "r--"%string;
+         seg_perms := seg_perms_ro;
          seg_bytes := vi_bytes im; seg_kind := SegVdsoText |} ].
 
 (** OPAQUE TO REDUCTION, and that is a performance decision with a
@@ -781,7 +785,7 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     syscall_spec (sys_input ms x8) model (Ok eff model' evs) ->
     m_halted model' = Some code ->
     m_killed model' = None ->
-    sstep (mkCfg ms model) (evs ++ [ExitEv code (m_fs model')])
+    sstep (mkCfg ms model) (evs ++ [ExitEv code (Fs.fs_observe (m_fs model'))])
           (SNext (mkCfg ms model'))
 (** The other way a process ends: a fatal signal it sent itself.  Same
     shape as [sstep_exit] and the same discarded effect -- the syscall
@@ -805,7 +809,7 @@ Inductive sstep : config -> list event -> step_to -> Prop :=
     ms_svc_pending ms = Some x8 ->
     syscall_spec (sys_input ms x8) model (Ok eff model' evs) ->
     m_killed model' = Some sig ->
-    sstep (mkCfg ms model) (evs ++ [KillEv sig (m_fs model')])
+    sstep (mkCfg ms model) (evs ++ [KillEv sig (Fs.fs_observe (m_fs model'))])
           (SNext (mkCfg ms model'))
 | sstep_syscall_unmodeled : forall ms model x8,
     m_halted model = None ->
@@ -2354,14 +2358,14 @@ Inductive sstep_cfg (cfg : SpuriousCfg) : config -> list event -> step_to -> Pro
     syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
     m_halted model' = Some code ->
     m_killed model' = None ->
-    sstep_cfg cfg (mkCfg ms model) (evs ++ [ExitEv code (m_fs model')])
+    sstep_cfg cfg (mkCfg ms model) (evs ++ [ExitEv code (Fs.fs_observe (m_fs model'))])
           (SNext (mkCfg ms model'))
 | sstep_cfg_killed : forall ms model x8 eff model' evs sig,
     m_halted model = None ->
     ms_svc_pending ms = Some x8 ->
     syscall_spec (sys_input segs ms x8) model (Ok eff model' evs) ->
     m_killed model' = Some sig ->
-    sstep_cfg cfg (mkCfg ms model) (evs ++ [KillEv sig (m_fs model')])
+    sstep_cfg cfg (mkCfg ms model) (evs ++ [KillEv sig (Fs.fs_observe (m_fs model'))])
           (SNext (mkCfg ms model'))
 | sstep_cfg_syscall_unmodeled : forall ms model x8,
     m_halted model = None ->
@@ -2756,48 +2760,45 @@ Qed.
    ([budget_refused_at_no_lazy_instr]). *)
 
 Lemma syscall_spec_unarmed : forall i m eff m' evs,
-  LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.lookup_arm
-    LinuxProcessSemantics.LinuxProcessSem.Sys.SyscallTable.spec_table
+  Dispatch.lookup_arm SyscallTable.spec_table
     (bv_unsigned (in_sysno i)) = None ->
   ~ syscall_spec i m (Ok eff m' evs).
 Proof.
   intros i m eff m' evs E H.
-  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch in H.
+  unfold syscall_spec, Dispatch.dispatch in H.
   rewrite E in H. cbv beta iota delta [unmodeled] in H. discriminate H.
 Qed.
 
 Lemma syscall_spec_at_113 : forall i m o,
   in_sysno i = Z_to_bv 64 113 ->
   (syscall_spec i m o <->
-   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
-     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+   PosixTimers.clock_gettime_spec (Syscall.clockid32 (in_arg i 0))
      (in_arg i 1) i m o).
 Proof.
   intros i m o E.
-  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  unfold syscall_spec, Dispatch.dispatch.
   rewrite E. reflexivity.
 Qed.
 
 Lemma syscall_spec_at_114 : forall i m o,
   in_sysno i = Z_to_bv 64 114 ->
   (syscall_spec i m o <->
-   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
-     (LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.clockid32 (in_arg i 0))
+   PosixTimers.clock_getres_spec (Syscall.clockid32 (in_arg i 0))
      (in_arg i 1) i m o).
 Proof.
   intros i m o E.
-  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  unfold syscall_spec, Dispatch.dispatch.
   rewrite E. reflexivity.
 Qed.
 
 Lemma syscall_spec_at_169 : forall i m o,
   in_sysno i = Z_to_bv 64 169 ->
   (syscall_spec i m o <->
-   LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec
+   Time.gettimeofday_spec
      (in_arg i 0) (in_arg i 1) i m o).
 Proof.
   intros i m o E.
-  unfold syscall_spec, LinuxProcessSemantics.LinuxProcessSem.Sys.Dispatch.dispatch.
+  unfold syscall_spec, Dispatch.dispatch.
   rewrite E. reflexivity.
 Qed.
 
@@ -2806,12 +2807,9 @@ Qed.
     reading, and [m_vm_lazy] reads through both. *)
 Local Ltac keeps_lazy_in H :=
   cbv beta iota delta [bind pure input get_model choose unmodeled alt modify set_clock
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.err_ret
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Syscall.ret_only
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_gettime_spec
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_spec
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.PosixTimers.clock_getres_result_spec
-    LinuxProcessSemantics.LinuxProcessSem.Sys.Kernel.Time.Time.gettimeofday_spec] in H;
+    Syscall.err_ret Syscall.ret_only
+    PosixTimers.clock_gettime_spec PosixTimers.clock_getres_spec
+    PosixTimers.clock_getres_result_spec Time.gettimeofday_spec] in H;
   repeat match goal with
   | H0 : _ /\ _ |- _ => destruct H0
   | H0 : exists _, _ |- _ => destruct H0
@@ -3154,7 +3152,7 @@ Qed.
    byte-range clause ([b < 256]) is needed: the [byte] type enforces it.
 
    The other two [run] inputs: the initial file-system image is
-   validated by [Fs.valid_fs]; the standard input stream
+   validated by [Fs.wf_fs]; the standard input stream
    ([State.InputStream]) needs no validity predicate at all — its
    elements are [byte], and any colist of bytes, finite or infinite, is
    an input a process could really be handed. *)
@@ -3295,6 +3293,20 @@ Definition total_arg_bytes (args : list (list byte)) : Z :=
     it.  So this half narrows the two THEOREMS without narrowing the
     model, and it would be deleted by proof work alone.
 
+    THE CLAUSE BOUNDS NO COMPONENT LENGTH.  A tail entry over
+    [Fs.name_max] bytes with no separator is a valid argument, and the
+    walk reads it as a component, goes on as a file system with a larger
+    limit would, and records that the limit was crossed
+    ([Fs.wr_long]), so every path-taking arm admits -ENAMETOOLONG beside
+    its answer (the limit is the file system's own [->lookup]:
+    [simple_lookup], the lookup of tmpfs and ramfs, answers
+    -ENAMETOOLONG on [d_name.len > NAME_MAX], fs/libfs.c:71-72, Linux
+    v6.18.46, so the answer beside it is one no supported kernel gives:
+    [Fs.comp_too_long]).  A statement that opens an argv
+    entry therefore carries the bound as a hypothesis of its own
+    ([Common.FileSim.resolve_argv_operand] is one) rather than reading
+    it off validity.
+
     IT IS ON THE TAIL, NOT THE WHOLE LIST, and that is load-bearing
     rather than tidy.  argv[0] conventionally holds a path — every shell
     launch puts one there — so a whole-list clause would restrict
@@ -3367,9 +3379,10 @@ Definition valid_envp (envp : list (list byte)) : Prop :=
     caller's own relative name, so it is 1 to 4095 bytes and does not
     start with "/".
 
-    RESIDUAL: a file system limits each NAME COMPONENT — 255 bytes on
-    ext4, 1024 on FUSE — and this predicate does not look at
-    components.  SCOPE.md records it. *)
+    RESIDUAL: tmpfs and ramfs, the file systems of the configuration of
+    record whose regular files hold the bytes written to them, limit
+    each NAME COMPONENT to 255 bytes ([simple_lookup], fs/libfs.c), and
+    this predicate does not look at components.  SCOPE.md records it. *)
 Definition byte_is_digit (b : byte) : bool :=
   andb (Z.leb 48 (bv_unsigned b)) (Z.leb (bv_unsigned b) 57).
 
@@ -3508,14 +3521,12 @@ Definition valid_launch (inp : ProcInput) : Prop :=
     costs provability.  So the premise is the exact kernel-real
     condition, not the convenient over-approximation of it.
 
-    [entry_stack_span] is an upper bound on the block's length written
-    in this file's own vocabulary ([total_arg_bytes]), so [valid_entry]
-    and the satisfiability lemmas reason about it without [StackLayout]'s
-    layout arithmetic.  What ties it to the real layout is
-    [PropExec.build_stack_bytes_within_span], proved where that
-    arithmetic lives; [StepTac.bsb_bound] is then derived from the same
-    two facts rather than recomputing the sum, so there is one
-    derivation and nothing to drift. *)
+    [entry_stack_span] is written in this file's own vocabulary
+    ([total_arg_bytes]), so [valid_entry] and the satisfiability lemmas
+    reason about it without [StackLayout]'s layout arithmetic.  It is no
+    longer an upper bound on the block's length: that length is
+    [PropExec.length_entry_stack_image_launch], proved where the layout
+    arithmetic lives, and [StepTac.bsb_bound] is derived from it. *)
 Definition entry_stack_span (argv envp : list (list byte)) : Z :=
   (8                                    (* argc *)
    + 8 * Z.of_nat (length argv) + 8     (* argv[] and its NULL *)
@@ -4351,14 +4362,15 @@ Definition valid_creds (inp : ProcInput) : Prop :=
     boot: [setup_new_exec] writes [RLIMIT_STACK] (fs/exec.c),
     [do_coredump] writes [RLIMIT_CORE] (fs/coredump.c), [acct_pin_kill]
     writes [RLIMIT_FSIZE] (kernel/acct.c), [fork_init] writes
-    [init_task]'s NPROC and SIGPENDING (kernel/fork.c), and the LSM
-    [bprm_committing_creds] hooks -- SELinux's
-    [selinux_bprm_committing_creds] and AppArmor's -- loop over ALL of
-    [RLIM_NLIMITS], NOFILE included, clamping each soft limit to
-    [min(rlim_max, init_task's soft)] on a domain transition.  That last
-    one is the reason this bound is a property of the LAUNCH rather than
-    of the model: an LSM clamp has already happened by the time the run
-    starts, and the field records where it landed.
+    [init_task]'s NPROC and SIGPENDING (kernel/fork.c).  The LSM
+    [bprm_committing_creds] hooks, SELinux's
+    [selinux_bprm_committing_creds] and AppArmor's, which would loop over
+    ALL of [RLIM_NLIMITS], NOFILE included, clamping each soft limit on a
+    domain transition, are not built: the configuration of record has no
+    LSM (SCOPE.md).  The bound is a property of the LAUNCH rather than of
+    the model all the same: whatever set the limit, a parent's
+    [setrlimit] among them, did so before the run starts, and the field
+    records where it landed.
 
     [sysctl_nr_open] is itself bounded by [sysctl_nr_open_max], the
     smaller of INT_MAX and the pointer-sized division
@@ -4576,56 +4588,7 @@ Ltac valid_urandom_default :=
     [in_sigmask] is the one field constrained for the OPPOSITE reason:
     it is read back verbatim rather than bounded at its reader, so the
     clause is the only thing standing between the model and a mask no
-    launch can produce.  See [valid_sigmask].
-
-    WHY [Fs.fs_keys_relative] IS ON THE IMAGE AND NOT ON [Fs.valid_fs].
-    The clause says the launch handed the process an image whose keys
-    are CWD-RELATIVE: no key begins with "/".  It is a premise about the
-    environment in the sense [valid_sigmask] is — no real launch
-    contradicts it, because the file system a run starts from is the
-    working directory it was started in, and a key there is a name
-    relative to that directory — and the model cannot check it, because
-    nothing in an [Fs.Fs] says where the image came from.
-
-    It reads [State.in_image_fs], the PRE-SEED image, rather than
-    [State.in_fs], and that is forced rather than stylistic.  [in_fs] is
-    [State.fs_seed_tmp] of the image with the declared /tmp
-    ([State.in_tmp]), and the seeding inserts each declared entry under
-    the ABSOLUTE key "/tmp/<name>" — so the same clause on [in_fs] would
-    be false for every input with a non-empty declaration and would
-    silently delete those inputs from every theorem quantified here.
-    Putting it on the image leaves [State.fs_seed_tmp_valid] and
-    [FinInput.valid_input_tmp_arbitrary] intact: no /tmp
-    table a launch could present is excluded.
-
-    WHAT IT BUYS.  [Fs.valid_fs] admits the key "/dev/null", and the
-    three device arms of [Sys.Fs.Open] — and [Sys.Fs.Stat]'s lookup of
-    an absolute pathname — answer [unmodeled] when the map holds such a
-    key or a key under it.  Without this clause, a program that always
-    opens /dev/null would have ONE pathological image, admitted by every
-    statement's quantifier, on which every error-free claim about it is
-    false, for a reason no process can meet.  With this clause those guards are
-    unreachable: [device_paths_never_seeded] below proves no key of a
-    seeded image is, or lives under, any of the three device paths, and
-    the guards stay in the arms as the courtesy their comments say they
-    are. *)
-
-(** THE IMAGE DESCRIBES A FILE SYSTEM: [Fs.fs_image_real] on
-    [State.in_image_fs], beside the clause above and on the same
-    pre-seed image, for the same seeding reason.  It says every key is
-    canonical (no empty, "." or ".." component, no "//" and no trailing
-    "/") and no key is also a directory another key lives in.  Ported
-    from main LPS (theorem-labs/linux-process-semantics) #1776, commit
-    9f9a96b29a; [Fs.fs_image_real] carries the argument.
-
-    WHAT IT BUYS.  Without it [valid_input] admits an image with the
-    keys "a" and "a/b".  No Linux file system holds that -- one name in
-    one directory is one inode -- and on it the model answers as if "a"
-    were a regular file and a directory at once, so a statement
-    quantified here covers a launch no kernel can produce.
-    [Checks.Cases.Fs.Open.fs_prefix_key_image_is_not_real] is that
-    image, refused; [valid_input_image_real] below is the projection a
-    proof uses. *)
+    launch can produce.  See [valid_sigmask]. *)
 
 (** THE LAUNCH IS ON THE KERNEL OF RECORD, in the fields the published
     statements had one answer for.  [recorded_kernel kb] is
@@ -4644,10 +4607,280 @@ Definition recorded_kernel (kb : KernelBuild) : KernelBuild :=
                 (kb_rmem_default default_kernel) (kb_wmem_max default_kernel)
                 (kb_rmem_max default_kernel).
 
+(* =========================================================================
+   THE FILE-SYSTEM CLAUSES, and the one switch question 1 turns
+   ========================================================================= *)
+
+(** THE SWITCH FOR ISSUE #1011, SECTION 15, QUESTION 1: does a valid
+    input have to be a Linux with a devtmpfs?
+
+    [true] adds [Fs.standard_root_present] to every validity variant:
+    /dev and /tmp are directories and the two devices are devices.  Every
+    Linux with a devtmpfs satisfies it, and it keeps the error-free
+    family meaningful.
+
+    [false] keeps the image quantifier FULLY UNIVERSAL over well-formed
+    images: a device-less container is a Linux variant, and an agent
+    proving an error-free statement must then prove both binaries'
+    failure paths on a missing device.
+
+    Flipping the answer is flipping this one line, and no other
+    DEFINITION reads the premise.  No arm's soundness leans on it: the
+    image describes /dev completely at launch (see [Fs.dev_dir]),
+    so with [false] and an image that omits a device, "/dev/null" is an
+    ordinary absence and the open answers -ENOENT, which is what a
+    container without that node answers.  Nothing can destroy a device
+    mid-run: unlinking a device is [unmodeled] so /dev never empties,
+    and rmdir of a non-empty directory is -ENOTEMPTY. *)
+Definition valid_input_requires_standard_root : bool := true.
+
+Definition standard_root_premise (fs : Fs.Fs) : Prop :=
+  if valid_input_requires_standard_root
+  then Fs.standard_root_present fs
+  else True.
+
+(** EVERY DEVICE THE IMAGE DECLARES SITS INSIDE THE /dev SUBTREE.
+
+    WHAT IT SAYS: a device node in the image is a node the kernel's
+    devtmpfs put there ([devtmpfs_create_node],
+    drivers/base/devtmpfs.c:129, Linux v6.18.46, runs when a driver-core
+    device is registered), and the image declares no node a launch made
+    with [mknod] elsewhere.  The model has NO [mknod], so the only
+    devices in a run are the ones the launch declares.
+
+    IT IS A NARROWING, and a real one: [mknod] really can put a device
+    node outside /dev, so a launch really can present such an image.
+    It is kept on the architect's ruling (issue #1011, section 15,
+    question 1, with [standard_root_present]); what it costs is that the
+    theorems are silent about an image with a device node outside /dev.
+
+    WHAT IT BUYS.  An argv operand resolved from a working directory
+    outside /dev never names a device, so a whole-program example whose
+    working directory is an ordinary folder meets no device arm through
+    its operands.  [Sys.Fs.Open.dev_at_home] declines a device at any
+    key but its own name in any case, so a device outside /dev could
+    only ever be declined, never answered wrongly.
+
+    THE BOOLEAN IS THE STATEMENT and the [Prop] is derived, because a
+    fixture has to decide this by computation and a proof has to consume
+    it as an implication about one key.  [devices_in_dev_subtree] below
+    is that implication. *)
+Definition devices_in_dev_subtreeb (fs : Fs.Fs) : bool :=
+  forallb (fun ke => match snd ke with
+                     | Fs.EDev _ => Fs.in_dev_subtree (fst ke)
+                     | _ => true
+                     end) (Fs.fs_tree fs).
+
+Definition devices_in_dev_subtree (fs : Fs.Fs) : Prop :=
+  forall k dk, Fs.fs_lookup fs k = Some (Fs.EDev dk) ->
+               Fs.in_dev_subtree k = true.
+
+Lemma devices_in_dev_subtreeb_sound : forall fs,
+  devices_in_dev_subtreeb fs = true -> devices_in_dev_subtree fs.
+Proof.
+  intros fs Hb k dk Hlk.
+  unfold devices_in_dev_subtreeb in Hb.
+  rewrite forallb_forall in Hb.
+  exact (Hb _ (Fs.fs_lookup_in fs k (Fs.EDev dk) Hlk)).
+Qed.
+
+(** "/etc/localtime", the file a C library's [tzset] opens to learn the
+    local zone: musl 1.2.6 src/time/__tz.c, [do_tzset], takes it when
+    TZ is unset and hands it to src/time/__map_file.c, which opens it
+    O_RDONLY|O_CLOEXEC|O_NONBLOCK; glibc's tzfile reader opens the same
+    path. *)
+Definition localtime_path : Fs.path :=
+  [Z_to_bv 8 47; Z_to_bv 8 101; Z_to_bv 8 116; Z_to_bv 8 99; Z_to_bv 8 47;
+   Z_to_bv 8 108; Z_to_bv 8 111; Z_to_bv 8 99; Z_to_bv 8 97; Z_to_bv 8 108;
+   Z_to_bv 8 116; Z_to_bv 8 105; Z_to_bv 8 109; Z_to_bv 8 101].
+
+(** THE IMAGE HOLDS NO /etc/localtime: the walk of the path from "/",
+    following links as an O_RDONLY open does, ends in [Fs.RMissing] (the
+    folder it reaches has no such name) or [Fs.RAbsent] (a folder on the
+    way is absent).  A DANGLING LINK at /etc/localtime, or at /etc, is
+    inside the clause: the open follows it ([build_open_flags] sets
+    LOOKUP_FOLLOW, fs/open.c:1339-1340) to a name that is not there.
+
+    THIS IS THE DECLARED ENVIRONMENT ASSUMPTION the released model
+    stated at its [/etc/localtime] arm, restated as a validity clause
+    over the same launches: an O_CREAT-free open of /etc/localtime
+    answers -ENOENT in the image.  Spelled out, /etc is absent or a
+    folder, and the walk of /etc/localtime reaches no inode.  A regular
+    file at /etc is OUTSIDE it, where [link_path_walk] answers -ENOTDIR
+    and the clause is false ([Fs.RNotDir]); so is an image that ships a
+    file or a folder at /etc/localtime ([Fs.RFound]).  It is an
+    assumption about the environment every run is launched in, and it
+    is written here, where the launches are quantified, so that a reader
+    who changes the image knows what to revisit.
+
+    WHAT IT BUYS.  A program that calls [localtime], [ctime_r] or
+    anything else that runs [tzset] opens this path before it does
+    anything the model can see, often before [main].  For [tzset] a
+    missing file is the ordinary case — the library falls back to UTC —
+    so under this clause the open is the walk's -ENOENT and needs no
+    content model.
+
+    THE KERNEL PATH.  Under a flag word WITHOUT O_CREAT the walk reaches
+    the last component and finds no inode: [open_last_lookups]
+    (fs/namei.c:3848, Linux v6.18.46) takes the [lookup_fast_for_open]
+    or [lookup_open] result, a negative dentry, into [step_into]
+    (:1984), whose [handle_mounts] (:1625-1644) calls
+    [traverse_mounts], and that answers -ENOENT for a dentry
+    [d_flags_negative] is true of (:1529-1542, the -ENOENT at
+    :1537-1538).  This runs before [do_open], so neither the O_DIRECTORY
+    -ENOTDIR test nor [may_open] is reached, and the answer does not turn
+    on the access mode.  [Sys.Fs.Open.openat_read_spec] and its siblings
+    give that answer for [Fs.RMissing] and [Fs.RAbsent].
+
+    THE BOOLEAN IS THE STATEMENT, as for [devices_in_dev_subtreeb], so
+    a fixture decides it by computation. *)
+Definition localtime_absentb (fs : Fs.Fs) : bool :=
+  match Fs.resolve (Fs.WalkFull true false) fs Fs.root localtime_path with
+  | (Fs.RMissing _ _, _, _) => true
+  | (Fs.RAbsent _, _, _) => true
+  | _ => false
+  end.
+
+Definition localtime_absent (fs : Fs.Fs) : Prop := localtime_absentb fs = true.
+
+(** "/proc" and "/sys" as keys: the root's children named [Fs.proc_comp]
+    and [Fs.sys_comp], the two names [Fs.at_outside] declines at the
+    root. *)
+Definition proc_key : Fs.path := Fs.child_key Fs.root Fs.proc_comp.
+Definition sys_key : Fs.path := Fs.child_key Fs.root Fs.sys_comp.
+
+(** THE KEY IS OUTSIDE /proc AND /sys: no key on its chain
+    ([Fs.key_chain], the root first and the key itself last) is
+    [proc_key] or [sys_key], so the key is neither folder and lies below
+    neither.  It is decided COMPONENT BY COMPONENT, as
+    [Fs.in_dev_subtree] is, so "/process" and "/system" are ordinary
+    keys.  [valid_image] asks it of the working folder.
+
+    WHY THE WORKING FOLDER NEEDS IT.  The walk declines "proc" and "sys"
+    only when it looks them up STANDING ON THE ROOT ([Fs.at_outside],
+    [Fs.ROutside]).  A relative pathname starts at the working folder
+    ([Fs.resolve_start]; [path_init] starts it at [fs->pwd],
+    fs/namei.c:2590-2604, Linux v6.18.46), and a walk that starts below
+    /proc stands on the root only if enough ".." take it there.  So with
+    an image holding a folder /proc and the working folder /proc,
+    [openat(AT_FDCWD, "self/status")] would be answered from the image
+    (-ENOENT), where Linux, with procfs mounted at /proc (SCOPE.md), asks
+    procfs ([proc_root_lookup], fs/proc/root.c:409-415, Linux v6.18.46)
+    and finds the process's own folder; [newfstatat] of "." and
+    [getdents64] of the working folder would read the image too.  /sys
+    is outside the model in the same way: another file system Linux
+    would walk.
+
+    IT IS A NARROWING, and a real one: a process can be started in /proc
+    or in /sys, and the theorems are silent about such a launch.  It is a
+    clause on the input rather than an [Fs.ROutside] answer of the walk
+    from such a folder because a decline an example can reach makes that
+    example's theorem false, and a clause on the input does not.
+
+    WHAT IT BUYS.  A walk that starts at the root or at a working folder
+    outside both enters /proc or /sys only by looking "proc" or "sys" up
+    at the root, which [Fs.ROutside] declines: a ".." from outside the
+    two subtrees stays outside them, and a link's body is walked from the
+    root or from the folder that holds the link.
+
+    THE BOOLEAN IS THE STATEMENT, as for [devices_in_dev_subtreeb], so a
+    fixture decides it by computation. *)
+Definition outside_proc_sysb (k : Fs.path) : bool :=
+  negb (existsb (fun a => Fs.path_eqb a proc_key || Fs.path_eqb a sys_key)
+                (Fs.key_chain k)).
+
+(** THE FILE-SYSTEM CLAUSES every validity variant carries, named once
+    so the variants below say the same thing and a reader can see that
+    they do.
+
+    - the image is a WELL-FORMED NAMESPACE ([Fs.wf_fs]): sorted, every
+      key canonical, the root a directory, every key's parent one.  That
+      is what says the image describes a file system: every key is
+      canonical, and no key sits under a file, because its parent is a
+      directory;
+    - the declared WORKING DIRECTORY is a canonical key, and it RESOLVES
+      TO A DIRECTORY, which is what [Fs.resolve] needs to start a
+      relative pathname and what makes "the working directory is a
+      directory" a state invariant (no arm writes [m_cwd], and [rmdir]
+      declines it);
+    - its bytes PLUS A NUL fit in PATH_MAX, so [getcwd] never has to
+      answer -ENAMETOOLONG for a valid input;
+    - every device sits inside the /dev subtree
+      ([devices_in_dev_subtreeb]);
+    - the standard-root premise, behind the switch above;
+    - the image holds no /etc/localtime ([localtime_absent]);
+    - the working directory lies OUTSIDE /proc AND /sys: it is neither,
+      nor below either ([outside_proc_sysb]).
+
+    THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER, "/" and /dev
+    included: a process really can be started there, and the walk
+    answers every pathname from it.  "proc" and "sys" looked up at "/"
+    are [Fs.ROutside], which every arm declines, and from a working
+    directory outside /proc and /sys that lookup is the only way a walk
+    enters either; a working directory INSIDE one would start its
+    relative walks there, where no lookup at "/" declines them, which is
+    why the last clause keeps it out.  A name under /dev the image does
+    not hold is an ordinary absence, because the image describes /dev
+    completely at launch.
+
+    THESE ARE CLAUSES ON THE INPUT, NOT INVARIANTS OF THE RUN.
+    [State.model_fs_wf] states the reachable-state invariant, and
+    [sstep_preserves_wf] below names the theorem that it is preserved by
+    a step.  The kit is proved at the model level, one lemma per shape an
+    arm can produce: [State.model_fs_wf_set_ino_data],
+    [State.model_fs_wf_fd_insert], [State.model_fs_wf_create_at],
+    [State.model_fs_wf_create_file],
+    [State.model_fs_wf_create_then_open],
+    [State.model_fs_wf_unlink_file], [State.model_fs_wf_remove_empty_dir]
+    and [State.model_fs_wf_frame]. *)
+Definition valid_image (inp : ProcInput) : Prop :=
+  Fs.wf_fs (in_fs inp)
+  /\ Fs.canonical_key (in_cwd inp) = true
+  /\ Fs.fs_lookup (in_fs inp) (in_cwd inp) = Some Fs.EDir
+  /\ devices_in_dev_subtreeb (in_fs inp) = true
+  /\ (length (in_cwd inp) + 1 <= path_max)%nat
+  /\ standard_root_premise (in_fs inp)
+  /\ localtime_absent (in_fs inp)
+  /\ outside_proc_sysb (in_cwd inp) = true.
+
+(** THE THEOREM THE PRESERVATION KIT IS FOR, NAMED RATHER THAN PROMISED.
+
+    [State.model_fs_wf] is a predicate on a model.  What a consumer
+    wants is that it is an INVARIANT: true of the launch state and
+    preserved by every step, so that a proof reaching some later
+    configuration may read it off.  This is that statement.
+
+    IT IS NOT PROVED, and it carries no unfinished proof: it is a [Prop] with
+    a name, so that a reader greps for it and finds one place rather
+    than a promise in prose.  Nothing in the tree assumes it.
+
+    WHAT IS MISSING is the case analysis that applies the kit: one case
+    per arm of [Specs.spec_table], plus the instruction step, which
+    needs that [mi_account_step] writes none of the three fields the
+    predicate reads.  [State.model_fs_wf_frame] covers the overwhelming
+    majority of arms. *)
+Definition sstep_preserves_wf : Prop :=
+  forall segs cfg evs cfg',
+    State.model_fs_wf (cfg_model cfg) ->
+    sstep segs cfg evs (SNext cfg') ->
+    State.model_fs_wf (cfg_model cfg').
+
+(** THE FILE-SYSTEM CLAUSES, DECIDED BY COMPUTATION.  Every one of them
+    is a boolean behind a bridge, which is why a fixture proves itself a
+    valid input rather than arguing it: [Fs.wf_fsb] decides
+    well-formedness, [Fs.canonical_key] the working directory, a lookup
+    the directory clause, [Fs.standard_root_presentb] the premise,
+    [localtime_absentb] the /etc/localtime clause and
+    [outside_proc_sysb] the last.  A fixture that is NOT valid fails
+    here loudly. *)
+Ltac valid_image_vm :=
+  first [ apply Fs.wf_fsb_iff; vm_compute; reflexivity
+        | apply Fs.standard_root_presentb_iff; vm_compute; reflexivity
+        | (vm_compute; reflexivity)
+        | (vm_compute; lia) ].
+
 Definition valid_input (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -4719,9 +4952,7 @@ Definition valid_input (inp : ProcInput) : Prop :=
     pins the reader, and names the reader-gone launch so a proof can
     ask for it, the shape the abort declaration already has. *)
 Definition valid_input_abort (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = true
@@ -4744,9 +4975,7 @@ Definition valid_input_abort (inp : ProcInput) : Prop :=
     below is what that leaving-free is named when a reader wants the
     name. *)
 Definition valid_input_either (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_va_size inp = Sv48
@@ -4825,9 +5054,7 @@ Qed.
     a service manager.  It is NOT the safer predicate: it asserts
     something about the launch that the ordinary one does not. *)
 Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -4849,9 +5076,7 @@ Definition valid_input_sigpipe_ignored (inp : ProcInput) : Prop :=
     starts -- the same safe failure [valid_input_either] gives for the
     abort stance. *)
 Definition valid_input_sigpipe_either (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -4943,9 +5168,7 @@ Qed.
     ([State.in_sigpipe_terminal] is [negb] of [State.in_channel_reader])
     so that its two halves are exactly the two named launches. *)
 Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -4959,9 +5182,7 @@ Definition valid_input_channel_closed (inp : ProcInput) : Prop :=
 (** Neither reader stance pinned: the clauses both share, and nothing
     about that declaration. *)
 Definition valid_input_channel_either (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -5097,9 +5318,7 @@ Qed.
     [valid_input_channel_closed] above follows the death too, on
     descriptors 1 and 2, because its whole point is that death. *)
 Definition valid_input_sigpipe_kills (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -5137,9 +5356,7 @@ Qed.
     a task that says nothing about its kernel is held to all three
     readings rather than to the default. *)
 Definition valid_input_sv39 (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -5151,9 +5368,7 @@ Definition valid_input_sv39 (inp : ProcInput) : Prop :=
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_sv57 (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -5165,9 +5380,7 @@ Definition valid_input_sv57 (inp : ProcInput) : Prop :=
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_va_any (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ valid_hwcap (in_hwcap inp)
   /\ in_abort_terminal inp = false
@@ -5177,8 +5390,10 @@ Definition valid_input_va_any (inp : ProcInput) : Prop :=
   /\ in_sigpipe_terminal inp = false
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
-Lemma valid_input_image_real : forall inp,
-  valid_input inp -> fs_image_real (in_image_fs inp) = true.
+(** THE FILE-SYSTEM CLAUSES, as one accessor: a proof that needs the
+    image well formed, the working directory a folder, or any other
+    clause [valid_image] names takes this and unfolds [valid_image]. *)
+Lemma valid_input_image : forall inp, valid_input inp -> valid_image inp.
 Proof.
   intros inp Hv. unfold valid_input in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
@@ -5194,8 +5409,8 @@ Qed.
 
 (** THE REMAINING CONJUNCTS OF [valid_input], AS ACCESSORS.
 
-    Six of the fifteen conjuncts already had one; these are the other
-    nine, so that NO consumer has to reach a conjunct by its position.
+    Six of the conjuncts already had one; these are the others, so
+    that NO consumer has to reach a conjunct by its position.
 
     A positional peel of a right-nested conjunction is not merely
     fragile, it fails QUIETLY in both directions.  A pattern SHORTER
@@ -5226,21 +5441,6 @@ Proof.
 Qed.
 
 Lemma valid_input_envp : forall inp, valid_input inp -> valid_envp (in_envp inp).
-Proof.
-  intros inp Hv. unfold valid_input in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  assumption.
-Qed.
-
-Lemma valid_input_fs : forall inp, valid_input inp -> valid_fs (in_fs inp).
-Proof.
-  intros inp Hv. unfold valid_input in Hv.
-  repeat match goal with H : _ /\ _ |- _ => destruct H end.
-  assumption.
-Qed.
-
-Lemma valid_input_keys_relative :
-  forall inp, valid_input inp -> fs_keys_relative (in_image_fs inp).
 Proof.
   intros inp Hv. unfold valid_input in Hv.
   repeat match goal with H : _ /\ _ |- _ => destruct H end.
@@ -5459,9 +5659,7 @@ Qed.
     here yet, and the day one is needed it is written the way these
     are. *)
 Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = false
@@ -5473,9 +5671,7 @@ Definition valid_input_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_hwcap_rv64gcv (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = false
@@ -5568,9 +5764,7 @@ Qed.
     predicate here yet, and the day one is needed it is written the way
     these are. *)
 Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gc
   /\ in_abort_terminal inp = true
@@ -5582,9 +5776,7 @@ Definition valid_input_abort_hwcap_rv64gc (inp : ProcInput) : Prop :=
   /\ in_kernel inp = recorded_kernel (in_kernel inp).
 
 Definition valid_input_abort_hwcap_rv64gcv (inp : ProcInput) : Prop :=
-  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_fs (in_fs inp)
-  /\ fs_keys_relative (in_image_fs inp)
-  /\ fs_image_real (in_image_fs inp) = true
+  valid_argv (in_argv inp) /\ valid_envp (in_envp inp) /\ valid_image inp
   /\ valid_creds inp /\ valid_nofile (in_nofile inp)
   /\ valid_sigmask inp /\ in_hwcap inp = hwcap_rv64gcv
   /\ in_abort_terminal inp = true
@@ -6544,148 +6736,6 @@ Lemma valid_input_abort_hwcap_rv64gcv_min_sigframe_size : forall inp h,
 Proof.
   intros inp h Hv.
   exact (f_equal (fun kb => min_sigframe_size kb h) (valid_input_abort_hwcap_rv64gcv_recorded_kernel inp Hv)).
-Qed.
-
-(* =========================================================================
-   The image premise, consumed: the device arms' guards are unreachable
-
-   [valid_input]'s [Fs.fs_keys_relative] conjunct is a premise about the
-   environment, and a premise earns its place by being USED.  What it is
-   for is here: the three device arms of [Sys.Fs.Open] and the key
-   lookup of [Sys.Fs.Stat.newfstatat_core_spec] each ask the initial
-   file system whether it holds an absolute path, or something under it,
-   and answer [unmodeled] when it does.  Under the premise it never
-   does, so those branches are dead on every valid input and the guards
-   stay in the arms as the courtesy their comments say they are — NO ARM
-   IS CHANGED by this: the premise makes the guards dead, it does not
-   delete them.
-
-   The lemmas live here rather than in [State] because they name
-   [Sys.Fs.Namei.fs_under] and the arms' own path constants, which sit
-   above [State.v]; the seeding half of the argument
-   ([State.seeded_absolute_key_is_tmp]) is down there where the seeding
-   is.
-   ========================================================================= *)
-
-(** THE ONE FACT THE ARMS NEED.  [p] begins with the separator and
-    DIVERGES from the seeding prefix at a byte position both of them
-    have.  Then no key of a seeded image is [p], and none lives under
-    it — so [Fs.fs_lookup] misses and [Sys.Fs.Namei.fs_under] is false.
-
-    Both halves come from [State.seeded_absolute_key_is_tmp]: a key is
-    relative, and then it does not even start the way [p] does, or the
-    seeding minted it and it is [State.tmp_key n], which agrees with
-    [State.tmp_prefix] at position [i] where [p] does not.  The
-    divergence is stated as an index rather than as "p is not under
-    /tmp" because the [fs_under] half needs more than non-prefixhood:
-    "/tmp" is not a /tmp key and yet every /tmp key lives under it. *)
-Lemma absolute_divergent_not_seeded : forall fs t r i a b,
-  fs_keys_relative fs ->
-  nth_error (path_slash_byte :: r) i = Some a ->
-  nth_error tmp_prefix i = Some b ->
-  a <> b ->
-  fs_lookup (fs_seed_tmp fs t) (path_slash_byte :: r) = None
-  /\ fs_under (fs_seed_tmp fs t) (path_slash_byte :: r) = false.
-Proof.
-  intros fs t r i a b Hrel Hp Ht Hab.
-  assert (Hi : (i < length (path_slash_byte :: r))%nat)
-    by (apply nth_error_Some; rewrite Hp; discriminate).
-  assert (Hj : (i < length tmp_prefix)%nat)
-    by (apply nth_error_Some; rewrite Ht; discriminate).
-  pose proof (State.seeded_absolute_key_is_tmp t fs Hrel) as Hall.
-  split.
-  - apply fs_lookup_none_of_keys.
-    eapply Forall_impl; [|exact Hall]. intros [q d] Hq. cbn [fst] in Hq |- *.
-    destruct Hq as [Hq|[n Hq]]; intros Heq.
-    + rewrite Heq in Hq. unfold key_is_relative in Hq. exact (Hq eq_refl).
-    + assert (Hx : nth_error q i = Some b)
-        by (rewrite Hq; unfold tmp_key; rewrite nth_error_app1 by exact Hj; exact Ht).
-      rewrite Heq, Hp in Hx. inversion Hx. now apply Hab.
-  - apply fs_under_false_of_keys.
-    eapply Forall_impl; [|exact Hall]. intros [q d] Hq. cbn [fst] in Hq |- *.
-    destruct Hq as [Hq|[n Hq]].
-    + destruct q as [|c q]; [reflexivity|].
-      unfold key_is_relative in Hq. cbn [dir_prefixb].
-      destruct (bv_eqb path_slash_byte c) eqn:Hc; [|reflexivity].
-      exfalso. apply bv_eqb_eq in Hc. apply Hq. now symmetry.
-    + destruct (dir_prefixb (path_slash_byte :: r) q) eqn:Hd; [|reflexivity].
-      exfalso. apply dir_prefixb_app in Hd. destruct Hd as [rest Hrest].
-      assert (Hx : nth_error q i = Some b)
-        by (rewrite Hq; unfold tmp_key; rewrite nth_error_app1 by exact Hj; exact Ht).
-      rewrite Hrest in Hx. rewrite nth_error_app1 in Hx by exact Hi.
-      rewrite Hp in Hx. inversion Hx. now apply Hab.
-Qed.
-
-(** The three DEVICE paths of [Sys.Fs.Open], each of which diverges from
-    "/tmp/" at its second byte ('d', 'e', 'd' against 't').  This is the
-    statement the arms' image guards are unreachable: each reads
-    [fs_lookup (m_fs m) p] and, on [None], [fs_under (m_fs m) p], so
-    both branches that answer [unmodeled] there are ruled out.  The
-    paths are the arms' OWN constants, so a path that moves moves here
-    too. *)
-Lemma device_paths_never_seeded : forall fs t p,
-  fs_keys_relative fs ->
-  In p [devnull_path; localtime_path; urandom_path] ->
-  fs_lookup (fs_seed_tmp fs t) p = None
-  /\ fs_under (fs_seed_tmp fs t) p = false.
-Proof.
-  intros fs t p Hrel Hin.
-  (* 'd' and 'e' against the 't' of "/tmp/": the second byte is where
-     each of the three parts company with the seeding prefix. *)
-  assert (Hd : Z_to_bv 8 100 <> Z_to_bv 8 116)
-    by (intros H; apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H; discriminate).
-  assert (He : Z_to_bv 8 101 <> Z_to_bv 8 116)
-    by (intros H; apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H; discriminate).
-  destruct Hin as [H|[H|[H|[]]]]; subst p.
-  - apply (absolute_divergent_not_seeded fs t _ 1%nat (Z_to_bv 8 100) (Z_to_bv 8 116) Hrel);
-      [reflexivity | reflexivity | exact Hd].
-  - apply (absolute_divergent_not_seeded fs t _ 1%nat (Z_to_bv 8 101) (Z_to_bv 8 116) Hrel);
-      [reflexivity | reflexivity | exact He].
-  - apply (absolute_divergent_not_seeded fs t _ 1%nat (Z_to_bv 8 100) (Z_to_bv 8 116) Hrel);
-      [reflexivity | reflexivity | exact Hd].
-Qed.
-
-(** The same, at a model whose file system is the run's initial one.
-
-    [m] is any model carrying [State.in_fs inp] — the initial model
-    [State.init_model] builds is one, and so is every later state that
-    has not written the map.  Whether a LATER state can be one is a
-    question about the write arms rather than about the premise: the
-    only specs that mint a key are [Sys.Fs.Open]'s create arms, which
-    sit behind the separator gate, and the /tmp arm, whose key is
-    [State.tmp_key] of one component — so no run-time creation puts a
-    device path in the map.  That is an argument about arms this lemma
-    does not quantify over, so it is said here and not claimed by the
-    statement. *)
-Lemma valid_input_device_guards_unreachable : forall inp m p,
-  fs_keys_relative (in_image_fs inp) ->
-  m_fs m = in_fs inp ->
-  In p [devnull_path; localtime_path; urandom_path] ->
-  fs_lookup (m_fs m) p = None /\ fs_under (m_fs m) p = false.
-Proof.
-  intros inp m p Hrel Hm Hin. rewrite Hm. unfold in_fs.
-  now apply device_paths_never_seeded.
-Qed.
-
-(** [Sys.Fs.Stat.newfstatat_core_spec]'s half of the same fact.  That
-    spec answers [unmodeled] when the path it was handed IS a key, and
-    -ENOENT when it is not; under the premise every absolute pathname
-    that is not a /tmp key misses, so the [unmodeled] branch is
-    unreachable for it and the answer is the real -ENOENT.  Stated over
-    the divergence index rather than over a list of paths, because
-    [newfstatat] takes its path from the program rather than from a
-    constant. *)
-Lemma valid_input_absolute_key_absent : forall inp m r i a b,
-  fs_keys_relative (in_image_fs inp) ->
-  m_fs m = in_fs inp ->
-  nth_error (path_slash_byte :: r) i = Some a ->
-  nth_error tmp_prefix i = Some b ->
-  a <> b ->
-  fs_lookup (m_fs m) (path_slash_byte :: r) = None
-  /\ fs_under (m_fs m) (path_slash_byte :: r) = false.
-Proof.
-  intros inp m r i a b Hrel Hm Hp Ht Hab. rewrite Hm. unfold in_fs.
-  exact (absolute_divergent_not_seeded _ _ r i a b Hrel Hp Ht Hab).
 Qed.
 
 Lemma refuse_reason_budget_implies_refused : forall i m,

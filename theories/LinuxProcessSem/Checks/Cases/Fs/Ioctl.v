@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -22,31 +25,31 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 
 Example ioctl_tiocgwinsz_enotty :
   check_syscall (mkInput 29 [1; TIOCGWINSZ; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [].
 Proof. check_eq. Qed.
 
 Example ioctl_tty_only_requests_all_enotty :
   Forall (fun req =>
     check_syscall (mkInput 29 [1; req; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-      (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [])
+      (mkEffect (errno_ret ENOTTY) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [])
     [TCGETS; TCSETS; TIOCSCTTY; TIOCGWINSZ;
      TIOCSWINSZ; TIOCNOTTY; TIOCGPTN; TIOCSPTLCK].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
 Example ioctl_other_request_is_error :
   Forall (fun req =>
     check_syscall (mkInput 29 [1; req; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
-      (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+      (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
     = CheckUnmodeled)
     [Z_to_bv 64 21531; Z_to_bv 64 21537].   (* FIONREAD 0x541B, FIONBIO 0x5421 *)
-Proof. repeat constructor; vm_compute; reflexivity. Qed.
+Proof. split_forall; vm_compute; reflexivity. Qed.
 
 (* -------------------------------------------------------------------------
    THE NULL DEVICE
 
-   [State.FdDevNull] is the descriptor [openat_devnull_spec] mints, and
+   [State.FdDevNull] is the descriptor [Open.open_devnull] mints, and
    the reason this kind needs its own examples is that the two above run
    on fd 1, which [init_model] makes an [FdChannel] -- a different
    constructor, so nothing they prove reaches this arm.
@@ -59,9 +62,9 @@ Proof. repeat constructor; vm_compute; reflexivity. Qed.
    ------------------------------------------------------------------------- *)
 
 Definition ioctl_devnull_model : Model :=
-  with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+  with_fds (fd_insert (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)))
               3 (FdDevNull false true))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 Example ioctl_devnull_tiocgwinsz_enotty :
   check_syscall (mkInput 29 [3; TIOCGWINSZ; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
@@ -76,7 +79,7 @@ Example ioctl_devnull_tty_only_requests_all_enotty :
     = CheckOk ioctl_devnull_model [])
     [TCGETS; TCSETS; TIOCSCTTY; TIOCGWINSZ;
      TIOCSWINSZ; TIOCNOTTY; TIOCGPTN; TIOCSPTLCK].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; check_eq. Qed.
 
 (** FAIL-CLOSED beside the conforming answer: a request outside the
     eight is still declined ON THIS KIND, so the arm answers the eight
@@ -92,4 +95,4 @@ Example ioctl_devnull_other_request_is_unmodeled :
       (mkEffect 0 [] []) ioctl_devnull_model
     = CheckUnmodeled)
     [Z_to_bv 64 21537; Z_to_bv 64 21531].   (* FIONBIO 0x5421, FIONREAD 0x541B *)
-Proof. repeat constructor; vm_compute; reflexivity. Qed.
+Proof. split_forall; vm_compute; reflexivity. Qed.

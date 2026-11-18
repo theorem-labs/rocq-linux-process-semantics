@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -54,8 +57,8 @@ Definition ps_wmem : word -> option byte :=
     a channel, whose readiness is a schedule the model does not
     represent. *)
 Definition pselect_model : Model :=
-  mkModel [(0, FdChannel 0); (3, FdFile [102] 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105])] None None None.
+  mkModel [(0, FdChannel 0); (3, FdFile 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (raw_files [([102], [104; 105])]) None None None.
 
 (** The return value is a BIT count, not a descriptor count: [do_select]
     has three independent [retval++], one per result mask, so fd 3 named
@@ -574,8 +577,7 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     example nothing in the tree said so for [ppoll].
 
     [ppoll_revents_of] enumerates the descriptor kinds, which makes a
-    MISSING arm a build error — the same shape, and the same reason, as
-    [Locks.path_openers].  What it does not make is a WRONG arm visible:
+    MISSING arm a build error.  What it does not make is a WRONG arm visible:
     [check_ppoll] calls [Select.ppoll_outcome] directly rather than
     mirroring it, so the spec arm IS the checker arm and no agreement
     proof can disagree with it.  Masking the read-write arm's answer to 0
@@ -609,8 +611,8 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     first conjunct fails alongside it, on the answer that is no longer
     given. *)
 Definition pselect_model_rdwr : Model :=
-  mkModel [(0, FdChannel 0); (3, FdFileRW [102] 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105])] None None None.
+  mkModel [(0, FdChannel 0); (3, FdFileRW 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (raw_files [([102], [104; 105])]) None None None.
 
 Example ppoll_a_read_write_file_polls_as_any_other :
   check_syscall

@@ -1,3 +1,8 @@
+# Name this object in its STT_FILE symbol. Without a .file directive the
+# linker names it after the compiler's random temporary object
+# (/tmp/ccXXXXXX.o), and in most examples the symbol table sits in loaded
+# page slack, so the snapshot would differ on every build (issue #1686).
+.file "_start.S"
 .section .text
 .globl _start
 _start:

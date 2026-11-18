@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -22,7 +25,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 
 Definition mremap_two_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Definition mremap_in (old_size new_size : word) : SyscallInput :=
   (* a4 is deliberately nonzero: Linux ignores new_address without FIXED. *)
@@ -66,7 +69,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_budget_full_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 4096)
-    (init_model [] 0 0 demo_sp 4096 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 4096 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_grow_beyond_budget_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -76,7 +79,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_occupied_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096); (131072, 8192)] 0 0 16384)
-    (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 16384 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_move_to_occupied_range_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -108,7 +111,7 @@ Example mremap_copy_reads_pre_effect_snapshot :
   after 65536 = None /\
   after 135168 = Some 0 /\
   after 196608 = Some 51.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 Example mremap_equal_size_accepts :
   check_syscall (mremap_in 8192 8192)
@@ -124,7 +127,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_one_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_accepts :
   check_syscall (mremap_in 4096 8192)
@@ -136,7 +139,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_crowded_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096); (69632, 4096)] 0 0 16384)
-    (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 16384 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_into_neighbour_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -146,7 +149,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_below_image_model : Model :=
   with_vmmaps (mkVmMaps [(69632, 4096)] [(65536, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_into_image_rejected :
   check_syscall (mremap_in 4096 8192)
@@ -183,7 +186,7 @@ Definition mremap_at_in (old_addr old_size new_size : word) : SyscallInput :=
 
 Definition mremap_grow_to_ceiling_model : Model :=
   with_vmmaps (mkVmMaps [] [(140735332474880, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_to_ceiling_accepts :
   check_syscall (mremap_at_in 140735332474880 4096 8192)
@@ -196,7 +199,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_grow_past_ceiling_model : Model :=
   with_vmmaps (mkVmMaps [] [(140735332478976, 4096)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_past_ceiling_rejected :
   check_syscall (mremap_at_in 140735332478976 4096 8192)
@@ -231,24 +234,22 @@ Example mremap_wrapping_new_size_success_rejected :
   = CheckReject.
 Proof. check_eq. Qed.
 
-(** A NEW SIZE AT THE TOP OF THE ADDRESS SPACE is -EINVAL, not the
-    arm's injected -ENOMEM.  It is page aligned, so it passes the
-    wrap gate above, and [check_mremap_params] then refuses it for
-    exceeding TASK_SIZE (mm/mremap.c, Linux v6.18.46),
-    before any VMA is looked up.  These two examples pinned -ENOMEM
-    until that gate was added; they pinned an answer Linux never
-    gives. *)
-Example mremap_top_aligned_new_size_is_einval :
+(** A NEW SIZE AT THE TOP OF THE ADDRESS SPACE is DECLINED.  It is page
+    aligned, so it passes the wrap gate above and reaches the TASK_SIZE
+    gate, where the supported versions differ: v6.17 and v6.18.46 answer
+    -EINVAL in [check_mremap_params] (mm/mremap.c:1775-1776, v6.18.46)
+    before any VMA is looked up, v6.16 only in [mremap_to], which
+    MREMAP_MAYMOVE alone never reaches
+    ([mremap_new_len_over_task_size_is_declined] below has the lines).
+    So neither the -EINVAL nor the grow arm's -ENOMEM is answered. *)
+Example mremap_top_aligned_new_size_is_declined :
   check_syscall (mremap_in 8192 18446744073709547520)
     (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
-  = CheckOk mremap_two_page_model [].
-Proof. check_eq. Qed.
-
-Example mremap_top_aligned_new_size_enomem_rejected :
-  check_syscall (mremap_in 8192 18446744073709547520)
-    (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
-  = CheckReject.
-Proof. check_eq. Qed.
+  = CheckUnmodeled
+  /\ check_syscall (mremap_in 8192 18446744073709547520)
+       (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
+     = CheckUnmodeled.
+Proof. split; check_eq. Qed.
 
 Definition mremap_misaligned_in (old_size new_size : word) : SyscallInput :=
   mkInput 216 [65537; old_size; new_size; 1; 0x12345000; 0]
@@ -268,7 +269,7 @@ Proof. check_eq. Qed.
 
 Definition mremap_zero_entry_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 0)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_zero_entry_passes_the_source_gate :
   mremap_source_b (m_vmmaps mremap_zero_entry_model) 65536 0 0 = true.
@@ -401,7 +402,7 @@ Example apply_effect_copy_source_survives_unmap_and_zero :
                  (mkEffectU 0 [] [(65536, 4096)] [(65536, 4096)]
                     [mkCopy 65536 131072 4096] [])) in
   after 131072 = Some 90 /\ after 65536 = Some 0.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 Definition mremap_orphan_in : SyscallInput :=
   (* a4 is deliberately nonzero: Linux ignores new_address without FIXED. *)
@@ -532,7 +533,7 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
 Definition mremap_lazy_two_pages : Model :=
   with_vm_backing [(65536, 8192)] [65536; 69632]
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-      (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof))).
 
 Example mremap_lazy_shrink_drops_tail_charge :
   check_syscall (mremap_in 8192 4096)
@@ -547,12 +548,12 @@ Example mremap_lazy_shrink_ledgers_are_exact :
   m_vm_lazy post = [(65536, 4096)] /\
   m_vm_materialized post = [65536] /\
   vm_backing_used post = 4096%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 Definition mremap_lazy_one_page : Model :=
   with_vm_backing [(65536, 4096)] [65536]
     (with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 4096)
-      (init_model [] 0 0 demo_sp 4096 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp 4096 (demo_input Fs.fs_empty IEof))).
 
 (** A lazy grow succeeds at a full backed budget because its new tail is a
     reservation, not an eager charge. *)
@@ -569,7 +570,7 @@ Example mremap_lazy_grow_preserves_only_old_charge :
   m_vm_lazy post = [(65536, 8192)] /\
   m_vm_materialized post = [65536] /\
   vm_backing_used post = 4096%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** The MOVE of the same lazy page is refused, and the reason is the
     grow's order rather than anything about backing: [[0x11000,
@@ -593,12 +594,12 @@ Example mremap_lazy_move_ledgers_follow_contents :
   m_vm_lazy post = [(131072, 8192)] /\
   m_vm_materialized post = [131072] /\
   vm_backing_used post = 4096%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 Definition mremap_mixed_backing : Model :=
   with_vm_backing [(65536, 4096)] []
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-      (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof))).
 
 Example mremap_mixed_backing_fails_closed :
   check_syscall (mremap_in 8192 4096)
@@ -635,7 +636,7 @@ Definition mremap_placement_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(Z_to_bv 64 0x2aaaaab000, 4096)] [] 0 0 8192
       (Z_to_bv 64 mmap_base_max) demo_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 (** A growing move to a low destination, NOW REFUSED.  0x80000000 is
     page-aligned, positive, below the ceiling and free, and the old
@@ -813,7 +814,7 @@ Definition mremap_grow_past_top_hi_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(Z_to_bv 64 (demo_top - 4096), 4096)] [] 0 0 8192
       (Z_to_bv 64 mmap_base_max) hi_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example mremap_inplace_grow_past_demo_top_admitted_under_high_sp :
   check_syscall (mremap_at_in (Z_to_bv 64 (demo_top - 4096)) 4096 8192)
@@ -836,12 +837,12 @@ Definition mremap_move_source_lo_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) demo_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp 16384 (demo_input Fs.fs_empty IEof)).
 Definition mremap_move_source_hi_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096); (69632, 4096)] [] 0 0 16384
       (Z_to_bv 64 mmap_base_max) hi_sp)
-    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 16384 (demo_input [] IEof)).
+    (init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp 16384 (demo_input Fs.fs_empty IEof)).
 
 (** The destination the search gives in the HIGH-sp run, named
     structurally so no constant can drift from the field it is read
@@ -875,33 +876,36 @@ Example mremap_move_past_demo_top_admitted_under_high_sp :
           (Z_to_bv 64 mmap_base_max) hi_sp) mremap_move_source_hi_model) [].
 Proof. check_eq. Qed.
 
-(** A NEW LENGTH OVER [State.TASK_SIZE] is -EINVAL, and the answer is
-    deterministic: [check_mremap_params] (mm/mremap.c, Linux
-    v6.18.46, commit 1f99e9ab748f) rejects it before any VMA is looked
-    up.  The first three
+(** A NEW LENGTH OVER [State.TASK_SIZE] is DECLINED, whatever the kernel
+    answered.  From v6.17 [check_mremap_params] rejects it with -EINVAL
+    before any VMA is looked up (mm/mremap.c:1775-1776, v6.18.46;
+    :1778-1779, v6.17); v6.16 tests it only in [mremap_to]
+    (mm/mremap.c:1387-1389, v6.16), which MREMAP_MAYMOVE alone never
+    reaches, so there the call goes on to [vma_lookup] and
+    [expand_vma] and answers -EFAULT or -ENOMEM.  The first three
     conjuncts use an [old_size] the model's ledger does NOT hold exactly,
-    so before this gate the answer was [Unmodeled]: they pin that the gate
-    fires AHEAD of the source test, which is the kernel's order
-    ([do_mremap] calls [check_mremap_params] before it calls
-    [vma_lookup]).  The fourth and fifth use the source the
-    ledger does hold, where the answer before this gate was the arm's
-    injected -ENOMEM, the answer Linux never gives here. *)
-Example mremap_new_len_over_task_size_is_einval :
+    the next three the source it does hold: every answer is
+    [CheckUnmodeled], so the gate still fires AHEAD of the source test
+    and ahead of the grow arm's injected -ENOMEM. *)
+Example mremap_new_len_over_task_size_is_declined :
   check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
     (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
-  = CheckOk mremap_two_page_model []
+  = CheckUnmodeled
   /\ check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
-       (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
-     = CheckReject
+       (mkEffect (errno_ret EFAULT) [] []) mremap_two_page_model
+     = CheckUnmodeled
   /\ check_syscall (mremap_in 4096 (Z_to_bv 64 (TASK_SIZE + 1)))
        (mkEffect 65536 [] []) mremap_two_page_model
-     = CheckReject
+     = CheckUnmodeled
   /\ check_syscall (mremap_in 8192 (Z_to_bv 64 (TASK_SIZE + 1)))
        (mkEffect (errno_ret EINVAL) [] []) mremap_two_page_model
-     = CheckOk mremap_two_page_model []
+     = CheckUnmodeled
   /\ check_syscall (mremap_in 8192 (Z_to_bv 64 (TASK_SIZE + 1)))
        (mkEffect (errno_ret ENOMEM) [] []) mremap_two_page_model
-     = CheckReject
+     = CheckUnmodeled
+  /\ check_syscall (mremap_in 8192 (Z_to_bv 64 (TASK_SIZE + 1)))
+       (mkEffect (errno_ret EFAULT) [] []) mremap_two_page_model
+     = CheckUnmodeled
   (* ...while a new length of exactly TASK_SIZE passes the gate and
      reaches the grow arm, whose injected -ENOMEM is admitted *)
   /\ check_syscall (mremap_in 8192 (Z_to_bv 64 TASK_SIZE))

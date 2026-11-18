@@ -1,13 +1,13 @@
 (** * LinuxProcessSem.Checks.StreamReset — the survivor's reset state: it only moves forward, its first observation fixes it for both routes, it is reported at most once, and only the end's own calls write it
 
     [State.se_reset] records what a stream-pair end has shown of the
-    error its peer's close may have left ([State.ResetState]; the design
-    is dispatch://OSSV-287/artifact/d2-design-md).  Two routes show it,
+    error its peer's close may have left ([State.ResetState]).  Two
+    routes show it,
     and both write it: the empty read ([Fs.ReadWrite.stream_read_reset],
     reached by [read_spec], [readv_spec] and [recvfrom_spec]) and a
     [ppoll] that names the end ([Fs.Select.ppoll_record], through
-    [ppoll_spec]).  This file proves the four properties the design
-    names, over THOSE spec arms on a survivor (read, readv, recvfrom,
+    [ppoll_spec]).  This file proves four properties over THOSE spec
+    arms on a survivor (read, readv, recvfrom,
     ppoll, and pselect6, which records nothing) and over the functions
     they call:
 
@@ -51,10 +51,7 @@
     [Fs.ReadWrite.stream_read_reset] and [Fs.Select.ppoll_record]; every
     other arm that rewrites an end goes through the one-field updates
     above, which keep the field, and only [State.stream_fresh] builds an
-    end at [RsUnknown].  This is the per-arm form that [Checks.AnonAgree]
-    takes for its own replicated state, for the same reason.  The
-    revision owner kept that scope for this state on 2026-11-02
-    (dispatch://OSSV-287/artifact/d2-design-md).
+    end at [RsUnknown].
 
     ONE HOLDER.  [se_reset] is kept in the descriptor entry, where Linux
     keeps [sk_err] on the socket that every descriptor of it shares.  The

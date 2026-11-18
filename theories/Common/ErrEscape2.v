@@ -27,7 +27,9 @@
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Import RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import Run.
 From LinuxProcessSemantics.Common Require Import ExitSim PropExec CatSim ErrEscape FileSim.
 Import ListNotations.
 Open Scope bv_scope.

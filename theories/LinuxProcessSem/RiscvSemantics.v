@@ -73,7 +73,8 @@
     riscv64 ABI: syscall number in a7, args in a0–a5 (x10–x15). *)
 
 From Stdlib Require Import ZArith NArith List String.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 
 Import ListNotations.

@@ -49,7 +49,11 @@
       spurious-failure configuration.  The two verdicts are proved again
       at the pinned reading rather than carried over, and Part 7's two
       refutations are proved at EVERY [Run.SpuriousCfg] rather than at
-      one.
+      one.  Part 8 also holds the BET-618 witnesses for the yes, no or
+      maybe forms of [Classifier]: each half of soundness refuted, the
+      maybe set inhabited by an exit 2 and by a run that leaves the
+      model, and the maybe statement, the maybe bound and totality with
+      three answers each refuted.
 
     Which of the four reasons at the top of [Checks/Examples.v] admits
     this file: the FIRST.  [Classifier.accepts] is a [forall] over every
@@ -63,10 +67,13 @@
     built — [Checks.Examples.exit0_image] and [Checks.Examples.demo_entry],
     with [Checks.Examples.exits_c_must_exit_at] as the evaluator that
     discharges the run tree — reused rather than rebuilt.  Only the
-    exit-1 twin is new.  Part 8 needs a second evaluator for the pinned
+    exit-1 twin is new, and Part 8's exit-2 twin.  Part 8 needs a second evaluator for the pinned
     reading, [Checks.SpuriousCfg.exits_c_must_exit_at_cfg], which is the
     same [Checks.Examples.exits_c] over [Run.sstep_cfg]; that is the one
-    import this file takes beyond [Checks/Examples.v]. *)
+    import this file takes beyond [Checks/Examples.v].
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString QArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -108,8 +115,9 @@ Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.
     the terms those lemmas carry.  [gated_demo_to_proc_input] pins that
     the two agree by computation rather than by the reader's eye. *)
 Definition gated_demo_fin : FinProcInput :=
-  mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+  mkFinProcInput [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                 Fs.default_cwd [] demo_uid demo_gid demo_groups
+                 net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 []
                  default_kernel default_execfn true true false.
 
 Lemma gated_demo_to_proc_input :
@@ -432,9 +440,10 @@ Qed.
     CORE, so the two cores differ, which is what
     [GatedSize.weight_bound_pred_refutable] asks for. *)
 Definition gated_demo_fin_stdin : FinProcInput :=
-  mkFinProcInput [[]] [] [] [Z_to_bv 8 65] demo_uid demo_gid demo_groups
+  mkFinProcInput [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                 Fs.default_cwd [Z_to_bv 8 65] demo_uid demo_gid demo_groups
                  net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                 [] [] default_kernel default_execfn true true false.
+                 [] default_kernel default_execfn true true false.
 
 Lemma gated_demo_fin_stdin_valid : valid_fin_input gated_demo_fin_stdin.
 Proof.
@@ -642,6 +651,196 @@ Proof.
   cbn [must_exit_with_scfg exit0_image]. unfold init_config.
   apply (exits_c_must_exit_at_cfg _ _ _ 8); [reflexivity | reflexivity |].
   vm_compute. reflexivity.
+Qed.
+
+(** BET-618: the exit-0 image has a valid entry on this input.
+    [gate_exit0_accepts_fo] holds at every entry and so names none;
+    the soundness witness below needs one, because [Classifier.sound_fo]
+    says nothing at an image with no valid entry.  The entry is
+    [Checks.Examples.demo_entry], through
+    [Checks.Examples.demo_entry_valid_exit0]. *)
+Lemma gated_demo_entry_valid :
+  valid_entry exit0_image demo_entry (to_proc_input gated_demo_fin).
+Proof. apply demo_entry_valid_exit0. exact gated_demo_fin_valid. Qed.
+
+(** BET-618: an input the classifier answers yes on at every start state is not a maybe input. *)
+Lemma gate_exit0_not_maybe_fo : ~ Classifier.maybe_fo exit0_image gated_demo_fin.
+Proof. intros (_ & Hna & _). exact (Hna gate_exit0_accepts_fo). Qed.
+
+(** BET-618: soundness is not vacuous: a yes on an input where the property is false refutes it. *)
+Lemma gate_exit0_unsound_for_false : ~ Classifier.sound_fo exit0_image (fun _ => False).
+Proof.
+  intros Hs.
+  destruct (Hs gated_demo_fin gated_demo_fin_valid demo_entry gated_demo_entry_valid) as [Hyes _].
+  exact (Hyes (gate_exit0_accepts_fo demo_entry gated_demo_entry_valid)).
+Qed.
+
+(** BET-618: the three verdict words are pairwise different (the third
+    pair is [Classifier.verdict_accept_neq_reject]). *)
+Lemma verdicts_pairwise_distinct :
+  Classifier.verdict_accept <> Classifier.verdict_maybe
+  /\ Classifier.verdict_reject <> Classifier.verdict_maybe.
+Proof. split; [exact Classifier.verdict_accept_neq_maybe | exact Classifier.verdict_reject_neq_maybe]. Qed.
+
+(** BET-618: an image whose maybe set is empty proves a maybe bound of 0 for every weight and total.
+    This is [Measure.maybe_bound_T_fo_zero_of_maybe_empty] read here, the
+    route a proof of the exact statement takes; it names no image.  The
+    witnesses that the maybe forms can fail are the exit-2 and
+    undecodable facts below. *)
+Lemma maybe_bound_zero_of_empty_demo : forall C w M,
+  Classifier.maybe_empty_T_fo C -> Measure.maybe_bound_T_fo C w M 0.
+Proof. intros C w M H. exact (Measure.maybe_bound_T_fo_zero_of_maybe_empty C w M H). Qed.
+
+(** BET-618: the "no" half of soundness is not vacuous either: the
+    exit-1 gate answers no at a valid entry on an input where the
+    property holds, so it is not sound for the property that always
+    holds. *)
+Lemma gate_exit1_unsound_for_true : ~ Classifier.sound_fo exit1_image (fun _ => True).
+Proof.
+  intros Hs.
+  assert (Hen : valid_entry exit1_image demo_entry (to_proc_input gated_demo_fin)).
+  { apply demo_entry_valid_exit1. exact gated_demo_fin_valid. }
+  destruct (Hs gated_demo_fin gated_demo_fin_valid demo_entry Hen) as [_ Hno].
+  apply (Hno I).
+  cbn [must_exit_with_scfg exit1_image demo_entry]. unfold init_config.
+  apply (exits_c_must_exit_at_cfg _ _ _ 8); [reflexivity | reflexivity |].
+  vm_compute. reflexivity.
+Qed.
+
+(** BET-618: the maybe gate.  [exit1_image]'s program with the one
+    immediate changed to 2 — [addi a0, x0, 2] (0x00200513) — so it
+    exits 2, the maybe answer ([Classifier.verdict_maybe]).  Same base,
+    size and program headers as the other two gates. *)
+Definition exit2_segment : Segment := {|
+  seg_base := 0x100;
+  seg_size := 12;
+  seg_perms := "r-x"%string;
+  seg_bytes := ["9308d0051305200073000000"%pstring];
+  seg_kind  := SegLoader
+|}.
+Definition exit2_segments : list Segment := [exit2_segment].
+Definition exit2_image : Image := mkImage exit2_segments 0x100 demo_phdrs.
+
+(** The maybe gate is startable at [Checks.Examples.demo_entry_of]: the
+    proof of [demo_entry_valid_exit1], since the reservation is the
+    same. *)
+Lemma demo_entry_valid_exit2 : forall inp,
+  valid_input inp -> valid_entry exit2_image (demo_entry_of inp) inp.
+Proof.
+  intros inp Hvalid.
+  red in Hvalid.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  unfold valid_entry, demo_entry_of, exit2_image.
+  apply launch_entry_va_valid; try assumption.
+  unfold valid_brk.
+  repeat split; vm_compute; try reflexivity; try discriminate.
+Qed.
+
+Lemma gate_exit2_entry_valid :
+  valid_entry exit2_image demo_entry (to_proc_input gated_demo_fin).
+Proof.
+  rewrite gated_demo_to_proc_input.
+  exact (demo_entry_valid_exit2 demo_proc_input demo_input_valid).
+Qed.
+
+(** BET-618: at that entry every run of the maybe gate exits 2. *)
+Lemma gate_exit2_maybe_at_demo_entry :
+  must_exit_with_scfg forced_only_cfg Classifier.verdict_maybe exit2_image
+    classifier_alloc_limit demo_entry (to_proc_input gated_demo_fin).
+Proof.
+  rewrite demo_entry_fields.
+  cbn [must_exit_with_scfg exit2_image]. unfold init_config.
+  apply (exits_c_must_exit_at_cfg _ _ _ 8); [reflexivity | reflexivity |].
+  vm_compute. reflexivity.
+Qed.
+
+(** BET-618: an exit 2 puts a valid input in the maybe set.  The two
+    verdict inequalities rule out a firm yes and a firm no, each from
+    the one valid entry above. *)
+Lemma gate_exit2_maybe_fo : Classifier.maybe_fo exit2_image gated_demo_fin.
+Proof.
+  split; [exact gated_demo_fin_valid |]. split.
+  - intros Ha. apply Classifier.verdict_accept_neq_maybe.
+    exact (must_exit_with_scfg_exclusive _ _ _ _ _ _ _
+             (Ha demo_entry gate_exit2_entry_valid) gate_exit2_maybe_at_demo_entry).
+  - intros Hn. apply Classifier.verdict_reject_neq_maybe.
+    exact (must_exit_with_scfg_exclusive _ _ _ _ _ _ _
+             (Hn demo_entry gate_exit2_entry_valid) gate_exit2_maybe_at_demo_entry).
+Qed.
+
+(** BET-618: so the maybe statement of a pair with no distribution can
+    fail: the maybe gate refutes it. *)
+Lemma gate_exit2_refutes_maybe_empty : ~ Classifier.maybe_empty_T_fo exit2_image.
+Proof. intros H. exact (H gated_demo_fin gate_exit2_maybe_fo). Qed.
+
+(** BET-618: and the maybe bound can fail: at unit weight and total
+    [1], the one-input list of maybe inputs sums to [1], so the bound
+    [0] is false for the maybe gate. *)
+Lemma gate_exit2_refutes_maybe_bound_zero :
+  ~ Measure.maybe_bound_T_fo exit2_image (fun _ => 1%Q) 1%Q 0%Q.
+Proof.
+  intros Hbound.
+  assert (Hnd : List.NoDup (List.map fin_core [gated_demo_fin])).
+  { cbn [List.map]. apply List.NoDup_cons; [intros Hin; exact Hin | apply List.NoDup_nil]. }
+  assert (Hall : forall f, In f [gated_demo_fin] -> Classifier.maybe_fo exit2_image f).
+  { intros f [Heq | []]. subst f. exact gate_exit2_maybe_fo. }
+  specialize (Hbound [gated_demo_fin] Hnd Hall).
+  rewrite sum_weights_cons, sum_weights_nil in Hbound.
+  apply (proj2 (Qle_bool_iff _ _)) in Hbound.
+  vm_compute in Hbound.
+  discriminate.
+Qed.
+
+(** BET-618: a run that leaves the model is not an answer.  The
+    undecodable image leaves the model on its first fetch at the
+    classifier's budget too, by the proof of
+    [undecodable_unmodeled_scfg_at_demo_entry]. *)
+Lemma undecodable_unmodeled_classifier_at_demo_entry :
+  bh_unmodeled (run_scfg forced_only_cfg undecodable_image classifier_alloc_limit demo_entry
+                  (to_proc_input gated_demo_fin)).
+Proof.
+  rewrite gated_demo_to_proc_input, demo_entry_fields.
+  cbn [run_scfg bh_unmodeled undecodable_image]. unfold init_config.
+  match goal with
+  | |- reaches_unmodeled_cfg _ _ ?c => exists [], c
+  end.
+  split; [apply star_cfg_refl |].
+  split; [reflexivity |]. left. split; [reflexivity |]. split; [| reflexivity].
+  cbn [cfg_ms cfg_model].
+  match goal with
+  | |- mi_account_step ?segs ?ms ?model = _ =>
+      rewrite (mi_account_step_no_lazy segs ms model ltac:(reflexivity))
+  end.
+  rewrite undecodable_step_unmodeled_at_demo_entry_run. reflexivity.
+Qed.
+
+Lemma undecodable_no_answer_at_demo_entry : forall code,
+  ~ must_exit_with_scfg forced_only_cfg code undecodable_image classifier_alloc_limit
+      demo_entry (to_proc_input gated_demo_fin).
+Proof.
+  intros code H.
+  exact (must_exit_with_scfg_modeled _ _ _ _ _ _ H undecodable_unmodeled_classifier_at_demo_entry).
+Qed.
+
+(** BET-618: totality with three answers is not free: the undecodable
+    image answers neither yes, no nor maybe at a valid entry. *)
+Lemma undecodable_refutes_total3 : ~ Classifier.classifier_total3_T_fo undecodable_image.
+Proof.
+  intros Ht.
+  assert (Hen : valid_entry undecodable_image demo_entry (to_proc_input gated_demo_fin)).
+  { apply demo_entry_valid_undecodable. exact gated_demo_fin_valid. }
+  destruct (Ht gated_demo_fin gated_demo_fin_valid demo_entry Hen) as [H | [H | H]];
+    exact (undecodable_no_answer_at_demo_entry _ H).
+Qed.
+
+(** BET-618: and the input it gives no answer on is a maybe input, so a
+    run with no answer counts in the maybe bound. *)
+Lemma undecodable_maybe_fo : Classifier.maybe_fo undecodable_image gated_demo_fin.
+Proof.
+  assert (Hen : valid_entry undecodable_image demo_entry (to_proc_input gated_demo_fin)).
+  { apply demo_entry_valid_undecodable. exact gated_demo_fin_valid. }
+  split; [exact gated_demo_fin_valid |].
+  split; intros H; exact (undecodable_no_answer_at_demo_entry _ (H demo_entry Hen)).
 Qed.
 
 (** ... and the refusal, from ONE valid entry, through

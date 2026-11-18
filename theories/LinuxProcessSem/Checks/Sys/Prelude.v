@@ -6,7 +6,10 @@
     [Checks/ExecutableSpecs.v] keeps the dispatcher
     and the four top-level theorems and re-exports this module. The
     checkers here are executable, and their proofs relate them to the
-    relational specs in the matching [Sys] module. *)
+    relational specs in the matching [Sys] module.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -865,3 +868,320 @@ Proof.
   apply bv_eqb_eq in H. subst. reflexivity.
 Qed.
 
+
+
+(** [State.descriptor_invariant], AS A TACTIC.  That predicate says
+    every [State.FdFile*] key resolves to an [Fs.EFile], so the
+    [Fs.EDir] and [Fs.EDev] branches a file-content lookup now has are
+    states it forbids.  It is not yet proved invariant -- see its own
+    comment and [Run.valid_image] -- so what these branches are is
+    FAIL CLOSED on both sides, which is what this tactic discharges.
+    They are FAIL-CLOSED in the spec and in the checker alike, so the
+    two sides agree there and neither admits anything.
+
+    The alternatives below are the shapes that agreement takes: a
+    contradictory hypothesis on the checker side, and the "both decline"
+    obligation on the spec side, whose proof is the ABSENT case's proof
+    with the same two rewrites.  It is [solve], so a branch that is NOT
+    one of these fails loudly here instead of being absorbed. *)
+Ltac entry_rewrites :=
+  do 12 (try (match goal with
+              | H : _ = _ |- _ => progress (srw H)
+              end)).
+
+Ltac entry_absurd :=
+  solve [ discriminate
+        | reflexivity
+        | congruence
+        | assumption
+        | apply unmodeled_intro
+        | now apply check_ret_only_no_unmodeled
+        | (eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+           eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           entry_rewrites; apply unmodeled_intro)
+        | (eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           entry_rewrites; apply unmodeled_intro)
+        ].
+
+(* =========================================================================
+   The walk's own refusals ([Fs.Namei.walk_refusals])
+   ========================================================================= *)
+
+(** [Fs.Namei.walk_refusals] as an acceptor over [c], the verdict the
+    arm's own checker gave [eff]: that verdict stands unless it rejected
+    the effect, and then a bare return of one of the walk's refusals
+    ([Fs.Namei.walk_reached] under the arm's walk mode [md]) that leaves
+    the model alone is accepted on a call the walk was reached on.  A
+    declined call stays declined, and an effect the arm itself accepts
+    keeps the arm's model. *)
+Definition check_walk_refusals (md : Fs.WalkMode) (i : SyscallInput) (pathp : word)
+    (eff : SyscallEffect) (m : Model) (c : check_result) : check_result :=
+  match c with
+  | CheckReject =>
+      match walk_reached md i m pathp with
+      | Some es =>
+          match eff with
+          | mkEffectU r [] [] [] [] [] =>
+              if errno_ret_in es r then CheckOk m [] else CheckReject
+          | _ => CheckReject
+          end
+      | None => CheckReject
+      end
+  | _ => c
+  end.
+
+(** What an accepted effect is: the arm's own acceptance, or a bare
+    errno with the model and the event list untouched. *)
+Lemma check_walk_refusals_ok_cases : forall md i pathp eff m c m' evs,
+  check_walk_refusals md i pathp eff m c = CheckOk m' evs ->
+  c = CheckOk m' evs
+  \/ (c = CheckReject /\ m' = m /\ evs = [] /\ exists r, eff = mkEffect r [] []).
+Proof.
+  intros md i pathp eff m c m' evs H. unfold check_walk_refusals in H.
+  destruct c as [m1 evs1| |]; [left; exact H| |discriminate].
+  right. destruct (walk_reached md i m pathp) as [es|]; [|discriminate].
+  destruct eff as [r ws zs us cs ci];
+    destruct ws, zs, us, cs, ci; try discriminate.
+  destruct (errno_ret_in es r); [|discriminate].
+  inversion H; subst. repeat split. eauto.
+Qed.
+
+Lemma check_walk_refusals_unmodeled : forall md i pathp eff m c,
+  check_walk_refusals md i pathp eff m c = CheckUnmodeled -> c = CheckUnmodeled.
+Proof.
+  intros md i pathp eff m c H. unfold check_walk_refusals in H.
+  destruct c; [discriminate| |reflexivity].
+  destruct (walk_reached md i m pathp) as [es|]; [|discriminate].
+  destruct eff as [r ws zs us cs ci];
+    destruct ws, zs, us, cs, ci; try discriminate.
+  destruct (errno_ret_in es r); discriminate.
+Qed.
+
+(** An accepted effect claims a copy-in only if the arm's own accepted
+    one does. *)
+Lemma check_walk_refusals_copyins_nil : forall md i pathp eff m c m' evs,
+  (forall m1 evs1, c = CheckOk m1 evs1 -> eff_copyins eff = []) ->
+  check_walk_refusals md i pathp eff m c = CheckOk m' evs ->
+  eff_copyins eff = [].
+Proof.
+  intros md i pathp eff m c m' evs Hc H.
+  apply check_walk_refusals_ok_cases in H.
+  destruct H as [H | (_ & _ & _ & r & ->)]; [exact (Hc _ _ H)|reflexivity].
+Qed.
+
+(** The four directions, from the arm's own four.  [s] is the part of the
+    arm [walk_refusals] wraps and [f] its checker on the same input and
+    model. *)
+Section WalkRefusals.
+  Variables (md : Fs.WalkMode) (s : Sys SyscallEffect) (f : SyscallEffect -> check_result)
+            (i : SyscallInput) (pathp : word) (m : Model).
+  Hypothesis Hso : forall eff m' evs, f eff = CheckOk m' evs -> s i m (Ok eff m' evs).
+  Hypothesis Hsu : forall eff, f eff = CheckUnmodeled -> s i m Unmodeled.
+  Hypothesis Hco : forall eff m' evs, s i m (Ok eff m' evs) -> f eff = CheckOk m' evs.
+  Hypothesis Hcu : forall eff, s i m Unmodeled -> f eff = CheckUnmodeled.
+
+  Lemma check_walk_refusals_sound_ok : forall eff m' evs,
+    check_walk_refusals md i pathp eff m (f eff) = CheckOk m' evs ->
+    walk_refusals md pathp s i m (Ok eff m' evs).
+  Proof using Hso Hsu Hco Hcu.
+    intros eff m' evs H. unfold check_walk_refusals in H.
+    destruct (f eff) as [m1 evs1| |] eqn:Hf.
+    - left. apply Hso. rewrite Hf. exact H.
+    - destruct (walk_reached md i m pathp) as [es|] eqn:Hw; [|discriminate].
+      destruct eff as [r ws zs us cs ci];
+        destruct ws, zs, us, cs, ci; try discriminate.
+      destruct (errno_ret_in es r) eqn:He; [|discriminate].
+      inversion H; subst; clear H.
+      apply errno_ret_in_true in He. destruct He as (e & Hin & ->).
+      right. split.
+      + intro Hu. rewrite (Hcu (mkEffect (errno_ret e) [] []) Hu) in Hf. discriminate.
+      + exists es, e. repeat split; try assumption.
+        intros m1 evs1 Hs. rewrite (Hco _ _ _ Hs) in Hf. discriminate.
+    - discriminate.
+  Qed.
+
+  Lemma check_walk_refusals_sound_unmodeled : forall eff,
+    check_walk_refusals md i pathp eff m (f eff) = CheckUnmodeled ->
+    walk_refusals md pathp s i m Unmodeled.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff H. apply check_walk_refusals_unmodeled in H.
+    left. exact (Hsu eff H).
+  Qed.
+
+  Lemma check_walk_refusals_complete_ok : forall eff m' evs,
+    walk_refusals md pathp s i m (Ok eff m' evs) ->
+    check_walk_refusals md i pathp eff m (f eff) = CheckOk m' evs.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff m' evs [Hs | (Hnu & es & e & Hw & Hin & Ho & Hnot)].
+    - rewrite (Hco _ _ _ Hs). reflexivity.
+    - inversion Ho; subst; clear Ho. unfold check_walk_refusals.
+      destruct (f (mkEffect (errno_ret e) [] [])) as [m1 evs1| |] eqn:Hf.
+      + exfalso. exact (Hnot m1 evs1 (Hso _ _ _ Hf)).
+      + rewrite Hw. cbv beta iota. rewrite (errno_ret_in_intro _ _ Hin). reflexivity.
+      + exfalso. exact (Hnu (Hsu _ Hf)).
+  Qed.
+
+  Lemma check_walk_refusals_complete_unmodeled : forall eff,
+    walk_refusals md pathp s i m Unmodeled ->
+    check_walk_refusals md i pathp eff m (f eff) = CheckUnmodeled.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff [Hs | (_ & es & e & _ & _ & Ho & _)];
+      [rewrite (Hcu eff Hs); reflexivity|discriminate].
+  Qed.
+End WalkRefusals.
+
+(* =========================================================================
+   [getname_flags]' own refusals ([Fs.Namei.getname_refusals])
+   ========================================================================= *)
+
+(** Is [ci] one of the copy-ins [Fs.Namei.getname_alloc_reads] lists? *)
+Definition getname_alloc_readsb (i : SyscallInput) (pathp : word)
+    (ci : list (word * nat)) : bool :=
+  existsb (access_ranges_eqb ci) (getname_alloc_reads (in_mem i) pathp).
+
+Lemma getname_alloc_readsb_true : forall i pathp ci,
+  getname_alloc_readsb i pathp ci = true
+  <-> In ci (getname_alloc_reads (in_mem i) pathp).
+Proof.
+  intros i pathp ci. unfold getname_alloc_readsb. rewrite existsb_exists. split.
+  - intros (x & Hin & Heq). apply access_ranges_eqb_eq in Heq. subst. exact Hin.
+  - intros Hin. exists ci. split; [exact Hin|apply access_ranges_eqb_refl].
+Qed.
+
+(** [Fs.Namei.getname_refusals] as an acceptor over [c], the verdict the
+    arm gave [eff] with its ledger: that verdict stands unless it
+    rejected the effect, and then a bare errno of
+    [Fs.Namei.getname_errnos] whose ledger is one of
+    [getname_flags]' allocation copy-ins is accepted, with the model and
+    the event list untouched.  A declined call stays declined. *)
+Definition check_getname_refusals (i : SyscallInput) (pathp : word)
+    (eff : SyscallEffect) (m : Model) (c : check_result) : check_result :=
+  match c with
+  | CheckReject =>
+      match eff with
+      | mkEffectU r [] [] [] [] ci =>
+          if errno_ret_in getname_errnos r && getname_alloc_readsb i pathp ci
+          then CheckOk m [] else CheckReject
+      | _ => CheckReject
+      end
+  | _ => c
+  end.
+
+(** What an accepted effect is: the arm's own acceptance, or a bare
+    errno with the model and the event list untouched. *)
+Lemma check_getname_refusals_ok_cases : forall i pathp eff m c m' evs,
+  check_getname_refusals i pathp eff m c = CheckOk m' evs ->
+  c = CheckOk m' evs
+  \/ (c = CheckReject /\ m' = m /\ evs = []
+      /\ exists r ci, eff = mkEffectU r [] [] [] [] ci).
+Proof.
+  intros i pathp eff m c m' evs H. unfold check_getname_refusals in H.
+  destruct c as [m1 evs1| |]; [left; exact H| |discriminate].
+  right. destruct eff as [r ws zs us cs ci];
+    destruct ws, zs, us, cs; try discriminate.
+  destruct (errno_ret_in getname_errnos r && getname_alloc_readsb i pathp ci);
+    [|discriminate].
+  inversion H; subst. repeat split. eauto.
+Qed.
+
+Lemma check_getname_refusals_unmodeled : forall i pathp eff m c,
+  check_getname_refusals i pathp eff m c = CheckUnmodeled -> c = CheckUnmodeled.
+Proof.
+  intros i pathp eff m c H. unfold check_getname_refusals in H.
+  destruct c; [discriminate| |reflexivity].
+  destruct eff as [r ws zs us cs ci]; destruct ws, zs, us, cs; try discriminate.
+  destruct (errno_ret_in getname_errnos r && getname_alloc_readsb i pathp ci);
+    discriminate.
+Qed.
+
+(** The same, with the errno named: what the wrapper adds is a bare
+    errno of [getname_errnos], whatever ledger it claims. *)
+Lemma check_getname_refusals_ok_inv : forall i pathp eff m c m' evs,
+  check_getname_refusals i pathp eff m c = CheckOk m' evs ->
+  c = CheckOk m' evs
+  \/ (m' = m /\ evs = []
+      /\ exists e ci, In e getname_errnos /\ eff = mkEffectU (errno_ret e) [] [] [] [] ci).
+Proof.
+  intros i pathp eff m c m' evs H. unfold check_getname_refusals in H.
+  destruct c as [m1 evs1| |]; [left; exact H| |discriminate].
+  right. destruct eff as [r ws zs us cs ci];
+    destruct ws, zs, us, cs; try discriminate.
+  destruct (errno_ret_in getname_errnos r) eqn:He; [|discriminate].
+  destruct (getname_alloc_readsb i pathp ci); [|discriminate].
+  simpl in H. inversion H; subst.
+  apply errno_ret_in_true in He. destruct He as (e & Hin & ->).
+  split; [reflexivity|]. split; [reflexivity|]. exists e, ci. auto.
+Qed.
+
+(** The arm's own acceptance stands. *)
+Lemma check_getname_refusals_of_ok : forall i pathp eff m c m' evs,
+  c = CheckOk m' evs -> check_getname_refusals i pathp eff m c = CheckOk m' evs.
+Proof. intros i pathp eff m c m' evs ->. reflexivity. Qed.
+
+(** The four directions, from the arm's own four.  [s] is the arm from
+    the fetch on, its ledger included, and [f] its checker on the same
+    input and model. *)
+Section GetnameRefusals.
+  Variables (pathp : word) (s : Sys SyscallEffect) (f : SyscallEffect -> check_result)
+            (i : SyscallInput) (m : Model).
+  Hypothesis Hso : forall eff m' evs, f eff = CheckOk m' evs -> s i m (Ok eff m' evs).
+  Hypothesis Hsu : forall eff, f eff = CheckUnmodeled -> s i m Unmodeled.
+  Hypothesis Hco : forall eff m' evs, s i m (Ok eff m' evs) -> f eff = CheckOk m' evs.
+  Hypothesis Hcu : forall eff, s i m Unmodeled -> f eff = CheckUnmodeled.
+
+  Lemma check_getname_refusals_sound_ok : forall eff m' evs,
+    check_getname_refusals i pathp eff m (f eff) = CheckOk m' evs ->
+    getname_refusals pathp s i m (Ok eff m' evs).
+  Proof using Hso Hsu Hco Hcu.
+    intros eff m' evs H. unfold check_getname_refusals in H.
+    destruct (f eff) as [m1 evs1| |] eqn:Hf.
+    - left. apply Hso. rewrite Hf. exact H.
+    - destruct eff as [r ws zs us cs ci];
+        destruct ws, zs, us, cs; try discriminate.
+      destruct (errno_ret_in getname_errnos r) eqn:He; [|discriminate].
+      destruct (getname_alloc_readsb i pathp ci) eqn:Hr; [|discriminate].
+      simpl in H. inversion H; subst; clear H.
+      apply errno_ret_in_true in He. destruct He as (e & Hin & ->).
+      apply getname_alloc_readsb_true in Hr.
+      right. split.
+      + intro Hu. rewrite (Hcu _ Hu) in Hf. discriminate.
+      + exists ci, e. split; [exact Hr|]. split; [exact Hin|]. split; [reflexivity|].
+        intros m1 evs1 Hs.
+        change (with_copyins ci (mkEffect (errno_ret e) [] []))
+          with (mkEffectU (errno_ret e) [] [] [] [] ci) in Hs.
+        rewrite (Hco _ _ _ Hs) in Hf. discriminate.
+    - discriminate.
+  Qed.
+
+  Lemma check_getname_refusals_sound_unmodeled : forall eff,
+    check_getname_refusals i pathp eff m (f eff) = CheckUnmodeled ->
+    getname_refusals pathp s i m Unmodeled.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff H. apply check_getname_refusals_unmodeled in H.
+    left. exact (Hsu eff H).
+  Qed.
+
+  Lemma check_getname_refusals_complete_ok : forall eff m' evs,
+    getname_refusals pathp s i m (Ok eff m' evs) ->
+    check_getname_refusals i pathp eff m (f eff) = CheckOk m' evs.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff m' evs [Hs | (Hnu & reads & e & Hr & Hin & Ho & Hnot)].
+    - rewrite (Hco _ _ _ Hs). reflexivity.
+    - inversion Ho; subst; clear Ho. unfold check_getname_refusals.
+      destruct (f (with_copyins reads (mkEffect (errno_ret e) [] [])))
+        as [m1 evs1| |] eqn:Hf.
+      + exfalso. exact (Hnot m1 evs1 (Hso _ _ _ Hf)).
+      + cbn [with_copyins eff_ret eff_writes eff_zeros eff_unmaps eff_copies].
+        rewrite (errno_ret_in_intro _ _ Hin).
+        rewrite (proj2 (getname_alloc_readsb_true _ _ _) Hr). reflexivity.
+      + exfalso. exact (Hnu (Hsu _ Hf)).
+  Qed.
+
+  Lemma check_getname_refusals_complete_unmodeled : forall eff,
+    getname_refusals pathp s i m Unmodeled ->
+    check_getname_refusals i pathp eff m (f eff) = CheckUnmodeled.
+  Proof using Hso Hsu Hco Hcu.
+    intros eff [Hs | (_ & reads & e & _ & _ & Ho & _)];
+      [rewrite (Hcu eff Hs); reflexivity|discriminate].
+  Qed.
+End GetnameRefusals.

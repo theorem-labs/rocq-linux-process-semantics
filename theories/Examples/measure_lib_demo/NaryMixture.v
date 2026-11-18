@@ -68,7 +68,7 @@ Open Scope bv_scope.
     something into argv makes it visible that they are a choice. *)
 Definition nary_argv : list (list byte) := [[Z_to_bv 8 119; Z_to_bv 8 99]].
 Definition nary_envp : list (list byte) := [].
-Definition nary_fs : Fs.Fs := [].
+Definition nary_fs : Fs.Fs := Fs.fs_empty.
 
 Definition nary_core (s : list byte) : FinCore :=
   mkFinCore nary_argv nary_envp nary_fs s.

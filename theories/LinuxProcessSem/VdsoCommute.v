@@ -28,7 +28,9 @@
     PURE ADDITION: this file changes no existing statement. *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs Vdso State Monad.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import State Monad.
 From LinuxProcessSemantics.LinuxProcessSem.Sys Require Import Syscall.
 Import ListNotations.
 Open Scope bv_scope.
@@ -202,8 +204,8 @@ Lemma with_utsname_with_vdso : forall bs v m,
   with_utsname bs (with_vdso v m) = with_vdso v (with_utsname bs m).
 Proof. reflexivity. Qed.
 
-Lemma with_statpin_with_vdso : forall p bs v m,
-  with_statpin p bs (with_vdso v m) = with_vdso v (with_statpin p bs m).
+Lemma with_statpin_with_vdso : forall id sp v m,
+  with_statpin id sp (with_vdso v m) = with_vdso v (with_statpin id sp m).
 Proof. reflexivity. Qed.
 
 Lemma with_abort_terminal_with_vdso : forall b v m,

@@ -404,7 +404,7 @@ Proof.
   difn H Eflag; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hfit|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hfit|].
-  difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hfit|].
+  difn H Etask; [discriminate|].
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hfit|].
@@ -574,6 +574,7 @@ Proof.
     | erewrite check_epoll_create1_frame by eassumption; exact Hfit
     | erewrite check_epoll_ctl_frame by eassumption; exact Hfit
     | erewrite check_epoll_pwait_frame by eassumption; exact Hfit
+    | erewrite check_mkdirat_frame by eassumption; exact Hfit
     | fail 1 "checked_table_preserves_fit has no case for this dispatcher arm: give the new checker a *_frame lemma (it leaves m_vmmaps alone) or a *_preserves_fit one (it writes vm_maps), and add it to the list above" ].
 Qed.
 

@@ -33,7 +33,10 @@
     REFUSED TO GIVE and requires [CheckUnmodeled], which is the shape
     [Checks/ExecutableSpecs.v]'s completeness biconditional makes
     load-bearing: it separates "the model declines" from "the model
-    agrees", which a positive pin alone cannot. *)
+    agrees", which a positive pin alone cannot.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -67,9 +70,9 @@ Definition pipe_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdPipe 0 false); (4, FdPipe 0 true);
-      (5, FdFileW [102] 0) ]
+      (5, FdFileW 1 0) ]
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [120])] None None None.
+    (raw_files [([102], [120])]) None None None.
 
 (** WHY THE DECLINES BELOW CARRY A CONTRAST.  A pin reading
     [CheckUnmodeled] says much less than it looks like it says: it also
@@ -107,7 +110,7 @@ Example ioctl_on_a_pipe_end_is_enotty :
          (mkEffect (errno_ret ENOTTY) [] []) pipe_model = CheckOk pipe_model [])
     [TCGETS; TCSETS; TIOCSCTTY; TIOCGWINSZ;
      TIOCSWINSZ; TIOCNOTTY; TIOCGPTN; TIOCSPTLCK].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
 (** ...and the negative half: a kernel claiming SUCCESS for one of them
     is refused, so the pin above is a claim rather than an admission. *)
@@ -116,7 +119,7 @@ Example ioctl_on_a_pipe_end_rejects_success :
     (mkEffect 0 [] []) pipe_model = CheckReject
   /\ check_syscall (mkInput 29 [4; TIOCGWINSZ; 4096; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) pipe_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** ...and a request outside the eight still declines on a pipe end, as
     on every other kind — the conformance is to the WHOLE arm, not to
@@ -138,7 +141,7 @@ Example ftruncate_on_a_pipe_end_is_einval :
     (mkEffect (errno_ret EINVAL) [] []) pipe_model = CheckOk pipe_model []
   /\ check_syscall (mkInput 46 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** The negative half, in the sharpest available form: the write end is
     refused the SUCCESS that the [FdFileW] at fd 5 really gets, so this
@@ -148,7 +151,7 @@ Example ftruncate_on_a_pipe_write_end_rejects_success :
     (mkEffect 0 [] []) pipe_model = CheckReject
   /\ check_syscall (mkInput 46 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** The socket family — PATTERN-CONFORMANCE with every other non-socket
     kind.  [sock_from_file] returns NULL unless the file's [f_op] is
@@ -164,7 +167,7 @@ Example socket_calls_on_a_pipe_end_are_enotsock :
        (mkEffect (errno_ret ENOTSOCK) [] []) pipe_model = CheckOk pipe_model []
   /\ check_syscall (mkInput 207 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ENOTSOCK) [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** The negative half, and the errno that matters: -EBADF is what an fd
     that is NOT OPEN gets, so refusing it here pins that a pipe end is
@@ -174,7 +177,7 @@ Example socket_calls_on_a_pipe_end_reject_ebadf :
     (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckReject
   /\ check_syscall (mkInput 200 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (* =========================================================================
    The arms that DECLINE
@@ -217,7 +220,7 @@ Example readv_pipe_gate_splits_the_two_ends :
      and not about readv *)
   /\ check_syscall (mkInput 65 [5; 4096; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** lseek (62) — -ESPIPE on both ends, and the ordering beside it.
     [vfs_llseek] answers -ESPIPE when FMODE_LSEEK is absent, and an
@@ -240,7 +243,7 @@ Example lseek_on_a_pipe_end_is_espipe_but_whence_wins :
        (mkEffect (errno_ret EINVAL) [] []) pipe_model = CheckOk pipe_model []
   /\ check_syscall (mkInput 62 [3; 0; 42; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ESPIPE) [] []) pipe_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** fstat (80) — the decline every open-fd kind takes here, so this arm
     is uniform-pattern and fail-closed at once.  The offer is a plain
@@ -260,7 +263,7 @@ Example fstat_on_a_pipe_end_declines :
        (mkEffect 0 [] []) pipe_model = CheckUnmodeled
   /\ check_syscall (mkInput 80 [9; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** fsync (82) and fdatasync (83) — -EINVAL on both ends, because
     neither file-operations table an anonymous pipe can carry defines
@@ -286,7 +289,7 @@ Example fsync_on_a_pipe_end_is_einval :
   (* ...while the FILE at fd 5 succeeds, so the errno is per-kind *)
   /\ check_syscall (mkInput 82 [5; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** dup (23) and dup3 (24) — the offer is the ordinary dup success, a
     second descriptor at the lowest free fd.  [File.dup_modeled_entry]
@@ -307,7 +310,7 @@ Example dup_of_a_pipe_end_declines :
        (mkEffect 6 [] []) pipe_model
      = CheckOk (with_fds (fd_insert (m_fds pipe_model) 6 (FdChannel 0))
                   pipe_model) [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** fcntl (25), F_SETFL — THE ENUMERATION, pinned from both sides, and
     the one arm in this file where a wildcard would be an unsound ACCEPT
@@ -326,7 +329,7 @@ Example fcntl_setfl_on_a_pipe_end_declines :
        (mkEffect 0 [] []) pipe_model = CheckUnmodeled
   /\ check_syscall (mkInput 25 [5; F_SETFL; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) pipe_model = CheckOk pipe_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** ...while F_SETFD is KIND-BLIND by construction — [Fcntl.fcntl_spec]
     answers it before it looks at the entry at all — so a pipe end gets
@@ -337,7 +340,7 @@ Example fcntl_setfd_on_a_pipe_end_is_zero :
     (mkEffect 0 [] []) pipe_model = CheckOk pipe_model []
   /\ check_syscall (mkInput 25 [3; F_SETFD; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) pipe_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (* =========================================================================
    The two arms that are predicates rather than syscall answers
@@ -394,7 +397,7 @@ Example pselect6_pollability_is_per_kind :
   /\ bits_all_pollable (m_fds pipe_model) 16 6 = false      (* fd 4: pipe write end *)
   /\ bits_all_pollable (m_fds pipe_model) 1 6 = false       (* fd 0: channel *)
   /\ bits_all_pollable (m_fds pipe_model) 32 6 = true.      (* fd 5: FdFileW *)
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** clone (220) — [Fork.clone_no_shared_file_b] refuses a descriptor
     table holding a pipe end, so a clone made with one open declines.
@@ -418,7 +421,7 @@ Definition clone_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdPipe 0 false) ]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 Example clone_with_a_pipe_end_open_declines :
   (* the syscall declines, over a table whose ONLY non-channel entry is
@@ -435,8 +438,8 @@ Example clone_with_a_pipe_end_open_declines :
      the gate is not refusing every table *)
   /\ clone_no_shared_file_b [ (0, FdChannel 0) ] = true
   /\ clone_no_shared_file_b
-       [ (0, FdChannel 0); (1, FdChannel 1); (5, FdDir) ] = true.
-Proof. repeat split; check_eq. Qed.
+       [ (0, FdChannel 0); (1, FdChannel 1); (5, FdDir Fs.default_cwd) ] = true.
+Proof. split_conj; check_eq. Qed.
 
 (** ...and the syscall-level contrast the conjuncts above still cannot
     give, because [CheckUnmodeled] alone never proves the decline came
@@ -453,42 +456,41 @@ Example clone_without_a_pipe_end_is_admitted :
   <> CheckUnmodeled.
 Proof. vm_compute. discriminate. Qed.
 
-(** unlinkat (35), through [Namei.fd_names_path] — a site that is easy
-    to miss, because its constructors sit inside a cons pattern rather
-    than at the head of an arm, so the match does not look like fd-kind
-    dispatch at all.  Its arms enumerate the constructors rather than end
-    in a [| _ :: r =>] catch-all.
+(** unlinkat (35), through [State.ino_held] — whether a descriptor
+    still holds the inode a removed name named, which decides whether the
+    inode keeps its row ([Fs.fs_unlink_file]).  It is a site that is easy
+    to miss, because its constructors sit inside [State.entry_ino] rather
+    than at the head of an arm, so the fold does not look like fd-kind
+    dispatch at all.  [entry_ino]'s arms enumerate the constructors rather
+    than end in a catch-all.
 
     Unlike every other decline in this file the answer here is EXACT
-    rather than fail-closed: [false], because a pipe end names no
-    filesystem path.  So this pin is an equality both ways rather than a
-    decline and an offer.
+    rather than fail-closed: [false], because a pipe end holds no
+    regular file's inode.  So this pin is an equality both ways rather
+    than a decline and an offer.
 
     ALL FOUR CONJUNCTS ARE ON THE PREDICATE, not on [unlinkat], and that
-    is a choice rather than an omission.  [Namei.fd_names_path] is where
-    the fd-kind decision lives; the syscall around it adds a pathname to
+    is a choice rather than an omission.  [State.ino_held] is where the
+    fd-kind decision lives; the syscall around it adds a pathname to
     encode in guest memory, a dirfd and a flags word, none of which has
-    anything to do with which [FdEntry] constructor the table holds.  A
-    syscall-level pin would be testing the path encoding as much as the
-    arm, and it would not discriminate the arm any more sharply than the
-    third and fourth conjuncts already do.
+    anything to do with which [FdEntry] constructor the table holds.
 
-    What the four say, in order: neither end of a pipe names the path;
-    an [FdFileW] on that same path does, so [false] above is about the
-    fd's KIND and not about the path being absent; and a pipe end
-    sitting BESIDE that file does not change the file's answer.  The
-    last is the one worth having — [fd_names_path] is an or-fold down
-    the table, so an arm that answered [true] would mask nothing but an
-    arm that short-circuited would, and the conjunct pins that the pipe
-    arm recurses rather than deciding. *)
-Example fd_names_path_ignores_a_pipe_end :
-  fd_names_path [ (3, FdPipe 0 false) ] [102] = false
-  /\ fd_names_path [ (4, FdPipe 0 true) ] [102] = false
-  (* the contrast, on the same path: a file fd DOES name it *)
-  /\ fd_names_path [ (5, FdFileW [102] 0) ] [102] = true
+    What the four say, in order: neither end of a pipe holds the inode;
+    an [FdFileW] on that same inode does, so [false] above is about the
+    fd's KIND and not about the inode; and a pipe end sitting BESIDE that
+    file does not change the file's answer.  The last is the one worth
+    having — [ino_held] is an or-fold down the table, so an arm that
+    answered [true] would mask nothing but an arm that short-circuited
+    would, and the conjunct pins that the pipe arm recurses rather than
+    deciding. *)
+Example ino_held_ignores_a_pipe_end :
+  ino_held [ (3, FdPipe 0 false) ] 1 = false
+  /\ ino_held [ (4, FdPipe 0 true) ] 1 = false
+  (* the contrast, on the same inode: a file fd DOES hold it *)
+  /\ ino_held [ (5, FdFileW 1 0) ] 1 = true
   (* ...and a pipe end alongside it does not mask the file's answer *)
-  /\ fd_names_path [ (3, FdPipe 0 false); (5, FdFileW [102] 0) ] [102] = true.
-Proof. repeat split; check_eq. Qed.
+  /\ ino_held [ (3, FdPipe 0 false); (5, FdFileW 1 0) ] 1 = true.
+Proof. split_conj; check_eq. Qed.
 
 (* =========================================================================
    Where a pipe end comes from
@@ -507,7 +509,7 @@ Proof. repeat split; check_eq. Qed.
     from a [pipe2] the run made. *)
 Example init_model_holds_no_pipe_end :
   Forall (fun e => match snd e with FdPipe _ _ => False | _ => True end)
-    (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))).
+    (m_fds (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))).
 Proof. repeat constructor. Qed.
 
 (* =========================================================================
@@ -519,7 +521,7 @@ Proof. repeat constructor. Qed.
     next, so over [init_model]'s three channels they are 3 and 4. *)
 
 Definition one_pipe_model : Model :=
-  let m := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof) in
+  let m := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof) in
   pipe2_model m (pipe_new_id (m_pipes m)).
 
 (** THE MODEL ADMITS BOTH KERNELS' COUNT VALIDATION for a vectored write
@@ -656,7 +658,7 @@ Example pipe2_wrapping_fildes_rejects_the_pair :
   check_syscall (mkInput 59 [pipe2_wrap_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_wrap_mem)
     (mkEffect (Z_to_bv 64 0) [(pipe2_wrap_fildes, [3;0;0;0;4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckReject.
 Proof. check_eq. Qed.
 
@@ -669,8 +671,8 @@ Example pipe2_wrapping_fildes_is_efault :
   check_syscall (mkInput 59 [pipe2_wrap_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_wrap_mem)
     (mkEffect (errno_ret EFAULT) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [].
 Proof. check_eq. Qed.
 
 (** WHERE THE NARROWING LANDS, which is the conjunct the two above cannot
@@ -699,7 +701,7 @@ Example pipe2_unwrapped_fildes_still_installs_the_pair :
   check_syscall (mkInput 59 [pipe2_flat_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_flat_mem)
     (mkEffect (Z_to_bv 64 0) [(pipe2_flat_fildes, [3;0;0;0;4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckOk one_pipe_model [].
 Proof. check_eq. Qed.
 
@@ -712,6 +714,6 @@ Example pipe2_unwrapped_fildes_rejects_efault :
   check_syscall (mkInput 59 [pipe2_flat_fildes; 0; 0; 0; 0; 0]
                    (fun _ => None) pipe2_flat_mem)
     (mkEffect (errno_ret EFAULT) [] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckReject.
 Proof. check_eq. Qed.

@@ -41,7 +41,7 @@ Hypothesis SINV_agree : forall E E' M, env_agree nx0 E E' -> SINV E M -> SINV E'
     the cs_ok re-establishment per arm, and RefNodes.v / MmapSim.v /
     AllocSim.v / NoReserve.v for the spec's inversion lemmas):
 
-    M1 [node_mmap2_sound   : OBL_mmap2]     [AP.node_mmap2 A nx0 LIMIT]   (checker: AsanPlanCore §8.3)
+    M1 [node_mmap2_sound   : OBL_mmap2]     [AP.node_mmap2 A nx0 LIMIT]   (checker: AsanPlanCore, its block "8.3 mmap")
          child a = REFUSED ([APC.refuse]: a0 := 2^64-12, pc+4, model unchanged; spec arm
          [e <- errno_from [ENOMEM];; err_ret e]);
          child b = GRANTED: NULL hint ([APC.mmap_null]; arms P (3,0x22) / A (3,0x4022) / B0 (0,0x22) / B (0,0x4022);

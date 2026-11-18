@@ -1,4 +1,4 @@
-(** * LinuxProcessSem.Sys.Fs.Namei — unlinkat (35)
+(** * LinuxProcessSem.Sys.Fs.Namei — mkdirat (34), unlinkat (35)
 
     This file answers to Linux [fs/namei.c]: it holds what the kernel
     defines there, and nothing else.  Which file a spec belongs in is
@@ -13,7 +13,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -33,26 +36,14 @@ Definition dotdot_path : path := [Z_to_bv 8 46; Z_to_bv 8 46].
 
 Definition slash_byte : byte := Z_to_bv 8 47.
 
-(** The SAME byte is spelled in [Fs], as [Fs.path_slash_byte], because
-    [Fs.key_is_relative] needs it at a rung below this one and this file
-    sits above it.  The separator's MEANING stays here — the component
-    tests below are what a separator is for — and the two spellings are
-    pinned equal so that moving either is a compile error rather than a
-    silent divergence. *)
-Lemma slash_byte_is_path_slash_byte : slash_byte = path_slash_byte.
+(** Pinned equal to the byte [Fs] interprets, so moving either is a
+    compile error rather than a silent divergence. *)
+Lemma slash_byte_is_path_slash_byte : slash_byte = Fs.path_slash_byte.
 Proof. reflexivity. Qed.
 
 (** Does the path contain a component separator? *)
 Definition path_has_slash (p : path) : bool :=
   existsb (fun b => bv_eqb b slash_byte) p.
-
-(** Used on a REVERSED path, which is what makes it strip trailing
-    separators; nothing else calls it. *)
-Fixpoint drop_leading_slashes (p : path) : path :=
-  match p with
-  | [] => []
-  | b :: r => if bv_eqb b slash_byte then drop_leading_slashes r else b :: r
-  end.
 
 (** Drop the separators a path ENDS with.  [link_path_walk] hashes a
     component, then skips every following "/" and stops if the string
@@ -61,16 +52,12 @@ Fixpoint drop_leading_slashes (p : path) : path :=
     [link_path_walk], the [if (!*name) goto OK] / skip-slashes / [if
     (unlikely(!*name))] sequence just after the [LAST_NORM] arm).  What
     they DO change is the byte [do_unlinkat] tests as
-    [last.name[last.len]]: see [path_trailing_slash]. *)
-Definition path_strip_trailing_slashes (p : path) : path :=
-  rev (drop_leading_slashes (rev p)).
-
-(** Is the last component followed by a separator?  This is the kernel's
-    own [last.name[last.len]] — the byte just past the component, which
-    is "/" exactly when the path had trailing separators and NUL
-    otherwise. *)
-Definition path_trailing_slash (p : path) : bool :=
-  negb (Nat.eqb (length (path_strip_trailing_slashes p)) (length p)).
+    [last.name[last.len]], and R22 moved that test into the walk:
+    [Fs.resolve] returns it as the third component of its answer, so
+    every arm reads one flag off one function.  The two helpers that
+    used to compute it here -- [path_strip_trailing_slashes] and
+    [path_trailing_slash] -- were the deleted separator gate's, had no
+    caller left once the walk returned the flag, and are gone. *)
 
 (** [p] is a DIRECTORY COMPONENT of [q]: [q] is [p] followed by "/" and
     then anything.  The base case is "[p] fully consumed", so the caller
@@ -84,176 +71,69 @@ Fixpoint dir_prefixb (p q : path) : bool :=
   | a :: p', b :: q' => bv_eqb a b && dir_prefixb p' q'
   end.
 
-(** Does any file in [fs] live UNDER [p]?  If one does then [p] names a
-    directory — a thing the flat map only implies and cannot hold. *)
-Fixpoint fs_under (fs : Fs) (p : path) : bool :=
-  match fs with
+(** Does any key in [fs] live UNDER [p]?  [dir_prefixb] over every key:
+    no arm reads it, and the [Common.FileSim] lemmas that carry it as a
+    premise are what keeps it here. *)
+Fixpoint tree_under (t : Fs.Tree) (p : path) : bool :=
+  match t with
   | [] => false
-  | (q, _) :: r => dir_prefixb p q || fs_under r p
+  | (q, _) :: r => dir_prefixb p q || tree_under r p
   end.
 
-(** [dir_prefixb] read back: a [true] exhibits the rest of the key.
-    This is what lets a caller holding a fact about the BYTES of a key
-    rule the test out — [Run.absolute_divergent_not_seeded] is the one
-    that does, for a key the seeding minted under "/tmp/". *)
-Lemma dir_prefixb_app : forall p q,
-  dir_prefixb p q = true -> exists r, q = p ++ slash_byte :: r.
-Proof.
-  induction p as [|a p IH]; intros q H.
-  - destruct q as [|c q]; [discriminate|].
-    cbn in H. apply bv_eqb_eq in H; subst c. now exists q.
-  - destruct q as [|b q]; [discriminate|].
-    cbn in H. apply Bool.andb_true_iff in H. destruct H as [Hab Hr].
-    apply bv_eqb_eq in Hab; subst b.
-    destruct (IH q Hr) as [r Hq]. exists r. cbn. now f_equal.
-Qed.
+Definition fs_under (fs : Fs) (p : path) : bool := tree_under (Fs.fs_tree fs) p.
 
-(** Neither half of [fs_under] can fire on a list of keys none of which
-    continues [p] with a separator. *)
-Lemma fs_under_false_of_keys : forall fs p,
-  Forall (fun qd => dir_prefixb p (fst qd) = false) fs ->
-  fs_under fs p = false.
-Proof.
-  induction fs as [|[q d] fs IH]; intros p H; [reflexivity|].
-  inversion H as [|? ? Hq Hr]; subst. cbn [fs_under].
-  cbn [fst] in Hq. rewrite Hq. now apply IH.
-Qed.
+(** Does any open DIRECTORY descriptor name the key [k]?  This is
+    [rmdir]'s guard and nothing else asks it.
 
-(** Strip a fixed prefix off a path, or say it is not there. *)
-Fixpoint path_strip_prefix (pre p : path) : option path :=
-  match pre, p with
-  | [], _ => Some p
-  | _ :: _, [] => None
-  | a :: pre', b :: p' =>
-      if bv_eqb a b then path_strip_prefix pre' p' else None
-  end.
-
-Lemma path_strip_prefix_app : forall pre p n,
-  path_strip_prefix pre p = Some n -> p = pre ++ n.
-Proof.
-  induction pre as [|a pre IH]; intros p n H; cbn in H.
-  - now inversion H.
-  - destruct p as [|b p]; [discriminate|].
-    destruct (bv_eqb a b) eqn:Hab; [|discriminate].
-    apply bv_eqb_eq in Hab; subst b.
-    cbn. f_equal. now apply IH.
-Qed.
-
-(** THE ONE PATHNAME SHAPE UNDER /tmp THE MODEL ANSWERS FOR: an
-    ABSOLUTE path "/tmp/<name>" with exactly one further component.
-    [Some name] is the component; [None] is every other spelling, and
-    every other spelling is declined the way the separator gate declines
-    today.
-
-    WHAT IS REJECTED, and why each is rejected rather than answered:
-
-    - a path that does not begin "/tmp/" at all — including a bare
-      "/tmp", "/tmp/" with nothing after it, and "/tmpfoo": the run's
-      declaration says nothing about them;
-    - a name with a further separator in it ("a/b"): that is a second
-      component, so the answer would come from a directory the flat map
-      cannot hold.  The declaration may still MENTION such a name, and
-      then some key lives under "/tmp/a" and the arms see it through
-      [fs_under] — which is why they test it;
-    - "." and "..", which name /tmp and its parent rather than a file in
-      it.  [Open.path_is_dirref]'s arms answer those for a RELATIVE
-      path off the working directory; under an absolute prefix they
-      would be answers about directories as state, which this arm
-      does not model.
-
-    A NAME WITH A NUL IN IT CANNOT ARRIVE HERE: every pathname the specs
-    see comes out of [Uaccess.read_cstr], which stops at the first NUL.
-    So this predicate says nothing about NUL, and the seeding
-    ([State.fs_seed_tmp]) drops the declared entries no program could
-    name.
-
-    The premise the arms rest on is [State.in_tmp]'s. *)
-Definition tmp_name (p : path) : option path :=
-  match path_strip_prefix tmp_prefix p with
-  | None => None
-  | Some n =>
-      if path_eqb n [] then None
-      else if path_has_slash n then None
-      else if path_eqb n dot_path then None
-      else if path_eqb n dotdot_path then None
-      else Some n
-  end.
-
-(** The gate and the seeding agree on the key: a path this answers for
-    is exactly the key [State.fs_seed_tmp] would have put its component
-    under.  That is what makes "the name the program used" and "the key
-    the run holds" the same thing. *)
-Lemma tmp_name_key : forall p n, tmp_name p = Some n -> p = tmp_key n.
-Proof.
-  intros p n H. unfold tmp_name in H.
-  destruct (path_strip_prefix tmp_prefix p) as [n'|] eqn:Hs; [|discriminate].
-  apply path_strip_prefix_app in Hs.
-  destruct (path_eqb n' []); [discriminate|].
-  destruct (path_has_slash n'); [discriminate|].
-  destruct (path_eqb n' dot_path); [discriminate|].
-  destruct (path_eqb n' dotdot_path); [discriminate|].
-  inversion H; subst n'. exact Hs.
-Qed.
-
-(** Is [p] the path of an open file fd?  A file fd records the PATH it
-    was opened on ([FdFile]/[FdFileW]), not an inode, so the removal of
-    a name such an fd holds has to change the fd: [unlink_open_tmp_spec]
-    turns it into a [State.FdAnon] on the /tmp arm, and the
-    working-directory arm declines (see [unlinkat_spec]).
-
-    THE NON-FILE ENTRIES ARE ENUMERATED rather than swept up by a
-    [| _ :: r =>] catch-all, and the difference is invisible until an
-    [FdEntry] constructor is added.  A catch-all here is extensionally
-    right today and would still compile after the next constructor while
-    silently answering "names no path" for it — the same unsound-accept
-    shape [Select.bits_all_pollable] and
-    [Net.Socket.sockfd_lookup_errno] enumerate to avoid, and the harder
-    one to notice, because the constructors sit INSIDE a cons pattern
-    rather than at the head of an arm. Listing them makes the next
-    constructor a compile error.
-
-    [FdPipe] answers [false] and that is exact rather than fail-closed:
-    a pipe end names no filesystem path at all.  Both ends hang off one
-    anonymous inode on the internal [pipe_mnt], and NEITHER is reached
-    through path resolution: [create_pipe_files] builds the WRITE end
-    with [alloc_file_pseudo(inode, pipe_mnt, "", O_WRONLY | ...)] and
-    then the READ end with [alloc_file_clone] of that same file
-    (fs/pipe.c, v6.18.46 — two different allocators, which is why this
-    says "neither is a path" rather than naming one of them for both).
-    So no [unlinkat] argument can ever denote a pipe end, and there is
-    nothing for the decision to be derived from beyond that. *)
-Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
+    WHY IT IS A GUARD AND NOT AN ANSWER.  Linux lets you rmdir a
+    directory an open descriptor still names: [vfs_rmdir] marks the
+    inode S_DEAD, detaches the mounts, and the descriptor survives
+    pointing at a directory that is no longer in any namespace, whose
+    [getdents64] returns nothing and whose [openat] children are all
+    -ENOENT.  This model has no term for a dead directory — an
+    [State.FdDir] names a key, and [State.descriptor_invariant] says that
+    key resolves to an [Fs.EDir] — so it declines instead of inventing
+    an errno Linux does not return.  That is the maintainer's ruling on
+    issue #1011, section 15, question 3, DECLINED. *)
+Fixpoint fd_names_dir (fds : list (word * FdEntry)) (k : Fs.path) : bool :=
   match fds with
   | [] => false
-  | (_, FdFile q _) :: r => path_eqb p q || fd_names_path r p
-  | (_, FdFileW q _) :: r => path_eqb p q || fd_names_path r p
-  | (_, FdFileA q _) :: r => path_eqb p q || fd_names_path r p
-  | (_, FdFileRW q _) :: r => path_eqb p q || fd_names_path r p
-  | (_, FdChannel _) :: r => fd_names_path r p
-  | (_, FdDir) :: r => fd_names_path r p
-  | (_, FdSocket _) :: r => fd_names_path r p
-  | (_, FdPipe _ _) :: r => fd_names_path r p
-  | (_, FdDevNull _ _) :: r => fd_names_path r p
-    (* exact, like the pipe end: /dev/null is not a key of [Fs.Fs] —
-       [Open.openat_spec] declines the open when the map holds one —
-       so no descriptor of this kind names a path [unlinkat] can reach *)
-  | (_, FdUrandom) :: r => fd_names_path r p
-    (* the same for /dev/urandom, for the same reason *)
-  | (_, FdStream _ _ _) :: r => fd_names_path r p
-    (* exact: a [socketpair] end is a sockfs inode made by
-       [sock_alloc_file]'s [alloc_file_pseudo], unbound, so it names no
-       path at all *)
-  | (_, FdDgram _) :: r => fd_names_path r p
-    (* exact for the same reason: [sock_alloc_file]'s pseudo file, and
-       [socket] binds nothing, so it names no path *)
-  | (_, FdEventfd _) :: r => fd_names_path r p
-    (* exact: [alloc_file_pseudo] on the anonymous-inode mount
-       (fs/anon_inodes.c), which no path in [Fs.Fs] reaches *)
-  | (_, FdAnon _ _) :: r => fd_names_path r p
-    (* exact: an unnamed file's last name is gone -- that is what made
-       it one -- and a file created later under that name is another
-       inode, so it names no path [unlinkat] can reach *)
+  | (_, FdDir q) :: r => path_eqb k q || fd_names_dir r k
+  | (_, FdFile _ _) :: r => fd_names_dir r k
+  | (_, FdFileW _ _) :: r => fd_names_dir r k
+  | (_, FdFileA _ _) :: r => fd_names_dir r k
+  | (_, FdFileRW _ _) :: r => fd_names_dir r k
+  | (_, FdChannel _) :: r => fd_names_dir r k
+  | (_, FdSocket _) :: r => fd_names_dir r k
+  | (_, FdPipe _ _) :: r => fd_names_dir r k
+  | (_, FdDevNull _ _) :: r => fd_names_dir r k
+  | (_, FdUrandom _ _) :: r => fd_names_dir r k
+  | (_, FdStream _ _ _) :: r => fd_names_dir r k
+  | (_, FdEventfd _) :: r => fd_names_dir r k
+  | (_, FdDgram _) :: r => fd_names_dir r k
+    (* none of these is a directory descriptor *)
   end.
+
+(** Whether the directory at key [k] is EMPTY is [Fs.fs_dir_empty]: a
+    directory is non-empty exactly when some key's parent is it, because
+    the image holds every entry under its own absolute key and
+    [Fs.wf_fs]'s fourth conjunct says every key's parent is a directory
+    in the image. *)
+
+(** Is [c] strictly BELOW the directory [k]?  [rmdir] asks it of the
+    working directory, to decline removing a directory the run is
+    standing in or under.
+
+    THE ROOT NEEDS ITS OWN ROW, and that is a property of the key
+    spelling rather than of the tree.  A canonical key is "/" for the
+    root and "/a/b/..." with single separators and no trailing one for
+    everything else, so [Fs.Namei.dir_prefixb] — which asks that [k] be
+    followed by "/" and then something — answers correctly for every key
+    but the root, whose own trailing byte IS the separator.  Every key
+    but the root is below the root. *)
+Definition key_strictly_under (k c : Fs.path) : bool :=
+  if path_eqb k Fs.root then negb (path_eqb c Fs.root)
+  else dir_prefixb k c.
 
 (** unlinkat's injectable failures: environment conditions the model does
     not track, all of them documented for unlink(2) and all reachable on
@@ -267,9 +147,226 @@ Fixpoint fd_names_path (fds : list (word * FdEntry)) (p : path) : bool :=
     [vfs_unlink]'s [is_local_mountpoint] — the one member that needs
     more than an ordinary entry, since the victim has to be a bind-mount
     target in the caller's namespace), and an unmapped victim uid or gid
-    (EOVERFLOW, from [may_delete], Linux v6.18.46 fs/namei.c:3267-3270).
-    ENOENT is NOT injectable: file existence IS tracked. *)
+    (EOVERFLOW, from [may_delete], Linux v6.18.46 fs/namei.c:3267-3270)
+    (Linux fs/namei.c, [may_delete] / [vfs_unlink]).
+    ENOENT is NOT injectable: entry existence IS tracked. *)
 Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EBUSY; EOVERFLOW].
+
+(** mkdirat's injectable failures, the same environment conditions one
+    rung down: the allocations [filename_create] and the filesystem's
+    own [->mkdir] make (ENOMEM), the parent's write and search
+    permission (EACCES, from [may_create]'s [inode_permission]), a
+    read-only mount (EROFS, from [filename_create]'s [mnt_want_write]),
+    and an append-only or immutable parent (EPERM, from [may_create]'s
+    [IS_APPEND] clause) (Linux fs/namei.c, [do_mkdirat] /
+    [filename_create] / [may_create] / [vfs_mkdir]).
+
+    EEXIST IS NOT INJECTABLE: existence is resolution, and the arm
+    decides it.  Neither is ENOSPC, which this model has no errno
+    constant for and no notion of a full filesystem to raise it from;
+    an image with no room is outside the surface rather than a failure
+    the model may inject. *)
+Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS].
+
+(** THE REFUSALS THE PATH WALK ITSELF CAN GIVE, ahead of whatever answer
+    the walk's outcome leads to.  Linux v6.18.46, fs/namei.c:
+
+    - -EACCES from [may_lookup] (1852-1874), which [link_path_walk]
+      calls at the top of its component loop (2466-2469), before it
+      hashes the component, on the folder the walk stands on.  So it
+      can refuse any pathname that HAS a component, "." and ".."
+      included; a pathname that is nothing but separators returns from
+      [link_path_walk] at 2455-2458 without reaching the loop, and that
+      is [Fs.LastRoot].  The model holds no permission bits (an
+      [Fs.EDir] carries no mode and no owner), so which folder refuses
+      is not something it can decide.  [may_follow_link]'s -EACCES under
+      [fs.protected_symlinks] (1168-1196, reached from [pick_link] at
+      1921-1925) needs a followed link, so a component, and is the same
+      member.
+    - -ENOMEM from the dentry the lookup allocates on a cache miss
+      ([lookup_one_qstr_excl]'s [d_alloc], 1701-1703;
+      [__lookup_slow]'s [d_alloc_parallel], 1801) and from the third
+      nested link body ([nd_alloc_stack], 1881-1886, 1899), each of them
+      after [getname_flags] has copied the whole name, so this -ENOMEM
+      carries the pathname copy-in.  A pathname that is nothing but
+      separators ([Fs.LastRoot]) looks nothing up, and keeps the member
+      for the arms that allocate past the walk ([path_openat]'s
+      [alloc_empty_file], 4124-4126 and fs/file_table.c:258-260, is
+      one); on an arm that allocates nothing there it admits an answer
+      Linux does not give, a priority-2 gap.
+    - -ELOOP beside every walk that followed a link ([Fs.wr_followed]):
+      a [nosymfollow] mount refuses every follow ([pick_link],
+      1927-1929), and the follow count is not reset when the kernel
+      repeats a walk after an RCU -ECHILD ([filename_lookup] 2705-2709,
+      [__filename_parentat] 2747-2751; [path_init] does not reset
+      [total_link_count]), so a chain of fewer than 40 links may still
+      reach [reserve_stack]'s limit (1878-1879).  A walk that ends
+      OUTSIDE the image admits it too: "/proc/self" is a link
+      ([proc_self_get_link], fs/proc/self.c) and an fd entry under it a
+      magic link, both followed through [pick_link].
+    - -ENAMETOOLONG beside every walk that handed a component over
+      [Fs.name_max] to a file system's [->lookup] ([Fs.wr_long]): the
+      limit is the file system's ([simple_lookup], fs/libfs.c:71-72, the
+      lookup of tmpfs and ramfs), so -ENAMETOOLONG is every supported
+      kernel's answer there, and the walk's own answer beside it is a
+      priority-2 gap ([Fs.comp_too_long]).
+
+    The -ENOMEM of [getname_flags]' own allocations is not among these.
+    It carries the copy-in [getname_flags] had made when it failed,
+    none or the first EMBEDDED_NAME_MAX bytes and never the whole name,
+    so it stands outside the ledger ([getname_refusals]). *)
+Definition walk_errnos (lk : Fs.LastKind) (w : Fs.WalkRes) : list Z :=
+  match lk with
+  | Fs.LastRoot => [ENOMEM]
+  | Fs.LastNorm | Fs.LastDot | Fs.LastDotDot => [ENOMEM; EACCES]
+  end
+  ++ (if Fs.wr_followed w
+         || match Fs.wr_res w with Fs.ROutside => true | _ => false end
+      then [ELOOP] else [])
+  ++ (if Fs.wr_long w then [ENAMETOOLONG] else []).
+
+(** THE REFUSAL [getname_flags] CAN GIVE AHEAD OF ITS OWN ANSWERS: the
+    -ENOMEM of [__getname] (fs/namei.c:146-148, Linux v6.18.46).
+    [getname_flags] allocates the name's buffer before it copies a byte.
+    The [strncpy_from_user] at 157 is what answers -EFAULT (a negative
+    count, 161-165), a count of PATH_MAX on the re-copy a long name
+    takes (180-195) is what answers -ENAMETOOLONG (207-211), and the
+    empty name's -ENOENT is the test on a count of 0 (167-171, and
+    201-206 on the re-copy).  So where the allocation fails, none of the
+    three is reached and -ENOMEM is the answer instead, for an
+    unreadable, an over-long and an empty pathname alike.
+    [getname_flags] is the same function in v6.16.
+
+    Every arm that answers those three reaches [getname_flags] first: a
+    plain [getname], which is [getname_flags] with no flags
+    (include/linux/fs.h:2944-2947), in [do_sys_openat2] (fs/open.c:1431),
+    in [SYSCALL_DEFINE3(unlinkat)] and [SYSCALL_DEFINE3(mkdirat)]
+    (fs/namei.c) and in [user_path_at] (fs/namei.c:3211-3219), which
+    [do_faccessat] calls; or [getname_flags] under LOOKUP_EMPTY in
+    [do_readlinkat] (fs/stat.c:569, :575), which runs [__getname] the
+    same way.  The one fetch that can answer without [getname_flags] is
+    [newfstatat]'s under AT_EMPTY_PATH ([Stat.statat_getname_runs]), and
+    that spec hands these refusals only to the calls that reach it. *)
+Definition getname_errnos : list Z := [ENOMEM].
+
+(** EMBEDDED_NAME_MAX (126): the count [getname_flags]' first
+    [strncpy_from_user] asks for (157), PATH_MAX less
+    [offsetof(struct filename, iname)].  [struct filename]
+    (include/linux/fs.h:2842-2848, Linux v6.18.46) holds two pointers,
+    an [atomic_t] and a third pointer ahead of [iname], so under the
+    riscv64 LP64 ABI [iname] sits at 32 (0, 8, 16, then 24 once the
+    [atomic_t] is padded to the pointer's alignment, then 32), as the
+    [static_assert] at 2849 allows, and the count is 4096 - 32.  The
+    struct and [getname_flags] read the same in v6.16 and v6.17
+    (include/linux/fs.h:2821-2827 and 2833-2839 there). *)
+Definition embedded_name_max : nat := 4064%nat.
+
+(** Does [getname_flags] take its re-copy path (180)?  Exactly when the
+    first copy returned its count: EMBEDDED_NAME_MAX bytes below
+    [TASK_SIZE], all readable and none NUL.  [read_cstr_aux] at that
+    bound answers [CstrTooLong] on exactly those, with the clamp
+    [strncpy_from_user] applies byte for byte ([State.read_cstr_aux]). *)
+Definition getname_recopies (mp : word -> option byte) (pathp : word) : bool :=
+  match read_cstr_aux mp pathp embedded_name_max with
+  | CstrTooLong => true
+  | CstrOk _ | CstrFault => false
+  end.
+
+(** THE COPY-IN EACH OF [getname_flags]' ALLOCATION FAILURES CARRIES.
+    [__getname] fails before the first copy (146-148, before 157): no
+    copy-in, whatever the pathname is, an ordinary one included.  The
+    [kzalloc] of the re-copy path fails after the first copy and before
+    the second (189-193, between 157 and 195): exactly the first
+    EMBEDDED_NAME_MAX bytes, on a pathname [getname_recopies].  Neither
+    is the whole name every answer past the fetch records: only the
+    second copy reads an over-long name to PATH_MAX, or a name that
+    faults past EMBEDDED_NAME_MAX to its fault. *)
+Definition getname_alloc_reads (mp : word -> option byte) (pathp : word)
+    : list (list (word * nat)) :=
+  [] :: (if getname_recopies mp pathp then [[(pathp, embedded_name_max)]] else []).
+
+(** [s], and BESIDE EVERY ANSWER [s] GIVES, [getname_flags]' -ENOMEM
+    ([getname_errnos]) with each copy-in of [getname_alloc_reads], as a
+    bare return that leaves the model as it was.  [s] is the arm from
+    the pathname fetch on, its copy-in ledger included, so this stands
+    OUTSIDE [record_copyins]: from inside, the refusal would claim the
+    whole name read, and [State.materialize_model_accesses] charges what
+    is claimed, so a page Linux never touched could fault the run where
+    Linux answered -ENOMEM and went on.
+
+    As in [walk_refusals], a call [s] declines admits no refusal, and an
+    effect [s] gives itself is answered once, with [s]'s model.  Each
+    arm applies this once it has reached [getname_flags]: behind every
+    test Linux makes before [getname] (a flag word's -EINVAL, readlink's
+    count), and in [newfstatat] only where the fetch reaches it
+    ([Stat.statat_getname_runs]). *)
+Definition getname_refusals (pathp : word) (s : Sys SyscallEffect)
+    : Sys SyscallEffect :=
+  fun i m o =>
+    s i m o
+    \/ (~ s i m Unmodeled
+        /\ exists reads e,
+             In reads (getname_alloc_reads (in_mem i) pathp)
+             /\ In e getname_errnos
+             /\ o = Ok (with_copyins reads (mkEffect (errno_ret e) [] [])) m []
+             /\ forall m1 evs1,
+                  ~ s i m (Ok (with_copyins reads (mkEffect (errno_ret e) [] []))
+                              m1 evs1)).
+
+(** Every outcome of [s] is one of the wrapped arm's. *)
+Lemma getname_refusals_intro : forall pathp s i m o,
+  s i m o -> getname_refusals pathp s i m o.
+Proof. intros. left. assumption. Qed.
+
+(** The refusals a call admits beside its answer once [getname_flags]
+    has copied [pathp]: on a nonempty string, the walk's own
+    ([walk_errnos]), walked from the working directory with the end [md]
+    the call asks for.  Every other outcome of the fetch is [None]: a
+    pathname that faulted or holds no NUL within PATH_MAX never reaches
+    the walk, and the empty one, which [getname_flags] refuses or under
+    LOOKUP_EMPTY hands on, has no component to look up, so no
+    allocation of the walk's runs on it.  [getname_flags]' own -ENOMEM
+    is [getname_refusals]'. *)
+Definition walk_reached (md : Fs.WalkMode) (i : SyscallInput) (m : Model)
+    (pathp : word) : option (list Z) :=
+  match read_cstr (in_mem i) pathp with
+  | CstrOk p =>
+      if path_eqb p [] then None
+      else Some (walk_errnos (Fs.path_last_kind p)
+                   (Fs.resolve_res md (m_fs m) (m_cwd m) p))
+  | CstrTooLong | CstrFault => None
+  end.
+
+(** [s], and BESIDE EVERY ANSWER [s] GIVES, each of the walk's refusals
+    as a bare return that leaves the model as it was.  [s] is the part
+    of an arm that runs once the pathname is in hand: the walk and what
+    the arm does with its outcome.  Each arm applies this inside its own
+    copy-in ledger, which is right for these refusals alone: each comes
+    after [getname_flags] has copied the whole pathname, so it carries
+    the copy-in every other answer past [getname] does.
+    [getname_flags]' own -ENOMEM fails before that copy is done and
+    stands outside the ledger ([getname_refusals]).
+
+    A CALL [s] DECLINES ADMITS NO REFUSAL: the model has said nothing
+    about it, so it does not say this either.  The last conjunct keeps
+    the refusal to effects [s] does not itself give, so that an errno
+    [s] already answers (an arm's own [-ENOMEM] beside a success, say)
+    is answered once, with [s]'s model. *)
+Definition walk_refusals (md : Fs.WalkMode) (pathp : word) (s : Sys SyscallEffect)
+    : Sys SyscallEffect :=
+  fun i m o =>
+    s i m o
+    \/ (~ s i m Unmodeled
+        /\ exists es e,
+             walk_reached md i m pathp = Some es
+             /\ In e es
+             /\ o = Ok (mkEffect (errno_ret e) [] []) m []
+             /\ forall m1 evs1, ~ s i m (Ok (mkEffect (errno_ret e) [] []) m1 evs1)).
+
+(** Every outcome of [s] is one of the wrapped arm's. *)
+Lemma walk_refusals_intro : forall md pathp s i m o,
+  s i m o -> walk_refusals md pathp s i m o.
+Proof. intros. left. assumption. Qed.
 
 (** The flag words [unlinkat_spec] interprets: 0 and AT_REMOVEDIR, which
     is every word the kernel accepts.  Unlike [modeled_open_flags] this
@@ -305,7 +402,7 @@ Definition unlink_rmdir (flags : word) : bool :=
     and -EISDIR for a directory when it did not (3289-3290).  The model
     tracks none of the mount's flags, the parent's permission, the
     entries' owners or their inode flags, so these five stand BESIDE the
-    type answer in [unlink_found_spec] and [unlinkat_tmp_spec], and never
+    type answer in [unlinkat_file_spec] and [rmdir_spec], and never
     replace it.
 
     Every member is also in [unlinkat_errnos], which additionally has
@@ -314,275 +411,331 @@ Definition unlink_rmdir (flags : word) : bool :=
 Definition unlink_before_type_errnos : list Z :=
   [EROFS; ENOMEM; EOVERFLOW; EACCES; EPERM].
 
-(** The refusals before [do_unlinkat]'s [slashes:] answer (Linux
-    v6.18.46 fs/namei.c): [mnt_want_write]'s -EROFS (4724-4726), then
-    [lookup_one_qstr_excl] (4729-4730), whose dentry allocation may
-    return -ENOMEM (1701-1703).  The jump at 4734-4735 reaches
-    [slashes:] (4767-4772) before [vfs_unlink], so [may_delete]'s
-    -EOVERFLOW, -EACCES and -EPERM do not belong to this list. *)
+(** The refusals before [lookup_one_qstr_excl] answers (Linux v6.18.46
+    fs/namei.c): [mnt_want_write]'s -EROFS, then the dentry the lookup
+    allocates on a cache miss, -ENOMEM (1701-1703).  [do_unlinkat] calls
+    the two at 4724-4726 and 4729-4730, [do_rmdir] at 4595-4597 and
+    4600.  So they stand beside the lookup's own -ENOENT for an absent
+    last name (1713-1716) on both calls, and beside [do_unlinkat]'s
+    [slashes:] answers (4767-4772), which the jump at 4734-4735 reaches
+    before [vfs_unlink], so [may_delete]'s -EOVERFLOW, -EACCES and
+    -EPERM do not belong to this list. *)
 Definition unlink_before_slashes_errnos : list Z := [EROFS; ENOMEM].
 
-(** THE REMOVAL ITSELF, once the key has been found: shared by the
-    working-directory arm and the /tmp arm below so that the two
-    provably do the same thing to the same key.  [p] is the pathname as
-    the program spelled it, which is what [do_unlinkat]'s [slashes:]
-    label reads; [c] is the key.
+(** THE REMOVAL OF A REGULAR FILE'S NAME, once resolution has found the
+    file's inode [i] at the key [k]: either an untracked environment
+    failure, or the name dropped from the image ([Fs.fs_unlink_file]).
 
-    The AT_REMOVEDIR answer sits here rather than at each caller because
-    it is the same answer for both: a model file is never a directory,
-    so [may_delete]'s -ENOTDIR is what Linux returns once the refusals
-    it reaches first ([unlink_before_type_errnos]) have passed, and those
-    refusals stand beside it.  The /tmp arm never reaches it, having
-    declined AT_REMOVEDIR above. *)
-Definition unlink_found_spec (p c : path) (flags : word) (m : Model)
+    LINUX, v6.18.46: [do_unlinkat] (fs/namei.c, 4705-4773) finds the
+    dentry and calls [vfs_unlink] (4654-4696), which runs [may_delete]
+    and the filesystem's [->unlink] ([shmem_unlink] on tmpfs,
+    mm/shmem.c:4006-4030, whose [drop_nlink] at :4019 lowers the
+    inode's link count by one), and [d_delete] then only unhashes the
+    dentry while open files still hold references to it.  So the
+    removal lowers [Fs.fs_ino_nlink] by one -- it is computed from the
+    names -- and touches no descriptor: every [struct file] on the inode
+    keeps its [f_path] on the unhashed dentry, its [f_pos], its
+    [f_mode] and its [f_flags], and [State.FdFile] carries the inode
+    number, not the name.
+
+    THE INODE STAYS WHILE SOMETHING HOLDS IT.  Another name keeps it, and
+    so does an open descriptor ([State.ino_held]): the inode is freed
+    only by the last [iput] ([iput_final], fs/inode.c:1874-1915), which
+    keeps an inode that still has a link ([inode_generic_drop],
+    include/linux/fs.h:3345-3348) and is not reached while a [struct
+    file] holds it.  musl's [tmpfile()] (src/stdio/tmpfile.c) creates a
+    file with O_RDWR|O_CREAT|O_EXCL and removes its name at once, and
+    this is the arm its descriptor then lives on.  A file nothing holds
+    any more is not in the file system the exit event carries, as on
+    Linux.
+
+    [Fs.wf_fs_unlink_file] says the image this leaves is still a
+    namespace: dropping a FILE cannot orphan anything, because no key's
+    parent is a file in a well-formed image.  [State.with_fs] drops the
+    inode's stat pin exactly when the inode is gone.
+
+    EVERY KEY IS ANSWERED, not only those under one folder: the walk
+    names the file the same way wherever it sits, and [vfs_unlink] does
+    not care which directory the victim is in. *)
+Definition unlink_file_spec (k : Fs.path) (i : Fs.ino) (m : Model)
     : Sys SyscallEffect :=
-  if unlink_rmdir flags then
-    alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
-        (err_ret ENOTDIR)  (* a model file is never a directory *)
-  else if path_trailing_slash p then
-    alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
-        (err_ret ENOTDIR)  (* do_unlinkat's [slashes:] *)
-  else if fd_names_path (m_fds m) c then unmodeled
-  else
-    alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
-        (set_fs (fs_remove (m_fs m) c) ;; ret_only (Z_to_bv 64 0)).
-
-(** The entry a descriptor holding the name [c] becomes once the name is
-    gone: a descriptor of the unnamed file [id], with the file's contents
-    [data] and pin [pin], and with what the descriptor's own
-    [struct file] carries kept as it was -- its [f_pos], its access mode
-    (FMODE_READ and FMODE_WRITE from the open) and its O_APPEND.
-    [vfs_unlink] (fs/namei.c, Linux v6.18.46) touches no [struct file]:
-    it drops the inode's link count and the dentry, and every open file
-    keeps its [f_path] on the now unhashed dentry and its own
-    [f_pos], [f_mode] and [f_flags].
-
-    ENUMERATED, for [fd_names_path]'s reason: a later file kind holding
-    a path must decide here what its descriptors become. *)
-Definition unlink_open_entry (c : path) (id : word) (data : list byte)
-    (pin : option (list byte)) (e : FdEntry) : FdEntry :=
-  match e with
-  | FdFile q off =>
-      if path_eqb c q then FdAnon id (mkAnonFile data off true false false pin) else e
-  | FdFileW q off =>
-      if path_eqb c q then FdAnon id (mkAnonFile data off false true false pin) else e
-  | FdFileRW q off =>
-      if path_eqb c q then FdAnon id (mkAnonFile data off true true false pin) else e
-  | FdFileA q off =>
-      if path_eqb c q then FdAnon id (mkAnonFile data off false true true pin) else e
-  | FdChannel _ | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdStream _ _ _ | FdEventfd _ | FdDgram _ | FdAnon _ _ => e
-      (* none of these holds a name, as [fd_names_path] argues kind by
-         kind *)
-  end.
-
-(** THE REMOVAL OF A /tmp NAME OPEN DESCRIPTORS HOLD (R14 of
-    dispatch://OSSV-287/spec): the name goes, and the file stays for
-    the descriptors, as an UNNAMED FILE ([State.FdAnon]).  musl's
-    [tmpfile()] (src/stdio/tmpfile.c) does exactly this to the file it
-    has just created with O_RDWR|O_CREAT|O_EXCL.  [p] is the pathname as
-    the program spelled it, [c] the key, [data] the file's contents.
-
-    LINUX, v6.18.46: [do_unlinkat] (fs/namei.c) finds the dentry and
-    calls [vfs_unlink], which runs [may_delete] and the filesystem's
-    [->unlink] ([shmem_unlink] on tmpfs, mm/shmem.c: [drop_nlink], then
-    [dput]), and [d_delete] then only unhashes the dentry, since the open
-    files still hold references to it.  The inode lives until the last
-    [fput]; every [struct file] on it keeps its contents, its offset,
-    its access mode and its O_APPEND ([unlink_open_entry]).
-
-    THE ANSWERS, in order:
-
-    - a trailing separator admits -EROFS and -ENOMEM before -ENOTDIR
-      at [do_unlinkat]'s [slashes:] label, as [unlink_found_spec] does
-      (AT_REMOVEDIR is declined before this arm is reached);
-    - the id a new unnamed file would take is one a live descriptor
-      already carries: declined.  [State.anon_new_id] wraps to 0 only
-      past a live id of 2^64 - 1, and no run makes 2^64 files;
-    - otherwise the [unlinkat_errnos] alternatives, each leaving the
-      name and the file as they were, or the removal: every descriptor
-      holding [c] becomes a descriptor of the new file, the key leaves
-      [m_fs], and the file is not in the file system the exit event
-      carries, as on Linux.
-
-    THE PIN MOVES WITH THE INODE.  The name's stat pin, if an [fstat]
-    made one, becomes the pin of every descriptor of the unnamed file,
-    with [st_nlink] set to 0 ([Uapi.stat_pin_unlinked]); [State.with_fs]
-    then drops it from the name, so a file created later under the same
-    name, which is another inode, starts without one.
-
-    ONLY THE /tmp ARM ANSWERS THIS (dispatch://OSSV-287/spec, decision
-    "Only the /tmp arm answers the removal of an open file"): the run's
-    /tmp is private to it ([State.in_tmp]), and only those files are
-    needed.  The working-directory arm keeps [unlink_found_spec]'s
-    decline. *)
-Definition unlink_open_tmp_spec (p c : path) (data : list byte) (m : Model)
-    : Sys SyscallEffect :=
-  if path_trailing_slash p then
-    alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
-        (err_ret ENOTDIR)  (* do_unlinkat's [slashes:] *)
-  else
-  let id := anon_new_id (m_fds m) in
-  if anon_id_live (m_fds m) id then unmodeled   (* the id wrapped: see above *)
-  else
-  let pin := match statpin_lookup (m_statpins m) c with
-             | Some b => Some (stat_pin_unlinked b)
-             | None => None
-             end in
   alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
-      (set_fds (map (fun q => (fst q, unlink_open_entry c id data pin (snd q)))
-                    (m_fds m)) ;;
-       set_fs (fs_remove (m_fs m) c) ;;
+      (set_fs (Fs.fs_unlink_file (m_fs m) k i (ino_held (m_fds m) i)) ;;
        ret_only (Z_to_bv 64 0)).
 
-(** THE /tmp ARM: removing a file the run HOLDS in its own private
-    temporary directory ([tmp_name], [State.in_tmp]).  It sits inside
-    the separator branch below, tested before that branch declines, the
-    way [Open.openat_sep_spec]'s arms sit inside openat's.
+(** THE REMOVAL OF A NAME THAT IS NOT A FILE'S: a link, which
+    [do_unlinkat] (fs/namei.c:4729-4730) removes without following: it
+    takes the last name with [lookup_one_qstr_excl] and calls
+    [vfs_unlink] on that dentry, so the link goes and what it names stays.
+    [Fs.wf_fs_remove_file] says the image is still a namespace. *)
+Definition unlink_remove_spec (k : Fs.path) (m : Model) : Sys SyscallEffect :=
+  alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
+      (set_fs (fs_remove (m_fs m) k) ;; ret_only (Z_to_bv 64 0)).
 
-    WHAT IT ANSWERS BESIDE THE REMOVAL, FIRST: a name some key lives
-    UNDER is -EISDIR.  The declaration may name "a/b", and then "/tmp/a"
-    is a DIRECTORY in the run's own /tmp; Linux refuses to unlink a
-    directory in [may_delete], which [vfs_unlink] calls before it
-    removes anything, and the refusal is unconditional on the
-    filesystem — [d_is_dir] on the victim with [isdir] clear is
-    -EISDIR.  [may_delete] tests that only after its own -EOVERFLOW,
-    -EACCES and -EPERM, and [do_unlinkat] calls [vfs_unlink] only after
-    [mnt_want_write]'s -EROFS and the lookup's -ENOMEM, so those five
-    stand beside the -EISDIR ([unlink_before_type_errnos] has the kernel
-    lines).  This is the one answer here that is LINUX-SPECIFIC rather
-    than POSIX's: POSIX lets unlink of a directory be -EPERM, and Linux
-    chose -EISDIR.  Every supported implementation is a Linux, and
-    qemu-user's `unlinkat` is the host kernel's, so the intersection
-    design priority 1 (README.md) asks about is -EISDIR on all of them.  The
-    -EISDIR is right for a trailing-separator spelling too, by a
-    different route: "/tmp/a/" strips to the same [c], and Linux reaches
-    [do_unlinkat]'s [slashes:] label, whose [d_is_dir] test answers
-    -EISDIR for a directory.  [may_delete] never runs on that route, so
-    its refusals do not stand beside that spelling's -EISDIR.  The
-    -EROFS and -ENOMEM that precede [slashes:] do stand beside it
-    ([unlink_before_slashes_errnos]), as on the two -ENOTDIR routes.
-    The note above [unlinkat_body_spec] names the remaining omissions. All
-    fs/namei.c, Linux v6.18.46; [may_delete]'s test was read again in
-    v6.12.1, where it stands unchanged, so the answer does not turn on
-    the version.
+(** THE unlinkat(flags = 0) ARM, over resolution.
 
-    WHY AN ANSWER AND NOT A DECLINE, which is the [Open.openat_create_spec]
-    argument moved one syscall over: the type answer does not depend on
-    which filesystem /tmp is on, no answer here changes the model, and
-    the image alone picks the branch, so one image drives a source and a
-    target into the same branch.  The guard runs BEFORE the lookup, and
-    because it answers, the order is load-bearing rather than tidy: an
-    implied directory is not a key the run holds, so the -ENOENT below
-    would claim the name is absent where Linux says it is a directory.
-    [Checks.Cases.Fs.Namei.unlinkat_tmp_implied_directory_precedes_not_held]
-    pins exactly that.  What the order also covers is the unrealizable
-    image [Fs.valid_fs] admits, where "/tmp/a" and "/tmp/a/b" are both
-    keys: no reality has both, and the arm answers the directory rather
-    than removing the file.
+    THE LAST COMPONENT'S KIND COMES FIRST, and it is one answer for all
+    three non-normal kinds.  [do_unlinkat] (fs/namei.c, Linux v6.18.46,
+    4720-4722) opens with
 
-    WHAT IT ANSWERS BESIDE THE REMOVAL: a key the run does NOT hold is
-    -ENOENT.  The arm gives the real
-    errno rather than leaving the last call of a run that cleans up after
-    itself outside the modeled surface.  Linux reaches the same answer
-    through [do_unlinkat]: [filename_parentat] walks to the parent, the
-    lookup of the last component finds no entry there, and the NEGATIVE
-    dentry that comes back is the -ENOENT the ANSWERS discussion below
-    already records (Linux fs/namei.c; through v6.14 the test is
-    [do_unlinkat]'s own [d_is_negative] at its [slashes:] label, and
-    v6.15 moved it into [lookup_one_qstr_excl] — the same answer either
-    way, which is what that note says).
+        error = -EISDIR;
+        if (type != LAST_NORM)
+                goto exit2;
 
-    WHAT MAKES IT TRUE HERE, rather than the flat map's confident guess
-    that [unlinkat_root_enoent_rejected] warns about, is the privacy
-    premise: the run's /tmp is its OWN, so what the environment declared
-    ([State.in_tmp]) plus what [Open.create_wronly] created minus what
-    this arm removed is the whole truth about what exists there.
-    The premise is the WHOLE of
-    what carries this answer, and nothing else in the model corroborates
-    it.  One thing that looks as though it might does not:
-    [Stat.newfstatat_core_spec] answers -ENOENT for a /tmp name the run
-    does not hold, but it reaches that off the FLAT MAP, having no /tmp
-    arm, no separator guard and no reading of [State.in_tmp] at all — it
-    answers the same way for any absent path, which makes it a
-    FALSE REJECTION, and it is the confident wrong answer the WORLD note
-    below warns about rather than a second reading of the premise.
+    which does not distinguish them, so ".", ".." and a path that is
+    nothing but separators are all -EISDIR.  That is decided before any
+    lookup, so it preempts every outcome of the walk's last step but not
+    the walk's own prefix errors: [filename_parentat] runs first
+    (4716-4718) and its failure is what [Fs.RNotDir] and [Fs.RAbsent]
+    are.
 
-    [Open.openat_tmp_spec]'s O_RDONLY of a name not held declines.
-    Nothing structural keeps it declined — that branch would answer
-    one errno and mint no descriptor, the same shape as the branch here —
-    so it could be answered off this same premise.
+    THEN THE TRAILING SEPARATOR, and only on the arm where the lookup
+    FOUND something.  [do_unlinkat] tests [last.name[last.len]] — the
+    byte just past the component — and jumps to its [slashes:] label
+    when it is not NUL (4734-4735, 4767-4772):
 
-    WHAT IT DECLINES, each for a reason of its own:
+        if (last.name[last.len])
+                goto slashes;
+        ...
+    slashes:
+        if (d_is_dir(dentry))
+                error = -EISDIR;
+        else
+                error = -ENOTDIR;
 
-    - AT_REMOVEDIR.  Linux answers -ENOTDIR for a regular file, and for
-      a directory -ENOTEMPTY or 0; which one it is depends on /tmp
-      holding a DIRECTORY, which this arm does not model.  The arm
-      declines the flag rather than answering the one case the
-      model could judge, and that is the narrower choice.
-    - a component over [Uapi.NAME_MAX].  That -ENAMETOOLONG comes out
-      of the FILESYSTEM's own lookup rather than out of fs/namei.c, and
-      the model has no filesystem type to ask.  The working-directory
-      arm declines it for the same reason, and unlike [Open]'s plain
-      arms (see [Open.openat_plain_name]'s note) nothing needs this one
-      to answer.
+    So a trailing separator on a regular file is -ENOTDIR and on a
+    directory is -EISDIR.  An ABSENT name never gets there:
+    [lookup_one_qstr_excl] returns -ENOENT for the negative dentry when
+    the caller passed no LOOKUP_CREATE, before the jump.  The parent end
+    never follows the last name, so a link there is a non-directory to
+    this test ([Fs.WalkParent]).  The jump
+    is taken after [mnt_want_write] and the lookup, so their -EROFS and
+    -ENOMEM stand beside both answers, as they stand beside the absent
+    name's -ENOENT ([unlink_before_slashes_errnos]); [may_delete] never
+    runs on either route.
 
-    The name some key lives UNDER is the -EISDIR above.  The
-    working-directory arm in [unlinkat_body_spec] declines that shape,
-    and the asymmetry is one of SCOPE and nothing deeper: [may_delete] does not care
-    which directory the victim is in, so the same derivation would carry
-    the plain arm, and moving it there is a change of its own with its
-    own examples to re-check.  Where the two arms DO have to agree is
-    the key space, and they do — see the NAME_MAX note in
-    [Checks.Cases.Fs.Namei.unlinkat_tmp_name_max_boundary].
+    A DIRECTORY WITHOUT A SEPARATOR IS -EISDIR, from
+    [may_delete(..., isdir = 0)]'s [else if (d_is_dir(victim)) return
+    -EISDIR] (3289-3290), with [unlink_before_type_errnos] beside it,
+    since [may_delete] reaches its own refusals first.
 
-    THERE IS NO IGNORED-FLAG MASK HERE, and none is wanted: unlike
-    [Open.open_ignored_flags], which strips O_CLOEXEC, O_LARGEFILE and
-    O_NONBLOCK before every openat arm sees the word, unlinkat's word
-    has already been narrowed to exactly 0 or AT_REMOVEDIR by
-    [modeled_unlink_flags] in the wrapper, which is the kernel's own
-    [SYSCALL_DEFINE3(unlinkat)] test and runs before [getname()].  So
-    the only distinction left for this arm to make is the one
-    [unlink_rmdir] makes.
+    A DEVICE DECLINES.  Linux unlinks a character device node like any
+    other entry, and the model could drop the [Fs.EDev] from the image
+    and stay well formed — but what it cannot describe is the DEVICE
+    surviving the name: an open [State.FdDevNull] carries no key, so
+    after the removal the model has a descriptor on a device that the
+    image no longer mentions, and no arm says what that descriptor now
+    is.  Removing a device the run may still hold is a state the
+    descriptor invariant has nothing to say about, so the arm fails
+    closed rather than answering.
 
-    A NAME OPEN DESCRIPTORS HOLD IS REMOVED, and the file stays for them
-    as an unnamed file: [unlink_open_tmp_spec].  A name no descriptor
-    holds takes [unlink_found_spec], the working-directory arm's
-    removal.
+    A FILE'S NAME IS REMOVED whether or not a descriptor holds the file
+    ([unlink_file_spec]): the descriptor holds the inode, not the name.
+    A LINK'S NAME IS REMOVED and its target stays ([unlink_remove_spec]);
+    the walk does not follow the last component here, as
+    [do_unlinkat] does not. *)
+(** THE THREE LAST-COMPONENT SWITCHES, EACH AS A FUNCTION OF THE KIND,
+    so that the arm below can run them where Linux runs them: AFTER
+    [filename_parentat] and not before it.
 
-    [dirfd] is not tested here, and does not have to be: the caller
-    below has already required AT_FDCWD.  Linux would ignore any dirfd
-    for a path of this shape — [filename_parentat] hands an absolute
-    name to [path_init], which sets [nd->path] from the root and never
-    reads [dfd] (fs/namei.c) — so a later real-dirfd arm may drop that
-    requirement without changing this arm's answers. *)
-Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
+    [None] is LAST_NORM, the case every switch falls THROUGH — which is
+    what makes these total without inventing an answer for the normal
+    component.
+
+    WHY THIS IS A FUNCTION AND NOT THE ARM'S OUTERMOST MATCH.  Each
+    [do_*] reads the last component's kind from the parent walk's own
+    result, so the walk has already either failed or succeeded by the
+    time the switch runs ([do_unlinkat], fs/namei.c:4716-4722, Linux
+    v6.18.46):
+
+        error = filename_parentat(dfd, name, lookup_flags, &path, &last, &type);
+        if (error)
+                goto exit1;              <- the PREFIX's errno wins here
+        error = -EISDIR;                 <- and only now the kind
+        if (type != LAST_NORM)
+                goto exit2;
+
+    An arm that switched on the kind first would answer -EISDIR for
+    "a/.." with [a] a regular file, where Linux answers -ENOTDIR from
+    the failed parent walk.  So the prefix outcomes -- [Fs.RNotDir],
+    [Fs.RAbsent], [Fs.RLoop] and [Fs.ROutside] ("proc" and "sys" at the
+    root), which are exactly the shapes [filename_parentat] fails with
+    -- are read first, and the kind is read inside the two rows where
+    the parent walk SUCCEEDED ([Fs.resolve_parent] turns its end into
+    the last name's own lookup). *)
+Definition unlink_nonnorm_errno (lk : Fs.LastKind) : option Z :=
+  match lk with
+  | Fs.LastNorm => None
+  | Fs.LastDot | Fs.LastDotDot | Fs.LastRoot => Some EISDIR
+  end.
+
+(** [do_rmdir] distinguishes all three where [do_unlinkat] does not
+    (fs/namei.c:4583-4593, Linux v6.18.46). *)
+Definition rmdir_nonnorm_errno (lk : Fs.LastKind) : option Z :=
+  match lk with
+  | Fs.LastNorm => None
+  | Fs.LastDotDot => Some ENOTEMPTY
+  | Fs.LastDot => Some EINVAL
+  | Fs.LastRoot => Some EBUSY
+  end.
+
+(** [filename_create]'s [if (unlikely(type != LAST_NORM)) goto out;]
+    with [error] still -EEXIST from the line above it (fs/namei.c:4203,
+    4219-4220, Linux v6.18.46). *)
+Definition mkdir_nonnorm_errno (lk : Fs.LastKind) : option Z :=
+  match lk with
+  | Fs.LastNorm => None
+  | Fs.LastDot | Fs.LastDotDot | Fs.LastRoot => Some EEXIST
+  end.
+
+Definition unlinkat_file_spec (r : Fs.Resolved) (lk : Fs.LastKind)
+    (ts : bool) (m : Model) : Sys SyscallEffect :=
+  match r with
+  (* [filename_parentat] FAILED: its errno wins, whatever the last kind *)
+  | Fs.RNotDir _ => err_ret ENOTDIR
+  | Fs.RAbsent _ => err_ret ENOENT
+  | Fs.RLoop => err_ret ELOOP                (* the 41st link, fs/namei.c:1878-1879 *)
+  | Fs.RParent _ _ => unmodeled              (* [Fs.resolve_parent] maps it away *)
+  | Fs.ROutside => unmodeled
+  (* the parent walk SUCCEEDED, so the kind switch runs now *)
+  | Fs.RMissing _ _ =>
+      match unlink_nonnorm_errno lk with
+      | Some e => err_ret e
+      | None =>
+          alt (er <- errno_from unlink_before_slashes_errnos ;; err_ret er)
+              (err_ret ENOENT)              (* [lookup_one_qstr_excl]'s -ENOENT *)
+      end
+  | Fs.RFound k e =>
+      match unlink_nonnorm_errno lk with
+      | Some er => err_ret er
+      | None =>
+          match e with
+          | EDir =>
+              if ts then
+                alt (er <- errno_from unlink_before_slashes_errnos ;; err_ret er)
+                    (err_ret EISDIR)            (* do_unlinkat's [slashes:] *)
+              else
+                alt (er <- errno_from unlink_before_type_errnos ;; err_ret er)
+                    (err_ret EISDIR)            (* may_delete's -EISDIR *)
+          | EDev _ => unmodeled
+          | EFile i =>
+              if ts then
+                alt (er <- errno_from unlink_before_slashes_errnos ;; err_ret er)
+                    (err_ret ENOTDIR)           (* do_unlinkat's [slashes:] *)
+              else unlink_file_spec k i m
+          | ELink _ =>
+              if ts then
+                alt (er <- errno_from unlink_before_slashes_errnos ;; err_ret er)
+                    (err_ret ENOTDIR)           (* [slashes:]: a link is no directory *)
+              else unlink_remove_spec k m
+          end
+      end
+  end.
+
+(** THE unlinkat(AT_REMOVEDIR) ARM — rmdir — over resolution.
+
+    [do_rmdir] SWITCHES ON THE LAST COMPONENT'S KIND BEFORE ANY LOOKUP,
+    and unlike [do_unlinkat] it distinguishes all three
+    (fs/namei.c:4583-4593, Linux v6.18.46):
+
+        switch (type) {
+        case LAST_DOTDOT: error = -ENOTEMPTY; goto exit2;
+        case LAST_DOT:    error = -EINVAL;    goto exit2;
+        case LAST_ROOT:   error = -EBUSY;     goto exit2;
+        }
+
+    So "/tmp/../.." is -ENOTEMPTY, "d/." is -EINVAL, and "/" and "//"
+    are -EBUSY, each without the directory being looked at.  That is why
+    [Fs.resolve] returns the kind: no other arm needs it, and this one
+    cannot be written without it.
+
+    THE TRAILING SEPARATOR IS IGNORED: [do_rmdir] reads
+    [last] for its name and its type and never looks at the byte past
+    it, so "d/" and "d" are one call.
+
+    A NON-DIRECTORY IS -ENOTDIR, from [may_delete(..., isdir = 1)]'s
+    [if (!d_is_dir(victim)) return -ENOTDIR] (3284-3286), which is one
+    answer for a regular file and for a device alike, with the five
+    refusals [may_delete] and its caller reach first beside it
+    ([unlink_before_type_errnos]).
+
+    A NON-EMPTY DIRECTORY IS -ENOTEMPTY, which is the filesystem's own
+    [->rmdir] (tmpfs's [shmem_rmdir] tests [simple_empty],
+    mm/shmem.c:4032-4035) and the one answer here that is a function of
+    the image rather than of the victim alone.  [fs_dir_empty] is the
+    test.  [vfs_rmdir] reaches [->rmdir] only after [may_delete] and its
+    -EBUSY for a mount point (fs/namei.c:4532-4552), so every member of
+    [unlinkat_errnos] stands beside it.
+
+    THE THREE DECLINES, and each is a state the model has no term for
+    rather than an errno it is unsure of.  Linux SUCCEEDS at all three
+    and leaves something behind:
+
+    - the working directory itself.  [vfs_rmdir] marks it S_DEAD
+      (4557) and the process keeps standing in a directory that is in
+      no namespace; every relative path it then resolves is -ENOENT.
+      The model's [State.m_cwd] would name a key the image no longer
+      holds, which [State.model_fs_wf]'s third conjunct forbids.
+    - an ANCESTOR of the working directory.  Linux refuses this one for
+      a non-empty ancestor (-ENOTEMPTY, since the cwd is in it) but a
+      chain of empty directories above an empty cwd is not the shape the
+      model can rule out, and the same S_DEAD state results.
+      [key_strictly_under] is the test.
+    - a directory an open [State.FdDir] names, which [fd_names_dir]
+      carries with its own argument.
+
+    No errno is invented for any of them.
+
+    THE PARENT'S LINK COUNT FOLLOWS ([Fs.fs_rmdir]): one lower under the
+    counting rule ([drop_nlink(dir)] in [shmem_rmdir] at mm/shmem.c:4038
+    and in ramfs's [simple_rmdir] at fs/libfs.c:806), the same under the
+    fixed one ([Fs.DirLinks]); a stat of the parent reads it there.
+
+    A LINK AT THE LAST NAME IS -ENOTDIR, as a file is: [do_rmdir] looks
+    the last name up without following it and [may_delete(..., isdir =
+    1)] refuses any victim that is not a directory (3284-3286). *)
+Definition rmdir_spec (r : Fs.Resolved) (lk : Fs.LastKind) (m : Model)
     : Sys SyscallEffect :=
-  if unlink_rmdir flags then unmodeled
-  else if Nat.ltb NAME_MAX (length n) then unmodeled
-  else if fs_under (m_fs m) c then
-    (if path_trailing_slash p then
-       alt (e <- errno_from unlink_before_slashes_errnos ;; err_ret e)
-           (err_ret EISDIR)  (* do_unlinkat's [slashes:]: no may_delete *)
-     else alt (e <- errno_from unlink_before_type_errnos ;; err_ret e)  (* reached before the type test *)
-              (err_ret EISDIR))  (* may_delete's -EISDIR *)
-  else
-    match fs_lookup (m_fs m) c with
-    | None => err_ret ENOENT     (* absent from the run's own /tmp: real -ENOENT *)
-    | Some data =>
-        if fd_names_path (m_fds m) c then unlink_open_tmp_spec p c data m
-        else unlink_found_spec p c flags m
-    end.
+  match r with
+  (* [filename_parentat] FAILED: its errno wins, whatever the last kind *)
+  | Fs.RNotDir _ => err_ret ENOTDIR
+  | Fs.RAbsent _ => err_ret ENOENT
+  | Fs.RLoop => err_ret ELOOP
+  | Fs.RParent _ _ => unmodeled              (* [Fs.resolve_parent] maps it away *)
+  | Fs.ROutside => unmodeled
+  (* the parent walk SUCCEEDED, so [do_rmdir]'s switch runs now *)
+  | Fs.RMissing _ _ =>
+      match rmdir_nonnorm_errno lk with
+      | Some e => err_ret e
+      | None =>
+          alt (er <- errno_from unlink_before_slashes_errnos ;; err_ret er)
+              (err_ret ENOENT)              (* [lookup_one_qstr_excl]'s -ENOENT *)
+      end
+  | Fs.RFound k e =>
+      match rmdir_nonnorm_errno lk with
+      | Some er => err_ret er
+      | None =>
+          match e with
+          | EFile _ | EDev _ | ELink _ =>
+              alt (er <- errno_from unlink_before_type_errnos ;; err_ret er)
+                  (err_ret ENOTDIR)             (* may_delete's -ENOTDIR *)
+          | EDir =>
+              if path_eqb k (m_cwd m) then unmodeled
+              else if key_strictly_under k (m_cwd m) then unmodeled
+              else if fd_names_dir (m_fds m) k then unmodeled
+              else if negb (fs_dir_empty (m_fs m) k) then
+                alt (er <- errno_from unlinkat_errnos ;; err_ret er)
+                    (err_ret ENOTEMPTY)         (* the filesystem's [->rmdir] *)
+              else
+                alt (er <- errno_from unlinkat_errnos ;; err_ret er)
+                    (set_fs (Fs.fs_rmdir (m_fs m) k) ;; ret_only (Z_to_bv 64 0))
+          end
+      end
+  end.
 
-(** [unlinkat dirfd path flags]: remove a directory entry.  This is the
-    one modeled syscall that DELETES from the file system, and the final
-    file system is observable ([ExitEv] carries it), so the removal is
-    real: [Fs.fs_remove].  [Fs.fs_remove_sorted] proves that dropping an
-    entry PRESERVES the canonical sorted form the [=] comparison needs —
-    a property of the operation alone.  Nothing threads
-    [Fs.fs_sorted (m_fs m)] along the model step, so that is not a
-    property of the states an execution reaches; [Fs.valid_fs] requires
-    it of the initial image and the header assumes the rest.
+(** [unlinkat dirfd path flags]: remove a directory entry.  The two
+    calls the flag word selects are different kernel functions with
+    different answers, and this arm is the pair of them.
 
     ORDER, following the kernel's exactly:
 
@@ -596,258 +749,68 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
         return do_unlinkat(dfd, getname(pathname));
 
       so [getname] is an argument expression on the two return paths
-      only and the -EINVAL genuinely precedes it (Linux fs/namei.c,
-      byte-identical v5.9 through v6.18).  Note AT_EMPTY_PATH and
-      AT_SYMLINK_NOFOLLOW are NOT accepted: they are -EINVAL like any
-      other bit.
+      only and the -EINVAL genuinely precedes it.  Note AT_EMPTY_PATH
+      and AT_SYMLINK_NOFOLLOW are NOT accepted: they are -EINVAL like
+      any other bit.
     - then [getname()], with all three of its answers, as [openat_spec]
       has them: -ENAMETOOLONG for no NUL within PATH_MAX, -ENOENT for
-      the empty string, and -EFAULT for an unmapped byte — the last
-      propagated out of [strncpy_from_user] rather than written in
-      [getname_flags] itself (Linux fs/namei.c, [getname_flags]; the
-      answers are unchanged v6.10 through v6.16, though the body is not
-      byte-stable across it);
-    - only then the dirfd, resolved in [path_init]: the relative-to-a-
-      dirfd modes are not modeled, so any dirfd but AT_FDCWD is
-      [unmodeled] — the same treatment [openat_spec] and
-      [readlinkat_spec] give it.
+      the empty string, and -EFAULT for an unmapped byte;
+    - only then the dirfd, resolved in [path_init]: the
+      relative-to-a-dirfd modes are not modeled, so any dirfd but
+      AT_FDCWD is [unmodeled].
 
     For an UNREADABLE pathname too: an illegal flag word with a NULL or
     unmapped path is -EINVAL, the pathname never fetched.
 
-    THE ANSWERS, once the path is in hand.  What the kernel does first is
-    TYPE the last component, in [link_path_walk], and three of the four
-    types it can produce are settled without consulting any file system.
-    So they are exact constants here (Linux fs/namei.c v6.18.46,
-    [do_unlinkat] / [do_rmdir], both byte-identical v6.10 through v6.14;
-    in v6.15 both changed for one reason, the negative-dentry -ENOENT
-    moving into [lookup_one_qstr_excl], which changes no answer this spec
-    gives):
+    THE WORLD IS THE NAMESPACE, and the three guards the flat map needed
+    are gone with it.  A path containing "/" anywhere but at the end was
+    [unmodeled] because the model could not walk it; [Fs.resolve] walks
+    it.  A name some key lived UNDER was [unmodeled] because the map
+    only IMPLIED a directory there; a directory is an [Fs.EDir] and both
+    arms answer it.  The "/tmp/<one component>" arm, which answered a
+    single shape under a declaration of its own, is gone: "/tmp/x" is an
+    ordinary absolute key and the premise it carried is the whole
+    image's (see [Fs]'s header).  What is left of the [Uapi.NAME_MAX]
+    guard is the walk's admitted -ENAMETOOLONG ([walk_errnos]).
+
+    THE ANSWERS, once the path is in hand, by the last component's type
+    (fs/namei.c, Linux v6.18.46, [do_unlinkat] 4705-4773 and [do_rmdir]
+    4570-4622), each read only after the parent walk succeeded:
 
       | last component | type        | flags = 0 | AT_REMOVEDIR |
       | "."            | LAST_DOT    | -EISDIR   | -EINVAL      |
       | ".."           | LAST_DOTDOT | -EISDIR   | -ENOTEMPTY   |
       | none at all    | LAST_ROOT   | -EISDIR   | -EBUSY       |
 
-    -EISDIR on all three comes from [do_unlinkat]'s [type != LAST_NORM]
-    test, which does not distinguish them; [do_rmdir] switches on the
-    type and does, and its [case LAST_ROOT] is the -EBUSY.
+    and for LAST_NORM, [unlinkat_file_spec] and [rmdir_spec] answer off
+    the entry the walk found.
 
-    LAST_ROOT is "the path had no component" — a path that is nothing but
-    separators, so "/" and "//" and "///" alike.  [link_path_walk] sets
-    [nd->last_type = LAST_ROOT] before it looks at anything, skips the
-    leading separators, and returns 0 the moment the string ends there,
-    so it never enters the component loop.  That is what separates this
-    arm from the "." and ".." ones, which look identical from the
-    outside: the loop calls [may_lookup] before it types anything, so
-    those two rest on the caller being able to search its own working
-    directory and this one does not.  It is not unconditional: the
-    APPROXIMATION note below has the condition each type is behind.
+    THE OPEN-FD CASE.  Linux keeps an unlinked file's contents reachable
+    through a descriptor already open on it until the last close.  The
+    model's file descriptors record the INODE ([State.FdFile] and its
+    kin), so the removal of a name changes no descriptor: the inode
+    keeps its row while a descriptor holds it ([Fs.fs_unlink_file]), and
+    every read and write through the descriptor reaches it there.
 
-    TRAILING SEPARATORS do not change which component is last, and do not
-    change its type; [path_strip_trailing_slashes] carries that argument.
-    What they change is one byte: [do_unlinkat] tests [last.name[last.len]], the
-    byte just past the component, and jumps to its [slashes:] label when
-    that byte is not NUL.
+    THE WALK'S OWN REFUSALS stand beside every answer the walk leads to
+    ([walk_refusals], applied in [unlinkat_spec]): [may_lookup]'s
+    -EACCES on every pathname that has a component, and the walk's
+    -ENOMEM on every nonempty pathname it is handed.  [getname_flags]'
+    own -ENOMEM stands beside every answer from the fetch on, the three
+    [getname_flags] gives itself (the empty path, an unreadable pointer,
+    an over-long one) included, with the copy-in it had made when its
+    allocation failed ([getname_refusals], applied in [unlinkat_spec]
+    outside the ledger).
 
-    The two -ENOTDIRs an ordinary name can draw are DIFFERENT kernel
-    answers reached down different
-    paths, which is why they are separate arms below rather than one.
-    The AT_REMOVEDIR one is [may_delete(..., isdir = 1)]'s
-    [!d_is_dir(victim)], reached through [vfs_rmdir]; a model file is
-    always a regular file, so rmdir of one never succeeds.  The
-    trailing-separator one is [do_unlinkat]'s [slashes:] label, which
-    [vfs_unlink] never gets near:
+    Two more untracked conditions sit ahead of the answers; which one
+    reaches which arm follows the last component's TYPE rather than the
+    answer:
 
-        if (last.name[last.len])
-                goto slashes;
-        ...
-    slashes:
-        if (d_is_dir(dentry))
-                error = -EISDIR;
-        else
-                error = -ENOTDIR;
-
-    The -ENOENT column is one answer for a different reason again: an
-    absent name never reaches [slashes:] at all, because
-    [lookup_one_qstr_excl] returns [ERR_PTR(-ENOENT)] for a negative
-    dentry when the caller passed no LOOKUP_CREATE, and neither
-    [do_unlinkat] nor [do_rmdir] does (Linux fs/namei.c v6.18.46,
-    [lookup_one_qstr_excl], the [d_is_negative(dentry) && !(flags &
-    LOOKUP_CREATE)] test).  That is why the trailing separator is tested
-    only on the arm where the lookup FOUND something.
-
-    NONE OF THIS TRANSFERS TO A PATH LOOKUP, and the reason is worth
-    stating here because the byte is the same one.  [openat] and
-    [newfstatat] reach the last component through [path_lookupat], which
-    calls [lookup_last]:
-
-        static inline const char *lookup_last(struct nameidata *nd)
-        {
-            if (nd->last_type == LAST_NORM && nd->last.name[nd->last.len])
-                    nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
-            return walk_component(nd, WALK_TRAILING);
-        }
-
-    [lookup_last] is called from [path_lookupat] and from nowhere else;
-    [path_parentat], which is what [filename_parentat] and therefore both
-    unlink callers use, stops at the parent and never invokes it (Linux
-    fs/namei.c v6.18.46, [lookup_last] and its one caller).  So the very
-    byte that sends [do_unlinkat] to [slashes:] makes a LOOKUP follow
-    symlinks and demand a directory: "sym/" is -ENOTDIR to unlink
-    whatever the link points at, because [slashes:] tests the dentry's
-    own type, and is the link's TARGET to open.  A spec for a lookup must
-    therefore not reuse the reasoning above, and must not reuse
-    [path_strip_trailing_slashes] on the strength of it.
-
-    THE WORLD this is exact in, and the three guards that keep the spec
-    inside it.  The model's file system is a flat map from uninterpreted
-    paths to bytes: there is no directory structure, and the only paths
-    answered as directories without a lookup are the ones the path walk
-    types — ".", "..", and the all-separator LAST_ROOT.  Reality is a
-    tree.  The two
-    agree exactly when every model key is a regular file directly in the
-    working directory AND the working directory holds nothing but those
-    keys — the first half is the correspondence [openat_spec] already
-    depends on.  The
-    SECOND half is the one no guard below can restore, because an EMPTY
-    real directory has no key at all: [fs_under] sees nothing under it
-    and [fs_lookup] misses, so unlinking it is -EISDIR on Linux and
-    -ENOENT here, and an AT_REMOVEDIR of it really succeeds there.
-    Trailing separators put MORE inputs behind that precondition without
-    changing the precondition itself: "D/" reaches these arms rather
-    than the separator decline, so a program that names an
-    empty real directory with a trailing separator gets the same
-    wrong -ENOENT that naming it plainly gets, instead of an
-    honest [unmodeled].  That is a real cost of answering trailing
-    separators, it is the reason those arms stop where they do, and
-    it is a divergence kept rather than fixed.  No
-    modeled syscall creates a directory — and it cannot, in the order that
-    matters: [Fs] maps a path to a byte list, so there is no value a
-    created directory could BE, which is why mkdirat is declined and why
-    a mkdir cannot land before the representation changes.  What keeps
-    this unreached is therefore an ENVIRONMENT precondition and not
-    that fact: the run must not start with an empty real directory in
-    the working directory.  Where the model
-    would otherwise answer with confidence and be wrong, it declines:
-
-    - a path with a "/" ANYWHERE BUT AT THE END is [unmodeled], once the
-      trailing ones are stripped and something is left — leading
-      separators included, so an absolute path WITH A COMPONENT is
-      declined here.  ("/" and "//" strip to nothing and are the
-      LAST_ROOT arm above, not this one.)  The bound is exactly
-      "the last component's parent is the working directory": the model
-      can type a last component and look it up in the map, and that is
-      the whole of what it can do.  A path with a separator anywhere but
-      at the end needs the kernel's walk, which resolves every component
-      against a tree the flat map does not have — an intermediate name
-      that is a regular file is -ENOTDIR, and a last component of "." or
-      ".." is typed only after the parent walk succeeds.  An ABSOLUTE
-      path is out of reach for a second reason on top of that one:
-      nothing in the model records the working directory's own path, so
-      "/tmp/x" and "x" cannot be related even when they name one file.
-      None of this is a function of the flat map, and the flat map's own
-      answer — "that key is absent, -ENOENT" — is the confident wrong
-      one.  This is the same gap [Stat.newfstatat_spec] has on the
-      stat side, where it is a false REJECTION rather than a decline.
-
-      WHAT CLOSING IT WOULD COST, since "give [Fs] a directory structure"
-      is three different jobs with three different prices, and only the
-      cheapest is a reinterpretation of what the map already holds:
-
-      - A relative walk that stays WITHIN the working directory's subtree
-        is derivable from the existing keys and needs no new state.
-        Which non-empty directories exist is already determined —
-        [fs_under] is that predicate — so a component walk over it would
-        answer "a/b", and the -ENOTDIR of a non-final regular file,
-        without [Fs] changing type and so without re-opening any example
-        proof.  A ".." that pops ABOVE the working directory is not
-        derivable, and for a stronger reason than the next bullet's: not
-        only is there no cwd path to resolve it against, [Fs] holds no
-        keys outside the working directory at all, so there is nothing
-        for the walk to land on.
-      - An ABSOLUTE path is not derivable at any price.  It needs the
-        working directory's own path, which nothing in the model records.
-        Storing one is not the hard part — a cwd is a [Fs.path] like any
-        other — the hard part is that the launching directory is chosen
-        by the ENVIRONMENT, which makes it a parameter of
-        [Equivalence.strong_universal_T] rather than a private field, and
-        whoever adds one owes that theorem an accounting.
-      - An EMPTY directory is not derivable either, and it is the one
-        that cannot be fixed by adding a walk: it leaves NO key in the
-        map, so nothing distinguishes it from an absent name.  That is
-        why AT_REMOVEDIR can never correctly succeed here, and why
-        closing it means directories become state in their own right —
-        state a successful rmdir MUTATES, which [ExitEv] would then have
-        to carry or the equivalence would quietly coarsen.
-
-      No widening of this spec substitutes for any of the three.
-
-      THE THREE DO NOT COMPOSE.  A program that unlinks the temporary
-      file it writes names it absolutely, under a directory the working directory does
-      not contain — and that shape is closed by none of the three in
-      sequence.  The first answers a name inside the working directory's
-      subtree and this name is not one; the second relates an absolute
-      name to the working directory and this name's parent is a
-      different directory entirely; so the map holds no key for it with
-      both paid, and only the third — directories as state in their own
-      right — reaches it.  This is a decline reached on every input of
-      such a binary, so its [Equivalence.strong_equiv] statement
-      is FALSE rather than narrowed, per the [modeled]-in-the-conclusion
-      note above.  Widening THIS spec would not by itself make such a
-      binary modeled either, while [Open.openat_spec] carries the same
-      guard: the create that precedes the unlink leaves the modeled
-      surface first on every input that reaches it.
-      Checks/Cases/Fs/Namei.v checks that the guard runs ahead of the
-      lookup, and that the name the walk would end at is answered rather
-      than declined.
-    - a name longer than [Uapi.NAME_MAX] is [unmodeled].  [getname()]'s
-      PATH_MAX bound lets a 4095-byte single component through, and the
-      FILESYSTEM then answers -ENAMETOOLONG; the model has no filesystem
-      type to ask.
-    - a name some key lives UNDER ([fs_under]) is [unmodeled].  A key
-      "a/b" means reality has a DIRECTORY "a", which the map cannot hold;
-      unlinking "a" is -EISDIR there and -ENOENT here.  The guard runs
-      before the lookup, so it also covers the unrealizable images
-      [Fs.valid_fs] admits, where "a" and "a/b" are both keys.
-
-    THE OPEN-FD GUARD.  Linux keeps an unlinked file's contents reachable
-    through an fd already open on it until the last close.  The model's
-    file fds record a PATH ([FdFile]/[FdFileW]), not an inode, so after a
-    removal they would name nothing — and the read, write, readv and
-    writev specs all rest on "an [FdFile] always points into the fs".
-    Rather than weaken that invariant in four places, unlinking a
-    working-directory path some fd still names is [unmodeled] here.
-    Closing the fd first, which is what a program that publishes a file
-    atomically does, stays inside the model.  A /tmp name some fd still
-    names is ANSWERED instead, by turning each such fd into a
-    [State.FdAnon] that carries the contents itself
-    ([unlink_open_tmp_spec]), so no [FdFile] is left pointing at a
-    removed key on that arm either.
-
-    APPROXIMATION, the same one [openat_spec] carries, in two forms.
-
-    First, the deterministic arms exclude [getname_flags]'s own
-    -ENOMEM, which it returns from [__getname] before it copies a byte
-    and which is therefore a real answer to the empty path, to ".", to
-    "..", to an unreadable pointer and to an over-long one.  That is
-    the same shape as [openat_spec]'s pre-resolution -EMFILE.
-
-    Second, three untracked conditions sit ahead of path resolution;
-    which one reaches which arm follows the last component's TYPE
-    rather than the answer (some later arms admit these refusals):
-
-    - [may_lookup]'s -EACCES: [link_path_walk] calls it at the TOP of the
-      component loop, before it hashes anything, so it precedes any arm
-      whose path HAS a component.
     - [complete_walk]'s -ESTALE, on a file system defining
-      [d_weak_revalidate]: [path_parentat] runs it after the walk, and it
-      returns 0 at once unless ND_JUMPED is still set.  [path_init] sets
-      that flag, and on this route the LAST_NORM arm of
-      [link_path_walk]'s switch is the only thing that clears it
-      ([path_lookupat]'s LOOKUP_MOUNTPOINT block also clears it, but
-      [filename_parentat] never passes LOOKUP_MOUNTPOINT, so that block
-      is not on this route).
+      [d_weak_revalidate]: [path_parentat] runs it after the walk
+      (2719-2733), and it returns 0 at once unless ND_JUMPED is still
+      set.  [path_init] sets that flag, and on this route the LAST_NORM
+      arm of [link_path_walk]'s switch is the only thing that clears it.
     - [mnt_want_write]'s -EROFS, which both [do_unlinkat] and [do_rmdir]
       raise after the type test and before the lookup.
 
@@ -856,33 +819,18 @@ Definition unlinkat_tmp_spec (n p c : path) (flags : word) (m : Model)
       | LAST_DOT, LAST_DOTDOT  | yes     | yes     | no     |
       | LAST_NORM              | yes     | no      | yes    |
 
-    The -ESTALE column runs OPPOSITE to the other two, which is what
-    makes it easy to get backwards: the arms that consult no file system
-    are the ones still carrying ND_JUMPED, and the LAST_NORM arms that do
-    consult one are the arms that cleared it.
-
-    Past those, the arms differ in what ELSE comes before their answer,
-    because they sit at different depths.  The AT_REMOVEDIR -ENOTDIR
-    comes out of [may_delete], so the -EOVERFLOW, -EACCES and -EPERM
-    that function reaches FIRST come before it, and so do [do_rmdir]'s
-    -EROFS and the lookup's -ENOMEM.  That arm admits all five beside its
-    -ENOTDIR ([unlink_before_type_errnos]), as the /tmp arm's -EISDIR
-    does for the same reason when the name has no trailing separator.
-    The three trailing-separator answers do not come out of
-    [may_delete]: [do_unlinkat] jumps to [slashes:] from ABOVE
-    [vfs_unlink], so [may_delete] never runs on that path.  They admit
-    -EROFS and the lookup's -ENOMEM beside -ENOTDIR (a file) or -EISDIR
-    (an implied /tmp directory), using [unlink_before_slashes_errnos].
-    They still omit [may_lookup]'s -EACCES above and the lookup's
-    -ENOENT for an already removed parent ([IS_DEADDIR], 1698-1699).
-    The absent-name -ENOENT arms also omit the -EROFS and -ENOMEM
-    that can precede lookup's -ENOENT.  These omissions narrow the spec.
-
-    So LAST_ROOT escapes the first and the third, and is behind
-    [complete_walk] alone.  "The answer to \"/\" is unconditional" would
-    still be too strong; what is true is that it is the one arm here
-    whose answer does not rest on the caller being able to search its own
-    working directory. *)
+    (the -EACCES column is [walk_errnos]).  Past those, the arms differ
+    in what ELSE comes before their answer, because they sit at
+    different depths.  The type answers of [may_delete] (the
+    AT_REMOVEDIR -ENOTDIR and the plain -EISDIR of a directory) admit
+    the five refusals it and its caller reach first
+    ([unlink_before_type_errnos]).  The trailing-separator answers do
+    not come out of [may_delete]: [do_unlinkat] jumps to [slashes:] from
+    ABOVE [vfs_unlink], so they admit only -EROFS and the lookup's
+    -ENOMEM ([unlink_before_slashes_errnos]), and so do the absent-name
+    answers, whose -ENOENT the lookup gives after both.  The -ESTALE
+    column is admitted nowhere.  That omission narrows the spec rather
+    than widening it. *)
 Definition unlinkat_body_spec (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
     match read_cstr (in_mem i) pathp with
@@ -892,26 +840,150 @@ Definition unlinkat_body_spec (dirfd pathp flags : word)
         if path_eqb p [] then err_ret ENOENT     (* empty pathname: getname's own -ENOENT *)
         else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
         else
-          let c := path_strip_trailing_slashes p in
-          if path_eqb c [] then                  (* nothing but separators: LAST_ROOT *)
-            (if unlink_rmdir flags then err_ret EBUSY else err_ret EISDIR)
-          else if path_has_slash c then
-            (match tmp_name c with
-             | Some n => unlinkat_tmp_spec n p c flags m
-             | None => unmodeled  (* a separator not at the end: see WORLD above *)
-             end)
-          else if path_eqb c dot_path then
-            (if unlink_rmdir flags then err_ret EINVAL else err_ret EISDIR)
-          else if path_eqb c dotdot_path then
-            (if unlink_rmdir flags then err_ret ENOTEMPTY else err_ret EISDIR)
-          else if Nat.ltb NAME_MAX (length c) then unmodeled  (* the filesystem's own -ENAMETOOLONG *)
-          else if fs_under (m_fs m) c then unmodeled (* c names an implied directory *)
-          else
-          match fs_lookup (m_fs m) c with
-          | None => err_ret ENOENT               (* absent: real -ENOENT, not a modeling gap *)
-          | Some _ => unlink_found_spec p c flags m
-          end
+          let '(r, lk, ts) := Fs.resolve_parent (m_fs m) (m_cwd m) p in
+          if unlink_rmdir flags then rmdir_spec r lk m
+          else unlinkat_file_spec r lk ts m
     end.
+
+(** [mkdirat dirfd path mode] (riscv64 nr 34, [SYSCALL_DEFINE3]), which
+    is [do_mkdirat(dfd, getname(pathname), mode)].  NEW IN R22: before
+    the namespace there was no value a created directory could BE, so
+    the call was outside the modeled surface entirely.
+
+    THE MODE IS IGNORED, and that is a decline about permissions rather
+    than about the directory.  [Fs.EDir] carries no mode, no owner and
+    no timestamps, so a directory this creates is indistinguishable from
+    one the image shipped; every later call that would read a mode —
+    [faccessat]'s W_OK, R_OK and X_OK — is already [unmodeled], and
+    [newfstatat]'s S_IFDIR answer pins its metadata rather than deriving
+    it.  So no modeled arm can observe the mode, and accepting every
+    mode word is exact rather than approximate.  [mode_strip_umask] and
+    the umask itself are the same decline one level up,
+    bugs/umask-unmodeled.md.
+
+    A NON-NORMAL LAST COMPONENT IS -EEXIST, all three of them, and this
+    is the one place [do_mkdirat] differs from [do_rmdir] in how it
+    reads the kind.  [filename_create] (fs/namei.c:4200-4250, Linux
+    v6.18.46) initialises
+
+        struct dentry *dentry = ERR_PTR(-EEXIST);
+
+    and then
+
+        if (unlikely(type != LAST_NORM))
+                goto out;
+
+    (4203, 4219-4220) with [out:] returning that dentry unchanged.  So
+    [mkdir(".")], [mkdir("..")] and [mkdir("/")] are -EEXIST, not the
+    -EINVAL and -EBUSY rmdir gives the same spellings.
+
+    THE TRAILING SEPARATOR IS IGNORED, and the derivation
+    is one line of [filename_create] rather than an absence (4205,
+    4228-4229):
+
+        bool want_dir = lookup_flags & LOOKUP_DIRECTORY;
+        ...
+        if (last.name[last.len] && !want_dir)
+                create_flags &= ~LOOKUP_CREATE;
+
+    [do_mkdirat] passes LOOKUP_DIRECTORY (4479), so [want_dir] is true,
+    the create flags survive, and "d/" creates exactly what "d" does.
+
+    AN EXISTING NAME IS -EEXIST whatever kind it is:
+    [filename_create] looks the name up with LOOKUP_EXCL (4231-4232),
+    and [lookup_one_qstr_excl] answers -EEXIST for a positive dentry
+    (1717-1719), before [may_create] and before the filesystem is asked
+    anything.  [mnt_want_write]'s -EROFS is read only after that lookup
+    (4223, 4236-4237: "don't fail immediately if it's r/o, at least try
+    to report other errors"), so it does not stand beside the -EEXIST.
+
+    AN ABSENT LAST COMPONENT IS CREATED as an [Fs.EDir] at the key
+    [Fs.RMissing] names.  [Fs.resolve_missing_parent] is what makes that
+    safe: the parent resolved as a directory, the name is nameable, the
+    child key is canonical with that parent, and nothing is there yet,
+    so [Fs.wf_fs] survives ([Fs.wf_fs_mkdir]).  That holds under /dev as
+    anywhere else: the image describes /dev completely at launch (see
+    [Fs.dev_dir]),
+    so an absent name there is absent, and devtmpfs makes the folder as
+    any tmpfs does.
+
+    THE PARENT'S LINK COUNT FOLLOWS ([Fs.fs_mkdir]): one higher under the
+    counting rule ([inc_nlink(dir)] in [shmem_mkdir] at mm/shmem.c:3952
+    and in [ramfs_mkdir] at fs/ramfs/inode.c:127), the same under the
+    fixed one ([Fs.DirLinks]), and the new folder starts at 2 or 1.
+
+    ONE CREATE DECLINES: the one that would take the parent's counting
+    count past [Fs.dir_count_max], ext4's limit.  tmpfs and ramfs set no
+    [s_max_links] and go on counting, so every supported kernel answers
+    that [mkdir]: the decline is a fail-closed gap, priority 3 only.
+
+    THE PREFIX ERRORS ARE THE WALK'S OWN, as everywhere:
+    [filename_parentat] runs first inside [filename_create] (4211-4213),
+    so [Fs.RNotDir] is -ENOTDIR and [Fs.RAbsent] is -ENOENT before the
+    last component is typed at all.
+
+    A LINK AT THE LAST NAME IS -EEXIST like any other existing name:
+    [filename_create] looks the last name up without following it.
+
+    WHAT THIS DOES NOT MODEL.  -ENOSPC has no term here and is not
+    injectable; it is outside the surface rather than declined per call,
+    in the same way [openat]'s fd-exhaustion errnos are.  The walk's own
+    -EACCES and -ENOMEM stand beside every answer past the fetch
+    ([walk_refusals], in [mkdirat_spec]), the deterministic -EEXIST's
+    included, and [getname_flags]' own -ENOMEM beside every answer
+    ([getname_refusals]). *)
+Definition mkdirat_body_spec (dirfd pathp : word)
+    (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
+  match read_cstr (in_mem i) pathp with
+  | CstrTooLong => err_ret ENAMETOOLONG          (* no NUL within PATH_MAX *)
+  | CstrFault => err_ret EFAULT                  (* unmapped byte in the path string *)
+  | CstrOk p =>
+      if path_eqb p [] then err_ret ENOENT       (* empty pathname: getname's own -ENOENT *)
+      else if negb (bv_eqb dirfd AT_FDCWD32) then unmodeled
+      else
+        let '(r, lk, _) := Fs.resolve_parent (m_fs m) (m_cwd m) p in
+        match r with
+        (* [filename_parentat] FAILED: its errno wins, whatever the last
+           kind.  [filename_create] returns that error before it ever
+           reaches its own [type != LAST_NORM] test. *)
+        | Fs.RNotDir _ => err_ret ENOTDIR
+        | Fs.RAbsent _ => err_ret ENOENT
+        | Fs.RLoop => err_ret ELOOP
+        | Fs.RParent _ _ => unmodeled        (* [Fs.resolve_parent] maps it away *)
+        | Fs.ROutside => unmodeled
+        (* the parent walk SUCCEEDED, so the kind test runs now *)
+        | Fs.RFound _ _ =>
+            match mkdir_nonnorm_errno lk with
+            | Some e => err_ret e
+            | None => err_ret EEXIST
+            end
+        | Fs.RMissing par nm =>
+            match mkdir_nonnorm_errno lk with
+            | Some e => err_ret e
+            | None =>
+                if Nat.ltb Fs.dir_count_max
+                     (S (Fs.dl_counting (Fs.fs_dir_links (m_fs m) par)))
+                then unmodeled                  (* past EXT4_LINK_MAX: see above *)
+                else
+                  alt (e <- errno_from mkdirat_errnos ;; err_ret e)
+                      (set_fs (Fs.fs_mkdir (m_fs m) (Fs.child_key par nm)) ;;
+                       ret_only (Z_to_bv 64 0))
+            end
+        end
+  end.
+
+(** The pathname copy-in, recorded exactly as [openat_spec] records it.
+    [do_mkdirat]'s caller fetches the name with [getname] before
+    anything else, and there is no second copy-in on any arm.  Inside
+    it, the walk's own refusals ([walk_refusals]); outside it,
+    [getname_flags]' own ([getname_refusals]), which fail before the
+    copy is done. *)
+Definition mkdirat_spec (dirfd pathp : word) : Sys SyscallEffect :=
+  i <- input ;;
+  m <- get_model ;;
+  getname_refusals pathp
+    (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+       (walk_refusals Fs.WalkParent pathp (mkdirat_body_spec dirfd pathp i m))).
 
 (** The flag word, then the body under its copy-in ledger.
 
@@ -924,11 +996,15 @@ Definition unlinkat_body_spec (dirfd pathp flags : word)
     this one is a real -EINVAL the kernel reaches before [getname()] is
     evaluated — recording a copy there would claim a read Linux did not
     perform.  The range is the prefix through the first NUL, the first
-    faulting byte, or PATH_MAX, as for openat. *)
+    faulting byte, or PATH_MAX, as for openat.  [getname_flags]' own
+    -ENOMEM stands outside the ledger and inside the flag test
+    ([getname_refusals]): the flag word is tested before [getname] is
+    called, and the allocation fails before the copy is done. *)
 Definition unlinkat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   if negb (modeled_unlink_flags flags) then err_ret EINVAL
   else
-    record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
-      (unlinkat_body_spec dirfd pathp flags i m).
+    getname_refusals pathp
+      (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
+         (walk_refusals Fs.WalkParent pathp (unlinkat_body_spec dirfd pathp flags i m))).

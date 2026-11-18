@@ -7,7 +7,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -77,8 +80,8 @@ Definition O_LARGEFILE : Z := 32768%Z.
       are [State.FdSocket], [State.FdStream], [State.FdEventfd] and
       [State.FdDgram] ([Fcntl.getfl_f_flags]).  [Open.openat_spec] never
       mints one: the fd this bullet is about is an [FdFile], [FdFileW],
-      [FdFileA], [FdFileRW], [FdDir], [FdDevNull], [FdUrandom] or
-      [FdAnon], and F_GETFL declines on every one of them FOR THE
+      [FdFileA], [FdFileRW], [FdDir], [FdDevNull] or [FdUrandom],
+      and F_GETFL declines on every one of them FOR THE
       REASON THIS BULLET IS ABOUT — the ignored bit is part of the answer, so the
       read fails closed inside the spec rather than at the dispatch.
       The two facts moved together on purpose: [Fcntl.getfl_f_flags]
@@ -159,6 +162,12 @@ Definition O_NONBLOCK : Z := 2048%Z.
     steps being reached.  Linux v6.18.46. *)
 Definition O_DIRECTORY : Z := 65536%Z.
 
+(** O_NOFOLLOW: 0400000 in the asm-generic ABI riscv64 takes
+    (include/uapi/asm-generic/fcntl.h:55-56).  [build_open_flags] sets
+    [LOOKUP_FOLLOW] only without it (fs/open.c:1339-1340), and sets it
+    itself under O_CREAT|O_EXCL (:1331-1334). *)
+Definition O_NOFOLLOW : Z := 131072%Z.
+
 Definition AT_FDCWD  : word := Z_to_bv 64 (-100).   (* -100 in two's complement *)
 
 (** AT_FDCWD as it reaches openat's dirfd test, i.e. after the [int dfd]
@@ -210,35 +219,32 @@ Definition AT_EMPTY_PATH : Z := 4096%Z.
     is unchanged across every branch this file names). *)
 Definition S_IRWXO : Z := 7%Z.
 
-(** "." (the working directory), one of the two paths that name a
-    directory without a lookup.  The other is [Fs.Namei.dotdot_path];
-    [Fs.Open.path_is_dirref] is the pair, and its comment says why they
-    get the same answers.  The interpreted fs has no directory
-    structure, so no path OTHER than those two resolves to a directory.
+(** "." (the working directory), the one-component path [openat] uses
+    for the plain directory open.  The other directory reference is
+    [Fs.Namei.dotdot_path]; [Fs.Open.path_is_dirref] is the pair, which
+    [Run.valid_argv] keeps out of argv.  Both are ordinary pathnames to
+    [Fs.resolve], which types them as [Fs.LastDot] and [Fs.LastDotDot].
 
     It sits here rather than with a syscall because more than one spec
-    resolves it: [openat] opens it as a directory fd, [newfstatat]
-    declines it for want of metadata, and no file under [Sys/] imports
-    another. *)
+    reads it, and no file under [Sys/] imports another. *)
 Definition dot_path : path := [Z_to_bv 8 46].
 
-(** "/dev/null", the one DEVICE path the model answers.  It sits here
-    for the reason [dot_path] does: [Fs.Open.openat_devnull_spec] opens
-    it, [Fs.Stat.fstat_devnull_spec] keys the descriptor's stat pin
-    under it, and no file under [Sys/] imports the other.  The
-    assumption the name rests on — the image's /dev/null is the null
-    device, character major 1 minor 3 — is stated once, at the openat
-    arm. *)
+(** "/dev/null", the key [Fs.Stat.fstat_devnull_spec] keeps the null
+    device's stat pin under.  It is the same bytes as [Fs.devnull_key],
+    where [Fs.standard_root] puts the device; [Fs.Open] mints
+    [State.FdDevNull] from the [Fs.EDev Fs.DevNull] entry the walk
+    reaches, not from this name.  The assumption the entry rests on —
+    the image's null device is character major 1 minor 3 — is stated
+    once, at [Fs.Open.open_devnull]. *)
 Definition devnull_path : path :=
   [Z_to_bv 8 47; Z_to_bv 8 100; Z_to_bv 8 101; Z_to_bv 8 118; Z_to_bv 8 47;
    Z_to_bv 8 110; Z_to_bv 8 117; Z_to_bv 8 108; Z_to_bv 8 108].
 
-(** "/dev/urandom", the second device path the model answers, here for
-    the reason [devnull_path] is: [Fs.Open.openat_urandom_spec] opens
-    it and [Fs.Stat.fstat_urandom_spec] keys the descriptor's stat pin
-    under it.  The assumption the name rests on — the image's
-    /dev/urandom is the random device, character major 1 minor 9 — is
-    stated once, at the openat arm. *)
+(** "/dev/urandom", the key [Fs.Stat.fstat_urandom_spec] keeps the
+    random device's stat pin under, for the reason [devnull_path] is.
+    It is the same bytes as [Fs.urandom_key].  The assumption the entry
+    rests on — the image's random device is character major 1 minor 9 —
+    is stated once, at [Fs.Open.open_urandom]. *)
 Definition urandom_path : path :=
   [Z_to_bv 8 47; Z_to_bv 8 100; Z_to_bv 8 101; Z_to_bv 8 118; Z_to_bv 8 47;
    Z_to_bv 8 117; Z_to_bv 8 114; Z_to_bv 8 97; Z_to_bv 8 110; Z_to_bv 8 100;
@@ -752,17 +758,16 @@ Definition timespec_ns_signed (bs : list byte) : Z :=
     v6.18.46, commit 1f99e9ab748f). *)
 Definition AT_REMOVEDIR : Z := 512%Z.
 
-(** The longest single path COMPONENT every Linux filesystem in reach
-    accepts (Linux include/uapi/linux/limits.h).  [fs/namei.c] itself has
-    NO such check — the bound belongs to the filesystem, raised by
-    [dir->i_op->lookup] ([simple_lookup] in fs/libfs.c on tmpfs and
-    [ext4_lookup] in fs/ext4/namei.c on ext4, both -ENAMETOOLONG at 255;
-    that guard is the FIRST statement of each function and is unchanged
-    v6.10 through v6.16, though the bodies around it are not — ext4's
-    changed at v6.11 and libfs's at v6.13, and ext4 reaches 255 through
-    its own [EXT4_NAME_LEN] rather than through [NAME_MAX]).  So the
-    model, which represents no filesystem type, declines a longer name
-    rather than picking one filesystem's answer. *)
+(** The longest single path COMPONENT the file systems of the
+    configuration of record accept (Linux include/uapi/linux/limits.h).
+    [fs/namei.c] itself has NO such check — the bound belongs to the
+    filesystem, raised by [dir->i_op->lookup]: [simple_lookup] in
+    fs/libfs.c, the lookup of tmpfs and ramfs (SCOPE.md), answers
+    -ENAMETOOLONG past 255 in its FIRST statement, a guard read
+    unchanged from v6.10 through v6.16 and at v6.18.46, though the body
+    around it changed at v6.13.  The walk admits that answer beside the
+    one a file system with a larger limit would give, which no supported
+    kernel gives: a priority-2 gap ([Fs.comp_too_long]). *)
 Definition NAME_MAX : nat := 255.
 
 (** One second in nanoseconds (include/vdso/time64.h [NSEC_PER_SEC]),
@@ -935,10 +940,12 @@ Definition UAPI_SA_FLAGS : Z := 0xD8000807%Z.
     questions about children this model does not have.  Anything but
     WNOHANG declines; see [Kernel.Exit.wait4_spec]. *)
 Definition WNOHANG : Z := 1%Z.
-(** MSG_CMSG_COMPAT (include/linux/socket.h).  Its VALUE depends on the
+(** MSG_CMSG_COMPAT (include/linux/socket.h).  Its value follows the
     kernel's configuration: [0x80000000] under CONFIG_COMPAT and [0]
-    without it, and the two give different answers for the same call —
-    see [Net.Socket.recvmsg_spec]. *)
+    without it.  The configuration of record sets CONFIG_COMPAT
+    (SCOPE.md), so this, the CONFIG_COMPAT value, is every supported
+    kernel's; [Net.Socket.recvmsg_spec] says what the bit does to a
+    call. *)
 Definition MSG_CMSG_COMPAT : Z := 2147483648%Z.   (* 0x80000000 *)
 
 (** [NR_OPEN_DEFAULT], the number of descriptor slots embedded in a
@@ -999,9 +1006,10 @@ Definition NGROUPS_MAX : Z := 65536%Z.
     [SCHED_EXT] is named for the opposite reason to the other five: no
     arm ANSWERS it.  [Kernel.Sched.Syscalls.sched_setscheduler_spec]
     declines it, and the constant exists so the decline can say which
-    number it is declining.  See that spec for why: whether
-    kernel/sched/sched.h's [valid_policy] admits 7 at all turns on
-    CONFIG_SCHED_CLASS_EXT, and the model does not fix that config. *)
+    number it is declining.  See that spec for why: kernel/sched/sched.h's
+    [valid_policy] admits 7 only under CONFIG_SCHED_CLASS_EXT, which the
+    configuration of record does not set, and the arm declines rather
+    than answer the -EINVAL every supported kernel gives. *)
 Definition SCHED_NORMAL   : Z := 0%Z.
 Definition SCHED_FIFO     : Z := 1%Z.
 Definition SCHED_RR       : Z := 2%Z.
@@ -1211,15 +1219,21 @@ Definition S_IFDIR  : Z := 16384%Z.  (* 0040000 *)
 Definition S_IFCHR  : Z :=  8192%Z.  (* 0020000 *)
 Definition S_IFIFO  : Z :=  4096%Z.  (* 0010000 *)
 
+(** The set-user-ID and set-group-ID bits, and group execute
+    (include/uapi/linux/stat.h:17-18 and :37, Linux v6.18.46): the three
+    bits of a regular file's [st_mode] a write or a truncate reads, and
+    clears the first two of ([stat_mode_killed]). *)
+Definition S_ISUID  : Z :=  2048%Z.  (* 0004000 *)
+Definition S_ISGID  : Z :=  1024%Z.  (* 0002000 *)
+Definition S_IXGRP  : Z :=     8%Z.  (* 0000010 *)
+
 (** The [S_IFMT] bits of a delivered [struct stat]'s [st_mode]. *)
 Definition stat_ifmt (bs : list byte) : Z :=
   Z.land (stat_field_le ST_MODE_OFF 4 bs) S_IFMT.
 
-(** Whether the kernel called the object a REGULAR FILE.  This is a
-    question ABOUT THE ANSWER, not a claim by the model: the model does
-    not know a path's type, and
-    [Fs.Stat.fstat_spec] uses this only to decide whether its [st_size]
-    obligation applies. *)
+(** Whether the kernel called the object a REGULAR FILE.  The file arm
+    of [Fs.Stat.fstat_spec] asserts it: an [Fs.EFile] is a regular file
+    ([Fs.Stat.fstat_file_spec] says why). *)
 Definition stat_is_reg (bs : list byte) : bool :=
   Z.eqb (stat_ifmt bs) S_IFREG.
 
@@ -1254,25 +1268,16 @@ Definition stat_buf_wf (bs : list byte) : bool :=
    && Z.eqb (stat_field_le ST_PAD2_OFF 4 bs) 0
    && Z.eqb (stat_field_le ST_UNUSED45_OFF 8 bs) 0)%bool.
 
-(** THE ONE MEMBER THE MODEL DERIVES, and it is derived CONDITIONALLY.
+(** [st_size] AGAINST A LENGTH, under the type.
 
     For a regular file [st_size] is the file's length: [generic_fillattr]
-    (fs/stat.c) copies [inode->i_size] into [stat->size] and
-    [cp_new_stat] copies that to [tmp.st_size], and for a regular file
-    [i_size] is the number of bytes the file holds — which, for a path
-    this model resolves, is the length of the byte list [Fs] carries.
-    THAT PREMISE IS THE ONE [ReadWrite.read_spec] ALREADY MAKES, and no
-    more: it is a claim about regular files, and the implication below
-    is how it is stated without extending it.
-
-    The implication is what keeps the arm from FALSELY REJECTING.
-    A path the model
-    resolves can be one Linux calls a character device, where the true answer
-    is S_IFCHR with [st_size] 0 while the model's byte list is not
-    empty.  Asserting S_IFREG, or asserting the length unconditionally,
-    rejects that conforming trace.  Under the implication the model
-    simply says nothing about it, and still says something sharp about
-    every file that really is regular.
+    (fs/stat.c:95, Linux v6.18.46) copies [i_size_read(inode)] into
+    [stat->size] and [cp_new_stat] copies that to [tmp.st_size], and for
+    a regular file [i_size] is the number of bytes the file holds —
+    which, for a key this model resolves to an [Fs.EFile], is the length
+    of its byte list.  The predicate is an implication on the delivered
+    type; every arm that reads it also asserts [stat_is_reg], so on
+    those arms it is the length outright.
 
     THE COMPARISON WRAPS AT 2^64, because [stat_field_le] reads eight
     bytes and a [list byte]'s length is an unbounded [nat].  A file that
@@ -1287,9 +1292,8 @@ Definition stat_size_ok (n : nat) (bs : list byte) : bool :=
                (bv_unsigned (Z_to_bv 64 (Z.of_nat n)))).
 
 (** THE MEMBERS A [struct stat] OF /dev/null CARRIES FROM THE
-    KERNEL, asserted outright rather than under an implication: the
-    device is known to be a device, which is what the regular-file arm
-    cannot say of a key.  [cp_new_stat] (fs/stat.c, Linux v6.18.46)
+    KERNEL, asserted outright: the entry is an [Fs.EDev], so the
+    device is known to be a device.  [cp_new_stat] (fs/stat.c, Linux v6.18.46)
     copies what [generic_fillattr] read off the inode: [st_mode]'s type
     bits are S_IFCHR because [init_special_inode] (fs/inode.c) set them
     when the node was made; [st_rdev] is [new_encode_dev] of
@@ -1354,29 +1358,167 @@ Qed.
 Lemma stat_bytes_eqb_refl : forall l, stat_bytes_eqb l l = true.
 Proof. intro l. apply stat_bytes_eqb_eq. reflexivity. Qed.
 
-(** THE MEMBERS THAT MAY NOT CHANGE UNDER A RUN, so that two [fstat]s of
-    one file cannot disagree about which file it is.  Bytes 0..47 —
-    [st_dev], [st_ino], [st_mode], [st_nlink], [st_uid], [st_gid],
-    [st_rdev] and [__pad1] — and bytes 56..63, [st_blksize] and
-    [__pad2].
+(** A delivered [struct stat]'s whole [st_mode]: the type bits
+    [stat_ifmt] masks, and the permission bits beside them. *)
+Definition stat_mode (bs : list byte) : Z := stat_field_le ST_MODE_OFF 4 bs.
 
-    WHY THESE AND NOT THE REST.  Each of the eight is settled by the
-    inode or by its superblock, and no syscall in
-    [Sys.SyscallTable.spec_table] moves one: there is no [chmod]/[fchmod]
-    arm for the permission bits, no [chown] arm for the ids, no
-    [link]/[linkat] arm for the link count, and a type, an inode number,
-    a device and a block size do not change at all while the inode
-    lives.  [unlinkat] (35) IS modeled and DOES drop [st_nlink]
-    ([vfs_unlink] -> the filesystem's [->unlink], [shmem_unlink]'s
-    [drop_nlink] on tmpfs; fs/namei.c, mm/shmem.c, Linux v6.18.46).  The
-    working-directory arm removes only a name no descriptor holds, so no
-    [fstat] observes that drop.  The /tmp arm also removes a name open
-    descriptors hold, and there the drop is observable: it moves the pin
-    off the name and into the unnamed file with [st_nlink] set to 0
-    ([stat_pin_unlinked], [Fs.Namei.unlink_open_tmp_spec]), so the pin
-    later [fstat]s are compared against already carries the dropped
-    count.  That is the one place a pinned member moves, and it moves
-    once, with the name.
+(** WHAT ONE WRITE OR TRUNCATE LEAVES OF A REGULAR FILE'S [st_mode] [m],
+    done by a caller without CAP_FSETID; [in_group] is whether the
+    file's group is one of the caller's.
+
+    A write reaches [file_remove_privs]: [shmem_file_write_iter] calls
+    it (mm/shmem.c:3500, Linux v6.18.46) once [generic_write_checks] has
+    passed a nonempty write, and so does ramfs's
+    [__generic_file_write_iter] (mm/filemap.c:4366).  A truncate asks
+    the same question in [do_truncate] (fs/open.c:55-60), which
+    [do_ftruncate] reaches (fs/open.c:195) and so does an O_TRUNC open
+    of an existing regular file, through [do_open] (fs/namei.c:3967,
+    :3979) and [handle_truncate] (fs/namei.c:3586).  Both take the
+    mask from [dentry_needs_remove_privs] (fs/inode.c:2214-2231), whose
+    [setattr_should_drop_suidgid] (fs/attr.c:63-79) names S_ISUID
+    always, and S_ISGID when [setattr_should_drop_sgid]
+    (fs/attr.c:33-45) finds S_IXGRP set or [in_group_or_capable]
+    (fs/inode.c:2910-2918) finds the caller outside the group -- and
+    names nothing at all for a caller with CAP_FSETID, or for a file
+    that is not S_ISREG ([file_remove_privs_flags] tests that too,
+    fs/inode.c:2253).  [notify_change] clears each named bit that is
+    set (fs/attr.c:489-503), and [setattr_copy] clears S_ISGID again
+    for a caller outside the group (fs/attr.c:341-343).  The S_NOSEC
+    shortcut both functions take first never skips a file that still
+    has a set-id bit: [inode_has_no_xattr] sets the flag only on a mode
+    without one (include/linux/fs.h:3997-4001).  Every one of those
+    functions reads the same at v6.16 and v6.17 (the stable tags, read
+    from git.kernel.org) as at v6.18.46.
+
+    So the mode left is [m] without S_ISUID, and without S_ISGID too
+    unless the caller is in the group and S_IXGRP is clear.  A second
+    such call leaves what one call would ([stat_mode_killed_twice]): the
+    S_IXGRP it reads is the first one's, and the two masks' union is
+    one of them. *)
+Definition stat_mode_killed (in_group : bool) (m : Z) : Z :=
+  Z.ldiff m (if (in_group && Z.eqb (Z.land m S_IXGRP) 0)%bool
+             then S_ISUID else Z.lor S_ISUID S_ISGID).
+
+(** A LATER [st_mode] [m1] AGAINST THE PIN'S [m2]: the same mode, or,
+    for a regular file, the mode one write or truncate by a caller
+    without CAP_FSETID leaves ([stat_mode_killed]), inside the file's
+    group or outside it.  Those three are every mode a run of the
+    modeled syscalls can leave: any number of those calls leaves one of
+    them, the model has no [chmod] that could set a bit again, and only
+    a regular file's bits are cleared.  The model knows neither the
+    caller's capabilities nor its supplementary groups, so it admits
+    all three. *)
+Definition stat_mode_stable (m1 m2 : Z) : bool :=
+  (Z.eqb m1 m2
+   || (Z.eqb (Z.land m2 S_IFMT) S_IFREG
+       && (Z.eqb m1 (stat_mode_killed true m2)
+           || Z.eqb m1 (stat_mode_killed false m2))))%bool.
+
+Lemma stat_mode_stable_refl : forall m, stat_mode_stable m m = true.
+Proof. intro m. unfold stat_mode_stable. now rewrite Z.eqb_refl. Qed.
+
+(** Clearing a mask [k] that shares no bit with [x] leaves the bits
+    [x] selects alone. *)
+Lemma stat_ldiff_land_disjoint : forall m k x,
+  Z.land x k = 0%Z -> Z.land (Z.ldiff m k) x = Z.land m x.
+Proof.
+  intros m k x H. apply Z.bits_inj'. intros n _.
+  pose proof (f_equal (fun z => Z.testbit z n) H) as T. cbn beta in T.
+  rewrite Z.land_spec, Z.testbit_0_l in T.
+  rewrite !Z.land_spec, Z.ldiff_spec.
+  destruct (Z.testbit m n), (Z.testbit k n), (Z.testbit x n); cbn in *; congruence.
+Qed.
+
+(** What a write or truncate leaves of the bits outside the two set-id
+    bits: all of them, the type and S_IXGRP among them. *)
+Lemma stat_mode_killed_land : forall g m x,
+  Z.land x (Z.lor S_ISUID S_ISGID) = 0%Z ->
+  Z.land (stat_mode_killed g m) x = Z.land m x.
+Proof.
+  intros g m x H. unfold stat_mode_killed.
+  destruct (g && Z.eqb (Z.land m S_IXGRP) 0)%bool.
+  - apply stat_ldiff_land_disjoint.
+    apply Z.bits_inj'. intros n _.
+    pose proof (f_equal (fun z => Z.testbit z n) H) as T. cbn beta in T.
+    rewrite Z.land_spec, Z.lor_spec, Z.testbit_0_l in T.
+    rewrite Z.land_spec, Z.testbit_0_l.
+    destruct (Z.testbit x n), (Z.testbit S_ISUID n), (Z.testbit S_ISGID n);
+      cbn in *; congruence.
+  - now apply stat_ldiff_land_disjoint.
+Qed.
+
+Lemma stat_mode_killed_twice : forall g1 g2 m,
+  stat_mode_killed g1 (stat_mode_killed g2 m) = stat_mode_killed (g1 && g2) m.
+Proof.
+  intros g1 g2 m.
+  assert (Hx : Z.land (stat_mode_killed g2 m) S_IXGRP = Z.land m S_IXGRP)
+    by (apply stat_mode_killed_land; reflexivity).
+  unfold stat_mode_killed at 1. rewrite Hx. unfold stat_mode_killed.
+  destruct (Z.eqb (Z.land m S_IXGRP) 0); destruct g1, g2; cbn [andb];
+    apply Z.bits_inj'; intros n _; rewrite !Z.ldiff_spec, ?Z.lor_spec;
+    destruct (Z.testbit m n), (Z.testbit S_ISUID n), (Z.testbit S_ISGID n);
+    reflexivity.
+Qed.
+
+Lemma stat_mode_stable_trans : forall a b c,
+  stat_mode_stable a b = true -> stat_mode_stable b c = true ->
+  stat_mode_stable a c = true.
+Proof.
+  intros a b c H1 H2. unfold stat_mode_stable in *.
+  apply orb_true_iff in H1 as [H1|H1]; apply orb_true_iff in H2 as [H2|H2].
+  - apply Z.eqb_eq in H1, H2. subst. now rewrite Z.eqb_refl.
+  - apply Z.eqb_eq in H1. subst a. rewrite H2. apply orb_true_r.
+  - apply Z.eqb_eq in H2. subst c. rewrite H1. apply orb_true_r.
+  - apply andb_true_iff in H1 as [_ H1]. apply andb_true_iff in H2 as [Hr H2].
+    apply orb_true_iff. right. rewrite Hr. cbn [andb].
+    assert (Hk1 : exists g1, a = stat_mode_killed g1 b)
+      by (apply orb_true_iff in H1 as [H1|H1]; apply Z.eqb_eq in H1; eauto).
+    assert (Hk2 : exists g2, b = stat_mode_killed g2 c)
+      by (apply orb_true_iff in H2 as [H2|H2]; apply Z.eqb_eq in H2; eauto).
+    destruct Hk1 as [g1 ->], Hk2 as [g2 ->].
+    rewrite stat_mode_killed_twice.
+    destruct (g1 && g2)%bool; rewrite Z.eqb_refl; [reflexivity | apply orb_true_r].
+Qed.
+
+(** THE MEMBERS THAT MAY NOT CHANGE UNDER A RUN, so that two stats of
+    one identity cannot disagree about which object it is.  Bytes 0..15
+    -- [st_dev] and [st_ino] -- the [st_mode] at 16..19, bytes 24..47
+    -- [st_uid], [st_gid], [st_rdev] and [__pad1] -- and bytes 56..63,
+    [st_blksize] and [__pad2].  [b1] is the later stat and [b2] the
+    pin it is held to, and the order matters, for the one change below.
+
+    WHY THESE AND NOT THE REST.  Each is settled by the inode or by its
+    superblock, and the syscalls in [Sys.SyscallTable.spec_table] move
+    none of them but two bits of a regular file's [st_mode]: there is no
+    [chmod]/[fchmod] arm for the permission bits, no [chown] arm for the
+    ids, and a type, an inode number, a device and a block size do not
+    change at all while the inode lives.
+
+    THE TWO BITS ARE S_ISUID AND S_ISGID, AND THEY ONLY DROP.  A
+    [write], [writev], [pwrite64] or [pwritev2] that writes a byte of a
+    regular file, an [ftruncate] of it, and an [openat] with O_TRUNC of
+    it clear them as [stat_mode_killed] says, so a later stat may show
+    the mode such calls leave ([stat_mode_stable]): S_ISUID or S_ISGID
+    cleared where the pin had it set, never set where the pin had it
+    clear.  [Fs.Stat.file_pin_after] then makes that stat's bytes the
+    pin, so no stat after it can show the bit again.  A folder's, a
+    device node's and a link's mode are held whole: Linux clears no bit
+    of theirs.
+
+    THE DROP IS ADMITTED AT ANY LATER STAT, not only at one after such a
+    call: the model does not ask whether one ran in between, so it admits
+    a set-id bit lost with nothing written, which Linux does not
+    produce.  That is a known over-approximation, of the same kind as
+    the members left free below.
+
+    [st_nlink] IS LEFT OUT, because the model computes it where it can
+    and it moves under a run: a regular file's is [Fs.fs_ino_nlink],
+    which [unlinkat] of one of its names lowers, and a folder's is
+    [Fs.fs_dir_links] under the rule its pin chose, which [mkdirat] and
+    [rmdir] of a subfolder move.  A device node's and a link's count is
+    the environment's, and is not held either: another name of the same
+    node, which the image cannot show as one ([State.StatId]), may be
+    removed.
 
     WHAT IS DELIBERATELY LEFT FREE: [st_size] (which [write] and
     [ftruncate] move, and which [stat_size_ok] constrains instead),
@@ -1388,35 +1530,46 @@ Proof. intro l. apply stat_bytes_eqb_eq. reflexivity. Qed.
     calls, which admits a run Linux would not produce.  That is a
     known over-approximation. *)
 Definition stat_stable_eqb (b1 b2 : list byte) : bool :=
-  (stat_bytes_eqb (firstn ST_PAD1_OFF b1) (firstn ST_PAD1_OFF b2)
-   && stat_bytes_eqb (firstn 8 (skipn ST_PAD1_OFF b1))
-                     (firstn 8 (skipn ST_PAD1_OFF b2))
+  (stat_bytes_eqb (firstn ST_MODE_OFF b1) (firstn ST_MODE_OFF b2)
+   && stat_mode_stable (stat_mode b1) (stat_mode b2)
+   && stat_bytes_eqb (firstn 24 (skipn (ST_NLINK_OFF + 4) b1))
+                     (firstn 24 (skipn (ST_NLINK_OFF + 4) b2))
    && stat_bytes_eqb (firstn 8 (skipn ST_BLKSIZE_OFF b1))
                      (firstn 8 (skipn ST_BLKSIZE_OFF b2)))%bool.
 
 Lemma stat_stable_eqb_refl : forall b, stat_stable_eqb b b = true.
 Proof.
-  intro b. unfold stat_stable_eqb. now rewrite !stat_bytes_eqb_refl.
+  intro b. unfold stat_stable_eqb.
+  now rewrite !stat_bytes_eqb_refl, stat_mode_stable_refl.
 Qed.
 
-(** [st_nlink] of a delivered [struct stat] is 0: the answer Linux
-    gives for a file whose last name is gone, since [drop_nlink] took
-    [i_nlink] from 1 to 0 and [generic_fillattr] (fs/stat.c, Linux
-    v6.18.46) copies [i_nlink] into [nlink]. *)
-Definition stat_nlink_zero (bs : list byte) : bool :=
-  Z.eqb (stat_field_le ST_NLINK_OFF 4 bs) 0.
+(** Whether the kernel called the object a DIRECTORY.  The directory
+    arms ASSERT it, because [Fs.EDir] is an entry kind, as the file arms
+    assert [stat_is_reg] of an [Fs.EFile]. *)
+Definition stat_is_dir (bs : list byte) : bool :=
+  Z.eqb (stat_ifmt bs) S_IFDIR.
 
-(** A file's stat pin once its name is gone: the same bytes with
-    [st_nlink] (four bytes at [ST_NLINK_OFF]) set to 0.  A pin taken
-    while the file had its name records the link count the environment
-    chose then; after the removal Linux reports 0, because every file
-    [Fs.Namei.unlink_open_tmp_spec] turns into an unnamed one has
-    exactly one name -- in the run's private /tmp, and no [link] or
-    [linkat] arm exists in [Sys.SyscallTable.spec_table] to give it a
-    second -- and [drop_nlink] takes that one away.  Every other member
-    is the inode's and stays. *)
-Definition stat_pin_unlinked (bs : list byte) : list byte :=
-  firstn ST_NLINK_OFF bs ++ Z_to_le_bytes 4 0 ++ skipn (ST_NLINK_OFF + 4) bs.
+(** Whether the kernel called the object a SYMBOLIC LINK: the type a
+    stat that does not follow a last-name link reports for it
+    ([generic_fillattr]'s [stat->mode = inode->i_mode], fs/stat.c:90,
+    on the link's own inode). *)
+Definition stat_is_lnk (bs : list byte) : bool :=
+  Z.eqb (stat_ifmt bs) S_IFLNK.
+
+(** [st_nlink] AGAINST A COUNT.  [generic_fillattr] copies [i_nlink]
+    (fs/stat.c:88) and [cp_new_stat] copies that out, as an
+    [unsigned int], so the comparison is modulo 2^32: [i_nlink] is an
+    [unsigned int] itself, and a count the model computes past it is one
+    no inode holds. *)
+Definition stat_nlink_ok (n : nat) (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_NLINK_OFF 4 bs) (bv_unsigned (Z_to_bv 32 (Z.of_nat n))).
+
+(** [st_size] against the length of a LINK'S BODY, for a stat that does
+    not follow it: tmpfs stores [i_size = strlen(symname)]
+    ([shmem_symlink], mm/shmem.c:4140 and :4158) and [generic_fillattr]
+    (fs/stat.c:95) reports it through [i_size_read]. *)
+Definition stat_lnk_size_ok (n : nat) (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_SIZE_OFF 8 bs) (bv_unsigned (Z_to_bv 64 (Z.of_nat n))).
 
 (** TWO SLICES OF A DELIVERED [struct stat] READ THE SAME out of two
     buffers that agree on the region they fall in: wholly inside the
@@ -1550,19 +1703,24 @@ Qed.
 Lemma stat_set_size_stable : forall n bs,
   length bs = 128%nat -> stat_stable_eqb (stat_set_size n bs) bs = true.
 Proof.
-  intros n bs Hlen. unfold stat_stable_eqb, ST_PAD1_OFF, ST_BLKSIZE_OFF.
+  intros n bs Hlen.
+  unfold stat_stable_eqb, ST_MODE_OFF, ST_NLINK_OFF, ST_BLKSIZE_OFF.
   assert (Hhead : firstn 48 (stat_set_size n bs) = firstn 48 bs)
     by (apply stat_set_size_head; lia).
   assert (Htail : skipn 56 (stat_set_size n bs) = skipn 56 bs)
     by (apply stat_set_size_tail; lia).
-  assert (H40 : firstn 40 (stat_set_size n bs) = firstn 40 bs).
-  { pose proof (stat_slice_head 0 40 (stat_set_size n bs) bs ltac:(lia) Hhead) as Hh.
+  assert (H16 : firstn 16 (stat_set_size n bs) = firstn 16 bs).
+  { pose proof (stat_slice_head 0 16 (stat_set_size n bs) bs ltac:(lia) Hhead) as Hh.
     rewrite !skipn_0 in Hh. exact Hh. }
-  assert (H4048 : firstn 8 (skipn 40 (stat_set_size n bs)) = firstn 8 (skipn 40 bs))
+  assert (Hmode : stat_mode (stat_set_size n bs) = stat_mode bs).
+  { unfold stat_mode. apply stat_field_le_head; [unfold ST_MODE_OFF; lia | exact Hhead]. }
+  assert (H2448 : firstn 24 (skipn (20 + 4) (stat_set_size n bs))
+                  = firstn 24 (skipn (20 + 4) bs))
     by (apply stat_slice_head; [lia | exact Hhead]).
   assert (H56 : firstn 8 (skipn 56 (stat_set_size n bs)) = firstn 8 (skipn 56 bs))
     by (apply stat_slice_tail; [lia | exact Htail]).
-  rewrite H40, H4048, H56, !stat_bytes_eqb_refl. reflexivity.
+  rewrite H16, Hmode, H2448, H56, !stat_bytes_eqb_refl, stat_mode_stable_refl.
+  reflexivity.
 Qed.
 
 Lemma stat_set_size_size_ok : forall n bs,
@@ -1576,10 +1734,209 @@ Proof.
   rewrite bytes_le_to_Z_of_le_bytes by lia. reflexivity.
 Qed.
 
+Lemma stat_set_size_lnk_size_ok : forall n bs,
+  length bs = 128%nat -> stat_lnk_size_ok n (stat_set_size n bs) = true.
+Proof.
+  intros n bs Hlen. unfold stat_lnk_size_ok.
+  apply Z.eqb_eq. unfold stat_field_le, ST_SIZE_OFF.
+  rewrite (stat_set_size_field n bs) by lia.
+  rewrite Z_to_bv_unsigned. unfold bv_wrap, bv_modulus.
+  rewrite bytes_le_to_Z_of_le_bytes by lia. reflexivity.
+Qed.
+
 Lemma stat_buf_wf_length : forall bs, stat_buf_wf bs = true -> length bs = 128%nat.
 Proof.
   intros bs H. unfold stat_buf_wf in H.
   apply andb_prop in H as [H _]; apply andb_prop in H as [H _];
     apply andb_prop in H as [H _]; apply andb_prop in H as [H _].
   now apply Nat.eqb_eq in H.
+Qed.
+
+(** THE SAME [struct stat] WITH A DIFFERENT [st_nlink]: bytes 20..23
+    replaced.  Like [stat_set_size] it is a witness's buffer and not a
+    claim about Linux: [Checks.Witness.Fs.Stat] names with it an
+    admissible answer whose link count is the one the model computes,
+    keeping every member a pin holds. *)
+Definition stat_set_nlink (n : nat) (bs : list byte) : list byte :=
+  firstn 20 bs ++ Z_to_le_bytes 4 (Z.of_nat n) ++ skipn 24 bs.
+
+Lemma stat_set_nlink_head : forall n bs,
+  (20 <= length bs)%nat -> firstn 20 (stat_set_nlink n bs) = firstn 20 bs.
+Proof.
+  intros n bs Hlen. unfold stat_set_nlink.
+  rewrite firstn_app, firstn_length_le by exact Hlen.
+  rewrite firstn_all2 by (rewrite firstn_length_le by exact Hlen; lia).
+  replace (20 - 20)%nat with 0%nat by lia. cbn [firstn]. apply app_nil_r.
+Qed.
+
+Lemma stat_set_nlink_tail : forall n bs,
+  (20 <= length bs)%nat -> skipn 24 (stat_set_nlink n bs) = skipn 24 bs.
+Proof.
+  intros n bs Hlen. unfold stat_set_nlink.
+  rewrite skipn_app, firstn_length_le by exact Hlen.
+  rewrite skipn_all2 by (rewrite firstn_length_le by exact Hlen; lia).
+  replace (24 - 20)%nat with 4%nat by lia.
+  rewrite skipn_app, length_Z_to_le_bytes.
+  rewrite skipn_all2 by (rewrite length_Z_to_le_bytes; lia).
+  replace (4 - 4)%nat with 0%nat by lia. rewrite skipn_0. reflexivity.
+Qed.
+
+Lemma stat_set_nlink_field : forall n bs,
+  (20 <= length bs)%nat ->
+  firstn 4 (skipn 20 (stat_set_nlink n bs)) = Z_to_le_bytes 4 (Z.of_nat n).
+Proof.
+  intros n bs Hlen. unfold stat_set_nlink.
+  rewrite skipn_app, firstn_length_le by exact Hlen.
+  rewrite skipn_all2 by (rewrite firstn_length_le by exact Hlen; lia).
+  replace (20 - 20)%nat with 0%nat by lia. rewrite skipn_0, app_nil_l.
+  rewrite firstn_app, length_Z_to_le_bytes.
+  rewrite firstn_all2 by (rewrite length_Z_to_le_bytes; lia).
+  replace (4 - 4)%nat with 0%nat by lia. cbn [firstn]. apply app_nil_r.
+Qed.
+
+Lemma stat_set_nlink_length : forall n bs,
+  length bs = 128%nat -> length (stat_set_nlink n bs) = 128%nat.
+Proof.
+  intros n bs Hlen. unfold stat_set_nlink.
+  rewrite !length_app, length_Z_to_le_bytes, length_firstn, length_skipn, Hlen.
+  reflexivity.
+Qed.
+
+(** A member wholly before byte 20 or wholly at or past byte 24 reads
+    the same out of two buffers that agree there. *)
+Lemma stat_field_le_head20 : forall off k x y,
+  (off + k <= 20)%nat -> firstn 20 x = firstn 20 y ->
+  stat_field_le off k x = stat_field_le off k y.
+Proof.
+  intros off k x y Hb Heq. unfold stat_field_le. f_equal.
+  assert (Hx : forall z : list byte,
+             firstn k (skipn off z) = firstn k (skipn off (firstn 20 z))).
+  { intro z. rewrite skipn_firstn_comm, firstn_firstn.
+    replace (Nat.min k (20 - off)) with k by lia. reflexivity. }
+  rewrite (Hx x), (Hx y), Heq. reflexivity.
+Qed.
+
+Lemma stat_field_le_tail24 : forall off k x y,
+  (24 <= off)%nat -> skipn 24 x = skipn 24 y ->
+  stat_field_le off k x = stat_field_le off k y.
+Proof.
+  intros off k x y Hb Heq. unfold stat_field_le. f_equal.
+  replace off with ((off - 24) + 24)%nat by lia.
+  rewrite <- !skipn_skipn, Heq. reflexivity.
+Qed.
+
+Lemma stat_set_nlink_ifmt : forall n bs,
+  (20 <= length bs)%nat -> stat_ifmt (stat_set_nlink n bs) = stat_ifmt bs.
+Proof.
+  intros n bs Hlen. unfold stat_ifmt. f_equal.
+  apply stat_field_le_head20; [unfold ST_MODE_OFF; lia|].
+  now apply stat_set_nlink_head.
+Qed.
+
+Lemma stat_set_nlink_wf : forall n bs,
+  stat_buf_wf bs = true -> stat_buf_wf (stat_set_nlink n bs) = true.
+Proof.
+  intros n bs H.
+  assert (Hall := H). unfold stat_buf_wf in Hall.
+  apply andb_prop in Hall as [Hall Hu]; apply andb_prop in Hall as [Hall Hp2];
+    apply andb_prop in Hall as [Hall Hp1]; apply andb_prop in Hall as [Hlen Hifmt].
+  apply Nat.eqb_eq in Hlen.
+  assert (Htail : skipn 24 (stat_set_nlink n bs) = skipn 24 bs)
+    by (apply stat_set_nlink_tail; lia).
+  assert (Hifmt' : stat_ifmt (stat_set_nlink n bs) = stat_ifmt bs)
+    by (apply stat_set_nlink_ifmt; lia).
+  assert (Hq1 : stat_field_le ST_PAD1_OFF 8 (stat_set_nlink n bs)
+                = stat_field_le ST_PAD1_OFF 8 bs)
+    by (apply stat_field_le_tail24; [unfold ST_PAD1_OFF; lia | exact Htail]).
+  assert (Hq2 : stat_field_le ST_PAD2_OFF 4 (stat_set_nlink n bs)
+                = stat_field_le ST_PAD2_OFF 4 bs)
+    by (apply stat_field_le_tail24; [unfold ST_PAD2_OFF; lia | exact Htail]).
+  assert (Hq3 : stat_field_le ST_UNUSED45_OFF 8 (stat_set_nlink n bs)
+                = stat_field_le ST_UNUSED45_OFF 8 bs)
+    by (apply stat_field_le_tail24; [unfold ST_UNUSED45_OFF; lia | exact Htail]).
+  unfold stat_buf_wf.
+  rewrite (stat_set_nlink_length n bs Hlen), Nat.eqb_refl.
+  unfold stat_ifmt_valid in Hifmt |- *. cbv zeta in Hifmt |- *.
+  rewrite Hifmt', Hq1, Hq2, Hq3, Hifmt, Hp1, Hp2, Hu. reflexivity.
+Qed.
+
+Lemma stat_set_nlink_stable : forall n bs,
+  length bs = 128%nat -> stat_stable_eqb (stat_set_nlink n bs) bs = true.
+Proof.
+  intros n bs Hlen.
+  unfold stat_stable_eqb, ST_MODE_OFF, ST_NLINK_OFF, ST_BLKSIZE_OFF.
+  assert (Hhead : firstn 20 (stat_set_nlink n bs) = firstn 20 bs)
+    by (apply stat_set_nlink_head; lia).
+  assert (Htail : skipn 24 (stat_set_nlink n bs) = skipn 24 bs)
+    by (apply stat_set_nlink_tail; lia).
+  assert (H56 : skipn 56 (stat_set_nlink n bs) = skipn 56 bs).
+  { replace 56%nat with (32 + 24)%nat by lia.
+    rewrite <- !skipn_skipn, Htail. reflexivity. }
+  assert (H16 : firstn 16 (stat_set_nlink n bs) = firstn 16 bs).
+  { assert (Hf : forall z : list byte, firstn 16 z = firstn 16 (firstn 20 z))
+      by (intro z; rewrite firstn_firstn; reflexivity).
+    rewrite (Hf (stat_set_nlink n bs)), (Hf bs), Hhead. reflexivity. }
+  assert (Hmode : stat_mode (stat_set_nlink n bs) = stat_mode bs)
+    by (unfold stat_mode; apply stat_field_le_head20;
+        [unfold ST_MODE_OFF; lia | exact Hhead]).
+  replace (20 + 4)%nat with 24%nat by lia.
+  rewrite H16, Hmode, Htail, H56, !stat_bytes_eqb_refl, stat_mode_stable_refl.
+  reflexivity.
+Qed.
+
+Lemma stat_set_nlink_nlink_ok : forall n bs,
+  (20 <= length bs)%nat -> stat_nlink_ok n (stat_set_nlink n bs) = true.
+Proof.
+  intros n bs Hlen. unfold stat_nlink_ok. apply Z.eqb_eq.
+  unfold stat_field_le, ST_NLINK_OFF.
+  rewrite (stat_set_nlink_field n bs Hlen).
+  rewrite Z_to_bv_unsigned. unfold bv_wrap, bv_modulus.
+  rewrite bytes_le_to_Z_of_le_bytes by lia. reflexivity.
+Qed.
+
+(** What a changed [st_nlink] leaves alone: the size, and so
+    [stat_size_ok] and [stat_lnk_size_ok]. *)
+Lemma stat_set_nlink_size : forall n bs,
+  (20 <= length bs)%nat ->
+  stat_field_le ST_SIZE_OFF 8 (stat_set_nlink n bs) = stat_field_le ST_SIZE_OFF 8 bs.
+Proof.
+  intros n bs Hlen. apply stat_field_le_tail24; [unfold ST_SIZE_OFF; lia|].
+  now apply stat_set_nlink_tail.
+Qed.
+
+Lemma stat_set_nlink_size_ok : forall n m bs,
+  (20 <= length bs)%nat ->
+  stat_size_ok m (stat_set_nlink n bs) = stat_size_ok m bs.
+Proof.
+  intros n m bs Hlen. unfold stat_size_ok, stat_is_reg.
+  rewrite stat_set_nlink_ifmt, stat_set_nlink_size by exact Hlen. reflexivity.
+Qed.
+
+Lemma stat_set_nlink_reg : forall n bs,
+  (20 <= length bs)%nat -> stat_is_reg (stat_set_nlink n bs) = stat_is_reg bs.
+Proof. intros n bs H. unfold stat_is_reg. now rewrite stat_set_nlink_ifmt. Qed.
+
+Lemma stat_set_nlink_dir : forall n bs,
+  (20 <= length bs)%nat -> stat_is_dir (stat_set_nlink n bs) = stat_is_dir bs.
+Proof. intros n bs H. unfold stat_is_dir. now rewrite stat_set_nlink_ifmt. Qed.
+
+Lemma stat_set_nlink_lnk : forall n bs,
+  (20 <= length bs)%nat -> stat_is_lnk (stat_set_nlink n bs) = stat_is_lnk bs.
+Proof. intros n bs H. unfold stat_is_lnk. now rewrite stat_set_nlink_ifmt. Qed.
+
+(** [stat_stable_eqb] chains: two patches that each keep the stable
+    members keep them together, and two set-id drops are one
+    ([stat_mode_stable_trans]). *)
+Lemma stat_stable_eqb_trans : forall a b c,
+  stat_stable_eqb a b = true -> stat_stable_eqb b c = true ->
+  stat_stable_eqb a c = true.
+Proof.
+  intros a b c H1 H2. unfold stat_stable_eqb in *.
+  apply andb_true_iff in H1 as [H1 H1d]. apply andb_true_iff in H1 as [H1 H1c].
+  apply andb_true_iff in H1 as [H1a H1b].
+  apply andb_true_iff in H2 as [H2 H2d]. apply andb_true_iff in H2 as [H2 H2c].
+  apply andb_true_iff in H2 as [H2a H2b].
+  apply stat_bytes_eqb_eq in H1a, H1c, H1d, H2a, H2c, H2d.
+  rewrite H1a, H1c, H1d, H2a, H2c, H2d, !stat_bytes_eqb_refl.
+  rewrite (stat_mode_stable_trans _ _ _ H1b H2b). reflexivity.
 Qed.

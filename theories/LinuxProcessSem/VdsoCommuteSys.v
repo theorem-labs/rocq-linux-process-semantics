@@ -20,8 +20,10 @@
     PURE ADDITION: this file changes no existing statement. *)
 
 From Stdlib Require Import ZArith List Bool.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs MemImageType.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs MemImageType Vdso State Monad Specs RiscvSemantics Run
+  State Monad Specs RiscvSemantics Run
   VdsoCommute VdsoCommuteArms.
 Import ListNotations.
 Open Scope bv_scope.
@@ -57,7 +59,7 @@ Qed.
     input, so its lemma is the one for that specification. *)
 Ltac vc_arm L := intros ? ? ? ? ?; eapply L; eassumption.
 
-(** THE WALK, assembled.  93 arms, in [Sys.SyscallTable.spec_table]'s order.
+(** THE WALK, assembled.  94 arms, in [Sys.SyscallTable.spec_table]'s order.
     A new arm with no lemma in [VdsoCommuteArms.v] fails here. *)
 Lemma spec_table_vdso_commutes :
   Forall (fun a => vdso_commutes (sa_spec a)) spec_table.
@@ -74,6 +76,7 @@ Proof.
   - vc_arm vc_fcntl_spec.                 (* 25  fcntl *)
   - vc_arm vc_ioctl_spec.                 (* 29  ioctl *)
   - vc_arm vc_flock_spec.                 (* 32  flock *)
+  - vc_arm vc_mkdirat_spec.               (* 34  mkdirat *)
   - vc_arm vc_unlinkat_spec.              (* 35  unlinkat *)
   - vc_arm vc_ftruncate_spec.             (* 46  ftruncate *)
   - vc_arm vc_faccessat_spec.             (* 48  faccessat *)

@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -25,7 +28,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 Definition timerfd_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2) ]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 Definition tfd_in (clkid flags : Z) : SyscallInput :=
   mkInput 85 [Z_to_bv 64 clkid; Z_to_bv 64 flags; 0; 0; 0; 0]
@@ -68,7 +71,7 @@ Example timerfd_create_dropped_flag_bits_are_einval :
   /\ check_syscall (tfd_in CLOCK_MONOTONIC (2 ^ 20))
        (mkEffect 3 [] []) timerfd_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ADMITTED CLOCK IDS DECLINE RATHER THAN ANSWER, including the two
     alarm ids the model can never resolve.  ADMISSION REASON: it is
@@ -123,7 +126,7 @@ Example timerfd_create_admitted_clocks_decline :
   /\ check_syscall (tfd_in CLOCK_PROCESS_CPUTIME_ID 0)
        (mkEffect (errno_ret EINVAL) [] []) timerfd_model
      = CheckOk timerfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ARGUMENTS NARROW TO 32 BITS, and the two halves are pinned
     together because only their conjunction says what narrowing means.
@@ -157,4 +160,4 @@ Example timerfd_create_narrows_both_arguments :
   /\ check_syscall (tfd_in (2 ^ 32 + 11) 0)
        (mkEffect (errno_ret EINVAL) [] []) timerfd_model
      = CheckOk timerfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.

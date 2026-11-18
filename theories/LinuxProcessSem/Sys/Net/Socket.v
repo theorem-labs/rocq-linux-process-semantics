@@ -11,7 +11,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -145,16 +148,24 @@ Definition INADDR_ANY : Z := 0%Z.
     succeeds and hand back an UNCONNECTED datagram socket, which the
     model holds as [State.FdDgram fam].  Linux v6.18.46 throughout:
 
-    - AF_UNIX: [unix_create] (net/unix/af_unix.c) accepts protocol 0,
-      gives a SOCK_DGRAM socket [unix_dgram_ops], and [unix_create1]
-      allocates its [sock].
-    - AF_INET6: [inet6_create] (net/ipv6/af_inet6.c) walks
-      [inetsw6[SOCK_DGRAM]], where protocol 0 takes the first entry's
-      protocol.  [inet6_register_protosw] inserts every non-permanent
-      entry after the last permanent one, and [udpv6_init] registers the
-      permanent UDP entry before [udplitev6_init] (permanent too) and
-      [pingv6_init] (not), so the first entry is UDP and the socket is
-      UDPv6 ([udpv6_prot], [inet6_dgram_ops]).
+    - AF_UNIX: [unix_create] (net/unix/af_unix.c:1150) accepts protocol
+      0, gives a SOCK_DGRAM socket [unix_dgram_ops] (:1005), and
+      [unix_create1] (:1095) allocates its [sock].
+    - AF_INET6: [inet6_create] (net/ipv6/af_inet6.c:120-278) walks
+      [inetsw6[SOCK_DGRAM]] (:136-156), where protocol 0 takes the
+      first entry's protocol (:148-150).  [inet6_register_protosw]
+      (:747-800) inserts every non-permanent entry after the last
+      permanent one (:780-786), and [inet6_init] calls [udpv6_init]
+      (:1184), which registers the permanent UDP entry
+      (net/ipv6/udp.c:1940-1946, :1961), before [udplitev6_init]
+      (:1188; permanent too, net/ipv6/udplite.c:72-78) and
+      [pingv6_init] (:1204; [INET_PROTOSW_REUSE] only,
+      net/ipv6/ping.c:218-224), so the first entry is UDP and the socket
+      is UDPv6 ([udpv6_prot], [inet6_dgram_ops]).  v6.16 and v6.17 take
+      the same path: [__sock_create], [inet6_register_protosw],
+      [inet6_init] and the three entries are the same text there, and
+      [inet6_create] differs only by a [READ_ONCE] of the flow-label
+      sysctl, which changes no answer.
 
     Every other shape of these two families stays declined, each for a
     reason the model does not carry: a nonzero protocol (AF_UNIX's
@@ -162,16 +173,19 @@ Definition INADDR_ANY : Z := 0%Z.
     AF_INET6's explicit IPPROTO_UDP, UDP-Lite, ICMPv6 ping and whatever
     a module registers), SOCK_STREAM and SOCK_SEQPACKET (connection
     sockets this model holds as nothing yet), SOCK_RAW (CAP_NET_RAW for
-    AF_INET6; rewritten to SOCK_DGRAM by [unix_create] for AF_UNIX, and
-    no target asks), and the types no protocol registers.
+    AF_INET6, af_inet6.c:180-183; rewritten to SOCK_DGRAM by
+    [unix_create] for AF_UNIX, and no target asks), and the types no
+    protocol registers.
 
     THE BUILD AND THE BOOT MUST REGISTER BOTH FAMILIES for this to be
     Linux's answer: CONFIG_UNIX and CONFIG_IPV6, each [y] in the
     configuration of record (SCOPE.md), and a boot without
-    [ipv6.disable=1], under which [inet6_init] returns before
-    [sock_register(&inet6_family_ops)] and [__sock_create] answers
-    -EAFNOSUPPORT.  SCOPE.md lists all three among the assumptions the
-    model does not check. *)
+    [ipv6.disable=1], under which [inet6_init] returns
+    (net/ipv6/af_inet6.c:1081-1084) before
+    [sock_register(&inet6_family_ops)] (:1116) and [__sock_create]
+    finds no family and answers -EAFNOSUPPORT (net/socket.c:1591-1594).
+    SCOPE.md records the two options under the configuration of record,
+    and the boot among the assumptions the model does not check. *)
 Definition socket_dgram_b (fam ty pro : Z) : bool :=
   ((Z.eqb fam AF_INET6 || Z.eqb fam AF_UNIX)
    && Z.eqb ty SOCK_DGRAM && Z.eqb pro 0)%bool.
@@ -179,20 +193,27 @@ Definition socket_dgram_b (fam ty pro : Z) : bool :=
 (** The errnos a [socket_dgram_b] call can fail with, for reasons the
     model does not decide; every one of them follows [__sock_create]'s
     range tests, which [socket_spec] answers first.  [sock_alloc]'s
-    -ENFILE (net/socket.c); then the family's [->create]: [unix_create1]'s
-    -ENFILE past [2 * get_max_files()] AF_UNIX sockets and -ENOMEM from
-    its [sk_alloc], or [inet6_create]'s -ENOBUFS from its [sk_alloc] (NOT
-    -ENOMEM: [err = -ENOBUFS] is set before that call, where
-    [inet_create] sets -ENOMEM) and the -ENOMEM of [udpv6_init_sock]'s
-    [kcalloc] (include/net/udp.h [udp_lib_init_sock]); then
-    [sock_map_fd]'s -EMFILE or -ENOMEM from [get_unused_fd_flags] and
-    -ENFILE or -ENOMEM from [sock_alloc_file]'s [alloc_file_pseudo].
+    -ENFILE (net/socket.c:1570-1575); then the family's [->create]:
+    [unix_create1]'s -ENFILE past [2 * get_max_files()] AF_UNIX sockets
+    and -ENOMEM from its [sk_alloc], or [inet6_create]'s -ENOBUFS from
+    its [sk_alloc] (NOT -ENOMEM: [err = -ENOBUFS] is set before that
+    call, net/ipv6/af_inet6.c:192-195, where [inet_create] sets -ENOMEM)
+    and the -ENOMEM of [udpv6_init_sock] (net/ipv6/udp.c:68-75), which
+    returns [udp_lib_init_sock]'s failed [kcalloc]
+    (include/net/udp.h:297-300); then [sock_map_fd] (net/socket.c:504-521)'s
+    -EMFILE or -ENOMEM from [get_unused_fd_flags] and -ENFILE or -ENOMEM
+    from [sock_alloc_file]'s [alloc_file_pseudo].
     So AF_UNIX's set is exactly [socket_errnos], and AF_INET6's is that
-    plus -ENOBUFS.  The LSM hooks ([security_socket_create],
-    [security_socket_post_create], [security_file_alloc]) and
-    [inet6_create]'s [BPF_CGROUP_RUN_PROG_INET_SOCK] are the
-    environment's: the model describes a kernel with no denying LSM and
-    no cgroup socket program, as [getsockopt_spec] does. *)
+    plus -ENOBUFS.  In v6.16 and v6.17 [udp_lib_init_sock] allocates
+    nothing and [udpv6_init_sock] returns 0 (net/ipv6/udp.c:68-74 there),
+    so that -ENOMEM is v6.18's alone; the set is the same on all three,
+    since [sock_map_fd]'s -ENOMEM is in it everywhere.  The LSM hooks
+    ([security_socket_create], [security_socket_post_create],
+    [security_file_alloc]) add none: the configuration of record builds
+    no LSM (SCOPE.md), so each is the stub of include/linux/security.h
+    that answers 0.  [inet6_create]'s [BPF_CGROUP_RUN_PROG_INET_SOCK]
+    (af_inet6.c:264-268) is the environment's: the model describes a
+    kernel with no cgroup socket program, as [getsockopt_spec] does. *)
 Definition socket_dgram_errnos (fam : Z) : list Z :=
   if Z.eqb fam AF_INET6 then [ENOMEM; EMFILE; ENFILE; ENOBUFS] else socket_errnos.
 
@@ -430,14 +451,14 @@ Definition move_addr_bytes (mp : word -> option byte) (a : word) (len : Z)
     allocation failure — is reported as -EADDRINUSE, because that
     function initialises [ret = -EADDRINUSE] and never overwrites it.
 
-    A NARROWING, and it reaches ONE of the two length checks above and
-    not both.  [__sys_bind] runs [move_addr_to_kernel] and only then
+    NOT A NARROWING, though the order would make one of it under an LSM.
+    [__sys_bind] runs [move_addr_to_kernel] and only then
     [__sys_bind_socket], whose first statement is [security_socket_bind]
     and whose second is [ops->bind] — so step 2's [0, 128] range test
-    PRECEDES the LSM while step 3's 16-byte minimum FOLLOWS it.  An LSM
-    can therefore answer -EACCES where this spec answers step 3's
-    -EINVAL, and cannot where it answers step 2's.  Fewer behaviors,
-    never more. *)
+    precedes the hook while step 3's 16-byte minimum follows it.  The
+    configuration of record builds no LSM (SCOPE.md), so the hook is the
+    stub of include/linux/security.h that answers 0, and step 3's
+    -EINVAL is every supported kernel's answer. *)
 Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -504,42 +525,56 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                   alt (e <- errno_from bind_errnos ;; err_ret e)
                       (set_fds (fd_insert (m_fds m) fd (FdSocket SkBound)) ;;
                        ret_only (Z_to_bv 64 0))
-              | SkBound | SkListening
-              | SkConnected _ _ (NCons _ _) | SkConnected _ _ NFin =>
+              | SkBound | SkListening | SkReset _ _ _ _ true =>
                   err_ret EINVAL
                   (* [__inet_bind]'s
-                     [sk->sk_state != TCP_CLOSE || inet->inet_num].  For
-                     each of these one conjunct or the other holds: a
-                     bound socket has a port, a listening one is
-                     TCP_LISTEN, and a live or half-closed connection is
-                     TCP_ESTABLISHED or TCP_CLOSE_WAIT with a port. *)
-              | SkConnected _ _ NRst | SkConnected _ _ NTimedOut
-              | SkReset _ _ => unmodeled
-                  (* A CONNECTION THE PEER HAS RESET IS UNBOUND AGAIN,
-                     and -EINVAL here would be a confidently wrong
-                     answer.  net/ipv4/tcp.c [tcp_done] runs
-                     [tcp_set_state(sk, TCP_CLOSE)], whose TCP_CLOSE arm
-                     calls [inet_put_port] whenever
-                     [icsk_bind_hash && !(sk_userlocks & SOCK_BINDPORT_LOCK)];
-                     net/core/sock.c [sk_clone_lock] clears that bit on
-                     EVERY accepted child
-                     ([newsk->sk_userlocks = sk->sk_userlocks & ~SOCK_BINDPORT_LOCK]),
-                     so the guard never saves it; and
-                     net/ipv4/inet_hashtables.c [__inet_put_port] sets
-                     [inet_sk(sk)->inet_num = 0].  Both conjuncts are
-                     then false and Linux AUTOBINDS and returns 0.
-                     (Contrast [listen_spec]'s [SkReset] arm, which is
-                     -EINVAL for a reason that does survive: [inet_listen]
-                     tests [sock->state], which [tcp_done] does not
-                     touch.)
-                     The model still declines rather than returning 0,
-                     for a second reason of its own: the reset runs
-                     [tcp_done] when the SEGMENT ARRIVES, not when the
-                     program reads it, so for [NRst]/[NTimedOut] the
-                     model does not even know the socket is already
-                     unbound.  And a successful bind here would leave a
-                     socket that is bound AND still reads as
-                     end-of-stream, which [SockState] cannot express. *)
+                     [sk->sk_state != TCP_CLOSE || inet->inet_num]
+                     (net/ipv4/af_inet.c:528, Linux v6.18.46).  A bound
+                     socket has a port, a listening one is TCP_LISTEN, and
+                     a reset socket the program has bound since has the
+                     port that bind took. *)
+              | SkConnected peer ch rx =>
+                  alt (err_ret EINVAL)
+                      (alt (e <- errno_from bind_errnos ;; err_ret e)
+                           (set_fds (fd_insert (m_fds m) fd
+                                       (FdSocket (SkReset peer ch rx true true))) ;;
+                            ret_only (Z_to_bv 64 0)))
+                  (* EITHER ANSWER, BECAUSE THE PROGRAM CANNOT SEE WHEN THE
+                     PEER'S END WAS PROCESSED.  Before it, the connection is
+                     ESTABLISHED or CLOSE_WAIT and holds the port it
+                     inherited (__inet_inherit_port), so the test above is
+                     true: -EINVAL.  After a RST or a timeout, [tcp_done]
+                     (net/ipv4/tcp.c:5033) ran [tcp_set_state(TCP_CLOSE)],
+                     which releases the port of a connection whose port is
+                     not user-locked (:2997-3000) and [__inet_put_port]
+                     zeroes [inet_num] (net/ipv4/inet_hashtables.c:227); an
+                     accepted child is never user-locked, because
+                     [sk_clone_lock] clears SOCK_BINDPORT_LOCK
+                     (net/core/sock.c:2515).  Both conjuncts are false and
+                     [get_port] autobinds (af_inet.c:538): 0 (:562), or
+                     [inet_csk_get_port]'s -EADDRINUSE.  The same functions
+                     are the same text in v6.16 and v6.17.  A reset can
+                     follow every script, the FIN included: a closed peer
+                     answers new data with one (net/ipv4/tcp_input.c
+                     :7177-7189, net/ipv4/tcp_minisocks.c:160-165).
+                     The 0 shows the end was processed and the error is
+                     still pending ([sock_error] was not called), so the
+                     socket moves to [SkReset] with [pending] and [bound]
+                     set.  The -EADDRINUSE leaves the model as it was: it
+                     still admits every later answer of either timing,
+                     which is wider than Linux and never narrower.
+                     testing/syscall-check/tests/socket_peer_reset.c
+                     records the 0 behind a byte and behind a FIN on
+                     the pinned kernel. *)
+              | SkReset peer ch rx pending false =>
+                  alt (e <- errno_from bind_errnos ;; err_ret e)
+                      (set_fds (fd_insert (m_fds m) fd
+                                  (FdSocket (SkReset peer ch rx pending true))) ;;
+                       ret_only (Z_to_bv 64 0))
+                  (* the end was processed, so the port is gone and the
+                     test above is false: the autobind, as for [SkFresh].
+                     The bind consumes no error ([sock_error] is not on
+                     its path), so [pending] stays as it was. *)
               end)
       end
   | Some (FdStream _ _ _) =>
@@ -556,16 +591,15 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
            nowhere;
          - [unix_validate_addr]: [addr_len <= 2] or [addr_len >
            sizeof(struct sockaddr_un)] (110) is -EINVAL, and so is any
-           [sun_family] other than AF_UNIX.  This is the answer to curl's
-           [bind] of an AF_INET address on its end (curl-fuzzer
-           [api_url_guess_local_port]; dispatch://OSSV-286/artifact/
-           census-wave3-md, kind D6), and no state moves;
+           [sun_family] other than AF_UNIX.  This is the answer to a
+           program's [bind] of an AF_INET address on its end of a socket
+           pair, and no state moves;
          - an AF_UNIX filesystem or abstract name: declined, for the
            autobind's reason.
          A length of 0 copies nothing and reaches [unix_validate_addr]
          with [addr_len] 0, so it is -EINVAL, before any read.  The LSM
          hook [security_socket_bind] runs between the copy and
-         [unix_bind]; the model has none, as the AF_INET arm says. *)
+         [unix_bind] and answers 0, as the AF_INET arm says. *)
       let al := sint32 addrlen in
       if orb (Z.ltb al 0) (Z.ltb SOCKADDR_STORAGE_SIZE al) then err_ret EINVAL
       else if Z.eqb al 0 then err_ret EINVAL
@@ -596,11 +630,11 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          enumeration of file kinds.  It is therefore the right answer for
          every NON-SOCKET kind this model has — [FdChannel], [FdFile],
          [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull],
-         [FdUrandom], [FdEventfd] and [FdAnon] — and for any non-socket
-         kind a later change adds.  [FdPipe], [FdFileA], [FdEventfd] and
-         [FdAnon] arrived that way without an edit: a pipe end's [f_op]
+         [FdUrandom] and [FdEventfd] — and for any non-socket
+         kind a later change adds.  [FdPipe], [FdFileA] and [FdEventfd]
+         arrived that way without an edit: a pipe end's [f_op]
          is [pipeanon_fops] (fs/pipe.c [create_pipe_files], v6.18.46), an
-         append fd's and an unnamed file's are their filesystem's, and an
+         append fd's is its filesystem's, and an
          eventfd's is [eventfd_fops] (fs/eventfd.c), so [sock_from_file]
          returns NULL for each exactly as for the other four.
          WHAT THE WILDCARD CANNOT SEE IS A NEW SOCKET KIND, which would
@@ -675,7 +709,7 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
   | Some (FdSocket sk) =>
       match sk with
       | SkConnected _ _ _ => err_ret EINVAL      (* not SS_UNCONNECTED: real -EINVAL *)
-      | SkReset _ _ => err_ret EINVAL
+      | SkReset _ _ _ _ _ => err_ret EINVAL
           (* ALSO -EINVAL, but NOT for the reason the arm above gives, and the
              difference is worth stating.  [__inet_listen_sk]'s state test is
              [(1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)], which ACCEPTS
@@ -726,8 +760,9 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
     2. [get_unused_fd_flags] -> -EMFILE (or -ENOMEM); NOT -ENFILE, which
        comes later.
     3. [sock_from_file] -> -ENOTSOCK.
-    4-6. [sock_alloc] / [sock_alloc_file] / LSM -> -ENFILE, -ENOMEM,
-       -EPERM.
+    4-6. [sock_alloc] / [sock_alloc_file] -> -ENFILE, -ENOMEM; then
+       [security_socket_accept], the stub that answers 0 in the
+       configuration of record, which builds no LSM (SCOPE.md).
     7. [inet_csk_accept] -> -EINVAL when the socket is not TCP_LISTEN.
     8-9. [inet_getname] and [move_addr_to_user], which run only when the
        address argument is non-NULL.
@@ -1080,13 +1115,9 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
     stated by which arms it can and cannot preempt:
     - [security_socket_connect] runs in [__sys_connect_file], between
       [sock_from_file] and [ops->connect] — so BEFORE everything
-      [__inet_stream_connect] does.  An LSM can therefore answer
-      -EACCES/-EPERM where this spec answers step 3's -EINVAL, step 5's
-      -EINVAL/-EAFNOSUPPORT, -EISCONN, AND the AF_UNSPEC 0, which is the
-      only arm here that answers a success.  It cannot where this spec
-      answers -EBADF, -ENOTSOCK, or [move_addr_to_kernel]'s
-      -EINVAL/-EFAULT, all of which precede it.  (The default hook
-      returns 0, include/linux/lsm_hook_defs.h.)
+      [__inet_stream_connect] does — and narrows nothing: the
+      configuration of record builds no LSM (SCOPE.md), so it is the
+      stub of include/linux/security.h that answers 0.
     - A cgroup BPF program at CGROUP_INET4_CONNECT
       ([BPF_CGROUP_PRE_CONNECT_ENABLED]) can return an arbitrary error,
       and it is NOT confined to the declined region: [pre_connect] runs
@@ -1146,13 +1177,13 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      (* [tcp_disconnect] on a socket with nothing to
                         disconnect: returns 0, changes nothing modeled *)
                  | SkBound | SkListening
-                 | SkConnected _ _ _ | SkReset _ _ => unmodeled
+                 | SkConnected _ _ _ | SkReset _ _ _ _ _ => unmodeled
                      (* a real disconnect: port release, accept-queue
                         teardown, or an RST — see above *)
                  end
                else
                  match sk with
-                 | SkListening | SkConnected _ _ _ | SkReset _ _ =>
+                 | SkListening | SkConnected _ _ _ | SkReset _ _ _ _ _ =>
                      err_ret EISCONN
                      (* NOT -EINVAL.  Listening is SS_UNCONNECTED with
                         [sk_state] TCP_LISTEN, which the SS_UNCONNECTED
@@ -1223,11 +1254,10 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     declines O_PATH before an fd is allocated.
 
     A NOTE ON THE LSM, once, for all five.  Each call runs a
-    [security_socket_*] hook past the lookup, and every hook here can
-    deny.  This model, like every other spec in this file, describes a
-    kernel whose active LSMs do not deny (the default capability LSM's
-    socket hooks all return 0); an enforcing SELinux or AppArmor policy
-    is outside the modeled environment, not a case answered wrongly. *)
+    [security_socket_*] hook past the lookup.  The configuration of
+    record builds no LSM (SCOPE.md), so every such hook is a stub that
+    answers 0; an enforcing SELinux or AppArmor policy would need a
+    kernel no supported implementation is. *)
 Inductive SockOf :=
   | SoInet (sk : SockState)                       (* an AF_INET/SOCK_STREAM socket *)
   | SoPair (id : word) (side : bool) (st : StreamEnd)  (* an AF_UNIX stream-pair end *)
@@ -1245,19 +1275,17 @@ Definition sock_fd (m : Model) (fd : word) : SockOf :=
   | Some (FdFileW _ _)  => SoErr ENOTSOCK
   | Some (FdFileA _ _)  => SoErr ENOTSOCK
   | Some (FdFileRW _ _) => SoErr ENOTSOCK
-  | Some FdDir          => SoErr ENOTSOCK
+  | Some (FdDir _)      => SoErr ENOTSOCK
   | Some (FdPipe _ _)   => SoErr ENOTSOCK  (* a pipe end is not a socket either: [pipeanon_fops]
                                               is not [socket_file_ops], so [sock_from_file]
                                               returns NULL (net/socket.c, v6.18.46) *)
   | Some (FdDevNull _ _) => SoErr ENOTSOCK (* nor is /dev/null: its [f_op] is [null_fops]
                                               (drivers/char/mem.c), and the same comparison
                                               fails *)
-  | Some FdUrandom => SoErr ENOTSOCK       (* nor /dev/urandom: [urandom_fops]
+  | Some (FdUrandom _ _) => SoErr ENOTSOCK  (* nor /dev/urandom: [urandom_fops]
                                               (drivers/char/random.c) *)
   | Some (FdEventfd _) => SoErr ENOTSOCK   (* nor an eventfd: [eventfd_fops]
                                               (fs/eventfd.c), on an anonymous inode *)
-  | Some (FdAnon _ _) => SoErr ENOTSOCK    (* nor an unnamed file: its [f_op] is its
-                                              filesystem's regular-file table *)
   | Some (FdSocket sk)  => SoInet sk
   | Some (FdStream id side st) => SoPair id side st
                                            (* a socket file: [sock_alloc_file] gives it
@@ -1311,18 +1339,23 @@ Definition user_range_writable (i : SyscallInput) (a : word) (len : Z) : bool :=
     - [len] is clamped DOWN to [klen], as a signed [int].  Only when the
       result is not negative does [unsafe_put_user(klen, ulen)] store 2
       -- "fromlen shall refer to the value before truncation" -- so the
-      length is written BEFORE the address, and a later fault leaves it
-      written.
+      length is written BEFORE the address (net/socket.c:276-314,
+      v6.18.46).
     - A negative length is -EINVAL (nothing stored), a zero length is 0
       (only the length stored), and otherwise the clamped prefix of the
-      address goes to [uaddr] by [copy_to_user]; a destination that takes
-      none of it is -EFAULT with the length already stored.
+      address goes to [uaddr] by [copy_to_user].
+    - A destination that does not take the whole prefix is DECLINED.  The
+      supported kernels answer -EFAULT there with different stores:
+      v6.18.46 has stored the length first, while v6.16 and v6.17 read it
+      with [get_user], copy the address, and store the length last with
+      [__put_user] (net/socket.c:276-301, v6.17; the same text in v6.16),
+      so their -EFAULT leaves [ulen] unwritten.
 
     [audit_sockaddr] sits before that copy and returns -ENOMEM only for a
     task with an audit context that cannot allocate; the model describes a
-    kernel with no audit rule on the task, as it describes one with no
-    denying LSM.  A range that takes some bytes and not others -- a
-    straddled page -- declines, as everywhere a copy can stop part way.
+    kernel with no audit rule on the task.  A range that takes some bytes
+    and not others -- a straddled page -- declines, as everywhere a copy
+    can stop part way.
 
     The same address serves both calls.  For getsockname it is this end's
     own; for getpeername it is the peer's, which is unbound too, and
@@ -1351,12 +1384,10 @@ Definition stream_getname (uaddr ulen : word) (i : SyscallInput) : Sys SyscallEf
          then pure (mkEffect (Z_to_bv 64 0)
                       [(ulen, word_le4 (Z_to_bv 64 2));
                        (uaddr, firstn (Z.to_nat len) unix_unnamed_addr)] [])
-         else match read_bytes_map (in_wmem i) uaddr (Z_to_bv 64 1) with
-              | None =>
-                  pure (mkEffect (errno_ret EFAULT) [(ulen, word_le4 (Z_to_bv 64 2))] [])
-                    (* [copy_to_user] takes nothing; the length is already stored *)
-              | Some _ => unmodeled   (* takes the first byte and not the second *)
-              end)
+         else unmodeled)
+           (* [copy_to_user] does not take the whole prefix: v6.18.46's
+              -EFAULT leaves the length stored, v6.16's and v6.17's leave
+              it unwritten (see the header) *)
   end.
 
 (** [setsockopt(SOL_SOCKET, SO_SNDBUF or SO_RCVBUF)] on a stream-pair end.
@@ -1484,7 +1515,8 @@ Definition stream_shutdown (fd id : word) (side : bool) (st : StreamEnd)
     So on a socket the only answer this call has is a SUCCESS THAT WRITES
     AN ADDRESS THROUGH [move_addr_to_user], and that write is what the
     model cannot do: [SyscallEffect] has no [sockaddr_in] export, and
-    [move_addr_to_user] (net/socket.c, byte-identical v6.1-v6.17) is a
+    [move_addr_to_user] (net/socket.c, byte-identical v6.1-v6.17; v6.18
+    stores the length before the address) is a
     three-step in/out protocol — [get_user(len, ulen)]; clamp
     [len] down to [klen]; -EINVAL if the user's [len] was negative (the
     clamp runs FIRST, so a negative length survives it); copy [len]
@@ -1580,7 +1612,7 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
       | SkFresh            => err_ret ENOTCONN   (* inet_dport == 0 *)
       | SkBound            => err_ret ENOTCONN
       | SkListening        => err_ret ENOTCONN
-      | SkReset _ _        => err_ret ENOTCONN   (* tcp_done left TCP_CLOSE; dport still set *)
+      | SkReset _ _ _ _ _  => err_ret ENOTCONN   (* tcp_done left TCP_CLOSE; dport still set *)
       | SkConnected _ _ _  => unmodeled          (* succeeds, writing the peer: no address export *)
       end
   | SoPair _ _ _ =>
@@ -1643,10 +1675,9 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
         (* NOT -ENOPROTOOPT: an AF_UNIX socket's [proto_ops] has
            [.setsockopt = unix_setsockopt] (net/unix/af_unix.c, v6.18.46),
            whose first statement is [if (level != SOL_SOCKET) return
-           -EOPNOTSUPP;].  This is the answer curl's TCP_NODELAY gets on
-           the pair: curl sets it because the address it resolved is
-           AF_INET (lib/cf-socket.c:160), only logs the failure, and goes
-           on *)
+           -EOPNOTSUPP;].  This is the answer a client's TCP_NODELAY gets
+           on a pair end, set because the address the client resolved is
+           AF_INET; such a client may only log the failure and go on *)
       else i <- input ;; stream_setsockopt fd id side st (in_arg i 2) (in_arg i 3) optlen i m
   | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
   end.
@@ -1906,7 +1937,7 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
             then ret_only (Z_to_bv 64 0)              (* case TCP_LISTEN: break, nothing written *)
             else unmodeled                            (* SHUT_RD/SHUT_RDWR: tcp_disconnect *)
         | SkConnected _ _ _ => unmodeled              (* default: the bits, maybe a FIN *)
-        | SkReset _ _       => unmodeled              (* tcp_done: TCP_CLOSE again *)
+        | SkReset _ _ _ _ _ => unmodeled              (* tcp_done: TCP_CLOSE again *)
         end
   | SoPair id side st =>
       if negb (shut_how_ok how) then err_ret EINVAL
@@ -2159,17 +2190,49 @@ Definition stream_send_flags_ok (fl : word) : bool :=
 Definition send_flag (fl : word) (bit : Z) : bool :=
   negb (Z.eqb (Z.land (bv_unsigned (sendflags32 fl)) bit) 0).
 
-(** The state of the connection as the SEND path sees it: the send
-    either goes out, or answers a pending peer error once, or answers
-    -EPIPE because there is no connection to send on. *)
+(** The state of the connection as the SEND path sees it: the send goes
+    out OR answers the error of an end the kernel may already have
+    processed ([SendGoes]), answers a pending error once ([SendErr]),
+    answers -EPIPE because there is no connection to send on
+    ([SendDead]), or is declined ([SendUnknown]).  [after] is the state
+    an error answer leaves. *)
 Inductive SendState :=
-  | SendGoes (chan : word)          (* ESTABLISHED or CLOSE_WAIT *)
-  | SendErr (e : Z) (peer : PeerAddr) (chan : word)  (* one pending error *)
-  | SendDead.                       (* no connection: -EPIPE, port or no port *)
+  | SendGoes (chan : word) (e : Z) (after : SockState)  (* ESTABLISHED or CLOSE_WAIT, or already closed *)
+  | SendErr (e : Z) (after : SockState)                 (* one pending error *)
+  | SendDead                                            (* no connection: -EPIPE, port or no port *)
+  | SendUnknown.                                        (* the script's end is out of reach *)
+
+(** THE ERROR A PROCESSED END STORES, by the terminal that ends the
+    script: net/ipv4/tcp_input.c [tcp_reset] stores ECONNRESET on an
+    established connection (:4700-4701) and EPIPE in CLOSE_WAIT, i.e.
+    after the peer's FIN (:4695-4697); the retransmit timer stores
+    ETIMEDOUT.  A RST after the FIN is not in the script — [NFin] is its
+    last cell — but a closed peer sends one in answer to new data
+    (tcp_input.c:7177-7189, net/ipv4/tcp_minisocks.c:160-165), so an
+    [NFin] end may carry it.  Linux v6.18.46; the same text in v6.16 and
+    v6.17. *)
+Definition end_errno (t : NetStream) : Z :=
+  match t with
+  | NRst => ECONNRESET
+  | NTimedOut => ETIMEDOUT
+  | _ => EPIPE
+  end.
+
+(** What is left of the script past the first [rw_bytes_max] bytes still
+    queued: a terminal when the end lies within them, a byte when it does
+    not, where the send is declined rather than judged on a scan the
+    checker could not finish for an endless script.  A definition of its
+    own, and [send_state] tests it with [net_ended] rather than matching
+    an [option], so that every proof about [send_state] meets this term
+    folded and never asks the kernel to unfold the scan of a literal
+    count. *)
+Definition net_end (rx : NetStream) : NetStream :=
+  snd (net_take_z rx rw_bytes_max).
+Arguments net_end : simpl never.
 
 (** How each socket state answers a send.
 
-    - fresh, bound or listening, and a connection whose error has
+    - fresh, bound or listening, and a reset connection whose error has
       already been delivered: -EPIPE, and -EPIPE only.  There is NO
       -ENOTCONN on the TCP send path at all —
       net/core/stream.c [sk_stream_wait_connect] returns -EPIPE for every
@@ -2178,10 +2241,22 @@ Inductive SendState :=
       (read(2) on the same socket IS -ENOTCONN; the two directions
       differ.)  With MSG_NOSIGNAL set that -EPIPE carries no signal,
       which is the entire point.
-    - a pending RST or retransmit timeout: reported ONCE, because
-      include/net/sock.h [sock_error] consumes it with an [xchg] — and it
-      is consumed by whichever of read and send reaches it first, which
-      is why the send transitions the socket exactly as a read does.
+    - A CONNECTION ([SkConnected]): THE PROGRAM CANNOT SEE WHETHER THE
+      KERNEL HAS PROCESSED THE PEER'S END, so both answers are admitted.
+      Not processed: ESTABLISHED or CLOSE_WAIT, inside the mask
+      (net/ipv4/tcp.c:1159-1164), and the copy loop runs (:1197 on).
+      Processed: TCP_CLOSE, and [sk_stream_wait_connect] answers the
+      stored error (net/core/stream.c:67-69), consumed by [sock_error]'s
+      [xchg] (include/net/sock.h:2496) — whatever bytes are still queued
+      in front of the end, which is why the error is the one of the
+      script's END ([net_end], [end_errno]) and not of its head.  The error
+      answer moves the socket to [SkReset] with the error consumed and
+      the queue intact: tcp_done purges only the write queue
+      (tcp_input.c:4669).
+    - A reset connection with its error pending: that error, once.
+      Reported ONCE because [sock_error] consumes it, by whichever of
+      read and send reaches it first, which is why the send transitions
+      the socket exactly as a read does.
     - A FRESH SOCKET IS NOT A SPECIAL CASE, and the reason is worth
       recording because the shape of the call suggests it should be.
       net/ipv4/af_inet.c [inet_sendmsg] does run [inet_send_prepare]
@@ -2205,17 +2280,21 @@ Inductive SendState :=
       [inet_csk_listen_start]'s own [get_port] call, which no
       [no_autobind] flag guards, so its -EADDRINUSE branch is live and
       stays under [alt].)
-    - CLOSE_WAIT: THE SEND SUCCEEDS.  The peer's FIN shuts down only the
-      receive half, and CLOSE_WAIT is inside [tcp_sendmsg_locked]'s mask.
-      This is the case a model gets wrong by assuming a closed peer
-      means a closed connection. *)
+    - CLOSE_WAIT: THE SEND SUCCEEDS until a RST is processed.  The peer's
+      FIN shuts down only the receive half, and CLOSE_WAIT is inside
+      [tcp_sendmsg_locked]'s mask.  This is the case a model gets wrong
+      by assuming a closed peer means a closed connection. *)
 Definition send_state (sk : SockState) : SendState :=
   match sk with
-  | SkConnected peer ch NRst      => SendErr ECONNRESET peer ch
-  | SkConnected peer ch NTimedOut => SendErr ETIMEDOUT peer ch
-  | SkConnected _ ch NFin         => SendGoes ch   (* CLOSE_WAIT: sends go out *)
-  | SkConnected _ ch (NCons _ _)  => SendGoes ch
-  | SkReset _ _                   => SendDead
+  | SkConnected peer ch rx =>
+      if net_ended (net_end rx)
+      then SendGoes ch (end_errno (net_end rx)) (SkReset peer ch rx false false)
+      else SendUnknown
+  | SkReset peer ch rx true bound =>
+      if net_ended (net_end rx)
+      then SendErr (end_errno (net_end rx)) (SkReset peer ch rx false bound)
+      else SendUnknown
+  | SkReset _ _ _ false _         => SendDead
   | SkBound | SkListening         => SendDead
   | SkFresh                       => SendDead      (* no autobind for TCP *)
   end.
@@ -2284,15 +2363,28 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
   | SendDead => record_copyins pre (err_ret EPIPE)
       (* every no-connection state, the fresh socket included: TCP does
          not autobind on send, so there is no second errno to union in *)
-  | SendErr e peer ch =>
+  | SendUnknown => unmodeled
+  | SendErr e after =>
       record_copyins pre
-        (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch))) ;;
+        (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
          err_ret e)
       (* consumed here exactly as [socket_pending_error] consumes it on
          the read side: one [sk_err], one [xchg], whichever direction
          gets there first.  The NEXT send is then -EPIPE, which is the
          classic two-step a program sees after a peer reset *)
-  | SendGoes ch => send_bytes pre acc total bs ch
+  | SendGoes ch e after =>
+      if negb (bv_unsigned total <=? rw_bytes_max)%Z then unmodeled
+        (* both callers have already declined a larger total
+           ([modeled_rw_count], and [sendmsg_spec]'s gathered total), so
+           this never fires; it is the bound that keeps a delivered count
+           apart from an errno return *)
+      else
+      alt (send_bytes pre acc total bs ch)
+          (record_copyins pre
+             (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
+              err_ret e))
+      (* the delivery if the end is not processed yet, the stored error
+         if it is: see [send_state] *)
   end.
 
 (** [sendto fd buf len flags addr addrlen].
@@ -2500,15 +2592,13 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
   | None => err_ret EBADF
   | Some (FdChannel _) | Some (FdFile _ _)
   | Some (FdFileW _ _) | Some (FdFileA _ _) | Some (FdFileRW _ _)
-  | Some FdDir
+  | Some (FdDir _)
   | Some (FdPipe _ _)
   | Some (FdDevNull _ _)
-  | Some FdUrandom
-  | Some (FdEventfd _)
-  | Some (FdAnon _ _) =>       (* not a socket: [sock_from_file] is one comparison
+  | Some (FdUrandom _ _)
+  | Some (FdEventfd _) =>      (* not a socket: [sock_from_file] is one comparison
                                   against [socket_file_ops], and a pipe end, the
-                                  two device kinds, an eventfd and an unnamed file
-                                  all fail it *)
+                                  two device kinds and an eventfd all fail it *)
       err_ret ENOTSOCK
   | Some (FdStream _ _ _) => unmodeled
       (* A STREAM-PAIR END DECLINES, WHOLE, and this decline is
@@ -2688,7 +2778,7 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
   | Some (FdFileW _ _) => Some ENOTSOCK
   | Some (FdFileA _ _) => Some ENOTSOCK
   | Some (FdFileRW _ _) => Some ENOTSOCK
-  | Some FdDir => Some ENOTSOCK
+  | Some (FdDir _) => Some ENOTSOCK
   | Some (FdPipe _ _) => Some ENOTSOCK
       (* The new constructor this comment's "must not inherit an answer
          by default" was written for, taking the answer EXPLICITLY:
@@ -2699,12 +2789,10 @@ Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
   | Some (FdDevNull _ _) => Some ENOTSOCK
       (* and /dev/null's is [null_fops] (drivers/char/mem.c), so the
          same comparison fails and the same -ENOTSOCK is exact *)
-  | Some FdUrandom => Some ENOTSOCK
+  | Some (FdUrandom _ _) => Some ENOTSOCK
       (* and /dev/urandom's is [urandom_fops] (drivers/char/random.c) *)
   | Some (FdEventfd _) => Some ENOTSOCK
       (* and an eventfd's is [eventfd_fops] (fs/eventfd.c) *)
-  | Some (FdAnon _ _) => Some ENOTSOCK
-      (* and an unnamed file's is its filesystem's regular-file table *)
   | Some (FdSocket _) => None
   | Some (FdStream _ _ _) => None
       (* a socket too: [recvfrom_spec] answers a stream-pair end before it
@@ -2838,13 +2926,14 @@ Definition socketpair_reserve_errnos : list Z := [EMFILE; ENOMEM].
     tracks, so all are environment choices here as there.
 
     Every other errno on that path is an ARGUMENT gate the modeled triple
-    has already passed, EXCEPT the two LSM hooks:
+    has already passed, or one of two LSM hooks:
     [security_socket_create] runs inside each [sock_create]
     ([__sock_create] calls it before [sock_alloc]) and
-    [security_socket_socketpair] runs once both sockets exist, so an
-    enforcing policy answers -EACCES with [usockvec] already written.
-    This set does not admit that, which makes the model NARROWER than
-    Linux here and never wider.
+    [security_socket_socketpair] runs once both sockets exist.  The
+    configuration of record builds no LSM (SCOPE.md), so both are stubs
+    that answer 0, and the -EACCES an enforcing policy would answer with
+    [usockvec] already written is no supported kernel's: leaving it out
+    is exact.
 
     THE -ENOMEM IS VERSION-DEPENDENT, and this is the value for the
     kernels this model covers.  [inet_create] sets [err = -ENOMEM]
@@ -2852,10 +2941,10 @@ Definition socketpair_reserve_errnos : list Z := [EMFILE; ENOMEM].
     ca746c55a7e6 ("net: Return the correct errno code") replaced the
     -ENOBUFS that had stood there since well before v4.15; the stable
     branches that predate it — 4.19.y, 5.4.y and 5.10.y — still answer
-    -ENOBUFS.  The modeled window is mainline v6.10 through v6.15 (see
-    [Fs.ReadWrite.readv_spec]), entirely on the -ENOMEM side, so
-    -ENOBUFS is out of scope here rather than an errno this set is
-    missing. *)
+    -ENOBUFS.  The supported kernels are v6.16 to v6.18.46 (SCOPE.md),
+    all on the -ENOMEM side: [inet_create] (net/ipv4/af_inet.c) is the
+    same text in v6.16, v6.17 and v6.18.46.  So -ENOBUFS is out of
+    scope here rather than an errno this set is missing. *)
 Definition socketpair_create_errnos : list Z := [ENFILE; ENOMEM].
 
 (** The outcome once the 8-byte destination is known writable: a
@@ -3213,13 +3302,12 @@ Definition recvfrom_spec (fd buf size : word) : Sys SyscallEffect :=
     Compare [recvfrom_spec], which imports its buffer first.  The two
     orders are opposite, and the pair of them is what these arms state.
 
-    MSG_CMSG_COMPAT IS [unmodeled], AND THE REASON IS THE SAME ONE
-    [access_ok] HAS.  The macro is [0x80000000] when CONFIG_COMPAT is
-    set and [0] when it is not, so on a riscv64 kernel built with rv32
-    emulation [recvmsg(fd, msg, 0x80000000)] is -EINVAL, and on one
-    built without it the bit is inert and the call goes on to the
-    descriptor.  Nothing a binary can observe says which kernel it is
-    running on, so the model declines rather than picking one.  The
+    MSG_CMSG_COMPAT IS [unmodeled], WHERE LINUX ANSWERS -EINVAL.  The
+    macro is [0x80000000] when CONFIG_COMPAT is set, and the
+    configuration of record sets it (SCOPE.md), so on every supported
+    kernel [recvmsg(fd, msg, 0x80000000)] is -EINVAL before the
+    descriptor is looked at.  The decline is a priority-3 gap,
+    fail-closed: an arm that answered that -EINVAL would close it.  The
     bit is tested against the low 32 bits, since [flags] is an
     [unsigned int] (see [Syscall.abi_low32]).
 
@@ -3235,7 +3323,7 @@ Definition recvfrom_spec (fd buf size : word) : Sys SyscallEffect :=
     to this entry point equally. *)
 Definition recvmsg_spec (fd flags : word) : Sys SyscallEffect :=
   if negb (Z.eqb (Z.land (bv_unsigned (abi_low32 flags)) MSG_CMSG_COMPAT) 0)
-  then unmodeled   (* CONFIG_COMPAT decides this one: fail closed *)
+  then unmodeled   (* -EINVAL on every supported kernel: declined, fail closed *)
   else
   m <- get_model ;;
   recv_fd_answer (m_fds m) fd.

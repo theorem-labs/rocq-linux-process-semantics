@@ -121,10 +121,10 @@
     [bv_eq].  The fourth field is an [Fs.Fs] that reaches this record
     only through [Classifier.rejects] and
     [FinInput.valid_fin_input], both of which factor through
-    [Run.valid_input] and so require [Fs.valid_fs] of the embedded file
-    system.  It is [Fs.valid_fs] that pins the canonical,
-    strictly-sorted form among its conjuncts — that is an attribute of
-    [Fs.valid_fs], not an assumption made here — and without it a single
+    [Run.valid_input] and so require [Fs.wf_fs] of the embedded file
+    system (through [Run.valid_image]).  It is [Fs.wf_fs] that pins the
+    canonical, strictly-sorted form among its conjuncts — that is an
+    attribute of [Fs.wf_fs], not an assumption made here — and without it a single
     directory could arrive under two unequal-but-equivalent [Fs.Fs]
     values, letting [NoDup] undercount duplicates that are really the
     same rejected input.
@@ -162,10 +162,13 @@
     is chosen by the submission, not by this file; [weight_bound_mono]
     is what makes every [b'] at least as large as a proven [b]
     provable too, which is the fact that lets a checker trust a printed
-    [b] as an upper-bound claim rather than an exact one. *)
+    [b] as an upper-bound claim rather than an exact one.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State StackLayout Run.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence MustExit FinInput Classifier.
 Import ListNotations.
 Open Scope bv_scope.
@@ -460,4 +463,104 @@ Proof.
   apply (proj2 (Qle_bool_iff _ _)) in Hbound.
   vm_compute in Hbound.
   discriminate.
+Qed.
+
+(* =========================================================================
+   The maybe bound
+   ========================================================================= *)
+
+(** The maybe bound: [C]'s maybe inputs never weigh more than [b] times
+    the declared total [M], for every list whose cores are
+    duplicate-free.  It is [weight_bound_T_fo] with
+    [Classifier.maybe_fo] in place of [Classifier.rejects_fo]: it counts
+    each valid input that does not get yes at every start state and does
+    not get no at every start state.  Jason's decision on ZLIB-1
+    (2026-11-03) and BET-618.
+
+    The existing bound [weight_bound_T_fo] does not change.  It counts
+    "no" and "maybe" together, as Jason said, and
+    [maybe_bound_T_fo_of_weight_bound_T_fo] carries a proof of it to
+    this bound.
+
+    An image with no valid entry has an empty maybe set
+    ([Classifier.maybe_fo]), so it satisfies this bound at [0] for every
+    [w] and [M].  This is the route [weight_bound_T] names, and
+    [Equivalence.IMAGE_WF] in the consuming checker closes it.
+    [Checks.GatedSize.gate_exit2_refutes_maybe_bound_zero] refutes the
+    bound at [0] for an image that exits 2. *)
+Definition maybe_bound_T_fo (C : Image) (w : FinProcInput -> Q) (M b : Q) : Prop :=
+  forall l : list FinProcInput,
+    List.NoDup (List.map fin_core l) ->
+    (forall f, In f l -> maybe_fo C f) ->
+    (sum_weights w l <= b * M)%Q.
+
+(** [maybe_bound_T_fo] over the maybe inputs that declare the capability
+    word, in the shape of [Classifier.maybe_empty_T_fo_hwcap_rv64gc]. *)
+Definition maybe_bound_T_fo_hwcap_rv64gc (C : Image) (w : FinProcInput -> Q) (M b : Q) : Prop :=
+  forall l : list FinProcInput,
+    List.NoDup (List.map fin_core l) ->
+    (forall f, In f l -> maybe_fo C f /\ in_hwcap (to_proc_input f) = hwcap_rv64gc) ->
+    (sum_weights w l <= b * M)%Q.
+
+Definition maybe_bound_T_fo_hwcap_rv64gcv (C : Image) (w : FinProcInput -> Q) (M b : Q) : Prop :=
+  forall l : list FinProcInput,
+    List.NoDup (List.map fin_core l) ->
+    (forall f, In f l -> maybe_fo C f /\ in_hwcap (to_proc_input f) = hwcap_rv64gcv) ->
+    (sum_weights w l <= b * M)%Q.
+
+(** An empty maybe set gives a maybe bound of [0], for every weight and
+    every total: the only list whose entries are all maybe inputs is the
+    empty list, and it sums to [0].  This is how a proof of the exact
+    statement reaches the maybe bound, through
+    [Classifier.maybe_empty_T_fo_of_decides_fo]. *)
+Lemma maybe_bound_T_fo_zero_of_maybe_empty : forall C w M,
+  maybe_empty_T_fo C -> maybe_bound_T_fo C w M 0.
+Proof.
+  intros C w M Hempty l _ Hall.
+  destruct l as [| f l].
+  - rewrite sum_weights_nil. rewrite Qmult_0_l. apply Qle_refl.
+  - exfalso. exact (Hempty f (Hall f (or_introl eq_refl))).
+Qed.
+
+Lemma maybe_bound_T_fo_hwcap_rv64gc_zero_of_maybe_empty : forall C w M,
+  maybe_empty_T_fo_hwcap_rv64gc C -> maybe_bound_T_fo_hwcap_rv64gc C w M 0.
+Proof.
+  intros C w M Hempty l _ Hall.
+  destruct l as [| f l].
+  - rewrite sum_weights_nil. rewrite Qmult_0_l. apply Qle_refl.
+  - exfalso. exact (Hempty f (proj2 (Hall f (or_introl eq_refl)))
+                      (proj1 (Hall f (or_introl eq_refl)))).
+Qed.
+
+Lemma maybe_bound_T_fo_hwcap_rv64gcv_zero_of_maybe_empty : forall C w M,
+  maybe_empty_T_fo_hwcap_rv64gcv C -> maybe_bound_T_fo_hwcap_rv64gcv C w M 0.
+Proof.
+  intros C w M Hempty l _ Hall.
+  destruct l as [| f l].
+  - rewrite sum_weights_nil. rewrite Qmult_0_l. apply Qle_refl.
+  - exfalso. exact (Hempty f (proj2 (Hall f (or_introl eq_refl)))
+                      (proj1 (Hall f (or_introl eq_refl)))).
+Qed.
+
+(** A maybe bound proved at [b] is a maybe bound at any larger [b'],
+    given [M] nonnegative, for the reason [weight_bound_mono] gives. *)
+Lemma maybe_bound_fo_mono : forall C w M b b',
+  (0 <= M)%Q -> (b <= b')%Q ->
+  maybe_bound_T_fo C w M b -> maybe_bound_T_fo C w M b'.
+Proof.
+  intros C w M b b' HM Hbb' Hbound l Hnd Hall.
+  eapply Qle_trans.
+  - exact (Hbound l Hnd Hall).
+  - apply Qmult_le_compat_r; assumption.
+Qed.
+
+(** The existing bound gives the maybe bound at the same [b]: the maybe
+    set is inside the set [weight_bound_T_fo] counts
+    ([Classifier.maybe_fo_rejects_fo]). *)
+Lemma maybe_bound_T_fo_of_weight_bound_T_fo : forall C w M b,
+  weight_bound_T_fo C w M b -> maybe_bound_T_fo C w M b.
+Proof.
+  intros C w M b H l Hnd Hall.
+  apply H; [exact Hnd |].
+  intros f Hin. exact (maybe_fo_rejects_fo C f (Hall f Hin)).
 Qed.

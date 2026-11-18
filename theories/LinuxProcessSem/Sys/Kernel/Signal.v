@@ -520,7 +520,7 @@ Definition sigpipe_hidden_pending_possible (m : Model) : bool :=
     5. The [oact] copy-out of the action from step 3:
        [sigpipe_oact_write].
 
-    So the three shapes curl's census shows are all answered: [act] and
+    So every shape with a non-NULL pointer is answered: [act] and
     [oact] both non-NULL, [act] alone, and [oact] alone (a read of the
     current action, which installs nothing).  Both NULL is 0, as before.
 
@@ -552,10 +552,9 @@ Definition sigpipe_hidden_pending_possible (m : Model) : bool :=
     collapse rests on: a hidden pending SIGPIPE can exist only while the
     handler is SIG_IGN and the signal is blocked; an unblock discards it
     ([get_signal]'s SIG_IGN [continue]); a SIG_IGN install flushes it.
-    The cost is narrow: with signal 13 open in the mask, curl's
-    ignore-then-restore is answered whole.  (The LPS model owner chose
-    this over making [raise_sigpipe] queue the signal; decision relayed
-    on Envoy for OSSV-287, 2026-10-31.)
+    The cost is narrow: with signal 13 open in the mask, a program that
+    ignores SIGPIPE and later restores SIG_DFL is answered whole.  The
+    alternative, making [raise_sigpipe] queue the signal, was not taken.
 
     A RUN THAT INSTALLS NOTHING BEHAVES EXACTLY AS IT DID BEFORE THIS ARM.
     The argument is a count of writers, and these commands check it:
@@ -1771,8 +1770,11 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
       machine.
     - [sig] = 0, the permission-and-existence probe.  [valid_signal(0)]
       is true and delivery is skipped under [if (!error && sig)], so the
-      answer is whatever [security_task_kill] says, which is an LSM
-      question rather than a kernel one.
+      answer is [check_kill_permission]'s.  Its last step,
+      [security_task_kill], is the stub that answers 0 in the
+      configuration of record, which builds no LSM (SCOPE.md), so this
+      decline costs coverage rather than standing for an answer the
+      model cannot know.
     - any other signal in 1..64.  The model has a disposition for
       SIGABRT and for no other signal: [rt_sigaction_spec] answers an
       install only for SIGINT and SIGTERM, and for SIGABRT only with the
@@ -1812,13 +1814,14 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
     list, so the list's second half still holds for the two signals on
     it.
 
-    ** THE LSM GAP
+    ** NO LSM ANSWERS FIRST
 
-    [check_kill_permission] ends with [security_task_kill], which an
-    enabled LSM can answer -EPERM to even for a signal to oneself.  This
-    spec answers rather than declining, so it does not admit that
-    -EPERM.  That is a known gap, of the same shape as [getdents64]'s
-    LSM and fanotify denial gap. *)
+    [check_kill_permission] ends with [security_task_kill], and the
+    configuration of record builds no LSM (SCOPE.md), so that hook is
+    the stub that answers 0 and no supported kernel answers this call
+    -EPERM.  The spec answers rather than declining, and refusing an
+    -EPERM there is exact, as [getdents64]'s refusal of -EACCES and
+    -EPERM is. *)
 
 (** [pid] and [tgid] arrive as [pid_t], an [int]: [Syscall.pid32] has
     already truncated to 32 bits, so "positive" is 1..2^31-1 and every

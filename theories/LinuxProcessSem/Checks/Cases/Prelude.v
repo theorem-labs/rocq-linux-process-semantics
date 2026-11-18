@@ -6,7 +6,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -20,6 +23,20 @@ Open Scope bv_scope.
 (** [vm_compute]-normalized results can differ from literal expected
     values only in the (opaque, proof-irrelevant) [BvWf] proofs inside
     [bv] leaves; descend to those leaves and compare unsigned values. *)
+(** SPLIT THE CONJUNCTION AND NOTHING ELSE.  [repeat split] also applies
+    to an EQUALITY -- [eq] is a one-constructor inductive, so [split]
+    offers [eq_refl] and the unifier then converts two whole models
+    WITHOUT the VM, which is minutes where [check_eq] is
+    milliseconds.  [apply conj] is [and]'s constructor and nothing
+    else's, so it stops at the answers and leaves them to [check_eq]. *)
+Ltac split_conj := repeat apply conj.
+
+(** The same for a [Forall] over a literal list, and for the same
+    reason: [repeat constructor] goes on to offer [eq_refl] on each
+    element's answer.  These two constructors are [Forall]'s and
+    nothing else's. *)
+Ltac split_forall := repeat first [apply Forall_nil | apply Forall_cons].
+
 Ltac check_eq :=
   vm_compute;
   repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal].
@@ -140,21 +157,97 @@ Definition zero_draw : EntryDraw :=
 Definition demo_groups : list word :=
   [Z_to_bv 64 27; Z_to_bv 64 1002; Z_to_bv 64 4000].
 
+(** THE FIXTURE INPUT.  It takes the image LITERALLY -- it is built with
+    [State.mkProcInput_full], not the thirteen-place
+    [State.mkProcInput], so nothing is migrated and a worked example
+    still denotes the map it is written with.  The thirteen-place form
+    is for consumers holding pre-namespace literals; these fixtures are
+    ours and are written against the namespace directly. *)
 Definition demo_input (fs0 : Fs.Fs) (stdin0 : InputStream) : ProcInput :=
-  mkProcInput [] [] fs0 stdin0 demo_uid demo_gid demo_groups net_silent
-              default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48.
-
-(** The same, with a DECLARED PRIVATE /tmp beside the image
-    ([State.in_tmp]): the entries are keyed by their one component, and
-    [State.init_model] seeds them under "/tmp/" ([State.fs_seed_tmp]).
-    [demo_input] is this one with the empty declaration, which
-    [State.fs_seed_tmp_nil] makes the image itself. *)
-Definition demo_input_tmp (fs0 tmp0 : Fs.Fs) (stdin0 : InputStream)
-    : ProcInput :=
-  mkProcInput_full [] [] fs0 stdin0 demo_uid demo_gid demo_groups
+  mkProcInput_full [] [] fs0 Fs.default_cwd stdin0 demo_uid demo_gid demo_groups
                    net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false
-                   Sv48 default_urandom tmp0 default_kernel default_execfn
+                   Sv48 default_urandom default_kernel default_execfn
                    true true false.
+
+(** THE KEY A PLAIN NAME NAMES in a fixture, now that the arms resolve.
+    A worked example that writes [wk [102]] for "f" is saying "the file
+    the program opens as `f`", which is the key [Fs.resolve] reaches
+    from the fixture's working directory; before R22 the name and the
+    key were the same byte string and the pins wrote the name. *)
+Definition wk (name : Fs.path) : Fs.path :=
+  Fs.child_key Fs.default_cwd name.
+
+(** WHAT A WORKED EXAMPLE WRITES AT A NAME.  A file is given by its
+    bytes and becomes an inode of its own ([Fs.fs_create_file]), numbered
+    in the order the fixture lists its files: the first file of a
+    fixture image is inode 1, the next 2, and so on, because the
+    standard root has no inode for [Fs.fs_fresh_ino] to count past.  A
+    descriptor on the first file is therefore [FdFile 1 _]. *)
+(** A symbolic link is given by its body ([SLink]), the bytes its
+    [->get_link] hands back. *)
+Inductive Seed := SFile (d : list byte) | SDir | SDev (k : Fs.DevKind) | SLink (b : Fs.path).
+
+Definition seed_put (fs : Fs.Fs) (k : Fs.path) (s : Seed) : Fs.Fs :=
+  match s with
+  | SFile d => Fs.fs_create_file fs k d
+  | SDir => Fs.fs_set fs k Fs.EDir
+  | SDev d => Fs.fs_set fs k (Fs.EDev d)
+  | SLink b => Fs.fs_set fs k (Fs.ELink b)
+  end.
+
+(** A FIXTURE IMAGE that is a NAMESPACE: the standard root and the chain
+    down to the working directory, with each plain name in [l] placed at
+    the key it resolves to.  Every fixture whose program opens a name
+    and expects to find it needs this rather than a bare list, because
+    a bare plain name is not a key and [Fs.resolve] will not reach it. *)
+Definition demo_fs (l : list (Fs.path * Seed)) : Fs.Fs :=
+  fold_left (fun fs ke => seed_put fs (wk (fst ke)) (snd ke)) l
+    (Fs.standard_root Fs.default_cwd).
+
+(** The same image for a fixture that builds its [State.Model] with
+    [State.mkModel] rather than through [demo_input]: [mkModel] takes the
+    map directly, so the fixture still needs the standard root and the
+    chain to the working directory under it, and still needs each plain
+    name at the key it resolves to. *)
+Definition demo_fs_raw (l : list (Fs.path * Seed)) : Fs.Fs := demo_fs l.
+
+(** THE BYTES OF THE FILE AT KEY [k], read through the inode the name
+    holds, or [None] when [k] names no regular file.  A worked example
+    states what a run left in a file with this, so the statement does not
+    depend on which number the file's inode was given. *)
+Definition file_at (fs : Fs.Fs) (k : Fs.path) : option (list byte) :=
+  match Fs.fs_lookup fs k with
+  | Some (Fs.EFile i) => Some (Fs.fs_ino_data fs i)
+  | _ => None
+  end.
+
+(** AN IMAGE OF FILES ONLY, for a fixture whose syscalls never resolve
+    a name (it builds its descriptors directly): each file of [l] at its
+    key, numbered 1, 2, ... in the order [l] lists them, over the empty
+    image.  A descriptor on the [n]th file holds inode [n]. *)
+Definition raw_files (l : list (Fs.path * list byte)) : Fs.Fs :=
+  fold_left (fun fs kd => Fs.fs_create_file fs (fst kd) (snd kd)) l Fs.fs_empty.
+
+(** "/tmp/" as the pre-namespace arms spell it.  The run's /tmp is no
+    longer declared separately ([State.in_tmp] is gone), so a fixture
+    that wants entries there puts them in the image at their absolute
+    keys; [demo_seed_tmp] is the helper that does it, and it keeps the
+    old seeding's one filter -- a component holding a NUL names nothing
+    a program could open, and is dropped. *)
+Definition demo_tmp_prefix : Fs.path :=
+  [Z_to_bv 8 47; Z_to_bv 8 116; Z_to_bv 8 109; Z_to_bv 8 112; Z_to_bv 8 47].
+
+Definition demo_seed_tmp (fs0 : Fs.Fs) (t : list (Fs.path * Seed)) : Fs.Fs :=
+  fold_left
+    (fun acc e =>
+       if negb (existsb (fun b => bv_eqb b (Z_to_bv 8 0)) (fst e))
+       then seed_put acc (demo_tmp_prefix ++ fst e) (snd e)
+       else acc)
+    t fs0.
+
+Definition demo_input_tmp (fs0 : Fs.Fs) (tmp0 : list (Fs.path * Seed))
+    (stdin0 : InputStream) : ProcInput :=
+  demo_input (demo_seed_tmp fs0 tmp0) stdin0.
 
 (** The launch facts the entry-block checks below read: the run's
     [mm->mmap_base] and the one-argument input whose block they lay
@@ -246,7 +339,7 @@ Proof. split; check_eq. Qed.
 
 Example unmodeled_syscall_is_error :
   check_syscall (mkInput 166 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -255,14 +348,14 @@ Proof. vm_compute. reflexivity. Qed.
 
 Definition one_map_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 (** An unaligned addr or len = 0 is -EINVAL, as on Linux. *)
 
 Definition near_ceiling_sum_model : Model :=
   with_vmmaps
     (mkVmMaps [] [(Z_to_bv 64 (two_pow_64 - 8192), 4096)] 0 0 demo_limit)
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 (** Reason 3.  A live mapping at [addr + n = 2^64 - 4096], one page
     short of the word's end: [munmap_near_max_is_einval] shows the
@@ -272,7 +365,7 @@ Definition near_ceiling_sum_model : Model :=
     Linux hands back sits far below [State.alloc_top]), so only a
     hand-built model can exercise the gate at its own boundary. *)
 
-Definition noaccess_base : Model := init_model [] 0 0 demo_sp 16384 (demo_input [] IEof).
+Definition noaccess_base : Model := init_model [] 0 0 demo_sp 16384 (demo_input Fs.fs_empty IEof).
 
 Definition noaccess_three_pages : Model :=
   with_vmmaps
@@ -292,18 +385,18 @@ Definition noaccess_unowned : Model :=
 
 Definition noaccess_image_overlap : Model :=
   with_vmmaps (mkVmMapsFull [(4096, 4096)] [(4096, 4096)] [] 0 0 16384 0 demo_sp)
-              (init_model [(4096, 4096)] 0 0 demo_sp 16384 (demo_input [] IEof)).
+              (init_model [(4096, 4096)] 0 0 demo_sp 16384 (demo_input Fs.fs_empty IEof)).
 
 Definition tight_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 8192)
-              (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Definition ceiling_room_model : Model :=
-  with_vmmaps (mkVmMaps [] [] 0 0 demo_limit) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+  with_vmmaps (mkVmMaps [] [] 0 0 demo_limit) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 Definition region_live_model : Model :=
   with_vmmaps (mkVmMaps [] [(131072, 4096)] 0 0 demo_limit)
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 (** [region_free], independent of the ceiling and the budget (both
     generous here: [demo_limit], and the sole live map is 4096 bytes
@@ -314,11 +407,14 @@ Definition region_live_model : Model :=
 Example fd_truncation_high_low_halves_all_ebadf :
   Forall (fun fd =>
     check_syscall (mkInput 64 [fd; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
-      (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [])
+      (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+    = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [])
     [Z_to_bv 64 (2 ^ 31); Z_to_bv 64 (2 ^ 32 - 1); Z_to_bv 64 (2 ^ 64 - 1);
      Z_to_bv 64 (2 ^ 63 + 2 ^ 32 - 1)].
-Proof. repeat constructor; check_eq. Qed.
+Proof.
+  (* the skeleton only -- see [split_forall] for why *)
+  split_forall; check_eq.
+Qed.
 
 (** ...while a LIVE low half is reached however enormous the register:
     fd = 2^63 is stdin, so a write to it is -EBADF for the RIGHT reason
@@ -329,12 +425,12 @@ Proof. repeat constructor; check_eq. Qed.
 Example fd_truncation_live_low_half_under_bit63 :
   check_syscall (mkInput 64 [Z_to_bv 64 (2 ^ 63); 4096; 2; 0; 0; 0]
                    mem_ab (fun _ => None))
-    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 63 [Z_to_bv 64 (2 ^ 63); 4096; 16; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [].
 Proof. split; check_eq. Qed.
 
 (** The value that comparison runs against — pinned as a numeral, so a
@@ -351,8 +447,8 @@ Proof. check_eq. Qed.
     relative-to-a-dirfd open, and still fails closed. *)
 
 Definition wpast_model : Model :=
-  mkModel [(3, FdFileW [102] 4)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105])] None None None.
+  mkModel [(3, FdFileW 1 4)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (demo_fs [([102], SFile [104; 105])]) None None None.
 
 (** write(3, buf, 0) at that offset transfers nothing and leaves both the
     file and the fd offset alone, as on Linux.  [Fs.file_write] does not
@@ -376,7 +472,7 @@ Definition rlim_src_at (soft hard : byte) : word -> option byte :=
            else if bv_ltu a 8208 then Some 0
            else None.
 
-Definition rlim_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition rlim_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** A NONZERO soft limit on purpose: it is what lets the set below
     actually change the record, so [prlimit64_read_after_set] cannot pass
@@ -525,7 +621,7 @@ Qed.
 Definition demo_block_top : word := Z_to_bv 64 sp_window_hi.
 Definition demo_block_sp : word := Z_to_bv 64 0x7ffffffffdf0.
 Definition demo_la : LaunchAuxv :=
-  launch_auxv (demo_input [] IEof) demo_block_sp demo_mbase.
+  launch_auxv (demo_input Fs.fs_empty IEof) demo_block_sp demo_mbase.
 
 Definition block_draw : EntryDraw :=
   mkDraw demo_random demo_block_top vdso_keeps_all.

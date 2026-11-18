@@ -46,7 +46,10 @@
     [Checks.Examples.exits_c_must_exit_at] as the evaluator that
     discharges the run tree.  Only the input record is new, and only
     because the gate statements are indexed by
-    [FinInput.FinProcInput]. *)
+    [FinInput.FinProcInput].
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -83,8 +86,9 @@ Proof. exact demo_input_valid. Qed.
     pins that the two records agree by computation rather than by the
     reader's eye. *)
 Definition efi_demo_fin : FinProcInput :=
-  mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+  mkFinProcInput [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                 Fs.default_cwd [] demo_uid demo_gid demo_groups
+                 net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 []
                  default_kernel default_execfn true true false.
 
 Lemma efi_demo_to_proc_input : to_proc_input efi_demo_fin = efi_demo_input.

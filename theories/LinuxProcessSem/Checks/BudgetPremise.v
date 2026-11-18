@@ -64,13 +64,17 @@
 
     As in [Checks.Omni]: every [vm_compute] below closes a SCALAR — a
     boolean, an access list, a checker verdict — and the run-level image
-    is stepped with its memory abstracted ([Checks.Omni.with_mem]). *)
+    is stepped with its memory abstracted ([Checks.Omni.with_mem]).
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run StackLayout MemImageType RiscvSemantics OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
   ExecutableSpecs Examples SpuriousCfg Omni AbortWitness.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require NoaccessOwned.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import
   Equivalence MustExit Classifier OmniEquivalence.
 Import ListNotations.
@@ -230,7 +234,7 @@ Definition fixed_rw_model (lim : Z) : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(65536, 4096)] [(65536, 4096)] 0 0 lim (Z_to_bv 64 0)
        (Z_to_bv 64 sp_window_lo))
-    (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp lim (demo_input Fs.fs_empty IEof)).
 
 Definition mmap_fixed_rw_in : SyscallInput :=
   mkInput 222 [65536; 4096; 3; 50; mmap_fd_none; 0] (fun _ => None) (fun _ => None).
@@ -274,7 +278,7 @@ Proof. vm_compute. reflexivity. Qed.
     ledger. *)
 Definition sanitizer_budget_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [] 0 0 lim)
-    (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp lim (demo_input Fs.fs_empty IEof)).
 
 Example mmap_sanitizer_budget_plus_page_is_budget_refused :
   alloc_budget_refused_b
@@ -431,7 +435,7 @@ Qed.
     request the budget sees; a shrink releases. *)
 Definition mremap_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 4096)] 0 0 lim)
-              (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp lim (demo_input Fs.fs_empty IEof)).
 
 Definition mremap_in (old_size new_size : word) : SyscallInput :=
   mkInput 216 [65536; old_size; new_size; 1; 0; 0] (fun _ => None) (fun _ => None).
@@ -450,7 +454,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Definition mremap_two_page_model (lim : Z) : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 lim)
-              (init_model [] 0 0 demo_sp lim (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp lim (demo_input Fs.fs_empty IEof)).
 
 Example mremap_shrink_is_not_budget_refused :
   alloc_budget_refused_b (mremap_in 8192 4096) (mremap_two_page_model 8192) = false.
@@ -500,7 +504,7 @@ Definition mremap_budget_refused_two_gate_b (old old_size new_size flags : word)
 Definition ov_model : Model :=
   with_vm_backing [(Z_to_bv 64 0x11000, Z_to_bv 64 8192)] [Z_to_bv 64 0x11000]
     (with_vmmaps (mkVmMaps [] [(0x10000, 4096); (0x11000, 8192)] 0 0 16384)
-      (init_model [] 0 0 demo_sp 16384 (demo_input [] IEof))).
+      (init_model [] 0 0 demo_sp 16384 (demo_input Fs.fs_empty IEof))).
 
 Example ov_pre_state_within_budget : vm_backing_within_limit ov_model = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -548,7 +552,7 @@ Definition un_model : Model :=
   with_vmmaps
     (mkVmMapsFull [] [(0x10000, 4096); (0x11000, 8192)] [(0x11000, 8192)]
        0 0 8192 (Z_to_bv 64 0) (Z_to_bv 64 sp_window_lo))
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example un_pre_state_within_budget : vm_backing_within_limit un_model = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -605,12 +609,6 @@ Proof.
   change (bv_modulus 64) with two_pow_64 in Hr.
   apply mremap_u64. split; [apply page_round_up_Z_nonneg; lia | exact H].
 Qed.
-
-(** The limit is carried across the resize unchanged. *)
-Lemma mremap_model_next_limit : forall m old old_n dst new_n,
-  vm_limit (m_vmmaps (mremap_model_next m old old_n dst new_n))
-  = vm_limit (m_vmmaps m).
-Proof. reflexivity. Qed.
 
 (** THE RULE, abstract.  On a grow past the mark's own argument gates,
     the mark reads the gate of THE ONE RESOLUTION the room test
@@ -823,7 +821,7 @@ Proof.
   apply Z.eqb_eq in Hdalign. apply Z.leb_le in Hdtop.
   unfold mremap_move_budget_b in Hmv.
   unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
-  rewrite mremap_model_next_limit in Hgate.
+  rewrite NoaccessOwned.mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [rewrite Hgate in Hmv; discriminate Hmv | exact Hdalign
     | rewrite Hnw; exact Hnmod | rewrite Hnw; lia | rewrite Hnw; lia
@@ -922,7 +920,7 @@ Proof.
   apply negb_true_iff.
   unfold mremap_move_budget_b.
   unfold mremap_final_budget_b, vm_backing_within_limit in Hgate.
-  rewrite mremap_model_next_limit in Hgate.
+  rewrite NoaccessOwned.mremap_model_next_limit in Hgate.
   rewrite (mremap_move_charge_at_fresh m old old_n dst new_n) in Hgate;
     [exact Hgate | exact Hdalign | rewrite Hnw; exact Hnmod
     | rewrite Hnw; lia | rewrite Hnw; lia
@@ -930,103 +928,6 @@ Proof.
     | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
       exact (region_free_app_r _ _ _ _ Hdfree)
     | exact Hnoacc | exact Hlazy | exact Hpages].
-Qed.
-
-(** The protected half of "fresh", from the ledger invariant alone.
-    [Mremap.mremap_fresh_avoids_noaccess] proves the same conclusion
-    but takes the whole of [Mremap.mremap_fresh_b], budget conjunct
-    included; its page-granularity argument reads only the alignment of
-    [dst], the shape of [new_n] and freeness against
-    [vm_reserved ++ vm_maps].  This is that argument on exactly those
-    hypotheses, so a consumer can derive the [vm_noaccess] hypothesis of
-    [Mremap.mremap_move_charge_at_fresh] BEFORE it knows the gate
-    passes. *)
-Lemma fresh_dst_avoids_noaccess : forall h dst new_n,
-  noaccess_pages_owned h ->
-  (0 < bv_unsigned new_n)%Z ->
-  (bv_unsigned new_n mod page_size = 0)%Z ->
-  (bv_unsigned dst mod page_size = 0)%Z ->
-  region_free (vm_reserved h ++ vm_maps h) dst new_n = true ->
-  region_free (vm_noaccess h) dst new_n = true.
-Proof.
-  intros h dst new_n Hown Hpos Hmod Halign Hrf.
-  assert (Hhi : ((bv_unsigned dst + bv_unsigned new_n) mod page_size = 0)%Z).
-  { rewrite Z.add_mod by (unfold page_size; lia).
-    rewrite Halign, Hmod. reflexivity. }
-  apply region_free_intro. intros a n Hin.
-  destruct (Hown a n Hin) as [Hn Hpage].
-  destruct (iv_overlap dst new_n a n) eqn:Hov; [exfalso|reflexivity].
-  unfold iv_overlap in Hov.
-  apply andb_true_iff in Hov as [Hov1 Hov2].
-  apply Z.ltb_lt in Hov1. apply Z.ltb_lt in Hov2.
-  remember (Z.max (bv_unsigned dst) (bv_unsigned a)) as x eqn:Hx.
-  destruct (Hpage x ltac:(lia)) as [b [s [Hinm [Hb1 Hb2]]]].
-  destruct (page_round_down_Z_within (bv_unsigned dst)
-              (bv_unsigned dst + bv_unsigned new_n) x Halign Hhi ltac:(lia))
-    as [Hf1 Hf2].
-  pose proof (region_free_In _ _ _ b s Hrf
-                (in_or_app _ _ _ (or_intror Hinm))) as Hno.
-  unfold iv_overlap in Hno.
-  apply andb_false_iff in Hno as [Hc|Hc]; apply Z.ltb_ge in Hc; lia.
-Qed.
-
-(** THE MOVE'S CHARGE ADMITS EVERY FRESH DESTINATION: where the move's
-    budget gate [Mremap.mremap_move_budget_b] passes, the gate
-    [Mremap.mremap_final_budget_b] that [Mremap.mremap_fresh_b] reads
-    passes at every destination that is page aligned, ends at or below
-    [alloc_top] and is free against [vm_reserved ++ vm_maps] — the
-    non-budget conjuncts of [Mremap.mremap_fresh_b] that bear on the
-    charge.  The ledger hypotheses are [State.noaccess_pages_owned], the
-    fit of every live mapping (from which [Mremap.maps_subtract_fits]
-    gives that lemma the fit of the ledger with the source range cut),
-    and the two lazy-ledger identities
-    [Mremap.mremap_move_charge_at_fresh] takes;
-    the [vm_noaccess] hypothesis of that lemma comes from
-    [fresh_dst_avoids_noaccess].  The converse direction of
-    [mremap_budget_refused_refuses_move].  The two side conditions on
-    [new_n] are what [Mremap.mremap_spec] supplies at the call site: it
-    passes [new_n = Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))]
-    under [page_align_is0_b new_size = false]. *)
-Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
-  (bv_unsigned dst mod page_size = 0)%Z ->
-  (bv_unsigned new_n mod page_size = 0)%Z ->
-  (0 < bv_unsigned new_n)%Z ->
-  (bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
-  region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
-  = true ->
-  noaccess_pages_owned (m_vmmaps m) ->
-  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
-     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
-  maps_subtract
-    (maps_subtract (m_vm_lazy m) (bv_unsigned old)
-       (bv_unsigned old + bv_unsigned old_n))
-    (bv_unsigned dst) (bv_unsigned dst + bv_unsigned new_n)
-  = maps_subtract (m_vm_lazy m) (bv_unsigned old)
-      (bv_unsigned old + bv_unsigned old_n) ->
-  List.filter (page_outside_range (bv_unsigned dst)
-                 (bv_unsigned dst + bv_unsigned new_n))
-    (List.filter (page_outside_range (bv_unsigned old)
-                    (bv_unsigned old + bv_unsigned old_n))
-       (m_vm_materialized m))
-  = List.filter (page_outside_range (bv_unsigned old)
-                   (bv_unsigned old + bv_unsigned old_n))
-      (m_vm_materialized m) ->
-  mremap_move_budget_b m old old_n new_n = true ->
-  mremap_final_budget_b m old old_n dst new_n = true.
-Proof.
-  intros m old old_n dst new_n Hdalign Hnmod Hpos Hdtop Hdfree Hown Hfit
-    Hlazy Hpages Hmv.
-  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
-  unfold mremap_move_budget_b in Hmv.
-  unfold mremap_final_budget_b, vm_backing_within_limit.
-  rewrite mremap_model_next_limit.
-  rewrite (mremap_move_charge_at_fresh m old old_n dst new_n);
-    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia
-    | exact (maps_subtract_fits _ _ _ Hfit)
-    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
-      exact (region_free_app_r _ _ _ _ Hdfree)
-    | exact (fresh_dst_avoids_noaccess _ _ _ Hown Hpos Hnmod Hdalign Hdfree)
-    | exact Hlazy | exact Hpages].
 Qed.
 
 
@@ -1187,7 +1088,7 @@ Definition touch_ms : machine_state := {|
     mark, not the allocator. *)
 Definition touch_model (lim : Z) : Model :=
   with_vm_backing [(Z_to_bv 64 touch_page, Z_to_bv 64 page_size)] []
-    (init_model (segments_reserved touch_segments) 0 0 demo_sp lim (demo_input [] IEof)).
+    (init_model (segments_reserved touch_segments) 0 0 demo_sp lim (demo_input Fs.fs_empty IEof)).
 
 (** The interpreter reports the store as a successful eight-byte access
     of the page — a scalar, so [vm_compute] never builds the successor
@@ -1278,7 +1179,7 @@ Definition wtouch_ms : machine_state := {|
 
 Definition wtouch_model : Model :=
   with_vm_backing [(0, 0x2000)] [0]
-    (init_model [] 0 0 demo_sp 0x1000 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 0x1000 (demo_input Fs.fs_empty IEof)).
 
 Definition wtouch_eff : SyscallEffect :=
   mkEffectU 1 [] [] [] [] [(Z_to_bv 64 0x1000, 1%nat)].
@@ -1671,7 +1572,7 @@ Lemma exit0_obs_cfg : forall cfg sp brk0 mbase rnd lim inp tr,
   obs_trace_cfg (run_segments exit0_segments inp sp mbase) cfg
     (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
        rnd lim inp) tr
-  <-> is_prefix tr [ExitEv verdict_accept (in_fs inp)].
+  <-> is_prefix tr [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))].
 Proof.
   intros cfg sp brk0 mbase rnd lim inp tr. split.
   - intros H.
@@ -1698,7 +1599,7 @@ Proof.
                       sp brk0 mbase rnd lim inp).
         split; [apply star_cfg_refl | exact I].
       * destruct Hp as [-> Hp']. destruct tr' as [| e' tr'']; [| destruct Hp'].
-        exists [ExitEv verdict_accept (in_fs inp)], c'.
+        exists [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))], c'.
         split; [exact Hstar | apply is_prefix_refl].
     + cbn in Hfull. destruct Hfull as [_ Hfull].
       destruct tr0'; cbn in Hfull; destruct Hfull.

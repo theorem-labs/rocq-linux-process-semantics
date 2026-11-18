@@ -2462,7 +2462,7 @@ Definition nubE (l : list expr) : list expr := nubE_acc l [].
 Definition conc_limit : Z := 4096.
 
 (** PERF: [evalS s z e] can only succeed when every variable / blob of [e] lies inside an
-    occurrence of the pivot [s] ([AxSymExec3Sound.evalS_def_None]); deciding that first skips the
+    occurrence of the pivot [s] ([AX2.evalS_def_None]); deciding that first skips the
     interval query for hopeless pivots (most sub-expressions of an address). *)
 Fixpoint evalS_def (s e : expr) : bool :=
   if expr_eqb e s then true else
