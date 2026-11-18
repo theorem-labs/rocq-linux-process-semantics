@@ -329,16 +329,23 @@ def label_comments(api):
     return [(c[1], c[2], a[len("body="):]) for c in writes(api) for a in c if a.startswith("body=<!-- review-label -->")]
 
 
-def attempt_job(job, failed=None, name=None, steps=None):
+# The steps that run only in a case of their own, which GitHub lists as skipped in each other run: the comment job's
+# mark of an answer that another run answered first.
+ONLY_WHEN = ("Leave the answer to a later run",)
+
+
+def attempt_job(job, failed=None, name=None, steps=None, taken=()):
     """A job of a run attempt as GitHub's API lists it, with its steps: the workflow's own steps of job, or steps. Each
     step before failed passed, failed failed and stopped the job, and each one after it was skipped; with no failed
-    step, every step passed. name is the job's name in the run (the screen job's holds its outsider)."""
+    step, every step passed. A step of ONLY_WHEN that taken does not name was skipped. name is the job's name in the
+    run (the screen job's holds its outsider)."""
     names = steps if steps is not None else [s.get("name") or "Run " + s["uses"] for s in JOBS[job]["steps"]]
     assert failed is None or failed in names, (job, failed)
     stop = len(names) if failed is None else names.index(failed)
     return {"name": name or job, "status": "completed", "conclusion": "success" if failed is None else "failure",
             "steps": [{"name": n, "status": "completed",
-                       "conclusion": "success" if i < stop else "failure" if i == stop else "skipped"}
+                       "conclusion": ("skipped" if n in ONLY_WHEN and n not in taken else "success") if i < stop
+                       else "failure" if i == stop else "skipped"}
                       for i, n in enumerate(names)]}
 
 
@@ -4336,8 +4343,9 @@ class FreshReaderTest(ReaderRunner):
 
 class SoundnessTest(ReaderRunner):
     """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that can change a Rocq proof (a
-    .v file, a dune or dune-project file, or a file that a dune file of the head names, wherever it is, however many
-    files the pull request has) gives the person verdict on soundness, whatever the model gave. Its comment gets the
+    .v file, a dune, dune-project or opam file, a file that a dune file of the head or of main names, or a file of an
+    OCaml module that a dune stanza builds, wherever it is, however many files the pull request has) gives the person
+    verdict on soundness, whatever the model gave. Its comment gets the
     fixed section after the trimmed text, where the reader never sees it: the three Rocq issues, the changed files of
     the build, and each line of the changed .v files at the head that uses the VM, the native compiler or a primitive
     array, as a fact and never as a fail. The gather job's own step reads the pull request from git and its files from
@@ -4824,20 +4832,111 @@ class SoundnessScanTest(unittest.TestCase):
         """proofs on this repository's own head: each of its dune files parses, so that no pull request gets the person
         verdict because the job could not read one. The files that its rules read or write count, wherever they are:
         the generators under tools/, the logs of the placement replays, the .hex chunks of an example and of the
-        bridge. Markdown files, the opam files and tools/check_one.py, which no dune file names, do not."""
+        bridge, and the OCaml module of tests/extraction's executable. So do the opam files (R8, v56). Markdown files
+        and tools/check_one.py, which no dune file names, do not. main as the same commit changes nothing."""
         counted = {"theories/A.v": "proof", "dune-project": "build", "theories/Examples/dune": "build",
+                   "rocq-linux-process-semantics-core.opam": "build",
                    "tools/gen_checker.py": "named", "tools/gen_fd_lemmas.py": "named",
                    "tools/placement_conformance/log_to_rocq.py": "named",
                    "tests/placement/linux-6.18.46-defconfig.log": "named",
                    "theories/LinuxProcessSem/Bridge/exit.hex": "named",
-                   "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "named"}
+                   "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "named",
+                   "tests/extraction/checked_input_smoke.ml": "module"}
         others = ["README.md", "SCOPE.md", "theories/README.md", "reports/a4-start-state.md", "tools/check_one.py",
-                  "rocq-linux-process-semantics-core.opam", "tools/placement_conformance/README.md"]
+                  "tools/placement_conformance/README.md"]
         files = [{"filename": p, "previous_filename": None} for p in list(counted) + others]
         facts = rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR))
         self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
         self.assertEqual({f["path"]: f["why"] for f in facts["files"]}, counted)
+        self.assertEqual(rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR), main="HEAD"), facts)
         self.assertFalse(rules.proofs("HEAD", files, len(files) + 1, cwd=os.path.dirname(GITHUB_DIR))["whole"])
+
+    def test_the_dune_files_and_the_links_of_main_count_and_one_that_the_job_cannot_read_is_named(self):
+        """R8: a head from an older main merges into main, whose dune files build the merge where the head leaves them
+        as they were. With main's rule that reads logs/run.log, main's link theories/L.v to data/x.txt, and main's
+        broken/dune that does not parse, none of which the head has: a change of the log or of the link's file counts,
+        each by main's file, and broken/dune is a file of the build that the job could not read. Without main, the head
+        alone counts neither. An opam file counts in any directory, as opam or <package>.opam."""
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def write(path, text):
+                os.makedirs(os.path.dirname(os.path.join(d, path)) or d, exist_ok=True)
+                with open(os.path.join(d, path), "w") as f:
+                    f.write(text)
+            git("init", "-q", "-b", "main")
+            for path in ("logs/run.log", "data/x.txt", "README.md"):
+                write(path, "1\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            write("tests/dune", "(rule (target R.v) (deps %{project_root}/logs/run.log) (action (echo \"x\\n\")))\n")
+            write("broken/dune", "(rule (deps a)\n")
+            os.makedirs(os.path.join(d, "theories"))
+            os.symlink("../data/x.txt", os.path.join(d, "theories", "L.v"))
+            git("add", "-A")
+            git("commit", "-q", "-m", "main moves on")
+            main = git("rev-parse", "HEAD")
+            git("checkout", "-q", "-b", "head", base)
+            for path in ("logs/run.log", "data/x.txt", "README.md"):
+                write(path, "2\n")
+            git("commit", "-q", "-am", "the pull request")
+            head = git("rev-parse", "HEAD")
+            changed = ["logs/run.log", "data/x.txt", "README.md", "opam", "pkg/rocq-x.opam"]
+            files = [{"filename": p, "previous_filename": None} for p in changed]
+            facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+            alone = rules.proofs(head, files, len(files), cwd=d)
+        self.assertEqual({f["path"]: (f["why"], f["by"], f["at_head"]) for f in facts["files"]},
+                         {"logs/run.log": ("named", "tests/dune", True), "data/x.txt": ("target", "theories/L.v", True),
+                          "opam": ("build", None, False), "pkg/rocq-x.opam": ("build", None, False)})
+        self.assertEqual((facts["whole"], facts["unparsed"]), (True, ["broken/dune"]))
+        self.assertEqual(({f["path"] for f in alone["files"]}, alone["unparsed"]), ({"opam", "pkg/rocq-x.opam"}, []))
+
+    def test_a_dune_stanza_builds_the_ocaml_modules_that_its_modules_field_takes(self):
+        """R8: an executable, executables, library, test or tests stanza names modules, not files. A file of a module
+        (.ml, .mli, .mll, .mly) counts when the stanza takes it, as dune reads the modules field: every module with no
+        field or with :standard, the named ones, and not those that a \\ takes out. A module name matches with its first
+        letter in either case. An element that the job cannot read ((:include ...), a variable) takes every module,
+        and one more \\ takes nothing out. include_subdirs adds the directories below: by module name when unqualified,
+        every module when qualified. A stanza of ocamllex, ocamlyacc or menhir takes every module of its directory, and
+        a stanza with C stubs, or a foreign_library, each C file there. A file of another directory or of another
+        kind, and a module that the field leaves out, do not count."""
+        texts = {
+            "all/dune": "(library (name all))",
+            "some/dune": "(executable (name main) (modules main Util))",
+            "but/dune": "(executables (names a b) (modules :standard \\ gen (other)))",
+            "inc/dune": "(test (name t) (modules (:include mods.sexp)))",
+            "var/dune": "(tests (names t) (modules %{read-lines:mods}))",
+            "two/dune": "(library (name two) (modules :standard \\ a \\ b))",
+            "flat/dune": "(include_subdirs unqualified)\n(library (name flat) (modules :standard \\ skip))",
+            "deep/dune": "(include_subdirs qualified)\n(library (name deep) (modules :standard \\ skip))",
+            "lex/dune": "(ocamllex lexer)\n(menhir (modules parser))",
+            "stubs/dune": "(library (name stubs) (modules) (foreign_stubs (language c) (names s)))",
+            "clib/dune": "(foreign_library (archive_name c) (language c) (names c))",
+            "none/dune": "(rule (target x.ml) (action (echo \"\")))\n(rocq.theory (name T))"}
+        names = rules.Names()
+        for by, text in texts.items():
+            for stanza in rules.dune_sexps(text):
+                rules.dune_names(names, by, stanza, os.path.dirname(by), [os.path.dirname(by)], lambda p: "")
+        for path, by in (("all/x.ml", "all/dune"), ("all/x.mli", "all/dune"), ("all/l.mll", "all/dune"),
+                         ("all/p.mly", "all/dune"), ("some/main.ml", "some/dune"), ("some/util.ml", "some/dune"),
+                         ("some/Main.mli", "some/dune"), ("but/a.ml", "but/dune"), ("inc/any.ml", "inc/dune"),
+                         ("var/any.ml", "var/dune"), ("two/a.ml", "two/dune"), ("flat/sub/x.ml", "flat/dune"),
+                         ("deep/sub/skip.ml", "deep/dune"), ("lex/lexer.mll", "lex/dune"), ("lex/any.ml", "lex/dune"),
+                         ("stubs/s.c", "stubs/dune"), ("stubs/s.h", "stubs/dune"), ("clib/c.c", "clib/dune"),
+                         ("some/not-a-module.ml", "some/dune")):
+            with self.subTest(path=path):
+                self.assertEqual(names.built(path), by)
+        for path in ("some/other.ml", "but/gen.ml", "but/other.ml", "flat/skip.ml", "flat/sub/skip.ml",
+                     "deep/skip.ml", "stubs/x.ml", "all/x.c", "all/README.md", "all/sub/x.ml", "none/y.ml", "x.ml",
+                     "some/util.ml.orig"):
+            with self.subTest(path=path):
+                self.assertIsNone(names.built(path))
+        scope = {"v": False, "others": [("all/x.ml", "module", "all/dune")], "whole": True, "unparsed": [],
+                 "unread": []}
+        self.assertRegex(rules.section([], scope=scope), r"(?m)^- `all/x\.ml`: `all/dune` builds it\.$")
 
     def test_the_section_lists_at_most_listed_lines_and_says_how_many_more(self):
         line = re.compile(r"^- `theories/.+\.v:\d+`: `vm_compute`$", re.M)
@@ -5155,6 +5254,36 @@ class AnswerFixTest(ReaderRunner):
                 self.assertEqual(rc, 0, out)
                 self.assertEqual(len([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c]), posts,
                                  out)
+
+    def test_an_answer_that_another_run_answered_first_posts_no_fix_and_sets_no_label(self):
+        """b1 (R1): the answer step reads the comments again just before it posts. Another run's answer that names
+        the same newest comment comes from that run, whenever GitHub made it: this run posts no answer, its output
+        other says so, the step "Leave the answer to a later run" marks the run for the rescreen pass, and neither the
+        fix nor the label step runs. This run's own answer, which an earlier attempt of the comment job posted, gets
+        no second copy, and the fix and the labels follow. A comment of another account that starts with an answer's
+        marker is no answer: this run's answer posts."""
+        self.pull_request(waiting=(899, 900))
+        rc, out, got = self.answered("fix", text="The fix follows.", trimmed="The fix follows.")
+        self.assertEqual(rc, 0, out)
+        early, late = "2026-11-02T09:00:00Z", "2026-11-02T10:05:00Z"
+        leave = "Leave the answer to a later run"
+        for case, comment, other, posts in (
+                ("another run's answer to 900, made before this run read the item",
+                 {"id": 31, "user": {"login": BOT}, "created_at": early, "body": "<!-- review-answer 900 -->\nYes."},
+                 "true", 0),
+                ("this run's own answer, from an earlier attempt",
+                 {"id": 32, "user": {"login": BOT}, "created_at": late, "body": got["body"]}, None, 0),
+                ("an answer's marker in another account's comment, made while this run ran",
+                 {"id": 33, "user": {"login": "eve"}, "created_at": late, "body": "<!-- review-answer 899 -->\nNo."},
+                 None, 1)):
+            with self.subTest(case=case):
+                rc, out, outputs = self.post_answer(got["body"], comments=[comment])
+                self.assertEqual((rc, outputs.get("other"), len(writes(self.api))), (0, other, posts), out)
+                ctx = dict(self.CTX, **{"env.POST_REVIEW": "true", "needs.trust.outputs.task": "answer",
+                                        "needs.review.outputs.fix": "{}", "steps.answer.outputs.other": other})
+                self.assertEqual({name: bool(evaluate(step("comment", name)["if"], ctx))
+                                  for name in (leave, self.POST_FIX, self.LABEL)},
+                                 {leave: other == "true", self.POST_FIX: other != "true", self.LABEL: other != "true"})
 
     def test_a_comment_that_asks_for_the_fix_starts_it_in_its_run_which_reads_git_objects_and_no_checkout(self):
         """b1 (R1, R2, R4): the answer to a comment that asks for the fix starts the fix in the same review job of
@@ -6025,6 +6154,36 @@ class FixRuleTest(unittest.TestCase):
                                         os.path.join(d, "pr.diff")], capture_output=True, text=True)
                     self.assertEqual(r.returncode, 0, r.stderr)
                     self.assertEqual(len(json.loads(r.stdout)["suggestions"]), kept, r.stdout)
+
+    def test_a_file_that_the_pull_request_only_renames_shows_no_line(self):
+        """D22: GitHub shows a file that a pull request renames with no change as the rename alone, with no line, and
+        so does the gather job's own command for pr.diff: a suggestion on any line of the new path, or of the old
+        one, is off the diff."""
+        run = step("gather", "Gather the pull request or issue")["run"]
+        (command,) = [line.strip() for line in run.split("\n") if line.strip().endswith('> "$out/pr.diff"')]
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            with open(os.path.join(d, "Old.v"), "w") as f:
+                f.write("Lemma a : True.\nProof. exact I. Qed.\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "main")
+            base = git("rev-parse", "HEAD")
+            git("mv", "Old.v", "New.v")
+            git("commit", "-q", "-m", "the pull request")
+            subprocess.run(["bash", "-c", command], cwd=d, check=True,
+                           env=dict(os.environ, mb=base, head=git("rev-parse", "HEAD"), out=d))
+            with open(os.path.join(d, "pr.diff"), encoding="utf-8") as f:
+                diff = f.read()
+        self.assertIn("rename from Old.v\nrename to New.v\n", diff)
+        self.assertEqual(rules.hunks(diff), {})
+        for path in ("New.v", "Old.v"):
+            with self.subTest(path=path):
+                fix = {"summary": "S.", "suggestions": [{"path": path, "start_line": 1, "line": 1,
+                                                          "replacement": "x\n", "why": "W."}]}
+                self.assertEqual(rules.suggestions(fix, diff)["suggestions"], [])
 
     def test_a_path_that_git_ends_with_a_tab_is_read_without_it_and_a_deleted_one_has_no_lines(self):
         """hunks reads the +++ line of a path that holds a space as git writes it, with a TAB after the path (and after
@@ -7621,6 +7780,28 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "answer", "mallory", "", "900")]), out)
         self.assertEqual(self.dispatched("answer", head="", account="mallory", comment="900")["route"], "screen")
+
+    def test_a_run_that_left_its_answer_to_a_later_run_is_taken_again_at_once(self):
+        """R1: the run of comment 900's own event left its answer to a later run: the run of 899 answered 899 after it
+        read the item, so its comment job posted nothing of its own (its step "Leave the answer to a later run" ran).
+        900 still waits for an answer, so the schedule starts its answer at once, under an hour after that run ended,
+        and its trust job takes that run. A run whose comment job posted its answer took the comment."""
+        answer = {"id": 6, "user": {"login": BOT}, "created_at": ago(20), "updated_at": ago(20),
+                  "body": "<!-- review-answer 899 -->\nThe answer to 899."}
+        self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED, said(899, 40), said(900, 30), answer])
+        jobs = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)")]
+        for left, comment, want in (
+                (True, attempt_job("comment", taken=ONLY_WHEN), [("7", "answer", "mallory", "", "900")]),
+                (False, attempt_job("comment"), [])):
+            with self.subTest(left=left):
+                self.listed_runs.clear()
+                self.ran(80, "answer #7 for 900 by mallory", made=29, ended=19, event="issue_comment",
+                         jobs=jobs + [comment])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if left:
+                    got = self.dispatched("answer", head="", account="mallory", comment="900")
+                    self.assertEqual(got["route"], "screen")
 
     def test_review_tries_answers_whose_comment_job_failed_stop_it(self):
         """R1, D16: an answer whose comment job failed is taken again once an hour, and each such run ran the screen

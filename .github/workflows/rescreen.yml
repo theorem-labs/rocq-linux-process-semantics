@@ -72,7 +72,8 @@ jobs:
   #             an hour while the newest run of that comment posted nothing of its own (it ended at a failed sign-in,
   #             its comment job failed, or its hold job held it and no hold takes it again), up to REVIEW_TRIES runs
   #             whose comment job failed. A run of the comment's own event names the comment too. A run that its trust
-  #             job stopped takes no comment.
+  #             job stopped takes no comment, nor does a run that left its answer to a later run because another run
+  #             answered a comment of it first.
   #   draft     an outside issue whose label comment holds no stored draft and no posted reply, once an hour after its
   #             newest draft run ended.
   #   approve   a first-time contributor's pull request whose head has runs that GitHub holds, from its own head
@@ -569,8 +570,10 @@ jobs:
           # its trust job stopped it (the job was skipped, or every job after it was), conflict when the comment job
           # alone ran after it (the task conflict). reviewed: signin when its review job failed at such a step.
           # commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
-          # draft (success when it did, failure or cancelled when it posted nothing or not all). held: held when its
-          # hold job ran, so the run itself posted nothing. counts: count when the run counts toward the limit of the
+          # draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job
+          # left its answer to a later run (its step of that name ran): another run answered a comment of that answer
+          # first, so it posted nothing of its own. held: held when its hold job ran, so the run itself posted nothing.
+          # counts: count when the run counts toward the limit of the
           # account that its name ends with, as the trust job's earlier counts it (not a run that its trust job
           # refused, nor one whose screen could not sign in; a run whose screen passed and whose review then could not
           # sign in counts, once: its screen ran, and its failed jobs run again with no new screen), else skip. The job
@@ -601,7 +604,9 @@ jobs:
                   else "-" end),
                  (if any($rest[] | select(.name | test("^review( |$)")); signed_out) then "signin" else "-" end),
                  ((map(select(.name == "comment")) | first) as $c
-                  | if $c == null then "-" else ($c.conclusion // "running") end),
+                  | if $c == null then "-"
+                    elif any($c.steps[]?; .name == "Leave the answer to a later run" and .conclusion == "success")
+                    then "left" else ($c.conclusion // "running") end),
                  (if any(.[]; .name == "hold" and .conclusion == "success") then "held" else "-" end),
                  (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                   elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
@@ -908,9 +913,10 @@ jobs:
           }
           # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
           # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
-          # of its own event (issue_comment) or by hand, took it, but one that its trust job stopped, and but one that
-          # posted nothing of its own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub
-          # error on the post, say, for which no hold job runs), or its hold job held it. Once for each comment, then
+          # of its own event (issue_comment) or by hand, took it, but one that its trust job stopped or that left its
+          # answer to a later run (another run answered a comment of it first), and but one that posted nothing of its
+          # own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub error on the post, say,
+          # for which no hold job runs), or its hold job held it. Once for each comment, then
           # once an hour while the newest run of that comment posted nothing so. After REVIEW_TRIES runs of the comment
           # whose comment job failed or was cancelled, the answer is not tried again (answer_stopped): each of them ran
           # the screen and the model. A hold of an answer that is tried again leaves the comments to that hold
@@ -952,7 +958,7 @@ jobs:
                     "hold), less than an hour ago: tried again later."
                   return 0
                 fi
-              elif [ "$early" != stopped ]; then
+              elif [ "$early" != stopped ] && [ "$commented" != left ]; then
                 echo "#$number: run $run took comment $id."
                 return 0
               fi

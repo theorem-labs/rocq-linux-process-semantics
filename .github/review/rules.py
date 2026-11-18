@@ -5,7 +5,7 @@ labels").
     python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line>
     python3 .github/review/rules.py make-label <name>
-    python3 .github/review/rules.py proofs <head> <files.jsonl> <changed files>
+    python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
@@ -46,9 +46,12 @@ whether the list of the changed paths is whole, and each file of the build that 
 the files of the pull request as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename}
 on each line, and <changed files> is the pull request's changed_files, or empty when a read did not finish or read
 another head: then the list is not whole. A changed path counts when it is a .v file, a dune, dune-project or
-dune-workspace file anywhere in the tree, a file that a dune file of <head> names (dune_names), or the file that a link
-of <head> points to when the link's own path counts. The dune files come from git objects of <head>, in the
-repository of the working directory, never from a checkout.
+dune-workspace file or an opam file (opam or *.opam) anywhere in the tree, a file that a dune file of <head> or of
+<main> names (dune_names), a file of an OCaml module or a C file that a stanza of such a dune file builds
+(Names.built), or the file that a link of <head> or of <main> points to when the link's own path counts. <main> is the
+commit of main that the pull request merges into: a head from an older main still counts each file that the dune
+files of main name. The dune files come from git objects of <head> and <main>, in the repository of the working
+directory, never from a checkout.
 
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
@@ -955,11 +958,26 @@ LISTED_CHARACTERS = 10_000
 # them, and so adds no mention of each review to these issues of rocq-prover/rocq.
 ISSUES = ("rocq-prover/rocq#22651", "rocq-prover/rocq#22760", "rocq-prover/rocq#22772")
 # The facts of the rule that the gather job writes into the .review/ of a pull request (proofs), and why a changed path
-# counts: a .v file, a file of the build (BUILD), a file that a dune file names, or the file that such a link points to.
+# counts: a .v file, a file of the build (BUILD, or an opam file), a file that a dune file names, a file of a module or
+# of a C stub that a stanza of a dune file builds, or the file that such a link points to.
 SOUNDNESS_FILE = "soundness.json"
-WHYS = ("proof", "build", "named", "target")
-# The files that tell dune how to build the proofs, by their name in any directory.
-BUILD = ("dune", "dune-project", "dune-workspace")
+WHYS = ("proof", "build", "named", "module", "target")
+# The files that tell dune and opam how to build the proofs, by their name in any directory: an opam file is opam, or
+# <package>.opam (OPAM), and its pin-depends can change the Rocq that CI builds with.
+BUILD = ("dune", "dune-project", "dune-workspace", "opam")
+OPAM = ".opam"
+# The stanzas of a dune file that build OCaml modules of their directory (libraries, executables and tests): every
+# module of the directory, or each one that their modules fields take (module_set). The stanzas that run an OCaml tool
+# on modules that they name (ocamllex, menhir, the grammar of a Rocq plugin), which this reads as every module of the
+# directory, and foreign_library, which compiles C files and no module. With (include_subdirs ...) other than no, the
+# modules of a directory are those of each directory below it too. The files of a module by their extension, the
+# fields of a stanza that compile C files, and those files by their extension.
+MODULE_STANZAS = ("executable", "executables", "library", "test", "tests")
+TOOL_STANZAS = ("ocamllex", "ocamlyacc", "menhir", "rocq.pp", "coq.pp", "foreign_library")
+MODULE_SOURCES = (".ml", ".mli", ".mll", ".mly", ".re", ".rei", ".mlg")
+FOREIGN_FIELDS = ("foreign_stubs", "foreign_archives", "extra_objects")
+FOREIGN_SOURCES = (".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx")
+MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
 # The modes of a regular file and of a link in a tree of git.
 REGULAR = ("100644", "100755")
 LINK = "120000"
@@ -1147,12 +1165,44 @@ def glob_pattern(glob):
     return re.compile("".join(out), re.S)
 
 
+def capital(name):
+    """A module name as dune compares it: with its first letter in upper case (foo.ml and Foo.ml are module Foo)."""
+    return name[:1].upper() + name[1:]
+
+
+def module_set(items, module, sure=False):
+    """Whether items, the elements of a modules field in dune's ordered set language, take the module named module
+    (capital): :standard takes every module of the directory, a name takes its module, a list takes what its elements
+    take, and a \\ takes out what the elements after it take. An element that this does not read (an (:include ...),
+    a variable, any other atom) can take any module, so that a file that dune may build counts: with sure, the
+    question is whether items surely take module, and such an element takes none. A level with more than one \\ is
+    read as the elements before its first \\, with nothing taken out."""
+    cuts = [i for i, e in enumerate(items) if e == "\\"]
+    if len(cuts) > 1:
+        return not sure and module_set(items[:cuts[0]], module)
+    if cuts:
+        left, right = items[:cuts[0]], items[cuts[0] + 1:]
+        return module_set(left, module, sure) and not module_set(right, module, not sure)
+    for e in items:
+        if isinstance(e, list):
+            took = not sure if e[:1] == [":include"] else module_set(e, module, sure)
+        elif e == ":standard":
+            took = True
+        else:
+            took = capital(e) == module if MODULE_NAME.fullmatch(e) else not sure
+        if took:
+            return True
+    return False
+
+
 class Names:
-    """The files that the dune files of a head name, each from the root of the repository, with the file that names
-    it: files by their path, trees (each file below a directory, for source_tree) and globs (glob_pattern)."""
+    """The files that the dune files of the trees that proofs reads name, each from the root of the repository, with
+    the file that names it: files by their path, trees (each file below a directory, for source_tree) and globs
+    (glob_pattern). And the stanzas that build modules or C files (stanza), with the directories whose dune file has
+    include_subdirs (subdirs: its value, for each directory)."""
 
     def __init__(self):
-        self.files, self.trees, self.globs = {}, [], []
+        self.files, self.trees, self.globs, self.stanzas, self.subdirs = {}, [], [], [], {}
 
     def add(self, by, name, base, tree=False):
         """Takes name, an atom or a quoted string of the file by, as the name of a file (of each file below a directory
@@ -1179,14 +1229,51 @@ class Names:
                 return by
         return next((by for pattern, by in self.globs if pattern.fullmatch(path)), None)
 
+    def stanza(self, by, node, here):
+        """Takes node, a stanza of MODULE_STANZAS or TOOL_STANZAS of the file by, for the directory here: the modules
+        that it builds (the elements of each of its modules fields, or None for every module of the directory), and
+        whether it compiles C files (a field of FOREIGN_FIELDS, or foreign_library)."""
+        fields = [f for f in node[1:] if isinstance(f, list) and f and isinstance(f[0], str)]
+        if node[0] in MODULE_STANZAS:
+            sets = [f[1:] for f in fields if f[0] == "modules"] or None
+            foreign = any(f[0] in FOREIGN_FIELDS for f in fields)
+        else:
+            sets, foreign = ([], True) if node[0] == "foreign_library" else (None, False)
+        self.stanzas.append((here, sets, foreign, by))
+
+    def built(self, path):
+        """The file whose stanza builds path, or None: path is a file of a module (MODULE_SOURCES) that a stanza of its
+        directory takes, or a C file (FOREIGN_SOURCES) of a directory whose stanza compiles C files. A stanza also
+        builds the files of each directory below its own when the dune file there has include_subdirs: by the name of
+        the module with unqualified, and every one with qualified or another value. A file whose name is no module
+        name counts for each stanza that can build it."""
+        directory, base = posixpath.split(path)
+        extension = posixpath.splitext(base)[1]
+        if extension not in MODULE_SOURCES and extension not in FOREIGN_SOURCES:
+            return None
+        module = capital(base.split(".", 1)[0])
+        for here, sets, foreign, by in self.stanzas:
+            below = directory != here
+            if below and not (here in self.subdirs and (not here or directory.startswith(here + "/"))):
+                continue
+            if extension in FOREIGN_SOURCES:
+                if foreign:
+                    return by
+            elif (sets is None or (below and self.subdirs[here] != "unqualified") or not MODULE_NAME.fullmatch(module)
+                  or any(module_set(items, module) for items in sets)):
+                return by
+        return None
+
 
 def dune_names(names, by, node, here, bases, read, depth=0, shell=False):
     """Adds to names each file that node, an S-expression of the file by (a dune file, or a file that one includes),
     names: each atom and each quoted string, from the directory of its stanza (here) and from each directory of a
     chdir around it (bases), and each word of a string that a shell reads. (subdir <dir> ...) moves here to <dir>,
     (source_tree <dir>) names each file below <dir>, and (include <file>) names <file> and, from here, each file that
-    the stanzas of <file> name: read(path) gives the text of a file of the head. A ValueError for a subdir outside the
-    repository, and for an include that the job cannot read or that is deeper than INCLUDES."""
+    the stanzas of <file> name: read(path) gives the text of a file of the tree. A stanza that builds modules or C
+    files (MODULE_STANZAS, TOOL_STANZAS) goes to names.stanza, and an (include_subdirs <mode>) other than no to
+    names.subdirs. A ValueError for a subdir outside the repository, and for an include that the job cannot read or
+    that is deeper than INCLUDES."""
     if isinstance(node, str):
         for word in [node] + (SHELL_WORD.findall(node) if shell else []):
             for base in bases:
@@ -1208,6 +1295,10 @@ def dune_names(names, by, node, here, bases, read, depth=0, shell=False):
         for stanza in dune_sexps(read(path)):
             dune_names(names, path, stanza, here, [here], read, depth + 1)
         return
+    if head in MODULE_STANZAS or head in TOOL_STANZAS:
+        names.stanza(by, node, here)
+    elif head == "include_subdirs" and len(node) == 2 and isinstance(node[1], str) and node[1] != "no":
+        names.subdirs[here] = node[1]
     if head == "source_tree" and len(node) == 2 and isinstance(node[1], str):
         for base in bases:
             names.add(by, node[1], base, tree=True)
@@ -1225,10 +1316,10 @@ def git(*args, cwd=None):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, check=True).stdout
 
 
-def head_tree(head, cwd=None):
-    """{path: (mode, object)} of each file of the tree of the commit head, from git objects."""
+def tree_of(commit, cwd=None):
+    """{path: (mode, object)} of each file of the tree of commit, from git objects."""
     tree = {}
-    for entry in git("ls-tree", "-r", "-z", "--full-tree", head, cwd=cwd).split(b"\0"):
+    for entry in git("ls-tree", "-r", "-z", "--full-tree", commit, cwd=cwd).split(b"\0"):
         if entry:
             meta, path = entry.split(b"\t", 1)
             mode, _kind, oid = meta.decode("ascii").split(" ")
@@ -1236,76 +1327,87 @@ def head_tree(head, cwd=None):
     return tree
 
 
-def proofs(head, files, count, cwd=None):
+def proofs(head, files, count, cwd=None, main=None):
     """The facts of the soundness rule at the commit head of a pull request, as soundness.json holds them: {whole,
     files, unparsed}. files are the files of the pull request at head as the API lists them on every page of
     pulls/<n>/files, and count its changed_files, None when a read did not finish or read another head. whole: the
     list holds each changed file. files: each changed path (of a file, and the path that it had before a rename) that
-    can change a proof, {path, why, by, at_head}: why is proof for a .v file, build for a file of BUILD, named for a
-    file that the dune file by names (dune_names), and target for the file that the link by points to, when the link's
-    own path counts; at_head says whether head has the path. unparsed: each dune file, or link that counts, that the
-    job could not read: not a regular file, over DUNE_BYTES, not UTF-8, or not read by dune_sexps. The dune files and
-    the links come from git objects of head, in the repository of cwd."""
-    tree = head_tree(head, cwd)
+    can change a proof, {path, why, by, at_head}: why is proof for a .v file, build for a file of BUILD or an opam
+    file (OPAM), named for a file that the dune file by names (dune_names), module for a file of a module or a C file
+    that a stanza of the dune file by builds (Names.built), and target for the file that the link by points to, when
+    the link's own path counts; at_head says whether head has the path. unparsed: each dune file, or link that counts,
+    that the job could not read: not a regular file, over DUNE_BYTES, not UTF-8, or not read by dune_sexps. The dune
+    files and the links come from git objects of head and of main, the commit of main that the pull request merges
+    into, in the repository of cwd: a head from an older main still counts each file that the dune files of main
+    name, which the merge builds."""
+    trees = [(commit, tree_of(commit, cwd)) for commit in (head, main) if commit]
 
-    def read(path, kinds=REGULAR, limit=DUNE_BYTES):
-        mode, oid = tree.get(path, ("", ""))
-        if mode not in kinds:
-            raise ValueError(f"{path} has the mode {mode or 'of no file'} at {head}")
-        if int(git("cat-file", "-s", oid, cwd=cwd)) > limit:
-            raise ValueError(f"{path} holds over {limit} bytes")
-        try:
-            return git("cat-file", "blob", oid, cwd=cwd).decode("utf-8")
-        except UnicodeDecodeError:
-            raise ValueError(f"{path} is not UTF-8 text") from None
-
-    names, unparsed, targets = Names(), [], {}
-    for path in sorted(tree):
-        if posixpath.basename(path) == "dune":
-            here = posixpath.dirname(path)
+    def reader(commit, tree):
+        def read(path, kinds=REGULAR, limit=DUNE_BYTES):
+            mode, oid = tree.get(path, ("", ""))
+            if mode not in kinds:
+                raise ValueError(f"{path} has the mode {mode or 'of no file'} at {commit}")
+            if int(git("cat-file", "-s", oid, cwd=cwd)) > limit:
+                raise ValueError(f"{path} holds over {limit} bytes")
             try:
-                for stanza in dune_sexps(read(path)):
-                    dune_names(names, path, stanza, here, [here], read)
-            except ValueError:
-                unparsed.append(path)
+                return git("cat-file", "blob", oid, cwd=cwd).decode("utf-8")
+            except UnicodeDecodeError:
+                raise ValueError(f"{path} is not UTF-8 text") from None
+        return read
+
+    names, unparsed, targets, links = Names(), set(), {}, []
+    for commit, tree in trees:
+        read = reader(commit, tree)
+        for path in sorted(tree):
+            if posixpath.basename(path) == "dune":
+                here = posixpath.dirname(path)
+                try:
+                    for stanza in dune_sexps(read(path)):
+                        dune_names(names, path, stanza, here, [here], read)
+                except ValueError:
+                    unparsed.add(path)
+        links += [(p, read) for p, (mode, _oid) in sorted(tree.items()) if mode == LINK]
 
     def counts(path):
+        base = posixpath.basename(path)
         if path.endswith(".v"):
             return "proof", None
-        if posixpath.basename(path) in BUILD:
+        if base in BUILD or base.endswith(OPAM):
             return "build", None
         by = names.of(path)
         if by:
             return "named", by
+        by = names.built(path)
+        if by:
+            return "module", by
         to = next((t for t in targets if path == t or path.startswith(t + "/")), None)
         return ("target", targets[to]) if to is not None else (None, None)
     # The build reads a file through a link to it: so the file that a link that counts points to counts too (a link
     # in the place of a dune file among them), and a chain of links reaches its end in at most as many rounds as there
-    # are links.
-    links = sorted(p for p, (mode, _oid) in tree.items() if mode == LINK)
+    # are links. Each tree's links are read in that tree.
     failed = set()
     for _ in links:
         before = len(targets)
-        for link in links:
-            if link in failed or not counts(link)[0]:
+        for i, (link, read) in enumerate(links):
+            if i in failed or not counts(link)[0]:
                 continue
             try:
                 to = from_root(posixpath.dirname(link), read(link, (LINK,), 4096))
             except ValueError:
-                failed.add(link)
+                failed.add(i)
                 continue
             if to:
                 targets.setdefault(to, link)
         if len(targets) == before:
             break
-    unparsed = sorted(set(unparsed) | failed)
+    unparsed = sorted(unparsed | {links[i][0] for i in failed})
     paths = set()
     for f in files:
         try:
             paths.update(changed_paths([f]))
         except ValueError:
             count = None
-    found = [{"path": p, "why": why, "by": by, "at_head": p in tree}
+    found = [{"path": p, "why": why, "by": by, "at_head": p in trees[0][1]}
              for p in sorted(paths) for why, by in [counts(p)] if why]
     return {"whole": count is not None and count == len(files), "files": found, "unparsed": unparsed}
 
@@ -1411,6 +1513,7 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
         return f"- {n} more {'file' if n == 1 else 'files'}. The summary of the workflow run lists all files."
     if scope["others"]:
         lines = [f"- {code(path)}" + (f": {code(by)} names it." if kind == "named" else
+                                      f": {code(by)} builds it." if kind == "module" else
                                       f": the link {code(by)} points to it." if kind == "target" else "")
                  for path, kind, by in scope["others"]]
         parts.append("The build of the proofs reads or writes these changed files:\n\n" + listing(lines, files))
@@ -1711,13 +1814,13 @@ def main(argv):
         if len(argv) == 3 and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
             mark(argv[1], argv[2])
             return 0
-        if len(argv) == 4 and argv[0] == "proofs" and HEAD.fullmatch(argv[1]):
-            count = int(argv[3]) if re.fullmatch(r"0|[1-9][0-9]*", argv[3]) else None
+        if len(argv) == 5 and argv[0] == "proofs" and HEAD.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
+            count = int(argv[4]) if re.fullmatch(r"0|[1-9][0-9]*", argv[4]) else None
             try:
-                files = json_lines(argv[2])
+                files = json_lines(argv[3])
             except ValueError:
                 files, count = [], None
-            print(json.dumps(proofs(argv[1], files, count)))
+            print(json.dumps(proofs(argv[1], files, count, main=argv[2])))
             return 0
         if len(argv) == 7 and argv[0] == "soundness":
             review, path, hold, outside, section_path, all_path = argv[1:]

@@ -139,9 +139,10 @@
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
-#           to the review of an outside pull request that changes a .v file, a dune, dune-project or dune-workspace
-#           file, or a file that a dune file names (the gather job reads the changed paths and the dune files itself),
-#           and adds the section on soundness after the shortened review (.github/review/rules.py soundness). For an
+#           to the review of an outside pull request that changes a .v file, a dune, dune-project, dune-workspace or
+#           opam file, a file that a dune file of the head or of main names, or a file of an OCaml module that a dune
+#           stanza builds (the gather job reads the changed paths and the dune files itself), and adds the section on
+#           soundness after the shortened review (.github/review/rules.py soundness). For an
 #           answer, Claude answers the comments of the author that wait (.github/review-answer.md, "An answer"), and
 #           the fresh reader shortens the answer. For a blocking finding of an outside pull request, or an answer that
 #           asks for it, Claude then writes the fix as suggested changes on the lines of the diff
@@ -176,9 +177,11 @@
 #           review-held off (unless a hold of other work of the item is still tried again), and sets the state label
 #           and the label comment (below); for a merge conflict, it posts the comment that asks the author to resolve
 #           it, with the label waits-on-author. It posts the answer, once for each comment, and the fix as one review
-#           of suggested changes, once for each head. For a draft, it posts the label comment alone, and for a reply
-#           the approved text, byte for byte and once. For a relabel, it sets the state label and the label comment of
-#           the head again, from what the workflow wrote of the head and what the post job decided. For a catch-up
+#           of suggested changes, once for each head: an answer of which another run answered a comment after this
+#           run read the item posts nothing, and the rescreen pass takes each comment that still waits. For a draft,
+#           it posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel,
+#           it sets the state label and the label comment of the head again, from what the workflow wrote of the head
+#           and what the post job decided. For a catch-up
 #           that reopened the pull request, it adds the line of the head to the label comment. For a stop of the
 #           rescreen pass, it gives the item waits-on-theorem and writes the hold comment that says that the work is
 #           not tried again. It never commits or pushes: its token can write no file of the repository. It uses this
@@ -346,8 +349,9 @@ env:
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
   # in theorem-labs/rocq-linux-process-semantics-internal, run stock Rocq, as this repository's CI lanes do. While this
   # is "true", code gives the review of an outside pull request that can change a proof (a .v file, a dune,
-  # dune-project or dune-workspace file, or a file that a dune file names, wherever it is) the verdict person and a
-  # section on soundness, whatever the model wrote (.github/review/rules.py soundness). The hold lasts
+  # dune-project, dune-workspace or opam file, a file that a dune file of the head or of main names, or a file of an
+  # OCaml module that a dune stanza builds, wherever it is) the verdict person and a section on soundness, whatever the
+  # model wrote (.github/review/rules.py soundness). The hold lasts
   # until those checks run a Rocq with the fixes for the three issues: only then set another value. Another value also
   # ends R12's Markdown-only rule: while the hold lasts, the post job records the import's check run only for a pull
   # request whose changed files are all Markdown files.
@@ -801,8 +805,10 @@ jobs:
           # its trust job stopped it (the job was skipped, or every job after it was), conflict when the comment job
           # alone ran after it (the task conflict). reviewed: signin when its review job failed at such a step.
           # commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
-          # draft (success when it did, failure or cancelled when it posted nothing or not all). held: held when its
-          # hold job ran, so the run itself posted nothing. counts: count when the run counts toward the limit of the
+          # draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job
+          # left its answer to a later run (its step of that name ran): another run answered a comment of that answer
+          # first, so it posted nothing of its own. held: held when its hold job ran, so the run itself posted nothing.
+          # counts: count when the run counts toward the limit of the
           # account that its name ends with, as the trust job's earlier counts it (not a run that its trust job
           # refused, nor one whose screen could not sign in; a run whose screen passed and whose review then could not
           # sign in counts, once: its screen ran, and its failed jobs run again with no new screen), else skip. The job
@@ -833,7 +839,9 @@ jobs:
                   else "-" end),
                  (if any($rest[] | select(.name | test("^review( |$)")); signed_out) then "signin" else "-" end),
                  ((map(select(.name == "comment")) | first) as $c
-                  | if $c == null then "-" else ($c.conclusion // "running") end),
+                  | if $c == null then "-"
+                    elif any($c.steps[]?; .name == "Leave the answer to a later run" and .conclusion == "success")
+                    then "left" else ($c.conclusion // "running") end),
                  (if any(.[]; .name == "hold" and .conclusion == "success") then "held" else "-" end),
                  (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                   elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
@@ -1140,9 +1148,10 @@ jobs:
           }
           # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
           # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
-          # of its own event (issue_comment) or by hand, took it, but one that its trust job stopped, and but one that
-          # posted nothing of its own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub
-          # error on the post, say, for which no hold job runs), or its hold job held it. Once for each comment, then
+          # of its own event (issue_comment) or by hand, took it, but one that its trust job stopped or that left its
+          # answer to a later run (another run answered a comment of it first), and but one that posted nothing of its
+          # own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub error on the post, say,
+          # for which no hold job runs), or its hold job held it. Once for each comment, then
           # once an hour while the newest run of that comment posted nothing so. After REVIEW_TRIES runs of the comment
           # whose comment job failed or was cancelled, the answer is not tried again (answer_stopped): each of them ran
           # the screen and the model. A hold of an answer that is tried again leaves the comments to that hold
@@ -1184,7 +1193,7 @@ jobs:
                     "hold), less than an hour ago: tried again later."
                   return 0
                 fi
-              elif [ "$early" != stopped ]; then
+              elif [ "$early" != stopped ] && [ "$commented" != left ]; then
                 echo "#$number: run $run took comment $id."
                 return 0
               fi
@@ -2471,12 +2480,18 @@ jobs:
             head=$(git rev-parse refs/review/head)
             [ "$head" = "$(jq -r .headRefOid "$out/pr.json")" ] \
               || { echo "::error::the pull request's head moved while it was read; the next run reviews the new head."; exit 1; }
-            mb=$(git merge-base origin/main "$head")
+            # main as the checkout fetched it: the commit that the pull request merges into, whose dune files the
+            # soundness rule reads too.
+            main=$(git rev-parse --verify "origin/main^{commit}")
+            mb=$(git merge-base "$main" "$head")
             printf 'base %s\nhead %s\n' "$mb" "$head" > "$out/commits.txt"
+            # Each changed path, a renamed file's old path too, which head/ and omitted.txt take.
             git diff --no-renames --name-only -z "$mb" "$head" > "$RUNNER_TEMP/changed"
             changed=$(tr -cd '\0' < "$RUNNER_TEMP/changed" | wc -c)
             (( changed <= 3000 )) || { echo "::error::$changed changed files: too large for this review."; exit 1; }
-            git diff --no-renames --no-ext-diff --no-textconv "$mb" "$head" > "$out/pr.diff"
+            # The diff as GitHub shows the pull request: a renamed file as a rename, with only its changed lines, so
+            # that the fix keeps no suggestion on a line that GitHub's diff does not show (rules.py suggestions).
+            git diff --find-renames --no-ext-diff --no-textconv "$mb" "$head" > "$out/pr.diff"
             # Each changed file as the pull request has it: regular files only, each cut at 2 MiB, 512 MiB in all.
             total=0
             while IFS= read -r -d '' path; do
@@ -2511,9 +2526,11 @@ jobs:
             # that it had before a rename, read after a check of the head and before a second check of it. A list that
             # a read did not finish, of another head, or shorter than changed_files (GitHub lists at most 3,000 files)
             # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files of the
-            # head from git objects and writes soundness.json: each changed path that can change a proof (a .v file, a
-            # dune, dune-project or dune-workspace file, a file that a dune file names, or the file that such a link
-            # points to), whether the list is whole, and each dune file that it could not read.
+            # head and of main from git objects, since the merge builds with the dune files of main where the head
+            # leaves them as they were, and writes soundness.json: each changed path that can change a proof (a .v
+            # file, a dune, dune-project, dune-workspace or opam file, a file that a dune file names, a file of an OCaml
+            # module or a C file that a dune stanza builds, or the file that such a link points to), whether the list is
+            # whole, and each dune file that it could not read.
             count=""
             : > "$RUNNER_TEMP/files.jsonl"
             if pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -2525,7 +2542,8 @@ jobs:
             else
               echo "::warning::the files of #$NUMBER at $head could not be read whole: the soundness rule counts the pull request as a change of a proof."
             fi
-            python3 .github/review/rules.py proofs "$head" "$RUNNER_TEMP/files.jsonl" "$count" > "$out/soundness.json"
+            python3 .github/review/rules.py proofs "$head" "$main" "$RUNNER_TEMP/files.jsonl" "$count" \
+              > "$out/soundness.json"
           fi
           echo "Gathered $(find "$out" -type f | wc -l) files."
 
@@ -3163,9 +3181,10 @@ jobs:
       # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
       # gather job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
       # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths can
-      # change a proof (a .v file, a dune, dune-project or dune-workspace file, or a file that a dune file of the head
-      # names), from every page of the pull request's files: a list that is not whole, or a dune file that the job
-      # could not read, counts as such a change too. The section lists, as facts, those files, the lines of the
+      # change a proof (a .v file, a dune, dune-project, dune-workspace or opam file, a file that a dune file of the
+      # head or of main names, or a file of an OCaml module or a C file that a dune stanza builds), from every page of
+      # the pull request's files: a list that is not whole, or a dune file that the job could not read, counts as such
+      # a change too. The section lists, as facts, those files, the lines of the
       # changed .v files at the head that use the VM, the native compiler or a primitive array, and each changed .v
       # file at the head that the gather job did not keep whole.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
@@ -3929,13 +3948,20 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$BODY" --jq .html_url
           fi
-      # The answer, once for each comment that it answers: a comment of github-actions[bot] that starts with the
-      # answer's marker, <!-- review-answer <comment id>, is the answer posted already. An answer whose action is none,
-      # or that the fresh reader refused, posts nothing.
+      # The answer, once for each comment that it answers, from the comments of the item as they are just before it
+      # posts. A comment of github-actions[bot] with the same text is this run's answer, which an earlier attempt of
+      # this job posted. Any other answer of github-actions[bot] (it starts with <!-- review-answer ) that names the
+      # same newest comment, or that GitHub made at or after the time when this run's trust job read the item
+      # (STARTED), is the answer of another run, which answered a comment of this answer first: this run then posts no
+      # answer, and no fix and no label either (the output other), whatever it read before. The step after this one
+      # marks such a run, and the rescreen pass starts the answer of each comment that still waits. An answer whose
+      # action is none, or that the fresh reader refused, posts nothing.
       - name: Post the answer
+        id: answer
         if: needs.trust.outputs.task == 'answer' && needs.review.outputs.refused != 'answer'
         env:
           ANSWER: ${{ needs.review.outputs.answer }}
+          STARTED: ${{ needs.trust.outputs.started }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -3951,23 +3977,37 @@ jobs:
             printf '%s\n' "$ANSWER" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+            || { echo "::error::no start time of this run"; exit 1; }
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           posted=$(PREFIX="<!-- review-answer $id " gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[]
-            | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith($ENV.PREFIX))) | .id') \
+            | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-answer ")))
+            | if .body == $ENV.ANSWER then "this"
+              elif (.body | startswith($ENV.PREFIX)) or (.created_at // "") >= $ENV.STARTED then "other"
+              else empty end') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
-          if [ -n "$posted" ]; then
-            echo "#$NUMBER: the comment $id has its answer already."
+          if grep -qx this <<< "$posted"; then
+            echo "#$NUMBER: this run posted its answer to the comment $id before."
+          elif grep -qx other <<< "$posted"; then
+            echo "#$NUMBER: another run answered a comment of this answer after this run read the item at $STARTED. This run posts no answer, no fix and no label."
+            echo "other=true" >> "$GITHUB_OUTPUT"
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$ANSWER" --jq .html_url
           fi
+      # Another run answered a comment of this run's answer first (the step before): this run posts nothing of its own.
+      # The rescreen pass reads this step by its name (facts, its commented left) and starts the answer of each comment
+      # that still waits.
+      - name: Leave the answer to a later run
+        if: steps.answer.outputs.other == 'true'
+        run: echo "#$NUMBER gets no answer, fix or label from this run. The rescreen pass starts the answer of each comment that still waits."
       # The fix, as one review of suggested changes on the head (POST pulls/<n>/reviews, event COMMENT, commit_id the
       # head, one comment on the right side of the diff for each suggestion), once for each head: a review of
       # github-actions[bot] whose body starts with <!-- review-fix <head> --> is the fix posted already. A pull
-      # request that moved on from the head is the next run's. The output posted tells the label step that a fix
-      # review is there.
+      # request that moved on from the head is the next run's, and so is the fix of an answer that another run answered
+      # first (Post the answer). The output posted tells the label step that a fix review is there.
       - name: Post the fix as suggested changes
         id: fixed
-        if: needs.review.outputs.fix != ''
+        if: needs.review.outputs.fix != '' && steps.answer.outputs.other != 'true'
         env:
           FIX: ${{ needs.review.outputs.fix }}
           HEAD: ${{ needs.review.outputs.head }}
@@ -4059,11 +4099,12 @@ jobs:
       # label comment of an outside pull request holds the marker line <!-- repo-pairs-import-paths <head>: <value> -->
       # of R12, with the value of REPO_PAIRS_IMPORT_PATHS that the post job's decision at the head read (this step's own
       # read when that job gave no decision), and its text names the step for the import by that value. So the rescreen
-      # pass reads the value that the state rested on, and relabels the head when the variable changed since.
+      # pass reads the value that the state rested on, and relabels the head when the variable changed since. An answer
+      # that another run answered first (Post the answer) leaves the labels as that run set them.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
-          && needs.trust.outputs.task != 'catchup'
+          && needs.trust.outputs.task != 'catchup' && steps.answer.outputs.other != 'true'
         env:
           TASK: ${{ needs.trust.outputs.task }}
           # The head that the review read, or the head of a relabel, which the trust job read.

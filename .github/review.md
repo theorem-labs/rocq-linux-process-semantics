@@ -28,13 +28,14 @@ Each review goes through three steps before it posts:
 - `.review/`, which the workflow gathers:
   - for a pull request, `pr.json` (title, body, author, commits, files,
     comments, reviews), `pr.diff` (the change against its merge base with
-    `main`), `commits.txt` (that base and the head), `head/` (each changed
-    file as the pull request has it, except what `omitted.txt` lists:
-    deleted files, links and submodules, files cut at 2 MiB, and any
-    `CLAUDE.md`, `AGENTS.md` or `.claude/`, which `pr.diff` still shows),
-    `review-comments.txt`, `checks.json` (the state of its checks when
-    the review started) and `soundness.json` (the changed files that can
-    change a Rocq proof: "Soundness of a Rocq proof", below).
+    `main`, as GitHub shows it: a renamed file is a rename with only its
+    changed lines), `commits.txt` (that base and the head), `head/` (each
+    changed file as the pull request has it, except what `omitted.txt`
+    lists: deleted files, links and submodules, files cut at 2 MiB, and
+    any `CLAUDE.md`, `AGENTS.md` or `.claude/`, which `pr.diff` still
+    shows), `review-comments.txt`, `checks.json` (the state of its checks
+    when the review started) and `soundness.json` (the changed files that
+    can change a Rocq proof: "Soundness of a Rocq proof", below).
   - for an issue, `issue.json`.
   - in `pr.json`, `issue.json` and `review-comments.txt`, only the comments
     and reviews of the author and of accounts with write access.
@@ -134,19 +135,27 @@ many files the pull request has:
 
 - a `.v` file.
 - a `dune`, `dune-project` or `dune-workspace` file.
-- a file that a `dune` file of the head names. For example: a file that a
-  rule reads or writes (its `deps`, its `targets` or `target`, and the
-  files of its `action`, such as `run`, `with-stdout-to` and `copy`), a
-  file of a glob (`glob_files`, `glob_files_rec`, `copy_files`), each file
-  of a `source_tree`, and the file of an `(include ...)` or a
-  `(:include ...)`.
+- an `opam` or `*.opam` file: its `pin-depends` can change the Rocq that
+  CI builds with.
+- a file that a `dune` file of the head or of `main` names. For example: a
+  file that a rule reads or writes (its `deps`, its `targets` or `target`,
+  and the files of its `action`, such as `run`, `with-stdout-to` and
+  `copy`), a file of a glob (`glob_files`, `glob_files_rec`, `copy_files`),
+  each file of a `source_tree`, and the file of an `(include ...)` or a
+  `(:include ...)`. The `dune` files of `main` count too: a pull request
+  that starts from an older `main` merges into the newest one.
+- a file of an OCaml module that an `executable`, `executables`,
+  `library`, `test` or `tests` stanza builds (`.ml`, `.mli`, `.mll`,
+  `.mly`): every module of its directory, or the modules of its `modules`
+  field. Also such a file of a directory with an `ocamllex`, `ocamlyacc`
+  or `menhir` stanza, and a C file of a stanza with C stubs.
 - the file that a link points to, when the link is one of these files.
 
 The workflow reads the changed files itself, from every page of the list
-of files of the pull request, and the `dune` files of the head from git:
-`soundness.json` gives the result. When GitHub does not give the whole
-list, or the workflow cannot read a `dune` file, the pull request counts
-as one that can change a Rocq proof.
+of files of the pull request, and the `dune` files of the head and of
+`main` from git: `soundness.json` gives the result. When GitHub does not
+give the whole list, or the workflow cannot read a `dune` file, the pull
+request counts as one that can change a Rocq proof.
 
 For each outside pull request that can change a Rocq proof, the review
 does these three things:
