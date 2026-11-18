@@ -621,11 +621,21 @@ FENCE = re.compile(r" {0,3}(?:`{3,}(?=[^`]*$)|~{3,})")
 # GitHub's cmark-gfm reads raw HTML as CommonMark 0.29 does. A line that starts an HTML block that a blank line does
 # not end: <pre>, <script>, <style> or <textarea>, <?, <![CDATA[, <! and an upper-case letter, or <!--. ENDS: for each
 # kind, what a line of the block holds when the block ends, and the line that ends it (for the first kind, the end tag
-# of the block's own name).
+# of the block's own name). cmark-gfm ends a comment's block only at -->, never at --!>, which an HTML parser also
+# reads as the end of a comment: the block then goes on, and the end that closed adds after the text ends it.
 LONG_HTML = re.compile(r"(?i) {0,3}<(?:(pre|script|style|textarea)(?=[ \t>]|$)|(\?)|(!\[CDATA\[)|(?-i:(![A-Z]))"
                        r"|(!--))")
-ENDS = ((re.compile(r"(?i)</(?:pre|script|style|textarea)>"), ""), (re.compile(r"\?>"), "?>"),
-        (re.compile(r"\]\]>"), "]]>"), (re.compile(r">"), ">"), (re.compile(r"-->"), "-->"))
+
+
+class Holds(str):
+    """A fixed end of an HTML block: search(line) tells whether the line holds it, as a pattern's search does."""
+
+    def search(self, line):
+        return self in line
+
+
+ENDS = ((re.compile(r"(?i)</(?:pre|script|style|textarea)>"), ""), (Holds("?>"), "?>"), (Holds("]]>"), "]]>"),
+        (Holds(">"), ">"), (Holds("-->"), "-->"))
 # Lines that start an HTML block that a blank line ends: a tag with one of CommonMark's names of such blocks
 # (BLOCK_HTML), or one whole tag alone, of any name (TAG_LINE), which cannot interrupt a paragraph of the same block.
 BLOCK_HTML = re.compile(
