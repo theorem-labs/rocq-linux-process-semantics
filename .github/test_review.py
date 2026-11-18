@@ -3810,6 +3810,53 @@ class CapTest(Runner):
                                             "failure", "cancelled", "timed_out", "neutral", "action_required",
                                             "stale")})
 
+    def test_a_re_run_that_runs_now_counts_however_long_ago_its_run_was_made(self):
+        """Decision 2: a maintainer can run again the jobs of any run, and the re-run keeps the time when its run was
+        made. The Count step reads each run that has not finished whenever it was made: a re-run of a run made 30
+        hours ago, whose review job calls the model now, and SCREENED_HOURLY_CAP - 1 screened reviews of the hour fill
+        the cap. The stand-in gh lists runs by GitHub's created filter, as the cases above do."""
+        cap = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        bin_dir = os.path.join(self.dir, "bin")
+        os.rename(os.path.join(bin_dir, "gh"), os.path.join(bin_dir, "gh-served"))
+        with open(os.path.join(bin_dir, "gh"), "w") as f:
+            f.write('#!/usr/bin/env bash\nargs=("$@") created=\n'
+                    'for a in "$@"; do case $a in \'created=>=\'*) created=${a#created=>=} ;; esac; done\n'
+                    'for i in "${!args[@]}"; do\n'
+                    '  if [ -n "$created" ] && [ "${args[$i]}" = --jq ]; then\n'
+                    '    args[$((i + 1))]="(.workflow_runs |= map(select(.created_at >= \\"$created\\")))'
+                    ' | .total_count = (.workflow_runs | length) | ${args[$((i + 1))]}"\n'
+                    '  fi\ndone\nexec "$(dirname "$0")/gh-served" "${args[@]}"\n')
+        os.chmod(os.path.join(bin_dir, "gh"), 0o755)
+
+        def ago(minutes):
+            return (datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        made = 30 * 60
+        fresh = [{"id": 10 + i, "event": "issue_comment", "status": "completed", "conclusion": "success",
+                  "created_at": ago(30), "updated_at": ago(20)} for i in range(cap - 1)]
+        rerun = {"id": 50, "event": "workflow_run", "status": "in_progress", "conclusion": None,
+                 "created_at": ago(made), "updated_at": ago(5), "run_started_at": ago(6), "run_attempt": 2}
+        runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
+        self.serve(runs, {"workflow_runs": []})
+        self.serve(f"{runs}.status=success", {"workflow_runs": fresh})
+        self.serve(f"{runs}.status=in_progress", {"workflow_runs": [rerun]})
+        for r in fresh:
+            self.serve(f"repos/{REPO}/actions/runs/{r['id']}/jobs", {"jobs": [
+                dict(attempt_job("review", name="review (screened)"), run_id=r["id"], run_attempt=1,
+                     started_at=ago(29))]})
+        again = dict(attempt_job("review", name="review (screened)"), run_id=50, run_attempt=2,
+                     status="in_progress", conclusion=None, started_at=ago(5))
+        for s in again["steps"]:
+            if s["name"] == "Review":
+                s.update(status="in_progress", conclusion=None)
+                break
+        self.serve(f"repos/{REPO}/actions/runs/50/jobs", {"jobs": [
+            dict(attempt_job("review", "Sign in to Anthropic", name="review (screened)"), run_id=50, run_attempt=1,
+                 started_at=ago(made - 2)), again]})
+        rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100",
+                                       **self.step_env(self.COUNT, "screen"))
+        self.assertEqual((rc, got.get("count")), (0, str(cap)), out)
+
 
 class BunTest(Runner):
     def test_no_other_bun_can_come_first(self):
