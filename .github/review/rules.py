@@ -3,6 +3,7 @@
 labels").
 
     python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
+    python3 .github/review/rules.py mark <number> <line>
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
@@ -27,6 +28,12 @@ that has none gets none. For an outside pull request (the facts kind=pr and outs
 person, the text also names the step of R12 for the import into the internal repository (import_steps), from the
 facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the
 post job's decision (import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+
+mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
+(with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
+state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working.
+The comment job of a catch-up records the line <!-- review-catchup <head> --> with it. The rescreen pass reads that
+line, so that each head gets one catch-up.
 
 make-label: makes the label <name> of LABELS with its colour and description, or sets its description when the label
 is there with another one. It reads the label first, and writes only what differs. A failure only warns: adding a
@@ -249,9 +256,12 @@ FIRST = "<!-- review-label -->"
 HEAD = re.compile(r"[0-9a-f]{40}")
 NUMBER = re.compile(r"[1-9][0-9]*")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
-# (R12), the stored draft of an issue's reply, and the approved reply that posted.
+# (R12), the stored draft of an issue's reply, the approved reply that posted, and the head that a catch-up closed and
+# reopened the pull request at (D16 (a): once for each head).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
-                  r"|<!-- (issue-reply-posted) [0-9]+ -->")
+                  r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->")
+# A marker line, as the last part of a label comment holds them.
+MARKER_LINE = re.compile(r"<!-- [^\n]* -->")
 
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
@@ -311,7 +321,7 @@ def label_of(state):
 
 
 def marker_kind(line):
-    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft or issue-reply-posted."""
+    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted or review-catchup."""
     m = KEPT.fullmatch(line)
     if not m:
         raise ValueError(f"not a marker line that the label comment keeps: {line!r}")
@@ -458,9 +468,7 @@ def apply(number, state, markers=(), head="", imports=None, labels=None):
         make_label(want)
         gh("--method", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={want}", "--jq", ".[].name")
     if labels is None:
-        mine = f"select(.user.login == {json.dumps(BOT)} and (.body | startswith({json.dumps(FIRST)})))"
-        labels = gh_objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
-                            f".[] | {mine} | {{id, body}} | @json")
+        labels = read_labels(number)
     old = labels[-1] if labels else None
     shown = f"#{number}: {want or 'no state label'} ({state})"
     if old is None and want is None:
@@ -470,13 +478,57 @@ def apply(number, state, markers=(), head="", imports=None, labels=None):
     if old is not None and body == old["body"]:
         print(f"{shown}, as its label comment says already.")
         return
+    write_label(number, old, body)
+    print(f"{shown}.")
+
+
+def read_labels(number):
+    """The label comments of BOT on the item number, each {id, body}, in the order that GitHub lists them."""
+    mine = f"select(.user.login == {json.dumps(BOT)} and (.body | startswith({json.dumps(FIRST)})))"
+    return gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
+                      f".[] | {mine} | {{id, body}} | @json")
+
+
+def write_label(number, old, body):
+    """Writes body as the label comment of the item number: in the place of old, a label comment {id, body}, or as a
+    new comment when old is None."""
+    repo = os.environ["REPO"]
     if old is not None:
         if not NUMBER.fullmatch(str(old["id"])):
             raise GhError(f"the label comment of #{number} has no id")
         gh("--method", "PATCH", f"repos/{repo}/issues/comments/{old['id']}", "-f", f"body={body}", "--jq", ".html_url")
     else:
         gh("--method", "POST", f"repos/{repo}/issues/{number}/comments", "-f", f"body={body}", "--jq", ".html_url")
-    print(f"{shown}.")
+
+
+def with_marker(body, line):
+    """The label comment body with line, a marker line of KEPT, as label_comment gives it for the same state with line
+    among its markers: in the last part of body, which holds the marker lines, line takes the place of the line of its
+    kind, after the other kept lines and before the conflict-state line and the marker of the state label. A body with
+    no marker line gets line as a new last part. The rest of body stays as it is."""
+    kind = marker_kind(line)
+    text, gap, last = body.rpartition("\n\n")
+    lines = last.split("\n")
+    if not gap or not all(MARKER_LINE.fullmatch(m) for m in lines):
+        return f"{body}\n\n{line}"
+    kept = [m for m in lines if KEPT.fullmatch(m) and marker_kind(m) != kind]
+    rest = [m for m in lines if not KEPT.fullmatch(m)]
+    return text + gap + "\n".join(kept + [line] + rest)
+
+
+def mark(number, line):
+    """Records line, a marker line of KEPT, in the label comment of the item number (with_marker), and writes nothing
+    else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
+    of the state working, which has no state label, with line."""
+    marker_kind(line)
+    labels = read_labels(number)
+    old = labels[-1] if labels else None
+    body = label_comment("working", "", [line]) if old is None else with_marker(old["body"], line)
+    if old is not None and body == old["body"]:
+        print(f"#{number}: its label comment holds {line} already.")
+        return
+    write_label(number, old, body)
+    print(f"#{number}: its label comment holds {line}.")
 
 
 def set_state(number, facts, markers=(), head="", labels=None):
@@ -1237,6 +1289,9 @@ def main(argv):
         if len(argv) >= 2 and argv[0] == "label" and NUMBER.fullmatch(argv[1]):
             facts, markers, head = parse(argv[2:])
             set_state(argv[1], facts, markers, head)
+            return 0
+        if len(argv) == 3 and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
+            mark(argv[1], argv[2])
             return 0
         if len(argv) == 7 and argv[0] == "soundness":
             review, path, hold, outside, section_path, all_path = argv[1:]

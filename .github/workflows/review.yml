@@ -30,7 +30,8 @@
 #   approve   a first-time contributor's pull request whose CI runs GitHub holds: the screen, and, when it passes, the
 #             approval of the held runs. A run by hand with the task review on such a pull request gets this task.
 #   catchup   an outside pull request whose head no run met: the OSS Verify App closes and reopens it, which starts CI.
-#             A pull request that a catch-up closed and could not reopen is only reopened.
+#             A pull request that a catch-up closed and could not reopen is only reopened. The label comment records
+#             the head, so that each head gets one catch-up.
 #   conflict  a pull request with a merge conflict, for which GitHub starts no CI run: a comment that asks its author
 #             to resolve the conflict.
 #   relabel   the import check run of R12 and the label and the label comment of a head, set again with no model from
@@ -174,7 +175,8 @@
 #           it, with the label waits-on-author. It posts the answer, once for each comment, and the fix as one review
 #           of suggested changes, once for each head. For a draft, it posts the label comment alone, and for a reply
 #           the approved text, byte for byte and once. For a relabel, it sets the state label and the label comment of
-#           the head again, from what the workflow wrote of the head and what the post job decided. For a stop of the
+#           the head again, from what the workflow wrote of the head and what the post job decided. For a catch-up
+#           that reopened the pull request, it adds the line of the head to the label comment. For a stop of the
 #           rescreen pass, it gives the item waits-on-theorem and writes the hold comment that says that the work is
 #           not tried again. It never commits or pushes: its token can write no file of the repository. It uses this
 #           run's GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
@@ -505,11 +507,13 @@ jobs:
           # job lists them for an answer (answer-to.json): each one made after what the workflow's newest review, fix
           # review, answer or hold read. A review and a fix review read the conversation when their run started, as
           # their marker <!-- review-read <time> --> says (one with no such marker, from before it, when GitHub last
-          # changed it), so that a comment made while their run ran still waits. An answer answers the comments up to
-          # the one that its marker names, the newest that waited for it, so that a comment made while it ran still
-          # waits too. A hold counts from the time GitHub last changed it. A hold that the workflow tries again as an
-          # answer answers nothing: each comment that waited when it was written, up to the one that its marker names,
-          # still waits until an answer answers it, whatever review or hold came after that hold.
+          # changed it), so that a comment made while their run ran still waits. That marker counts only among the
+          # marker lines at the start of the comment, which the workflow writes: the text of a review of before the
+          # move off pull_request_target is the model's, with no change, and can hold any marker. An answer answers
+          # the comments up to the one that its marker names, the newest that waited for it, so that a comment made
+          # while it ran still waits too. A hold counts from the time GitHub last changed it. A hold that the workflow
+          # tries again as an answer answers nothing: each comment that waited when it was written, up to the one that
+          # its marker names, still waits until an answer answers it, whatever review or hold came after that hold.
           waiting() {
             local found
             # shellcheck disable=SC2016 # $b is jq's
@@ -520,7 +524,7 @@ jobs:
                 then {held: ($b | capture("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer (?<c>[0-9]+) -->") | .c)}
                 elif ($b | test("^<!-- review-answer [0-9]+")) then {answers: ($b | capture("^<!-- review-answer (?<c>[0-9]+)") | .c)}
                 elif ($b | test("^<!-- review(-held)? -->")) then {read: (($b
-                  | capture("\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
+                  | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
                   | .t) // .updated_at)}
                 else null end)}') \
               || return 1
@@ -529,7 +533,7 @@ jobs:
               found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/reviews" --jq '.[] | (.body // "") as $b
                 | {made: .submitted_at, at: .submitted_at, id, author: .user.login, text: ($b | test("\\S")),
                    own: (if .user.login == "github-actions[bot]" and ($b | startswith("<!-- review-fix ")) then {read: (($b
-                     | capture("\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
+                     | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
                      | .t) // .submitted_at)} else null end)}
                 | @json') || return 1
               found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/comments" \
@@ -574,21 +578,30 @@ jobs:
             esac
           }
           # head_marks <number> <head>: what the comments of github-actions[bot] on <number> say of <head>, as
-          # "<review> <held> <conflict>". review is new when a comment holds the marker <!-- review-head <head> --> of
-          # this workflow's review, old when one starts with <!-- review --> and holds "of commit " and the first 12
-          # characters of <head> (the review of before the move off pull_request_target), and none else. held is true
-          # when a hold comment names <head> (<!-- review-held-head <head> -->). conflict is true when the label
-          # comment holds <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict.
+          # "<review> <held> <conflict> <caught>", from the lines that the workflow writes alone, never from the text of
+          # a review: the model writes that text, and a review of before the move off pull_request_target holds it
+          # with no change, so it can name any commit and hold any marker. review is new when a comment starts with
+          # <!-- review --> and, on its next line, the marker <!-- review-head <head> --> of this workflow's review;
+          # old when its first two lines are <!-- review --> and "**Automated review** of commit " with the first 12
+          # characters of <head>, the header of the review of before that move (a review of now has the marker of its
+          # head on its second line, so it is never old); and none else. held is true when a hold comment names <head>
+          # (<!-- review-held-head <head> -->). conflict is true when the label comment holds
+          # <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict. caught is true when
+          # the label comment holds <!-- review-catchup <head> -->: a catch-up closed and reopened the pull request at
+          # <head>.
           head_marks() {
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             comments "$1" | SHA=$2 jq -rs 'map(select(.user.login == "github-actions[bot]") | .body // "") as $b
-              | [(if any($b[]; test("(^|\n)<!-- review-head " + $ENV.SHA + " -->(\n|$)")) then "new"
-                  elif any($b[]; startswith("<!-- review -->") and contains("of commit " + $ENV.SHA[0:12])) then "old"
+              | [(if any($b[]; startswith("<!-- review -->\n<!-- review-head " + $ENV.SHA + " -->\n")) then "new"
+                  elif any($b[]; . + "\n"
+                    | startswith("<!-- review -->\n**Automated review** of commit " + $ENV.SHA[0:12] + "\n")) then "old"
                   else "none" end),
                  any($b[]; startswith("<!-- review-held -->")
                    and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")),
                  any($b[]; startswith("<!-- review-label -->")
-                   and test("\n<!-- review-conflict-state " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
+                   and test("\n<!-- review-conflict-state " + $ENV.SHA + " -->(\n|$)")),
+                 any($b[]; startswith("<!-- review-label -->")
+                   and test("\n<!-- review-catchup " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
           }
           # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the automated
           # catch-up closed it and could not reopen it. The catch-up then tries nothing more on it.
@@ -634,15 +647,18 @@ jobs:
             esac
           }
           # ci_of <head>: the CI runs of <head> of the event pull_request: pending while one of them is queued, in
-          # progress, waiting or held for a person's approval (action_required), or while GitHub does not list them all
-          # (whole); else the time when the newest one ended; nothing when there is none.
+          # progress, waiting or held for a person's approval, or while GitHub does not list them all (whole); else the
+          # time when the newest one ended; nothing when there is none. GitHub lists a held run with the status
+          # action_required, or with the status completed and the conclusion action_required (run 39977702978 of this
+          # repository, read 2026-11-17): such a run has not ended.
           ci_of() {
             local out rows
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             out=$(SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -F per_page=100 \
               --jq "$pages"'(.workflow_runs[] | select(.head_sha == $ENV.SHA and .event == "pull_request"
                   and .path == ".github/workflows/ci.yml")
-                | if .status == "completed" then .updated_at // "-" else "pending" end)') || return 1
+                | if .status == "completed" and .conclusion != "action_required" then .updated_at // "-" else "pending"
+                  end)') || return 1
             if ! rows=$(whole <<< "$out"); then echo pending; return 0; fi
             sort <<< "$rows" | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
           }
@@ -807,16 +823,19 @@ jobs:
             access[$1]=$rc
           }
           # held_of: held_list, "<head> <created>" of each run of the event pull_request that GitHub holds for a
-          # person's approval (status action_required), read once in this run. GitHub lists at most 1,000 of them, the
-          # newest first: when it cut the list, held_list is empty and held_cut is set, and held_at reads the runs of
-          # each head.
+          # person's approval, read once in this run: the runs that the filter status=action_required lists, with the
+          # status action_required, or with the status completed and the conclusion action_required, as GitHub lists a
+          # held run (ci_of). GitHub lists at most 1,000 of them, the newest first: when it cut the list, held_list is
+          # empty and held_cut is set, and held_at reads the runs of each head.
           held_list="" held_read="" held_cut=""
           held_of() {
             local out
             [ -z "$held_read" ] || return 0
             out=$(gh api --method GET --paginate "repos/$REPO/actions/runs" -f status=action_required \
-              -f event=pull_request -F per_page=100 --jq "$pages"'(.workflow_runs[] | select(.status == "action_required"
-                and .event == "pull_request") | "\(.head_sha) \(.created_at // "-")")') || return 1
+              -f event=pull_request -F per_page=100 --jq "$pages"'(.workflow_runs[]
+                | select((.status == "action_required" or .conclusion == "action_required")
+                         and .event == "pull_request")
+                | "\(.head_sha) \(.created_at // "-")")') || return 1
             held_list=$(whole <<< "$out") || held_cut=1
             held_read=1
           }
@@ -830,8 +849,9 @@ jobs:
             fi
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             SHA=$1 gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$1" -f status=action_required \
-              -F per_page=100 --jq '.workflow_runs[] | select(.status == "action_required" and .head_sha == $ENV.SHA
-                and .event == "pull_request") | .created_at // "-"'
+              -F per_page=100 --jq '.workflow_runs[]
+                | select((.status == "action_required" or .conclusion == "action_required")
+                         and .head_sha == $ENV.SHA and .event == "pull_request") | .created_at // "-"'
           }
           : > "$seen/due"
           # owe <at> <task> <account> <head> <comment> <why>: #number is due a run of <task>, for <account> (empty for
@@ -1151,7 +1171,7 @@ jobs:
             fi
             owe "${last:-$opened}" draft "$limited" - - "no draft of a reply to it is stored"
           }
-          # due_approve: the approval of the runs of the head of #number that GitHub holds (status action_required),
+          # due_approve: the approval of the runs of the head of #number that GitHub holds (held_of and held_at),
           # while no approval run screened the head with a verdict since the newest held run: its screen job passed and
           # its post job did not fail (by the App's retry, one that failed leaves no verdict), or a hold that is not
           # tried again, the newest of its work, names the head. Once an hour after the newest approval run of the head.
@@ -1233,13 +1253,14 @@ jobs:
             done
             merge=null
           }
-          # head_of: review, held and conflicted, what the comments of #number say of its head (head_marks), read once.
+          # head_of: review, held, conflicted and caught, what the comments of #number say of its head (head_marks),
+          # read once.
           head_of() {
             local line
             [ -z "$head_read" ] || return 0
             line=$(head_marks "$number" "$head") \
               || { echo "::error::the comments of #$number could not be read."; return 1; }
-            read -r review held conflicted <<< "$line"
+            read -r review held conflicted caught <<< "$line"
             head_read=1
           }
           # ci_head: ci, what the CI runs of the head of #number say (ci_of), read once.
@@ -1307,15 +1328,22 @@ jobs:
             fi
             owe "$opened" relabel "" "$head" - "the merge conflict of $head is gone"
           }
-          # due_catchup: the catch-up of an outside pull request whose head no review and no run of this workflow
-          # names (no run met it), whose head repository is still there, and whose newest CI run of the head ended over
-          # an hour ago, with none still to finish: a catchup run, whose post job closes and reopens it with the OSS
-          # Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows. Once for each
-          # head: that run names it. A pull request whose head repository is gone is never closed: GitHub cannot
-          # reopen it.
+          # due_catchup: the catch-up of an outside pull request whose head no review, no hold comment and no run of
+          # this workflow names (no run met it), whose head repository is still there, and whose newest CI run of the
+          # head ended over an hour ago, with none still to finish: a catchup run, whose post job closes and reopens it
+          # with the OSS Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows.
+          # A hold comment names its head whatever the age of the run that held it, which can be older than the 8 days
+          # of runs that this pass reads. Once for each head: the comment job of the run that closed and reopened the
+          # pull request records the head in the label comment (<!-- review-catchup <head> -->, caught), and that
+          # line stays there however long ago the run was. A pull request whose head repository is gone is never
+          # closed: GitHub cannot reopen it.
           due_catchup() {
-            [ "$review" = none ] || return 0
+            [ "$review" = none ] && [ "$held" = false ] || return 0
             [ -z "$(runs_of '[a-z]+' "$head")" ] || return 0
+            if [ "$caught" = true ]; then
+              echo "#$number: its label comment records a catch-up of $head, which runs once for each head."
+              return 0
+            fi
             if [ "${pr_repo[$number]:-0}" = 0 ]; then
               echo "#$number: the head repository of $head is gone, so it is not closed."
               return 0
@@ -1483,7 +1511,7 @@ jobs:
           consider() {
             local head="" outsider=false limited="" hold=""
             local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
-            local review=none held=false conflicted=false head_read="" merge="" ci="" ci_read=""
+            local review=none held=false conflicted=false caught=false head_read="" merge="" ci="" ci_read=""
             if [ "$draft" != false ]; then
               echo "#$number: a draft, of which the trust job takes no run."
               return 0
@@ -1742,12 +1770,16 @@ jobs:
               read -r merged base pr_head mergeable head_repo <<< "$data"
             fi
           }
-          # held_runs: how many runs of the head pr_head GitHub holds for a person's approval (status action_required).
+          # held_runs: how many runs of the head pr_head GitHub holds for a person's approval: with the status
+          # action_required, or with the status completed and the conclusion action_required, as GitHub lists a held run
+          # (ci_of).
           held_runs() {
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             SHA=$pr_head gh api --method GET --paginate "repos/$REPO/actions/runs" -f head_sha="$pr_head" \
-              -f status=action_required -F per_page=100 --jq '[.workflow_runs[] | select(.status == "action_required"
-                and .head_sha == $ENV.SHA and .event == "pull_request")] | length' | awk '{ n += $1 } END { print n + 0 }'
+              -f status=action_required -F per_page=100 --jq '[.workflow_runs[]
+                | select((.status == "action_required" or .conclusion == "action_required")
+                         and .head_sha == $ENV.SHA and .event == "pull_request")] | length' \
+              | awk '{ n += $1 } END { print n + 0 }'
           }
           # replied: true when the label comment of #NUMBER says that its first reply posted.
           replied() {
@@ -2061,7 +2093,7 @@ jobs:
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
                     [[ $pr_head =~ ^[0-9a-f]{40}$ ]] || stop "it names no head commit."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
-                    read -r reviewed named conflicted <<< "$marks"
+                    read -r reviewed named conflicted _ <<< "$marks"
                     [ "$reviewed" != new ] || stop "a review of the workflow names $pr_head."
                     [ "$named" = false ] || stop "a hold comment names $pr_head."
                     [ "$conflicted" = false ] \
@@ -2133,14 +2165,15 @@ jobs:
                   [ "$mergeable" = dirty ] || stop "it has no merge conflict (its mergeable_state is ${mergeable:-unknown})."
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
-                    read -r _ _ conflicted <<< "$marks"
+                    read -r _ _ conflicted _ <<< "$marks"
                     [ "$conflicted" = false ] || stop "its label comment records the merge conflict of $pr_head already."
                   fi
                   route review "" ;;
                 # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed (above):
                 # no screen and no model. The rescreen pass's catch-up of an open pull request (rescreen.yml, catchup)
                 # needs an outside author, a head repository that is still there (GitHub cannot reopen a pull request
-                # whose head repository is gone), no review of the head, and CI runs of the head that all ended, the
+                # whose head repository is gone), no review and no hold comment that names the head, no catch-up of the
+                # head that its label comment records (once for each head), and CI runs of the head that all ended, the
                 # newest over an hour ago.
                 catchup)
                   if [ "$state" = open ] && [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
@@ -2148,8 +2181,10 @@ jobs:
                     [ -n "$of" ] || stop "its author $AUTHOR has write access."
                     [[ $head_repo =~ ^[1-9][0-9]*$ ]] || stop "its head repository is gone, so it is not closed."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
-                    read -r reviewed _ _ <<< "$marks"
+                    read -r reviewed named _ caught <<< "$marks"
                     [ "$reviewed" = none ] || stop "a review names $pr_head."
+                    [ "$named" = false ] || stop "a hold comment names $pr_head."
+                    [ "$caught" = false ] || stop "its label comment records a catch-up of $pr_head already."
                     ci=$(ci_of "$pr_head") || fail "the CI runs of $pr_head could not be read."
                     [[ -n $ci && $ci != pending ]] || stop "no CI run of $pr_head ended, or one has not finished."
                     [[ $ci < $(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ) ]] \
@@ -2167,7 +2202,7 @@ jobs:
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
                     [ "$mergeable" != unknown ] || stop "GitHub does not say yet whether $pr_head has a merge conflict."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
-                    read -r reviewed named conflicted <<< "$marks"
+                    read -r reviewed named conflicted _ <<< "$marks"
                     [[ $reviewed == new || $named == true || $conflicted == true ]] \
                       || stop "no review, hold comment or merge conflict of the workflow names $pr_head."
                   fi
@@ -2306,11 +2341,14 @@ jobs:
           # fix review, answer or hold read, as the trust job and the rescreen pass tell them (waiting). A review and a
           # fix review read the conversation when their run started, as their marker <!-- review-read <time> --> says
           # (one with no such marker, from before it, when GitHub last changed it), so that a comment made while their
-          # run ran still waits. An answer answers the comments up to the one that its marker names, the newest that
-          # waited for it. A hold comment counts from the time GitHub last changed it. A hold of an answer that the
-          # workflow tries again (its marker names the task answer) answers nothing: each comment that waited when it
-          # was written, up to the one that its marker names, still waits until an answer answers it, whatever review
-          # or hold came after that hold. The answer answers each comment that waits, and its marker names the newest.
+          # run ran still waits. That marker counts only among the marker lines at the start of the comment or the
+          # review, which the workflow writes, as for waiting: the text of a review of before the move off
+          # pull_request_target can hold any marker. An answer answers the comments up to the one that its marker
+          # names, the newest that waited for it. A hold comment counts from the time GitHub last changed it. A hold of
+          # an answer that the workflow tries again (its marker names the task answer) answers nothing: each comment
+          # that waited when it was written, up to the one that its marker names, still waits until an answer answers
+          # it, whatever review or hold came after that hold. The answer answers each comment that waits, and its
+          # marker names the newest.
           # When the comment that the trust job read waits no more, an answer, a review or a hold of the workflow read
           # it: this run gathers nothing.
           if [ "$own" = true ]; then
@@ -2318,7 +2356,7 @@ jobs:
             jq -n --arg author "$author" --slurpfile c "$RUNNER_TEMP/comments.json" \
               --slurpfile r "$RUNNER_TEMP/reviews.json" --slurpfile rc "$RUNNER_TEMP/review-comments.json" '
               def read_at: (.body // "")
-                | capture("\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t;
+                | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t;
               ([$c[0][], $r[0][], $rc[0][]] | map(select(.author == $author)
                   | {key: (.id | tostring), value: (.created_at // .submitted_at // "")}) | from_entries) as $made
               | ([$c[0][] | select(.author == "github-actions[bot]" and ((.body // "") | test("^<!-- review-answer [0-9]+")))
@@ -3435,7 +3473,9 @@ jobs:
   # pull request and for a relabel, it decides the import check run of R12 on the head (.github/review/rules.py
   # import-check) and records repo-pairs/import-approved, with conclusion success, when the rule holds. It checks out
   # main's .github/ for that, and runs nothing else from it. Its outputs: recorded, true when it recorded that check run
-  # at the head, and decision, what it decided for that check run: record, or the first rule of R12 that does not hold.
+  # at the head; decision, what it decided for that check run: record, or the first rule of R12 that does not hold; and
+  # caught, the head of a pull request that a catch-up closed and reopened, or only reopened, which the comment job
+  # records in the label comment.
   post:
     needs: [trust, gather, screen, review]
     # The review or the rescreen of an outside pull request whose screen passed and whose review succeeded, a relabel, a
@@ -3462,6 +3502,7 @@ jobs:
     outputs:
       recorded: ${{ steps.record.outputs.recorded == 'true' && 'true' || 'false' }}
       decision: ${{ steps.decide.outputs.decision }}
+      caught: ${{ steps.catchup.outputs.caught }}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -3574,8 +3615,11 @@ jobs:
       # state now tells which. An open one whose head moved since the trust job read it, or whose head repository is
       # gone (GitHub cannot reopen such a pull request), is not closed. A closed one is reopened only while its newest
       # close is the App's own, so that a pull request that someone closed in between stays closed. The reopen is tried
-      # 3 times, 10 seconds apart; then the step fails, and the rescreen pass tries the reopen again an hour later.
+      # 3 times, 10 seconds apart; then the step fails, and the rescreen pass tries the reopen again an hour later. Once
+      # the pull request is open again, the output caught names its head: the comment job records it in the label
+      # comment, so that the rescreen pass catches up each head once.
       - name: Close and reopen the pull request
+        id: catchup
         if: needs.trust.outputs.task == 'catchup'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -3618,6 +3662,7 @@ jobs:
           for try in 1 2 3; do
             if gh api --method PATCH "repos/$REPO/pulls/$NUMBER" -f state=open --jq .state > /dev/null; then
               echo "Reopened #$NUMBER: GitHub starts a CI run of $sha."
+              [[ ! $sha =~ ^[0-9a-f]{40}$ ]] || echo "caught=$sha" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "::warning::try $try of 3 to reopen #$NUMBER failed."
@@ -3627,9 +3672,10 @@ jobs:
           exit 1
 
       # An approval whose screen passed. With this job's own token: the pull request now, and the runs that GitHub
-      # holds of the head that the screen read (status action_required). When the head moved since the trust job read
-      # it, the screen did not read the new head: nothing is approved, and the new head's held runs wait for a run of
-      # their own. Only a run of the event pull_request at that head, from the pull request's head repository and head
+      # holds of the head that the screen read (with the status action_required, or with the status completed and the
+      # conclusion action_required, as GitHub lists a held run). When the head moved since the trust job read it, the
+      # screen did not read the new head: nothing is approved, and the new head's held runs wait for a run of their
+      # own. Only a run of the event pull_request at that head, from the pull request's head repository and head
       # branch, is approved, and no other run of the same commit (OSSV-679's decision 7).
       - name: The held runs of the screened head
         id: held
@@ -3657,7 +3703,8 @@ jobs:
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           runs=$(SHA=$HEAD REPOSITORY=$repository BRANCH=$branch gh api --method GET --paginate "repos/$REPO/actions/runs" \
             -f head_sha="$HEAD" -f status=action_required -F per_page=100 --jq '.workflow_runs[]
-              | select(.status == "action_required" and .event == "pull_request" and .head_sha == $ENV.SHA
+              | select((.status == "action_required" or .conclusion == "action_required")
+                       and .event == "pull_request" and .head_sha == $ENV.SHA
                        and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
                        and .head_branch == $ENV.BRANCH)
               | .id') \
@@ -3715,15 +3762,18 @@ jobs:
   # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
   # it, and the state label and the label comment of each, which .github/review/rules.py sets from main's checkout of
   # .github/. A draft posts nothing but its label comment, after the review job uploaded it, and a relabel nothing but
-  # the state label and the label comment of its head. A stop of the rescreen pass posts the label and the hold comment
-  # of its work alone. A review, an answer or a fix that the fresh reader refused posts nothing: the item gets
-  # waits-on-theorem and a label comment with Sami's next step. No App token posts here, so none of these comments,
-  # reviews and labels starts a run of a workflow. It never commits or pushes: its token can write no file of the
-  # repository. It runs whatever the post job's result, and reads that job's recorded as false when it did not succeed.
+  # the state label and the label comment of its head. A catch-up that closed and reopened the pull request posts
+  # nothing but the line of its head in the label comment, and keeps the state label and the text of that comment. A
+  # stop of the rescreen pass posts the label and the hold comment of its work alone. A review, an answer or a fix that
+  # the fresh reader refused posts nothing: the item gets waits-on-theorem and a label comment with Sami's next step.
+  # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
+  # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
+  # job's recorded as false when it did not succeed.
   comment:
     needs: [trust, gather, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job. A reply
-    # and a stop have no gather, screen or review job: they need the trust job alone.
+    # and a stop have no gather, screen or review job: they need the trust job alone. A catch-up needs a post job that
+    # reopened the pull request (its output caught).
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -3731,10 +3781,12 @@ jobs:
                && needs.review.result == 'success')
               || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel'
                    || needs.trust.outputs.task == 'reply' || needs.trust.outputs.task == 'stop')
-                  && needs.trust.result == 'success')) }}
+                  && needs.trust.result == 'success')
+              || (needs.trust.outputs.task == 'catchup' && needs.post.result == 'success'
+                  && needs.post.outputs.caught != '')) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max). Every write of the
-    # item's state label and label comment runs in this group, label-<n>: this job's, the hold job's, and a stop's,
-    # which this job writes.
+    # item's state label and label comment runs in this group, label-<n>: this job's, the hold job's, and a stop's and
+    # a catch-up's, which this job writes.
     concurrency:
       group: label-${{ needs.trust.outputs.number }}
       cancel-in-progress: false
@@ -3903,6 +3955,7 @@ jobs:
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
+          && needs.trust.outputs.task != 'catchup'
         env:
           TASK: ${{ needs.trust.outputs.task }}
           # The head that the review read, or the head of a relabel, which the trust job read.
@@ -3957,10 +4010,11 @@ jobs:
           # GitHub last changed the newest hold that stops this run's labels, - for none: each hold for an answer's
           # run, and for any other run each hold but one of an answer that is tried again. pending: true when the
           # newest hold of another work than this run's is one that the rescreen pass tries again and that work posted
-          # nothing since: no review that names the head of the hold, for a held review or approval; no answer, for a
-          # held answer; no stored draft and no posted reply, for a held draft. unsettled: true when the newest hold of
-          # another such work, tried again or not (the screen's, which waits on Sami), is one that its work posted
-          # nothing since. own: true when the newest hold of this run's work is tried again.
+          # nothing since: no review that names the head of the hold (its marker <!-- review-head <head> --> on the
+          # line after <!-- review -->, where the workflow writes it, never in the text), for a held review or
+          # approval; no answer, for a held answer; no stored draft and no posted reply, for a held draft. unsettled:
+          # true when the newest hold of another such work, tried again or not (the screen's, which waits on Sami), is
+          # one that its work posted nothing since. own: true when the newest hold of this run's work is tried again.
           found=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[] | @json') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           # shellcheck disable=SC2016 # $ENV and the names bound in the filter are jq's
@@ -3974,7 +4028,8 @@ jobs:
                   elif .work == "draft" then any($ours[]; (.body | startswith("<!-- review-label -->"))
                     and (.body | test("\n<!-- (issue-draft [0-9]+-[0-9]+|issue-reply-posted [0-9]+) -->(\n|$)")))
                   else any($ours[]; (.body | startswith("<!-- review -->")) and .at > $h.at
-                    and ($h.head == "" or (.body | contains("\n<!-- review-head " + $h.head + " -->\n"))))
+                    and ($h.head == ""
+                         or (.body | startswith("<!-- review -->\n<!-- review-head " + $h.head + " -->\n"))))
                   end;
               ($holds | group_by(.work) | map(max_by(.at) | select(.work != $ENV.W))) as $others
               | [($holds | map(select($ENV.W == "answer" or ((.work == "answer" and .tried) | not)) | .at) | max // "-"),
@@ -4111,6 +4166,22 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$body" --jq .html_url
           fi
+      # A catch-up that closed and reopened the pull request, or only reopened it (the post job's caught, its head
+      # now): the label comment records that head in the line <!-- review-catchup <head> --> (.github/review/rules.py
+      # mark), which every later label comment keeps. The state label and the text of the label comment stay as they
+      # are: the review of the CI run that the reopen starts sets them. An item with no label comment gets one, of
+      # the state in which the workflow still works on it. The rescreen pass reads the line, so that it catches up
+      # each head once, however long ago (rescreen.yml, catchup).
+      - name: Record the catch-up of the head
+        if: env.POST_REVIEW == 'true' && needs.trust.outputs.task == 'catchup'
+        env:
+          CAUGHT: ${{ needs.post.outputs.caught }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          [[ $CAUGHT =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::the post job names no head that it caught up: $CAUGHT"; exit 1; }
+          python3 .github/review/rules.py mark "$NUMBER" "<!-- review-catchup $CAUGHT -->"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:

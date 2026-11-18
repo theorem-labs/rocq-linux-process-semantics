@@ -1069,8 +1069,10 @@ class CommentsTest(Runner):
         <!-- review-read <time> --> says, so a comment made while the run ran still waits; one with no such marker
         counts from the time GitHub last changed it. An answer answers the comments up to the one that its marker
         names. A hold of an answer that is tried again keeps the comments that waited when it was written waiting,
-        whatever review came after it, and not a comment that a review before it had read. The gather job's
-        answer-to.json and the trust and rescreen jobs' waiting give the same comments."""
+        whatever review came after it, and not a comment that a review before it had read. The marker of a read counts
+        only among the marker lines at the start of a review: a review of before the move off pull_request_target,
+        whose text the model wrote with no change, can hold such a line in its text, which is no read. The gather
+        job's answer-to.json and the trust and rescreen jobs' waiting give the same comments."""
         def review(read, posted):
             marker = f"<!-- review-read {read} -->\n" if read else ""
             return {"id": 1, "login": BOT, "at": "2026-11-02T09:00:00Z", "edited": posted,
@@ -1089,6 +1091,10 @@ class CommentsTest(Runner):
                 "body": "<!-- review-held -->\n**Automated answer held.**\n\nHeld.\n\n"
                         "<!-- review-held-limit 50 0 answer 900 -->"}
         late = review("2026-11-02T12:50:00Z", "2026-11-02T13:00:00Z")
+        # A review of before: no marker names its head, and a line of its text says that it read at 13:30.
+        planted = {"id": 1, "login": BOT, "at": "2026-11-02T09:00:00Z", "edited": "2026-11-02T11:00:00Z",
+                   "body": f"<!-- review -->\n**Automated review** of commit {HEAD[:12]}\n\nFine.\n"
+                           "<!-- review-read 2026-11-02T13:30:00Z -->\n"}
         for case, comments, reviews, want in (
                 ("a review whose run started before the comment",
                  [review("2026-11-02T12:10:00Z", "2026-11-02T13:00:00Z"), before, during], [], [900]),
@@ -1104,7 +1110,8 @@ class CommentsTest(Runner):
                  [late, before, during, hold], [fix("2026-11-02T12:10:00Z", "2026-11-02T12:20:00Z")], [900]),
                 ("a held answer, then an answer to its comment",
                  [old, before, during, hold, dict(answer, body="<!-- review-answer 900 -->\n**Automated answer**")], [],
-                 None)):
+                 None),
+                ("a review of before whose text holds a marker of a read", [planted, before, during], [], [899, 900])):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
@@ -1538,10 +1545,15 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(self.ran(dict(approve, route="limit"), github=dispatch), {"hold"})
         self.assertEqual(self.ran(dict(approve, route="review", outsider=""), outputs=clean, github=dispatch), set())
 
-    def test_a_catchup_and_a_relabel_run_the_apps_job_and_a_relabel_the_comment_job(self):
-        """No gather, screen, model or hold: a catch-up runs the App's job alone, and a relabel the App's job and then
-        the comment job, whatever the App's job gave, which sets the label again."""
-        self.assertEqual(self.ran({"task": "catchup", "route": "review", "number": "7", "head": HEAD}), {"post"})
+    def test_a_catchup_runs_the_apps_job_and_a_relabel_the_apps_job_then_the_comment_job(self):
+        """No gather, screen, model or hold: a catch-up runs the App's job, and then the comment job only when that job
+        reopened the pull request (its output caught names the head), which records the head in the label comment;
+        a relabel runs the App's job and then the comment job, whatever the App's job gave, which sets the label
+        again."""
+        catchup = {"task": "catchup", "route": "review", "number": "7", "head": HEAD}
+        self.assertEqual(self.ran(catchup), {"post"})
+        self.assertEqual(self.ran(catchup, outputs={"post": {"caught": HEAD}}), {"post", "comment"})
+        self.assertEqual(self.ran(catchup, results={"post": "failure"}, outputs={"post": {"caught": HEAD}}), {"post"})
         for result in ("success", "failure"):
             with self.subTest(post=result):
                 self.assertEqual(self.ran({"task": "relabel", "route": "review", "number": "7", "head": HEAD},
@@ -3001,7 +3013,9 @@ class PostLabelTest(Runner):
         answer posted after it, whichever of the holds is the newer. An answer also leaves the label on for the
         screen's hold of the review, which waits on Sami, until a review posts. A hold of an answer that is tried again
         leaves the state as it is: one that came after a review's run started does not stop the review's state label,
-        and keeps review-held on; it stops the labels of an answer's run, whose answer did not read its comment."""
+        and keeps review-held on; it stops the labels of an answer's run, whose answer did not read its comment. A
+        review names its head only in its marker on the line after <!-- review -->, where the workflow writes it: the
+        text of a review of before the move off pull_request_target can hold that marker, and names no head."""
         def hold(marker, at, title="review"):
             return {"user": {"login": BOT}, "created_at": at, "updated_at": at,
                     "body": f"<!-- review-held -->\n**Automated {title} held.**\n\nHeld.\n\n{marker}\n"
@@ -3015,8 +3029,11 @@ class PostLabelTest(Runner):
         screened = hold("", "2026-11-02T08:00:00Z")
         review, other = posted(review_of(HEAD)["body"]), posted(review_of(OTHER_HEAD)["body"])
         answer = posted("<!-- review-answer 900 -->\nThe answer.")
+        planted = posted(f"<!-- review -->\n**Automated review** of commit {OTHER_HEAD[:12]}\n\nFine.\n"
+                         f"<!-- review-head {HEAD} -->\n**Automated review** of commit {HEAD[:12]}\n")
         for task, comments, off in (("answer", [held_review, held_answer], False),
                                     ("answer", [held_review, held_answer, other], False),
+                                    ("answer", [held_review, held_answer, planted], False),
                                     ("answer", [held_review, held_answer, review], True),
                                     ("answer", [first_answer, held_review, review], True),
                                     ("answer", [first_answer, screened], False),
@@ -5603,22 +5620,32 @@ class RescreenTrustTest(Held):
         the label comment's conflict-state line names, or whose CI run has not finished (a review of the form of before
         does not stop it). A conflict whose conflict-state line is there already. A relabel while GitHub does not say
         whether the head has a merge conflict, or of a head that no review, hold comment or conflict-state line names.
-        A catch-up of a writer's pull request, of a head that a review names, whose head repository is gone, or whose
-        CI run has not finished or ended under an hour ago. While the reason holds, each is taken."""
+        A catch-up of a writer's pull request, of a head that a review or a hold comment names or whose catch-up the
+        label comment records, whose head repository is gone, or whose CI run has not finished or ended under an hour
+        ago. A CI run that GitHub holds has not finished, in each form that GitHub lists a held run in (the status
+        action_required, or the status completed with the conclusion action_required). The text of a review names no
+        head: a review of before the move off pull_request_target, of another head, whose text holds the marker and
+        the header line of the head, is none of the head's. While the reason holds, each is taken."""
         def said(body, id_=30):
             return {"id": id_, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD, "body": body}
         new = review_of(HEAD)
         old = said(f"<!-- review -->\n**Automated review** of commit {HEAD[:12]}\n\nNo blocking finding.")
         named = limit_hold(50, head=HEAD)
         line = said(rules.label_comment("conflict", head=HEAD), 40)
+        planted = said(f"<!-- review -->\n**Automated review** of commit {OTHER_HEAD[:12]}\n\nFine.\n"
+                       f"<!-- review-head {HEAD} -->\n**Automated review** of commit {HEAD[:12]}\n", 31)
+        caught = said(rules.label_comment("working", markers=[f"<!-- review-catchup {HEAD} -->"]), 40)
+        other = said(rules.label_comment("working", markers=[f"<!-- review-catchup {OTHER_HEAD} -->"]), 40)
         for task, comments, ci, merge, more, taken in (
                 ("review", [], ("completed", 90), "clean", {}, True),
                 ("review", [old], ("completed", 90), "clean", {}, True),
+                ("review", [planted], ("completed", 90), "clean", {}, True),
                 ("review", [new], ("completed", 90), "clean", {}, False),
                 ("review", [named], ("completed", 90), "clean", {}, False),
                 ("review", [line], ("completed", 90), "clean", {}, False),
                 ("review", [], ("in_progress", 5), "clean", {}, False),
                 ("review", [], ("action_required", 5), "clean", {}, False),
+                ("review", [], ("completed", 300, "action_required"), "clean", {}, False),
                 ("conflict", [], ("completed", 90), "dirty", {}, True),
                 ("conflict", [line], ("completed", 90), "dirty", {}, False),
                 ("relabel", [new], ("completed", 90), "clean", {}, True),
@@ -5628,6 +5655,11 @@ class RescreenTrustTest(Held):
                 ("relabel", [new], ("completed", 90), "unknown", {}, False),
                 ("catchup", [], ("completed", 90), "clean", {}, True),
                 ("catchup", [old], ("completed", 90), "clean", {}, False),
+                ("catchup", [planted], ("completed", 90), "clean", {}, True),
+                ("catchup", [named], ("completed", 90), "clean", {}, False),
+                ("catchup", [caught], ("completed", 90), "clean", {}, False),
+                ("catchup", [other], ("completed", 90), "clean", {}, True),
+                ("catchup", [], ("completed", 300, "action_required"), "clean", {}, False),
                 ("catchup", [], ("completed", 90), "clean", {"repository": None}, False),
                 ("catchup", [], ("in_progress", 5), "clean", {}, False),
                 ("catchup", [], ("completed", 50), "clean", {}, False),
@@ -5636,8 +5668,8 @@ class RescreenTrustTest(Held):
                 self.item(kind="pr", head=HEAD, mergeable=merge, labels=(), **more)
                 self.held(7, *comments)
                 self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": [
-                    {"id": 70, "status": ci[0], "event": "pull_request", "path": ".github/workflows/ci.yml",
-                     "head_sha": HEAD, "updated_at": ago(ci[1])}]})
+                    {"id": 70, "status": ci[0], "conclusion": ci[2] if len(ci) > 2 else None, "event": "pull_request",
+                     "path": ".github/workflows/ci.yml", "head_sha": HEAD, "updated_at": ago(ci[1])}]})
                 account = "mallory" if task == "review" and more.get("author", "mallory") == "mallory" else ""
                 got = self.route(task=task, account=account, head=HEAD)
                 self.assertEqual(bool(got.get("route")), taken, got)
@@ -7255,7 +7287,7 @@ class CatchUpScheduleTest(Scheduled):
     def test_a_head_that_no_run_met_is_closed_and_reopened_with_token_a(self):
         """An outside pull request whose head has no review and that no run of this workflow names, whose head
         repository is there, and whose CI run of the head ended over an hour ago: one catchup run of the head, whose
-        name names no account. Its trust job takes it, the post job alone runs after it, and that job closes and then
+        name names no account. Its trust job takes it, the post job runs after it, and that job closes and then
         reopens the pull request with token A. GitHub then starts a CI run of the head (the event pull_request), whose
         run of this workflow reviews the head. The next run starts no second catch-up of the head."""
         self.item(kind="pr")
@@ -7292,6 +7324,59 @@ class CatchUpScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual(rc, 0, out)
         self.assertNotIn("catchup", [r[1] for r in runs], out)
+
+    def test_a_head_caught_up_over_8_days_ago_gets_no_second_catch_up(self):
+        """Decision 6 (D16 (a), once for each head): the post job of the catchup run reopens the pull request and
+        names its head (caught), and then the comment job, in the item's group label-<n>, records that head in the
+        label comment (<!-- review-catchup <head> -->). It sets no state label and keeps the rest of the comment as
+        label gives it for the same state: the text and the lines of an older head's label comment, or, with no label
+        comment, a new one of the state in which the workflow still works on the item. 9 days later no run of the 8
+        days that the schedule reads names the head, and no review or hold names it: the head gets no second
+        catch-up, and the trust job refuses one."""
+        day = 24 * 60
+        line = f"<!-- review-catchup {HEAD} -->"
+        older = {"id": 40, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                 "body": rules.label_comment("change", markers=[rules.import_marker(OTHER_HEAD, None)])}
+        for case, comments, want in (
+                ("no label comment", [], ("POST", rules.label_comment("working", markers=[line]))),
+                ("the label comment of an older head", [older],
+                 ("PATCH", rules.label_comment("change", older["body"], [line])))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=comments, labels=(AUTHOR_LABEL,) if comments else ())
+                self.ci(ended=90)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+                trust = self.dispatched("catchup")
+                self.forget()
+                ctx = self.ctx(trust)
+                steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+                self.assertEqual(steps[CATCH_UP], "success", self.logs)
+                self.assertEqual(self.patches(), [("token-A", "state=closed"), ("token-A", "state=open")])
+                caught = evaluate(JOBS["post"]["outputs"]["caught"], ctx)
+                self.assertEqual(caught, HEAD)
+                ran = run_graph(trust, github={"github.event_name": "workflow_dispatch"},
+                                outputs={"post": {"caught": caught}})
+                self.assertEqual(ran_jobs(ran), {"trust", "post", "comment"})
+                self.forget()
+                steps = run_job(self, "comment", self.ctx(trust, **{"needs.post.result": "success",
+                                                                    "needs.post.outputs.caught": caught}), {})
+                self.assertEqual(steps["Record the catch-up of the head"], "success", self.logs)
+                self.assertEqual([n for n, o in steps.items() if o == "success"],
+                                 ["Run actions/checkout", "Record the catch-up of the head"])
+                self.assertEqual(state_labels(self.api), [])
+                (method, _endpoint, body), = label_comments(self.api)
+                self.assertEqual((method, body), want)
+                self.listed_runs.clear()
+                self.of_heads.clear()
+                self.ci(ended=9 * day)
+                self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(9 * day),
+                                  "updated_at": ago(9 * day), "body": body})
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, []), out)
+                self.assertIn(f"#7: its label comment records a catch-up of {HEAD}", out)
+                self.dispatched("catchup", want=False)
 
     def test_a_head_whose_ci_run_has_not_ended_an_hour_ago_gets_no_catch_up(self):
         """A CI run of the head that is in progress or held (that head gets the approval of its held runs), one that
@@ -8778,6 +8863,33 @@ class LabelTest(Runner):
         rc, out = self.rule("label", "7", "kind=issue", "held=true", comments=[dict(old, body=body), forged])
         self.assertEqual((rc, writes(self.api)), (0, []), out)
 
+    def test_a_marker_line_is_recorded_with_no_change_of_the_state(self):
+        """Decision 6: rules.py mark, as the comment job of a catch-up runs it, records the head in the label comment
+        and changes nothing else: no state label, and the comment that label gives for the same state with the line
+        among its markers, so the text and the other lines stay, and the line takes the place of an older one of its
+        kind. Every later label comment keeps the line. An item with no label comment gets one of the state working,
+        which has no state label. A label comment that holds the line already gets no write."""
+        line, older = f"<!-- review-catchup {HEAD} -->", f"<!-- review-catchup {OTHER_HEAD} -->"
+        for state, markers in (("change", [rules.import_marker(OTHER_HEAD, None)]), ("conflict", []), ("working", []),
+                               ("replied", ["<!-- issue-reply-posted 41 -->", older])):
+            with self.subTest(state=state):
+                old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment(state, markers=markers, head=HEAD)}
+                rc, out = self.rule("mark", "7", line, labels=(AUTHOR_LABEL,), comments=[old])
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(state_labels(self.api), [])
+                (method, endpoint, body), = label_comments(self.api)
+                self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
+                self.assertEqual(body, rules.label_comment(state, old["body"], [line], head=HEAD))
+                self.assertNotIn(older, body)
+                self.assertIn(line, rules.label_comment("decide", body).split("\n"))
+                rc, out = self.rule("mark", "7", line, comments=[dict(old, body=body)])
+                self.assertEqual((rc, writes(self.api)), (0, []), out)
+        rc, out = self.rule("mark", "7", line)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [])
+        self.assertEqual(label_comments(self.api), [("POST", f"repos/{REPO}/issues/7/comments",
+                                                     rules.label_comment("working", markers=[line]))])
+
     def test_with_no_state_label_an_item_with_no_label_comment_gets_none(self):
         rc, out = self.rule("label", "7", "held=true", labels=(THEOREM_LABEL,))
         self.assertEqual(rc, 0, out)
@@ -8785,7 +8897,9 @@ class LabelTest(Runner):
 
     def test_arguments_that_are_not_the_rules_write_nothing(self):
         for args in (("label", "7", "conflict=true"), ("label", "7", "colour=red"), ("label", "x"),
-                     ("label", "7", "marker=<!-- waits-on-author -->"), ("make-label", "bug")):
+                     ("label", "7", "marker=<!-- waits-on-author -->"), ("make-label", "bug"),
+                     ("mark", "7", "<!-- waits-on-author -->"), ("mark", "x", f"<!-- review-catchup {HEAD} -->"),
+                     ("mark", "7")):
             with self.subTest(args=args):
                 rc, out = self.rule(*args)
                 self.assertEqual((rc, writes(self.api)), (2, []), out)
@@ -9022,7 +9136,8 @@ class ImportCheckTest(ReaderRunner):
 
     def assertRecorded(self, got, value, head=HEAD):
         """One check run repo-pairs/import-approved, with conclusion success on head, recorded with token A as the
-        post job's only write, and one marker line of value in its output text: recorded is true."""
+        post job's only write, and one marker line of value in its output text: recorded is true, and the job caught
+        up no head (caught is empty), so the comment job records no catch-up."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -9034,7 +9149,7 @@ class ImportCheckTest(ReaderRunner):
                           "conclusion": "success"})
         self.assertEqual(sorted(body["output"]), ["summary", "text", "title"])
         self.assertMarker(body["output"]["text"], value, head)
-        self.assertEqual(got["post"], {"recorded": "true", "decision": "record"})
+        self.assertEqual(got["post"], {"recorded": "true", "decision": "record", "caught": ""})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
