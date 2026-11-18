@@ -4454,6 +4454,28 @@ class SoundnessTest(ReaderRunner):
                                                            "No blocking finding.")
         self.assertEqual((got["verdict"], listed), ("pass", []))
 
+    def test_a_change_of_an_ocaml_file_that_a_dune_stanza_builds_gets_the_person_verdict(self):
+        """R8: "any other file that a dune rule of the repository reads or writes". An executable stanza names its
+        modules, not their files, and a library stanza with no modules field builds every .ml file of its directory.
+        As in tests/extraction/dune, whose rule builds and runs checked_input_smoke.ml at each dune build: a pull
+        request that changes only such a file gets the person verdict, and the section names the file."""
+        built = dict(self.MAIN, **{
+            "dune-project": "(lang dune 3.23)\n",
+            "tests/extraction/dune": "(executable\n (name smoke)\n (modules smoke))\n\n"
+                                     "(rule\n (alias default)\n (action (run ./smoke.exe)))\n",
+            "tests/extraction/smoke.ml": "let () = print_endline \"ok\"\n",
+            "plugin/dune": "(library\n (name plugin))\n", "plugin/plugin.ml": "let x = 1\n"})
+        for path in ("tests/extraction/smoke.ml", "plugin/plugin.ml"):
+            with self.subTest(path=path):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review({path: "let () = exit 0\n"}, "pass", [],
+                                                                 "No blocking finding.", "No blocking finding.",
+                                                                 main=built)
+                self.assertSoundness(head, got, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+                self.assertRegex(shown, f"(?m)^- `{re.escape(path)}`")
+
     def test_a_head_from_an_older_main_counts_the_files_that_the_dune_rules_of_main_read(self):
         """R8: "any other file that a dune rule of the repository reads or writes". A pull request can start from an
         older commit of main. Here main got a dune rule that reads tests/placement/run.log after the commit that the
