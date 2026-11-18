@@ -5783,6 +5783,46 @@ class FixRuleTest(unittest.TestCase):
                 self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
                                  (0, {"summary": "S.", "suggestions": [suggestion]}))
 
+    def test_a_suggestion_on_a_line_that_githubs_diff_of_a_renamed_file_does_not_show_is_not_kept(self):
+        """D22 ("Suggestions only on the diff"): GitHub refuses a review whose comment is on a line that the pull
+        request's diff does not show (422), and then no suggestion of the fix posts. GitHub shows a renamed file as a
+        rename with only its changed hunks, as git diff does with rename detection. A pull request that renames
+        theories/Old.v to theories/New.v and changes its line 15: a suggestion at New.v:15 is on the diff and is kept;
+        one at New.v:2, which GitHub's diff does not show, becomes the summary's sentence. pr.diff is written by the
+        gather job's own command."""
+        run = step("gather", "Gather the pull request or issue")["run"]
+        (command,) = [line.strip() for line in run.split("\n") if line.strip().endswith('> "$out/pr.diff"')]
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            os.makedirs(os.path.join(d, "theories"))
+            lines = [f"Lemma l{i} : True. Proof. exact I. Qed." for i in range(1, 21)]
+            with open(os.path.join(d, "theories", "Old.v"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "main")
+            base = git("rev-parse", "HEAD")
+            git("mv", "theories/Old.v", "theories/New.v")
+            lines[14] = "Lemma l15 : True. Proof. trivial. Qed."
+            with open(os.path.join(d, "theories", "New.v"), "w") as f:
+                f.write("\n".join(lines) + "\n")
+            git("commit", "-q", "-am", "the pull request")
+            head = git("rev-parse", "HEAD")
+            subprocess.run(["bash", "-c", command], cwd=d, check=True, env=dict(os.environ, mb=base, head=head, out=d))
+            shown = rules.hunks(git("diff", "-M", base, head) + "\n")   # the diff as GitHub shows it
+            self.assertEqual(shown, {"theories/New.v": [(12, 18)]})
+            for line, kept in ((15, 1), (2, 0)):
+                with self.subTest(line=line):
+                    s = {"path": "theories/New.v", "start_line": line, "line": line, "replacement": "x\n", "why": "W."}
+                    with open(os.path.join(d, "fix.json"), "w") as f:
+                        json.dump({"summary": "S.", "suggestions": [s]}, f)
+                    r = subprocess.run([sys.executable, RULES_PY, "suggestions", os.path.join(d, "fix.json"),
+                                        os.path.join(d, "pr.diff")], capture_output=True, text=True)
+                    self.assertEqual(r.returncode, 0, r.stderr)
+                    self.assertEqual(len(json.loads(r.stdout)["suggestions"]), kept, r.stdout)
+
     def test_a_path_that_git_ends_with_a_tab_is_read_without_it_and_a_deleted_one_has_no_lines(self):
         """hunks reads the +++ line of a path that holds a space as git writes it, with a TAB after the path (and after
         the quotes of a path that git quotes), and so does a path that ends with a space. A path that holds a TAB is
