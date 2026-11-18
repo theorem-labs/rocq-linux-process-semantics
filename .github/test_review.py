@@ -6626,9 +6626,23 @@ class RescreenJobTest(Held):
         self.assertEqual([s for s in job["steps"] if "uses" in s], [])
         run = pass_step()["run"]
         self.assertNotRegex(run, r"python3|\.github/review/")
-        self.assertEqual(sorted(set(re.findall(r"--method (POST|PATCH|PUT|DELETE) \"([^\"]+)\"", run))),
-                         [("POST", "repos/$REPO/actions/runs/$1/rerun-failed-jobs"),
-                          ("POST", "repos/$REPO/actions/workflows/review.yml/dispatches")])
+        # Every call of gh api, with its continued lines joined: a method other than GET (quoted endpoint or not)
+        # names only the two starts of a run, a call with fields and no method (gh's POST) is a GraphQL query with no
+        # mutation, and no gh command of an item writes.
+        flat = re.sub(r"\\\n\s*", " ", run)
+        calls = re.findall(r"\bgh api\b([^\n|;)]*)", flat)
+        writes = set()
+        for call in calls:
+            method = re.search(r"(?:--method|-X)\s+([A-Za-z]+)", call)
+            if method and method.group(1).upper() != "GET":
+                endpoint = re.sub(r"(?:--method|-X)\s+[A-Za-z]+", "", call).split()[0].strip("\"'")
+                writes.add((method.group(1).upper(), endpoint))
+            elif not method and re.search(r"(?:^|\s)(?:-f|-F|--field|--raw-field|--input)\b", call):
+                self.assertRegex(call.strip(), r"^graphql\b", call)
+        self.assertEqual(sorted(writes), [("POST", "repos/$REPO/actions/runs/$1/rerun-failed-jobs"),
+                                          ("POST", "repos/$REPO/actions/workflows/review.yml/dispatches")])
+        self.assertNotRegex(run, r"\bmutation\b")
+        self.assertNotRegex(flat, r"\bgh (?:issue|pr|label)\s+(?:create|edit|comment|close|reopen|delete|merge|review)\b")
         self.assertIn('review.yml/dispatches" -f ref=main ', run)
         for name, job in JOBS.items():
             with self.subTest(job=name):
