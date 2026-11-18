@@ -7625,6 +7625,27 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
                 self.assertEqual(self.patches(), [])
 
+    def test_held_runs_of_the_same_commit_from_another_fork_get_no_approve_run(self):
+        """R10 (OSSV-679's decision 7): the approval approves only the held runs of the head from the pull request's
+        own head repository and head branch, never another run of the same commit. Another account can push the same
+        commit to its own fork and open a pull request of it, whose runs GitHub holds: those runs are not this pull
+        request's, so it gets no approve run, which would screen it on its author's hourly limit and approve nothing,
+        and the trust job takes none. The pull request's own held runs of the head get one."""
+        for repository, branch, want in ((999, "copy", []),
+                                         (FORK_ID, BRANCH, [("7", "approve", "mallory", HEAD, "")])):
+            with self.subTest(repository=repository, branch=branch):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr")
+                self.of_heads += [{"id": i, "status": "action_required", "event": "pull_request", "head_sha": HEAD,
+                                   "path": ".github/workflows/ci.yml", "head_branch": branch,
+                                   "head_repository": {"id": repository}, "created_at": ago(300)} for i in (61, 62)]
+                self.publish()
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                self.serve_item(7, "mallory", kind="pr", head=HEAD, branch=BRANCH, repository=FORK_ID)
+                self.dispatched("approve", account="mallory", want=bool(want))
+
     def test_a_held_head_that_a_run_screened_with_a_verdict_since_its_newest_held_run_gets_no_approval(self):
         """b8 (D16 (f)): an approve run of the head after its newest held run, whose screen job passed and whose post
         job did not fail (the screen held it, so no post job ran; or its post job passed): no approve run. A verdict
