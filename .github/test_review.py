@@ -3500,6 +3500,61 @@ class CapTest(Runner):
                         break
                 self.assertEqual(rc, want, out)
 
+    def test_a_run_whose_failed_jobs_run_again_hours_after_it_was_made_counts_toward_the_cap(self):
+        """Decision 2: the rescreen pass runs again the failed jobs of a run whose screen passed and whose review
+        could not sign in, at most once an hour, up to 50 times, for any run of the last 8 days, and the cap counts
+        that run once. GitHub's created filter reads a run's created_at, which a re-run keeps: run 44291111246 of this
+        repository (read 2026-11-18), attempt 2, made at 11:03:15Z and started again at 11:58:16Z, is in the list of
+        runs made from 11:00Z to 11:10Z and not in the list of runs made from 11:30Z to 12:10Z. The stand-in gh here
+        lists runs by that filter. SCREENED_HOURLY_CAP - 1 screened reviews of the hour, and the review job of such a
+        run made 4 hours ago, which calls the model now, fill the cap: the next screened review is held, as it is when
+        that run was made an hour ago."""
+        cap = int(WF["env"]["SCREENED_HOURLY_CAP"])
+        bin_dir = os.path.join(self.dir, "bin")
+        os.rename(os.path.join(bin_dir, "gh"), os.path.join(bin_dir, "gh-served"))
+        with open(os.path.join(bin_dir, "gh"), "w") as f:
+            f.write('#!/usr/bin/env bash\nargs=("$@") created=\n'
+                    'for a in "$@"; do case $a in \'created=>=\'*) created=${a#created=>=} ;; esac; done\n'
+                    'for i in "${!args[@]}"; do\n'
+                    '  if [ -n "$created" ] && [ "${args[$i]}" = --jq ]; then\n'
+                    '    args[$((i + 1))]="(.workflow_runs |= map(select(.created_at >= \\"$created\\")))'
+                    ' | .total_count = (.workflow_runs | length) | ${args[$((i + 1))]}"\n'
+                    '  fi\ndone\nexec "$(dirname "$0")/gh-served" "${args[@]}"\n')
+        os.chmod(os.path.join(bin_dir, "gh"), 0o755)
+
+        def ago(minutes):
+            return (datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for made in (60, 240):
+            with self.subTest(made_minutes_ago=made):
+                fresh = [{"id": 10 + i, "event": "issue_comment", "status": "completed", "conclusion": "success",
+                          "created_at": ago(30), "updated_at": ago(20)} for i in range(cap - 1)]
+                rerun = {"id": 50, "event": "workflow_run", "status": "in_progress", "conclusion": None,
+                         "created_at": ago(made), "updated_at": ago(5), "run_attempt": 2}
+                self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": fresh + [rerun]})
+                for r in fresh:
+                    self.serve(f"repos/{REPO}/actions/runs/{r['id']}/jobs", {"jobs": [
+                        dict(attempt_job("review", name="review (screened)"), run_id=r["id"], run_attempt=1,
+                             started_at=ago(29))]})
+                first = dict(attempt_job("review", "Sign in to Anthropic", name="review (screened)"), run_id=50,
+                             run_attempt=1, started_at=ago(made - 2))
+                again = dict(attempt_job("review", name="review (screened)"), run_id=50, run_attempt=2,
+                             status="in_progress", conclusion=None, started_at=ago(5))
+                for s in again["steps"]:
+                    if s["name"] == "Review":
+                        s.update(status="in_progress", conclusion=None)
+                        break
+                self.serve(f"repos/{REPO}/actions/runs/50/jobs", {"jobs": [first, again]})
+                rc, out, got = self.run_script(step("review", self.COUNT)["run"], RUN_ID="100",
+                                               **self.step_env(self.COUNT, "screen"))
+                for name in (self.CHECK, self.CAP):
+                    if rc != 0:
+                        break
+                    rc, out, _ = self.run_script(step("review", name)["run"], COUNT=got["count"],
+                                                 **self.step_env(name, "screen"))
+                self.assertEqual(rc, 1, out)
+                self.assertIn("HELD", out)
+
 
 class BunTest(Runner):
     def test_no_other_bun_can_come_first(self):
