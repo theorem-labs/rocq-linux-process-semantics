@@ -1366,6 +1366,50 @@ class ClosedTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(trim.closed(text), want)
 
+    def test_a_fence_in_an_html_block_of_any_tag_or_a_details_end_in_a_list_item_moves_no_fixed_part(self):
+        """b6 (R9): closed() must leave nothing open that takes in the fixed part after the text, and no </details> that
+        closes the collapsed block of the whole review. CommonMark starts an HTML block at a line that holds one whole
+        tag alone, of any name (<span>, <br>, <a href=...>), after a blank line, and only a blank line ends it: a fence
+        line in it is HTML, so a closing fence added after the text opens a code block for each fixed part. And
+        CommonMark reads a line of a list item from the indent of the item's text: four spaces in, after a blank line,
+        a </details> is HTML there, not an indented code block. The comment is read as CommonMark reads these blocks
+        and as HTML counts <details>."""
+        def layout(body):
+            """For each line of body: whether a code block holds it, and how many <details> are open before it."""
+            states, fence, html, para, depth = [], "", False, False, 0
+            for line in body.split("\n"):
+                states.append((bool(fence), depth))
+                if fence:
+                    if re.fullmatch(" {0,3}" + re.escape(fence[0]) + "{%d,}[ \t]*" % len(fence), line):
+                        fence = ""
+                    continue
+                if html and not line.strip():
+                    html = False
+                    continue
+                if not html:
+                    if not line.strip():
+                        para = False
+                        continue
+                    if not para and line.startswith("    "):
+                        continue
+                    m = re.match(r" {0,3}(`{3,}(?=[^`]*$)|~{3,})", line)
+                    if m:
+                        fence, para = m.group(1), False
+                        continue
+                    html = not para and bool(re.fullmatch(r" {0,3}</?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?/?>\s*", line))
+                    para = not html
+                depth += len(re.findall(r"(?i)<details\b", line)) - len(re.findall(r"(?i)</details\s*>", line))
+            return states
+
+        text = "Blocking.\n\n<span>\n```\n<details><summary>Notes</summary>\n\nMore notes."
+        body = trim.closed(text) + "\n\n**Soundness of the proofs.**"
+        self.assertEqual(layout(body)[-1], (False, 0), body)   # the fixed part is in no code block and no <details>
+        # The control: the same text with no tag line before its fence.
+        control = text.replace("<span>\n", "")
+        self.assertEqual(layout(trim.closed(control) + "\n\n**Soundness of the proofs.**")[-1], (False, 0))
+        review = "Blocking.\n\n- A list item.\n\n    </details>\n\nThe rest of the review."
+        self.assertNotIn("</details>", trim.closed(review))   # it shows as text, and closes no block
+
     def test_an_answer_or_a_fix_whose_text_leaves_markup_open_keeps_its_footer_and_its_suggestion_blocks(self):
         """The answer's footer, the fix's footer and each suggestion block come after the text that leaves a fence
         or a <details> open, and a </details> of a why shows as text."""
