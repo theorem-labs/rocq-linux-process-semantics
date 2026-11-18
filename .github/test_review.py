@@ -4987,6 +4987,26 @@ class SoundnessScanTest(unittest.TestCase):
                           "docs/deep.md": ("target", "docs/link.md"), "docs/other.md": ("target", "tests/dune")})
         self.assertEqual(facts["unparsed"], ["tests/dune"])
 
+    def test_a_file_that_a_dune_rule_reads_through_a_link_to_its_directory_counts(self):
+        """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". dune
+        follows a link to a directory: with t/ext a link to ../vendor, the (glob_files_rec *.hex) of t/dune reads
+        vendor/x.hex, and dune 3.23 runs the rule again after a change of it. So a change of vendor/x.hex counts. A
+        Markdown file beside it, which no rule reads, does not."""
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            for path, text in (("t/dune", "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
+                                          " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n"),
+                               ("vendor/x.hex", "00\n"), ("vendor/README.md", "# Vendor\n")):
+                os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+                with open(os.path.join(d, path), "w") as f:
+                    f.write(text)
+            os.symlink("../vendor", os.path.join(d, "t", "ext"))
+            for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "main")):
+                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
+                               capture_output=True)
+            files = [{"filename": p, "previous_filename": None} for p in ("vendor/x.hex", "vendor/README.md")]
+            facts = rules.proofs("HEAD", files, len(files), cwd=d, main="HEAD")
+        self.assertEqual([f["path"] for f in facts["files"]], ["vendor/x.hex"])
+
     def test_the_dune_files_of_this_repository_parse_and_name_the_inputs_of_its_proofs_and_no_markdown_file(self):
         """proofs on this repository's own head: each of its dune files parses, so that no pull request gets the person
         verdict because the job could not read one. The files that its rules read or write count, wherever they are:
