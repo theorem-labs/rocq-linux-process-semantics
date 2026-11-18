@@ -4889,6 +4889,26 @@ class AnswerFixTest(ReaderRunner):
         rc, out, _ = self.post_answer("")
         self.assertEqual((rc, writes(self.api)), (0, []), out)
 
+    def test_a_comment_that_another_run_answered_after_this_run_read_it_gets_no_second_answer(self):
+        """b1 (R1): the comment job posts the answer "once for each comment". Comments 899 and 900 of mallory each
+        start an answer run. The run of 900 read the conversation while the run of 899 still ran, so both wait for it
+        and its answer answers both. The run of 899 then posted its answer to 899, after the trust job of the run of
+        900 decided (STARTED). The run of 900 posts no second answer to 899: 900 still waits, and the rescreen pass
+        starts its answer. An answer posted before the run read the conversation stops nothing."""
+        self.pull_request(waiting=(899, 900))
+        rc, out, got = self.answered(text="Both comments, answered.", trimmed="Both comments, answered.")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(got["body"].startswith("<!-- review-answer 900 -->\n"), got["body"])
+        for case, at, answered, posts in (("posted while this run ran", "2026-11-02T10:05:00Z", 899, 0),
+                                          ("posted before this run read it", "2026-11-02T09:00:00Z", 898, 1)):
+            with self.subTest(case=case):
+                other = {"id": 31, "user": {"login": BOT}, "created_at": at, "updated_at": at,
+                         "body": f"<!-- review-answer {answered} -->\n**Automated answer**\n\nYes."}
+                rc, out, _ = self.post_answer(got["body"], comments=[other])
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(len([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c]), posts,
+                                 out)
+
     def test_a_comment_that_asks_for_the_fix_starts_it_in_its_run_which_reads_git_objects_and_no_checkout(self):
         """b1 (R1, R2, R4): the answer to a comment that asks for the fix starts the fix in the same review job of
         the issue_comment run. That run reads the pull request's files through the gather job's step, from git
