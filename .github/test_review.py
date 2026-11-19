@@ -9852,6 +9852,26 @@ class RescreenEventsTest(Scheduled):
                 self.assertLessEqual(len(calls), 1, calls)
                 self.assertIn(text, out)
 
+    def test_screen_start_a_pass_with_a_number_whose_head_has_a_merge_conflict_starts_its_conflict_run(self):
+        """R14 and OSSV-221's architect's ruling (2026-11-19 08:17Z): GitHub starts no CI run for a pull request with
+        a merge conflict, so its head has no held run. A run of the pass that screen-start.yml started with its number
+        takes its mergeable_state from the same read of the pull request, and for a merge conflict, in the place of its
+        end, starts the conflict run of that pull request alone (waits-on-author, and the comment that asks its author
+        to resolve it): nothing for another item that waits. The trust job takes that run. Once the label comment
+        records the conflict of the head, such a run starts nothing."""
+        self.waiting()
+        self.item(kind="pr", merge="dirty")
+        rc, out, runs, wrote, calls = self.numbered(7)
+        self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+        self.assertEqual(len(wrote), 1, wrote)
+        self.assertEqual(calls.count(f"repos/{REPO}/pulls/7"), 1, calls)
+        trust = self.dispatched("conflict")
+        self.assertEqual((trust["task"], trust["route"]), ("conflict", "review"))
+        self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                          "body": rules.label_comment("conflict", head=HEAD)})
+        rc, out, runs, wrote, calls = self.numbered(7)
+        self.assertEqual((rc, runs, wrote), (0, [], []), out)
+
     def test_screen_start_a_pass_with_a_number_whose_head_has_a_held_run_does_its_pass(self):
         """R14: when GitHub holds a run of the head of that pull request, from its head repository and head branch, the
         run does its pass as a run with no number does: the approval of that head, which only a run of the pass starts,
