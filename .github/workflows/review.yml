@@ -497,13 +497,12 @@ jobs:
           # work in its marker: answer, draft or approve as the marker names the task, and review for a marker with no
           # task (a rescreen takes it again). Any other hold names it in its title: answer ("Automated answer held."),
           # draft ("Automated reply held."), approve ("Automated start of the checks held."), import ("Automated check
-          # for the import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and
-          # review for any other.
+          # for the import held."), catchup ("Automated close and reopen held."), and review for any other.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
               | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-                 "close and reopen": "catchup", "catch-up": "catchup"}[.t])
+                 "close and reopen": "catchup"}[.t])
             // "review"; '
           # holds <number>: the newest hold comment of each work (works) on <number>, one on each line: "<work> <time>
           # <run> <tries> <kind> <task> <comment> <id> <head>". For a hold that the rescreen pass tries again (its
@@ -1037,7 +1036,7 @@ jobs:
           }
           # stopped <task> <tries>: the work of the hold that held_work read is not tried again, after <tries> runs of
           # <task> since the hold (halt, with the stop hold-<work>): waits-on-theorem, with the label comment's step
-          # "Sami starts the work that the hold comment names again, by hand", and a hold comment that says so in the
+          # "Sami starts again, by hand, the work that the hold comment names", and a hold comment that says so in the
           # place of that hold. The hold comment of other work stays as it is.
           stopped() {
             local title work what tried of=$1
@@ -1053,13 +1052,13 @@ jobs:
             what="this issue"
             [ "$kind" != pr ] || what="this pull request"
             tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
-            [ -n "$work" ] || tried="The workflow tried $2 times to start the checks of $what after it held them, and no try finished."
+            [ -n "$work" ] || tried="The workflow held the start of the checks of $what. Then it tried $2 times to start them, and no try finished."
             halt "hold-$of" tries_used_up "$of" "$title" "$tried The workflow does not try it again. You do not need to do anything."
           }
           # head_stopped <work> <tries>: the automated <work> (review; approval, of the held runs; import, the import
           # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
-          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the work that the
-          # hold comment names again, by hand", then a hold comment that says so and names the head, in the place of the
+          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts again, by hand, the
+          # work that the hold comment names", then a hold comment that says so and names the head, in the place of the
           # newest hold comment of that work (works), and never of a hold of other work, which the rescreen pass still
           # takes again. That hold stops each later try of the head, and no other reason takes the head in this run
           # (taken).
@@ -1089,7 +1088,7 @@ jobs:
           left_stopped() {
             echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
               "tried again, and the label comment names the next step for Sami."
-            halt reopen left_closed catchup "Automated catch-up held." \
+            halt reopen left_closed catchup "Automated close and reopen held." \
               "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
@@ -1217,7 +1216,7 @@ jobs:
           }
           # answer_stopped <comment> <tries>: the comment job of <tries> answer runs of <comment> failed, so its answer
           # is not tried again (halt, with the stop answer-post): waits-on-theorem, with the label comment's step "Sami
-          # starts the work that the hold comment names again, by hand", then a hold comment that says so, in the place of
+          # starts again, by hand, the work that the hold comment names", then a hold comment that says so, in the place of
           # the newest hold comment of an answer. That hold is not tried again, so the comments before it wait for no
           # answer (waiting).
           answer_stopped() {
@@ -4277,9 +4276,9 @@ jobs:
           # task), else the title's.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
               | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-                 "close and reopen": "catchup", "catch-up": "catchup"}[.t])
+                 "close and reopen": "catchup"}[.t])
             // "review"; '
           # What the hold comments of github-actions[bot] say, as "<last> <pending> <unsettled> <own>". last: when
           # GitHub last changed the newest hold that stops this run's labels, - for none: each hold for an answer's
@@ -4526,6 +4525,9 @@ jobs:
       TASK: ${{ needs.trust.outputs.task }}
       ROUTE: ${{ needs.trust.outputs.route }}
       OUTSIDER: ${{ needs.trust.outputs.outsider }}
+      # The account whose OUTSIDE_HOURLY_LIMIT the run counts on, which a hold at the limit names: the item's author,
+      # or the account of the latest event.
+      ACCOUNT: ${{ needs.trust.outputs.account }}
       REVIEW: ${{ needs.review.result }}
       ORIGIN: ${{ needs.trust.outputs.origin }}
       TRIES: ${{ needs.trust.outputs.tries }}
@@ -4672,23 +4674,42 @@ jobs:
               exit 0
             done <<< "$newer"
           fi
-          item=$(gh api "repos/$REPO/issues/$NUMBER" --jq 'if .pull_request then "pr" else "issue" end') \
+          data=$(gh api "repos/$REPO/issues/$NUMBER" --jq '[(if .pull_request then "pr" else "issue" end), (.user.login // "-")] | join(" ")') \
             || { echo "::error::#$NUMBER could not be read"; exit 1; }
+          read -r item author <<< "$data"
           what="this pull request"
           [ "$item" = pr ] || what="this issue"
           # The rescreen pass (rescreen.yml) takes a hold with a marker once its comment is an hour old, at its first
-          # run after that, which an event starts. A limit hold says what happens if the account is still at its limit;
-          # the other holds say only that a new hold replaces this comment, since a rescreen can be held for another
-          # cause than theirs.
+          # run after that, which an event starts. Such a hold says that first, then that the author does not need to do
+          # anything, then why. A limit hold ends with what happens if the account is still at its limit; the other
+          # holds end with only that a new hold replaces this comment, since a rescreen can be held for another cause
+          # than theirs.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
           events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."$'\n\n'
-          again="The workflow screens $what again at the first of these events after $next:$events"
-          again_limit="${again}If the account is still at the limit then, the workflow holds $what again. This comment then gives the new time."
-          again_other="${again}If the workflow holds $what again, this comment says why."
+          again="The workflow screens $what again at the first of these events after $next:${events}You do not need to do anything."$'\n\n'
+          again_other="If the workflow holds $what again, this comment says why."
+          # The account that the screen was for (OUTSIDER): the item's author, or else the account of the latest event.
+          from="${what^} comes from an account without write access to this repository."
+          [ "$OUTSIDER" = "$author" ] || from="The latest event of $what comes from an account without write access to this repository."
           if [ "$ROUTE" = limit ]; then
             [[ $OUTSIDER =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $OUTSIDER"; exit 1; }
+            # The account at the limit (ACCOUNT, the trust job's account; with none, the account of the event): the
+            # item's author, or else the account of the latest event. A CI run of a pull request whose author and pusher
+            # both have no write access uses the limit of the author: the comment then names both.
+            account=${ACCOUNT:-$OUTSIDER}
+            [[ $account =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $account"; exit 1; }
             kind=limit
-            why="The latest event of $what comes from an account with no write access to this repository. Each hour, the workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account, before it reviews or answers them. This account is at that limit. $again_limit"
+            limit="Each hour, the workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account, before it reviews or answers them."
+            who="this account"
+            if [ "$account" != "$author" ]; then
+              why="The latest event of $what comes from an account with no write access to this repository. $limit This account is at that limit."
+            elif [ "$OUTSIDER" = "$account" ]; then
+              why="The account of the author of $what has no write access to this repository. $limit This account is at that limit."
+            else
+              who="the account of the author"
+              why="The latest event of $what comes from an account with no write access to this repository. For this event, the workflow uses the limit of the author of $what, whose account has no write access either. $limit The account of the author is at that limit."
+            fi
+            why="$again$why If $who is still at the limit when the workflow screens $what again, the workflow holds it again. This comment then gives the new time."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
@@ -4703,15 +4724,15 @@ jobs:
             # above).
             if grep -qxF 'Hold at the hourly cap' <<< "$failed"; then
               kind=cap
-              why="${what^} comes from an account without write access to this repository. The automated screen passed it. The workflow runs at most $SCREENED_HOURLY_CAP automated reviews and answers each hour for such accounts, and it already ran $SCREENED_HOURLY_CAP. $again_other"
+              why="$again$from The automated screen passed $what. The workflow runs at most $SCREENED_HOURLY_CAP automated reviews and answers each hour for such accounts, and it already ran $SCREENED_HOURLY_CAP. $again_other"
             else
               tries=$((tries + 1))
               if (( tries < REVIEW_TRIES )); then
                 kind=transient
-                why="${what^} comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish. This was try $tries of $REVIEW_TRIES. $again_other"
+                why="$again$from The automated screen passed $what, but $work_of did not finish. This was try $tries of $REVIEW_TRIES. $again_other"
               else
                 fact=tries_used_up
-                why="${what^} comes from an account without write access to this repository. The automated screen passed it, but $work_of did not finish after $tries tries. The workflow does not try it again."
+                why="$from The automated screen passed $what, but $work_of did not finish after $tries tries. The workflow does not try it again."
               fi
             fi
           else
@@ -4720,10 +4741,10 @@ jobs:
               why="The automated screen held $what, so the workflow wrote no answer. You do not need to do anything."
             elif [ "$TASK" = approve ]; then
               why="The automated screen held this pull request, so its checks have not run. You do not need to do anything."
-            elif [ "$item" = pr ]; then
-              why="The automated screen held this pull request, so the automated review did not run. You do not need to do anything."
-            else
+            elif [ "$TASK" = draft ]; then
               why="The automated screen held this issue, so the workflow wrote no reply. You do not need to do anything."
+            else
+              why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
             fi
           fi
           marker=""
@@ -4758,9 +4779,9 @@ jobs:
           id=$(W=$work gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq 'def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
                   | .t // "review")
-                // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+                // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
                   | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-                     "close and reopen": "catchup", "catch-up": "catchup"}[.t])
+                     "close and reopen": "catchup"}[.t])
                 // "review";
               .[] | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->"))
                            and ((.body // "") | work) == $ENV.W) | .id' \

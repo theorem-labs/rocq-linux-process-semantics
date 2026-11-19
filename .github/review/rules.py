@@ -139,8 +139,10 @@ WHO = "Sami"
 # The labels that the workflow makes, with their colours and descriptions (at most 100 characters each).
 LABELS = {
     AUTHOR: ("fbca04", "The next step is the author's. A comment of the review workflow names the step."),
-    THEOREM: ("5319e7", "The next step is at Theorem. A comment of the review workflow names the step and who takes it."),
-    "review-held": ("d93f0b", "The review workflow held this item. Its hold comment tells what happens next."),
+    THEOREM: ("5319e7",
+              "A person at Theorem takes the next step. A review workflow comment names the person and the step."),
+    "review-held": ("d93f0b",
+                    "The review workflow held this pull request or issue. Its hold comment tells what happens next."),
 }
 
 # The facts of a run that the rule reads, with their values when a job does not give them.
@@ -198,13 +200,13 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 PASSED = "The automated screen and the automated review passed this pull request."
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
-    "- Else, when the import into the internal repository runs and copies each changed path, Sami approves the "
+    "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
     "head commit for the import.\n"
-    "- Else, when the import runs, Sami copies the change into the internal repository by hand.")
+    "- If not, when the import runs, Sami copies the change into the internal repository by hand.")
 APPROVE = "Sami approves the head commit for the import into the internal repository."
 COPY = "Sami copies the change into the internal repository by hand."
 IMPORT_STEPS = (f"- {APPROVE.removesuffix('.')}, if the import copies each path that the pull request changes.\n"
-                f"- Else, {COPY}")
+                f"- If not, {COPY}")
 UNREAD = ("GitHub did not give the full list of the files that this pull request changes, so the workflow cannot "
           "tell which step comes next.")
 # Why the import does not take the pull request, for each decision whose step is COPY.
@@ -221,12 +223,12 @@ STATES = {
     "conflict": (AUTHOR, "You resolve the merge conflict with `main`. Then you push the branch.", ""),
     "fix": (
         AUTHOR, "You apply the suggested changes of the automated fix, or push your own change.",
-        "The automated review gave a blocking finding. The automated fix posted suggested changes for it. When the "
-        "branch gets a new commit, the automated review runs again."),
+        "The automated review found a problem. The automated fix posted suggested changes for it. When the branch "
+        "gets a new commit, the automated review runs again."),
     "change": (
         AUTHOR, "You make the change that the automated review names. Then you push the change.",
-        "The automated review gave a blocking finding, and the automated fix posted no suggested change for it. "
-        "After your push, the automated review runs again."),
+        "The automated review found a problem, and the automated fix posted no suggested change for it. After your "
+        "push, the automated review runs again."),
     "replied": (
         AUTHOR, "You read the reply to this issue.",
         "If a question stays open, write it in a comment on this issue."),
@@ -234,15 +236,15 @@ STATES = {
     # The fresh reader refused the text (the fact refused): nothing of it posted.
     "refused-review": (
         THEOREM, "Sami writes the review by hand.",
-        "The workflow stopped the automated review, so it did not post. You do not need to do anything."),
+        "The workflow stopped the automated review, so the workflow did not post it. You do not need to do anything."),
     "refused-answer": (
         THEOREM, "Sami answers your comment by hand.",
-        "The workflow stopped the automated answer to your comment, so it did not post. You do not need to do "
-        "anything."),
+        "The workflow stopped the automated answer to your comment, so the workflow did not post it. You do not need "
+        "to do anything."),
     "refused-fix": (
         THEOREM, "Sami writes the fix by hand.",
-        "The automated review gave a blocking finding. The workflow stopped the automated fix for the finding, so no "
-        "suggested change posted. You can push your own change."),
+        "The automated review found a problem. The workflow stopped the automated fix for the problem, so the "
+        "workflow posted no suggested change. You can push your own change."),
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
@@ -251,12 +253,13 @@ STATES = {
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
         "runs again."),
     "fix-stop": (
-        THEOREM, "Sami writes a comment on the blocking finding that the automated fixes did not fix.",
-        "The workflow posted 2 automated fixes since your last push, and the automated review still gives a blocking "
-        "finding. No automated fix runs again. You do not need to do anything."),
+        THEOREM, "Sami writes a comment on the problem that the automated review still finds.",
+        "The workflow posted 2 automated fixes since your last push, and the automated review still finds a problem. "
+        "No automated fix runs again. You do not need to do anything."),
     # The hold comment says what did not finish, after how many tries, and that the workflow does not try it again.
     "stopped": (
-        THEOREM, "Sami starts the work that the hold comment names again, by hand.", "You do not need to do anything."),
+        THEOREM, "Sami starts again, by hand, the work that the hold comment names.",
+        "You do not need to do anything."),
     "reopen": (
         THEOREM, "Sami reopens the pull request.",
         "The workflow closed this pull request to start its checks. It could not reopen the pull request. You do not "
@@ -270,9 +273,9 @@ STATES = {
         f"{PASSED} The workflow recorded the check `repo-pairs/import-approved` on its head commit. You do not need "
         "to do anything."),
     "working": (
-        None, "The workflow tries the item again.",
-        "You do not need to do anything. When a hold comment gives a time, the workflow tries the item again from "
-        "that time."),
+        None, "The workflow tries this pull request or issue again.",
+        "You do not need to do anything. When a hold comment gives a time, the workflow tries this pull request or "
+        "issue again from that time."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -378,7 +381,7 @@ def import_steps(state, value, decision):
         return STATES[state][1], f"{PASSED} {unread}You do not need to do anything.\n\n{steps}"
     _label, step, text = STATES[state]
     # No text promises a merge or an import before the questions have their answers.
-    answered = "If the answers to the questions leave no blocking finding,"
+    answered = "If the answers to the questions leave no problem to fix,"
     if live and decision in ("person", "markdown"):
         after = f"{answered} {APPROVE}"
     elif live and decision in NOT_TAKEN:
@@ -921,8 +924,9 @@ def check_run(number, head, value, hold):
     summary = ["The automated screen and the automated review passed this head commit.",
                "No changed file is under `.github/`."]
     if hold:
-        summary.append("Each changed file is a Markdown file. Until the import's checks run a Rocq with the fixes for "
-                       "the three public proofs of `False`, the workflow records this check only for such a change.")
+        summary.append("Each changed path ends with `.md`. The workflow records this check only for such a change. "
+                       "This rule lasts until the checks of the import use a Rocq that fixes the three public proofs "
+                       "of `False`.")
     summary.append("The import copies each changed path." if value is not None else
                    "The variable `REPO_PAIRS_IMPORT_PATHS` is not set, so the workflow did not compare the changed "
                    "paths with the paths of the import.")
@@ -1035,7 +1039,7 @@ CUT = re.compile(r"(.+): cut at 2 MiB of its [0-9]+ bytes")
 ON_SOUNDNESS = re.compile(r"(?i)sound")
 QUESTION = {"kind": "question", "ref": None, "optional": False,
             "text": "Sami answers whether the proofs are sound after the changes of this pull request. When the CI "
-                    "checks pass on stock Rocq, that does not show that the proofs are sound."}
+                    "checks pass on stock Rocq, they do not show that the proofs are sound."}
 
 
 def head_proofs(review):
@@ -1720,11 +1724,12 @@ def code(text):
 
 
 def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
-    """The fixed section on soundness: why the rule holds, from scope (soundness; None for a change of a .v file and
-    nothing else), and the facts for Sami: the changed files of the build, the files of the build that the job could
-    not read, the lines that found holds (uses), and the changed .v files at the head that the search did not read
-    whole. Its lists hold at most listed lines in at most characters characters in all, and a list that holds fewer
-    than it has ends with a line that says how many more there are."""
+    """The fixed section on soundness: first that Sami answers whether the proofs are sound, then why the rule holds,
+    from scope (soundness; None for a change of a .v file and nothing else), and the facts for Sami: the changed files
+    of the build, the files of the build that the job could not read, the lines that found holds (uses), and the
+    changed .v files at the head that the search did not read whole. Its lists hold at most listed lines in at most
+    characters characters in all, and a list that holds fewer than it has ends with a line that says how many more
+    there are."""
     scope = scope or {"v": True, "others": [], "whole": True, "unparsed": [], "unread": []}
     issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
     if scope["v"]:
@@ -1733,10 +1738,10 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
         why = "This pull request changes a file that the build of the Rocq proofs reads or writes."
     else:
         why = "The workflow cannot show that this pull request changes no Rocq proof."
-    parts = [f"**Soundness of the proofs.** {why} The CI checks of this repository (Build and check) check the proofs "
-             f"on stock Rocq. Stock Rocq accepts three public proofs of `False`: {issues}. So when these checks pass, "
-             "that does not show that the proofs are sound. Sami answers whether the proofs are sound. You do not need "
-             "to do anything for this point."]
+    parts = [f"**Soundness of the proofs.** Sami answers whether the proofs are sound. You do not need to do anything "
+             f"for this point. {why} The CI checks of this repository (Build and check) build the proofs with stock "
+             f"Rocq. Stock Rocq accepts three public proofs of `False`: {issues}. So when these checks pass, they do "
+             "not show that the proofs are sound."]
     room = [listed, characters]
 
     def listing(lines, more):

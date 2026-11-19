@@ -136,7 +136,7 @@ jobs:
   # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
   # try of the head. After REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that names the
   # head and says that its automated work did not finish and is not tried again, and waits-on-theorem with the label
-  # comment's step "Sami starts the work that the hold comment names again, by hand" (.github/review/rules.py), and
+  # comment's step "Sami starts again, by hand, the work that the hold comment names" (.github/review/rules.py), and
   # this pass fails for that run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the time
@@ -249,13 +249,12 @@ jobs:
           # work in its marker: answer, draft or approve as the marker names the task, and review for a marker with no
           # task (a rescreen takes it again). Any other hold names it in its title: answer ("Automated answer held."),
           # draft ("Automated reply held."), approve ("Automated start of the checks held."), import ("Automated check
-          # for the import held."), catchup ("Automated close and reopen held." or "Automated catch-up held."), and
-          # review for any other.
+          # for the import held."), catchup ("Automated close and reopen held."), and review for any other.
           works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
               | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen|catch-up) held[.][*][*](\n|$)")
+            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
               | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-                 "close and reopen": "catchup", "catch-up": "catchup"}[.t])
+                 "close and reopen": "catchup"}[.t])
             // "review"; '
           # holds <number>: the newest hold comment of each work (works) on <number>, one on each line: "<work> <time>
           # <run> <tries> <kind> <task> <comment> <id> <head>". For a hold that the rescreen pass tries again (its
@@ -789,7 +788,7 @@ jobs:
           }
           # stopped <task> <tries>: the work of the hold that held_work read is not tried again, after <tries> runs of
           # <task> since the hold (halt, with the stop hold-<work>): waits-on-theorem, with the label comment's step
-          # "Sami starts the work that the hold comment names again, by hand", and a hold comment that says so in the
+          # "Sami starts again, by hand, the work that the hold comment names", and a hold comment that says so in the
           # place of that hold. The hold comment of other work stays as it is.
           stopped() {
             local title work what tried of=$1
@@ -805,13 +804,13 @@ jobs:
             what="this issue"
             [ "$kind" != pr ] || what="this pull request"
             tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
-            [ -n "$work" ] || tried="The workflow tried $2 times to start the checks of $what after it held them, and no try finished."
+            [ -n "$work" ] || tried="The workflow held the start of the checks of $what. Then it tried $2 times to start them, and no try finished."
             halt "hold-$of" tries_used_up "$of" "$title" "$tried The workflow does not try it again. You do not need to do anything."
           }
           # head_stopped <work> <tries>: the automated <work> (review; approval, of the held runs; import, the import
           # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
-          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts the work that the
-          # hold comment names again, by hand", then a hold comment that says so and names the head, in the place of the
+          # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts again, by hand, the
+          # work that the hold comment names", then a hold comment that says so and names the head, in the place of the
           # newest hold comment of that work (works), and never of a hold of other work, which the rescreen pass still
           # takes again. That hold stops each later try of the head, and no other reason takes the head in this run
           # (taken).
@@ -841,7 +840,7 @@ jobs:
           left_stopped() {
             echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
               "tried again, and the label comment names the next step for Sami."
-            halt reopen left_closed catchup "Automated catch-up held." \
+            halt reopen left_closed catchup "Automated close and reopen held." \
               "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
           }
           # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
@@ -969,7 +968,7 @@ jobs:
           }
           # answer_stopped <comment> <tries>: the comment job of <tries> answer runs of <comment> failed, so its answer
           # is not tried again (halt, with the stop answer-post): waits-on-theorem, with the label comment's step "Sami
-          # starts the work that the hold comment names again, by hand", then a hold comment that says so, in the place of
+          # starts again, by hand, the work that the hold comment names", then a hold comment that says so, in the place of
           # the newest hold comment of an answer. That hold is not tried again, so the comments before it wait for no
           # answer (waiting).
           answer_stopped() {
