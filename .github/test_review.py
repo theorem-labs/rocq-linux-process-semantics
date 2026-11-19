@@ -5947,6 +5947,29 @@ class SoundnessScanTest(unittest.TestCase):
         facts = rules.proofs(linked, files, len(files), cwd=d, main=main)
         self.assertEqual([f["path"] for f in facts["files"]], ["docs/lock/lock.dune", "dune.lock"])
 
+    def test_the_facts_of_a_glob_with_many_stars_come_within_the_time_of_the_gather_job(self):
+        """R8: "however many files the pull request has", and a check that needs more work than the workflow does for
+        one pull request counts it (WORK): proofs never leaves the item with no verdict. dune 3.23 builds a rule of g/
+        with (glob_files *a*a*a*a*a*a*a*a*a*a*a*a*c) in under a second and reads g/aaa...c (40 a's). But the regular
+        expression of that glob, one step of Work for each path that it is checked against, backtracks on g/aaa...b,
+        which it does not match: 8 stars take 8 seconds there, and each more star takes many times more, so the gather
+        job's 20 minutes end with no facts. proofs gives facts within 2 minutes, and they give the rule."""
+        run = "a" * 40
+        d, head = self.repository({"g/dune": "(rule (target o) (deps (glob_files " + "*a" * 12 + "*c))\n"
+                                             " (action (with-stdout-to o (echo \"\"))))\n",
+                                   f"g/{run}c": "1\n", f"g/{run}b": "2\n"})
+        self.write("files.jsonl", "".join(json.dumps({"filename": p, "previous_filename": None}) + "\n"
+                                          for p in ("g/dune", f"g/{run}c", f"g/{run}b")))
+        try:
+            r = subprocess.run([sys.executable, RULES_PY, "proofs", head, head,
+                                os.path.join(self.review, "files.jsonl"), "3"],
+                               cwd=d, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            self.fail("rules.py proofs gave no facts within 2 minutes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        facts = json.loads(r.stdout)
+        self.assertTrue(f"g/{run}c" in [f["path"] for f in facts["files"]] or not facts["whole"], facts)
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
