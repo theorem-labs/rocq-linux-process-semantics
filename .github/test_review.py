@@ -5926,6 +5926,18 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertTrue([f["path"] for f in facts["files"]] == ["inc/x.h"] or facts["unparsed"] == ["stubs/dune"],
                         facts)
 
+    def test_the_text_that_the_section_names_for_a_glob_is_text_that_the_dune_file_holds(self):
+        """b7 (R9): the section's line for a Markdown file that counts by a glob says "<dune file> holds <text>", so
+        <text> is text of that dune file. A word that holds glob_files inside it (here in an action) makes each changed
+        Markdown file count, as any glob_files does, and the text that the section names is the file's own, from
+        glob_files to the end of the word after it, not glob_files and a space that the file does not hold."""
+        text = '(rule (target o) (action (echo my_glob_files_list)))\n'
+        d, head = self.repository({"lib/dune": text, "README.md": "1\n"})
+        facts = rules.proofs(head, [{"filename": "docs/a.md", "previous_filename": None}], 1, cwd=d, main=head)
+        (f,) = facts["files"]
+        self.assertEqual((f["path"], f["why"], f["by"]), ("docs/a.md", "named", "lib/dune"))
+        self.assertIn(f["what"], text)
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
