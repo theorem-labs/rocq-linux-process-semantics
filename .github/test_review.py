@@ -5365,6 +5365,40 @@ class SoundnessScanTest(unittest.TestCase):
             facts = rules.proofs(head, files, len(files), cwd=d, main=main)
         self.assertEqual([f["path"] for f in facts["files"]], ["vendor/new.hex"])
 
+    def test_the_facts_of_a_pull_request_of_many_links_and_globs_come_within_the_time_of_the_gather_job(self):
+        """The gather job has 20 minutes, and rules.py proofs gives the facts in them or counts the pull request as one
+        that can change a proof (View bounds what links add to a tree at VIEW_PATHS): it never leaves the item with no
+        verdict. A pull request of 1,101 files, within its 3,000: 100 links to D/, whose 1,000 files the view then holds
+        100 times, and a dune file of 8,000 globs. proofs gives facts within 5 minutes, and they give the rule."""
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            paths = {"g/dune": "(rule (target o) (deps " + " ".join(f"q*{i}" for i in range(8000))
+                               + ") (action (echo \"\")))\n"}
+            paths.update({f"D/f{i}.txt": f"{i}\n" for i in range(1000)})
+            for path, text in paths.items():
+                os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+                with open(os.path.join(d, path), "w") as f:
+                    f.write(text)
+            os.makedirs(os.path.join(d, "L"))
+            links = [f"L/l{i}" for i in range(100)]
+            for link in links:
+                os.symlink("../D", os.path.join(d, link))
+            for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "main")):
+                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
+                               capture_output=True)
+            head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, check=True, capture_output=True,
+                                  text=True).stdout.strip()
+            with open(os.path.join(d, "files.jsonl"), "w") as f:
+                for path in [*paths, *links]:
+                    f.write(json.dumps({"filename": path, "previous_filename": None}) + "\n")
+            try:
+                r = subprocess.run([sys.executable, RULES_PY, "proofs", head, head, "files.jsonl",
+                                    str(len(paths) + len(links))], cwd=d, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                self.fail("rules.py proofs gave no facts within 5 minutes")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        facts = json.loads(r.stdout)
+        self.assertTrue(facts["files"] or facts["unparsed"] or not facts["whole"], facts)
+
     def test_a_dune_stanza_builds_the_ocaml_modules_that_its_modules_field_takes(self):
         """R8: an executable, executables, library, test or tests stanza names modules, not files. A file of a module
         (.ml, .mli, .mll, .mly) counts when the stanza takes it, as dune reads the modules field: every module with no
