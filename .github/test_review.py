@@ -5970,6 +5970,41 @@ class SoundnessScanTest(unittest.TestCase):
         facts = json.loads(r.stdout)
         self.assertTrue(f"g/{run}c" in [f["path"] for f in facts["files"]] or not facts["whole"], facts)
 
+    def test_the_work_of_includes_links_and_long_globs_counts_against_the_bound_of_work(self):
+        """R8: "however many files the pull request has", and review.md: the check of the changed files that needs more
+        work than the workflow does for one pull request counts the pull request (WORK, "one byte of a dune file that
+        the job reads"), within the gather job's 20 minutes. Three loops spend almost none of it, each for a pull
+        request that dune 3.23 builds. A dune file of 3,000 (include big.inc), big.inc of blanks: the job reads and
+        parses big.inc again for each include (half a second for 1 MiB) and spends its bytes once. 1,000 links in D/
+        whose 4 KB targets loop, with 99 links to ../D: the view meets each link 100 times and follows its 40 hops of
+        2,047 parts each time, about 30 ms, for one step. And an env stanza whose c_flags hold a word of 100 KB with a
+        ?, with 2,000 library stanzas: the word is a glob from each of their directories, which re.compile reads whole,
+        0.6 seconds, for GLOB_WORK steps. With the bound of 20,000,000 steps and a big.inc of 1 MiB, each takes the job
+        25 to 60 minutes. With a bound of 1,000,000 steps (WORK, read when the count starts) and a big.inc of 200 KB,
+        proofs gives facts within a minute, and they give the rule."""
+        includes = {"t/dune": "(include big.inc)\n" * 3000, "t/big.inc": " " * (200_000 - 1) + "\n"}
+        loops = {f"D/l{i}": "./" * 2045 + f"l{i}" for i in range(1000)}
+        loops.update({f"L/d{j}": "../D" for j in range(99)})
+        homes = {"dune": "(env (_ (c_flags (:standard " + "x" * 100_000 + "?))))\n"}
+        homes.update({f"s{i}/dune": f"(library (name s{i}))\n" for i in range(2000)})
+        script = ("import json, sys\nsys.path.insert(0, sys.argv[1])\nimport rules\nrules.WORK = 1_000_000\n"
+                  "files = [json.loads(line) for line in open(sys.argv[3])]\n"
+                  "print(json.dumps(rules.proofs(sys.argv[2], files, len(files), main=sys.argv[2])))\n")
+        for name, files, links in (("includes", includes, {}), ("links", {}, loops), ("globs", homes, {})):
+            with self.subTest(name):
+                d, head = self.repository(dict(files, **{"README.md": "# Model\n"}), links)
+                self.write("files.jsonl", "".join(json.dumps({"filename": p, "previous_filename": None}) + "\n"
+                                                  for p in sorted({"README.md", *files, *links})))
+                try:
+                    r = subprocess.run([sys.executable, "-c", script, os.path.dirname(RULES_PY), head,
+                                        os.path.join(self.review, "files.jsonl")],
+                                       cwd=d, capture_output=True, text=True, timeout=60)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"rules.py proofs gave no facts within a minute ({name})")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                facts = json.loads(r.stdout)
+                self.assertTrue(facts["files"] or facts["unfollowed"] or not facts["whole"], facts)
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
