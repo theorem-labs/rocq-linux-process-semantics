@@ -10368,6 +10368,27 @@ class ScreenStartTest(Runner):
                 self.assertEqual((rc, self.steps(log)), (0, want), out)
                 self.assertOneStart(log)
 
+    def test_screen_start_waits_for_the_runs_of_its_own_event_not_an_earlier_ones(self):
+        """R14: the step waits until GitHub has listed the runs of its event. When a pull request reopens (the App's
+        catch-up, or its author), or a new pull request opens with a head commit that runs of an earlier event have,
+        GitHub lists those earlier runs at once: the step reads on until it lists a run made at or after the event
+        (the CI run that GitHub holds, which the pass approves), within the same 2 minutes, before it starts the
+        pass."""
+        at = "2026-11-02T10:00:00Z"
+        old = dict(self.run_of(HEAD), id=30, status="completed", conclusion="success", created_at="2026-11-02T09:00:00Z")
+        new = dict(self.run_of(HEAD), created_at="2026-11-02T10:00:04Z")
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1, "workflow_runs": [old]})
+        self.serve(f"repos/{REPO}/actions/runs.then", {"total_count": 2, "workflow_runs": [new, old]})
+        (s,) = self.job()["steps"]
+        env = filled(s["env"], {"github.token": self.TOKEN, "github.repository": REPO,
+                                "github.event.pull_request.head.sha": HEAD, "github.event.pull_request.number": 7,
+                                "github.event.pull_request.updated_at": at})
+        rc, out, _ = self.run_script(s["run"], **env)
+        with open(os.path.join(self.api, "every"), encoding="utf-8") as f:
+            log = [c.split("\0")[:-1] for c in f.read().split("\1")[:-1]]
+        self.assertEqual((rc, self.steps(log)), (0, ["read", "sleep 10", "read", "start"]), out)
+        self.assertOneStart(log)
+
     def test_screen_start_starts_the_pass_once_after_2_minutes_when_github_lists_no_run(self):
         """R14: when GitHub lists no pull_request run of the head commit (a read that fails lists none; an event that
         starts no CI run, such as edited, labeled or closed, or a pull request with a merge conflict), the step reads
