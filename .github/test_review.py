@@ -10337,6 +10337,30 @@ class ScreenStartTest(Runner):
                     self.assertLessEqual({e.strip() for e in re.findall(r"\$\{\{(.*?)\}\}", str(value))},
                                          self.CONTEXTS)
 
+    def test_screen_start_reads_no_field_that_the_author_writes_through_the_runner(self):
+        """R14: no run: line reads a field of the event that the author writes, also not through what the runner gives
+        each step: the file of the event (GITHUB_EVENT_PATH, which holds the title, the body and the branch name) and
+        the head branch (GITHUB_HEAD_REF). Run with both given, the step's log and its calls of gh hold none of the
+        author's words."""
+        for s in self.job()["steps"]:
+            with self.subTest(step=s.get("name")):
+                self.assertNotRegex(s.get("run", ""), r"\bGITHUB_(EVENT_PATH|HEAD_REF)\b")
+        event = os.path.join(self.dir, "event.json")
+        with open(event, "w") as f:
+            json.dump({"pull_request": {"number": 7, "title": "TITLE-OF-AUTHOR", "body": "BODY-OF-AUTHOR",
+                                        "head": {"sha": HEAD, "ref": "BRANCH-OF-AUTHOR"}}}, f)
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1, "workflow_runs": [self.run_of(HEAD)]})
+        (s,) = self.job()["steps"]
+        env = filled(s["env"], {"github.token": self.TOKEN, "github.repository": REPO,
+                                "github.event.pull_request.head.sha": HEAD, "github.event.pull_request.number": 7})
+        rc, out, _ = self.run_script(s["run"], GITHUB_EVENT_PATH=event, GITHUB_HEAD_REF="BRANCH-OF-AUTHOR", **env)
+        with open(os.path.join(self.api, "every"), encoding="utf-8") as f:
+            calls = f.read()
+        self.assertEqual(rc, 0, out)
+        for word in ("TITLE-OF-AUTHOR", "BODY-OF-AUTHOR", "BRANCH-OF-AUTHOR"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, out + calls)
+
     def test_screen_start_a_newer_event_of_the_pull_request_cancels_the_run_that_waits(self):
         """A burst of events of one pull request (an author who edits the title many times): the runs of one pull
         request share one group of the whole workflow, by its number, and a newer one cancels the one that waits.
