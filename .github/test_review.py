@@ -6022,6 +6022,19 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
                          {"t/data[1].txt": ("named", "t/dune"), "t/conf{a}.txt": ("named", "t/dune")})
 
+    def test_a_name_whose_brace_closes_inside_a_bracket_gives_facts_and_no_error(self):
+        """R8: the job reads the changed paths itself, and the facts of a pull request that changes a dune file count
+        it. dune 3.23 builds (rule (target o) (deps "x{a[}]") (action (with-stdout-to o (cat "x{a[}]")))) and reads
+        t/x{a[}]. The { of that name closes only inside a bracket expression: glob_pattern opens a group that it never
+        closes, and re.compile raises re.PatternError, which is no ValueError, so rules.py proofs stops with a traceback
+        and the gather job ends with no facts and no verdict. proofs gives facts: t/dune counts, README.md does not."""
+        d, head = self.repository({"t/dune": "(rule (target o) (deps \"x{a[}]\")\n"
+                                             " (action (with-stdout-to o (cat \"x{a[}]\"))))\n",
+                                   "t/x{a[}]": "1\n", "README.md": "# Model\n"})
+        files = [{"filename": p, "previous_filename": None} for p in ("t/dune", "README.md")]
+        facts = rules.proofs(head, files, len(files), cwd=d, main=head)
+        self.assertEqual(([f["path"] for f in facts["files"]], facts["whole"]), (["t/dune"], True))
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
