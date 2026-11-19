@@ -2281,6 +2281,21 @@ class LimitTest(Runner):
                     rc, out, got = self.run_trust("issue_comment", "bob", "bob", comment="900")
                     self.assertEqual((rc, got.get("route")), (0, "limit" if counted else "screen"), out)
 
+    def test_pushes_of_another_account_to_an_authors_pull_request_use_the_authors_limit(self):
+        """Ruling 1: a limit counts against the reviewed pull request's author. Each of bob's pushes to the head of
+        eve's #20 counted on eve (its screen job: screen eve). After OUTSIDE_HOURLY_LIMIT of them in the hour, bob's
+        next push holds eve's review at her limit, as OUTSIDE_HOURLY_LIMIT runs of eve's own would: bob does not start
+        screened runs without a limit (OUTSIDE_HOURLY_LIMIT: the most runs that one account without write access may
+        start in an hour and have screened)."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+        pushes = [(30 + i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(self.LIMIT)]
+        self.runs(*pushes, jobs={r[0]: [attempt_job("screen", name="screen eve"),
+                                        attempt_job("review", name="review (screened)")] for r in pushes})
+        rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                      head_repository=str(FORK_ID), pulls=[])
+        self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")), (0, "20", "eve", "limit"), out)
+
     def test_runs_that_the_trust_job_stopped_are_read_within_the_budget(self):
         """Decision 1 and decision 3: a run of mallory's event that the trust job stopped (a CI run of a pull request
         into another branch) counts for nothing, and only its jobs show that: each costs a read, within the
