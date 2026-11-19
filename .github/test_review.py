@@ -62,6 +62,13 @@ RULES_PY = os.path.join(GITHUB_DIR, "review", "rules.py")
 TRIM_PY = os.path.join(GITHUB_DIR, "review", "trim.py")
 # The lists and the trims of the trim test (.github/review/fixtures/trim/README.md).
 TRIM_FIXTURES = os.path.join(GITHUB_DIR, "review", "fixtures", "trim")
+# The functions and values of the rescreen pass, which the trust step and the rescreen pass's step source from their
+# job's checkout of the workflow's own commit (GITHUB_WORKSPACE), and the line of each step that sources it.
+HELD_SH = os.path.join(GITHUB_DIR, "review", "held.sh")
+SOURCE_HELD = 'source "$GITHUB_WORKSPACE/.github/review/held.sh"\n'
+# The checkout of that file alone, at the commit of main whose workflow file runs, in the trust job and the pass's job.
+HELD_CHECKOUT = {"ref": "${{ github.sha }}", "persist-credentials": False, "sparse-checkout": ".github/review/held.sh",
+                 "sparse-checkout-cone-mode": False}
 REPO = "acme/model"
 TRUST = "Whether the author and the account that started the run have write access"
 WJ = "\u2060"   # the word joiner that trim.py's inert puts in each mention and reference
@@ -363,6 +370,17 @@ def step(job, name):
     return found[0]
 
 
+def held_sh():
+    """The text of .github/review/held.sh."""
+    with open(HELD_SH, encoding="utf-8") as f:
+        return f.read()
+
+
+def sourced(run):
+    """A step's script as bash runs it: the text of .github/review/held.sh in the place of the line that sources it."""
+    return run.replace(SOURCE_HELD, held_sh())
+
+
 # The review job's Anthropic endpoint and ids, which its env holds for its sign-ins and its fresh reader, and the ids
 # that its Review step gives the action, filled in from that env.
 ANTHROPIC = {k: v for k, v in JOBS["review"]["env"].items() if k.startswith("ANTHROPIC_")}
@@ -409,10 +427,12 @@ class Runner(unittest.TestCase):
         self.output = os.path.join(self.dir, "output")
         self.env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
         # A run of this workflow on main of REPO, as GitHub sets GITHUB_REF and GITHUB_REPOSITORY_ID for each of its
-        # events there.
+        # events there. GITHUB_WORKSPACE is the job's checkout, from which the trust step and the rescreen pass's step
+        # source .github/review/held.sh: here the root of this repository, which holds that file.
         self.env.update(PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH=self.api, REPO=REPO, APPS=APPS,
                         GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output,
-                        GITHUB_REF="refs/heads/main", GITHUB_REPOSITORY_ID=str(REPO_ID))
+                        GITHUB_REF="refs/heads/main", GITHUB_REPOSITORY_ID=str(REPO_ID),
+                        GITHUB_WORKSPACE=os.path.dirname(GITHUB_DIR))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -841,15 +861,16 @@ class TrustTest(Runner):
         self.assertReview(None, "issues", "a/../b", "a/../b")
         self.assertReview(None, "issues", "x[bot][bot]", "x[bot][bot]")
 
-    def test_the_job_reads_only_and_checks_nothing_out(self):
+    def test_the_job_reads_only_and_checks_out_held_sh_alone(self):
         """checks: read is for the check runs of a head, which the check of a stop reads again (due_variable), and for
-        the notices of a CI run's trust job (reviewed). account is the account whose limit the run counts on, which the
+        the notices of a CI run's trust job (reviewed); contents: read is for the checkout of .github/review/held.sh
+        alone, its one action (RescreenTrustTest). account is the account whose limit the run counts on, which the
         screen job's name gives; uncounted says that the account counts as at its limit because the trust job did not
         read every run that could count on it."""
         job = JOBS["trust"]
-        self.assertEqual(job["permissions"], {"actions": "read", "issues": "read", "pull-requests": "read",
-                                              "checks": "read"})
-        self.assertFalse(any("uses" in s for s in job["steps"]))
+        self.assertEqual(job["permissions"], {"actions": "read", "contents": "read", "issues": "read",
+                                              "pull-requests": "read", "checks": "read"})
+        self.assertEqual([(s["uses"], s["with"]) for s in job["steps"] if "uses" in s], [(CHECKOUT, HELD_CHECKOUT)])
         names = ("task", "route", "uncounted", "outsider", "account", "number", "head", "comment", "origin", "tries",
                  "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
@@ -1053,11 +1074,10 @@ class CommentsTest(Runner):
         self.assertEqual((read, waiting), ({"comments": [900], "reviews": [], "review-comments": [22]}, None))
 
     def held_waiting(self):
-        """The ids that waiting gives for mallory on pull request #7, from what is served: the function of the held
-        block of the trust and rescreen jobs, by which the trust job checks the answer that the rescreen job starts, and
-        that job finds the comments that wait (D16 (d))."""
-        held = re.search(r"# held\n(.*?)# end of held\n", step("trust", TRUST)["run"], re.S).group(1)
-        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{held}'
+        """The ids that waiting gives for mallory on pull request #7, from what is served: the function of
+        .github/review/held.sh, which the trust and rescreen jobs source, by which the trust job checks the answer that
+        the rescreen job starts, and that job finds the comments that wait (D16 (d))."""
+        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{SOURCE_HELD}'
                                      f"waiting {self.PR} mallory pr\n")
         self.assertEqual(rc, 0, out)
         return [int(line.split()[1]) for line in out.split("\n") if line.strip()]
@@ -6351,11 +6371,13 @@ class AnswerFixTest(ReaderRunner):
         self.assertEqual(self.git("rev-parse", "refs/review/head", cwd=self.work), head)
         for path in steering:
             self.assertFalse(os.path.lexists(os.path.join(self.work, path)), path)
+        # Each checkout is of main: the trust job's of held.sh alone, at the commit of main whose workflow file runs.
         for name, job in JOBS.items():
             for s in job["steps"]:
                 if s.get("uses", "").startswith("actions/checkout@"):
                     with self.subTest(job=name):
-                        self.assertEqual(s.get("with", {}).get("ref", "main"), "main")
+                        self.assertEqual(s.get("with", {}).get("ref", "main"),
+                                         "${{ github.sha }}" if name == "trust" else "main")
                         self.assertNotIn("repository", s.get("with", {}))
         with open(os.path.join(root, "answer-to.json")) as f:
             waiting = json.load(f)
@@ -7722,15 +7744,28 @@ class RescreenTrustTest(Held):
                                  name == "trust")
 
     def test_the_trust_job_and_the_rescreen_pass_share_their_functions_and_their_values(self):
-        """The trust job of each run that rescreen.yml starts decides it again with the block of functions that
-        rescreen.yml's step runs, byte for byte (the check of a stop runs the pass for its item), and both count with
-        the same values: a pass that counted the limit or the tries with another value than review.yml's jobs would
-        start runs that their trust job refuses, or stops that it never takes."""
-        def held(text):
-            found = re.findall(r"# held\n(.*?)# end of held\n", text, re.S)
-            self.assertEqual(len(found), 1)
-            return found[0]
-        self.assertEqual(held(pass_step()["run"]), held(step("trust", TRUST)["run"]))
+        """The trust job of each run that rescreen.yml starts decides it again with the functions that rescreen.yml's
+        step runs (the check of a stop runs the pass for its item): each of the two steps sources .github/review/held.sh
+        once, after it set seen and defined trusted and before it defines restart, and defines none of the file's
+        functions itself. Each of the two jobs checks out that file alone before the step, at github.sha, the commit of
+        main whose workflow file runs: no head and no ref of a pull request. Both count with the same values: a pass
+        that counted the limit or the tries with another value than review.yml's jobs would start runs that their trust
+        job refuses, or stops that it never takes."""
+        functions = set(re.findall(r"^([a-z_]+)\(\) \{", held_sh(), re.M))
+        self.assertLessEqual({"consider", "consider_closed", "waiting", "held_account"}, functions)
+        for job, name in ((JOBS["trust"], TRUST), (RESCREEN["jobs"]["rescreen"], RESCREEN_JOB)):
+            with self.subTest(step=name):
+                (the,) = [s for s in job["steps"] if s.get("name") == name]
+                run = the["run"]
+                self.assertEqual(run.count(SOURCE_HELD), 1)
+                at = run.index(SOURCE_HELD)
+                self.assertLess(run.index('seen=$(mktemp -d -p "$RUNNER_TEMP")\n'), at)
+                self.assertLess(run.index("# end of trusted\n"), at)
+                self.assertGreater(run.index("restart() {"), at)
+                self.assertEqual(set(re.findall(r"^ *([a-z_]+)\(\) *\{", run, re.M)) & functions, set())
+                checkouts = [s for s in job["steps"] if "uses" in s]
+                self.assertEqual([(s["uses"], s["with"]) for s in checkouts], [(CHECKOUT, HELD_CHECKOUT)])
+                self.assertLess(job["steps"].index(checkouts[0]), job["steps"].index(the))
         for name in ("POST_REVIEW", "APPS", "OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES"):
             with self.subTest(name=name):
                 self.assertEqual(RESCREEN["env"][name], WF["env"][name])
@@ -8311,8 +8346,9 @@ class RescreenJobTest(Held):
         write starts the pass (ScreenStartTest). The pass has it beside read permissions alone (contents, issues,
         pull-requests and checks), and it holds no environment, no secret and no identity token.
         Its step's only writes are the start of a run of review.yml on main and the re-run of the failed jobs of a
-        review run (rerun): no label, no comment and no other write of an item, and it runs no file of the repository,
-        so it checks nothing out. No job of review.yml can start a run."""
+        review run (rerun): no label, no comment and no other write of an item. The one file of the repository that it
+        runs is .github/review/held.sh, which its job checks out alone (RescreenTrustTest) and its step sources: the
+        checks below read the step with that file in it. No job of review.yml can start a run."""
         self.assertEqual((WF["permissions"], RESCREEN["permissions"]), ({}, {}))
         job = RESCREEN["jobs"]["rescreen"]
         self.assertEqual(job["permissions"], {"actions": "write", "contents": "read", "issues": "read",
@@ -8321,8 +8357,10 @@ class RescreenJobTest(Held):
         with open(RESCREEN_WORKFLOW, encoding="utf-8") as f:
             text = f.read()
         self.assertNotRegex(text, r"\bsecrets\.|id-token")
-        self.assertEqual([s for s in job["steps"] if "uses" in s], [])
+        self.assertEqual([(s["uses"], s["with"]) for s in job["steps"] if "uses" in s], [(CHECKOUT, HELD_CHECKOUT)])
         run = pass_step()["run"]
+        self.assertEqual(run.count(SOURCE_HELD), 1)
+        run = sourced(run)
         self.assertNotRegex(run, r"python3|\.github/review/")
         # Every call of gh api, with its continued lines joined: a method other than GET (quoted endpoint or not)
         # names only the two starts of a run, a call with fields and no method (gh's POST) is a GraphQL query with no
@@ -8376,7 +8414,7 @@ class RescreenJobTest(Held):
                              ({"inputs.task": "measure", "inputs.number": None}, "measure the screen")):
             with self.subTest(inputs=inputs):
                 self.assertEqual(name("workflow_dispatch", **dict(by_hand, **inputs)), want)
-        titled = re.search(r"^ *titled=('.*')$", pass_step()["run"], re.M).group(1)
+        titled = re.search(r"^ *titled=('.*')$", held_sh(), re.M).group(1)
         script = (f"titled={titled}\n" + 'while IFS= read -r t; do\n  if [[ $t =~ $titled ]]; then '
                   'echo "${BASH_REMATCH[2]} ${BASH_REMATCH[5]}"; else echo -; fi\ndone\n')
         names = {"rescreen #7 of mallory": "7 mallory", f"review #7 at {HEAD} of mallory": "7 mallory",
@@ -10397,13 +10435,13 @@ class HeadScheduleTest(Scheduled):
                 self.assertEqual(["--method", "POST", rerun] in writes(self.api), made + 60 < kept, out)
 
     def test_the_rerun_window_is_the_time_that_github_keeps_the_gathered_data(self):
-        """Decision 2: kept_days of the block that the trust job and the rescreen pass share, the days after which the
-        failed jobs of a run do not run again (rerun), is the retention-days of the artifact review-data that the
-        gather job keeps and that the re-run review job reads."""
+        """Decision 2: kept_days of .github/review/held.sh, which the trust job and the rescreen pass source, the days
+        after which the failed jobs of a run do not run again (rerun), is the retention-days of the artifact review-data
+        that the gather job keeps and that the re-run review job reads."""
         (upload,) = [s for s in JOBS["gather"]["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
         self.assertEqual(upload["with"]["name"], "review-data")
-        held = re.search(r"# held\n(.*?)# end of held\n", step("trust", TRUST)["run"], re.S).group(1)
-        self.assertEqual(re.findall(r"^ *kept_days=([0-9]+)$", held, re.M), [str(upload["with"]["retention-days"])])
+        self.assertEqual(re.findall(r"^ *kept_days=([0-9]+)$", held_sh(), re.M),
+                         [str(upload["with"]["retention-days"])])
 
     def test_a_stopped_ci_run_of_another_pull_request_of_the_head_leaves_the_re_run_as_it_is(self):
         """Ruling 4: a passed screen counts once and is not screened again for a sign-in failure; only the failed jobs
@@ -12277,17 +12315,18 @@ class ImportCheckTest(ReaderRunner):
 
     def test_each_step_that_reads_the_variable_maps_it_from_the_repository_variable(self):
         """The workflows loaded with yq: each step of the trust, post and comment jobs and of rescreen.yml whose script
-        reads the name that a step maps to ${{ vars.REPO_PAIRS_IMPORT_PATHS }} maps that name to it in its own env, and
-        reads each name that it maps. The post job's decision step, the comment job's label step, the rescreen pass's
-        step (which relabels a head whose recorded value is not the value now) and the trust job's step (which runs the
-        pass's functions again for a stop) do, and no script holds the expression itself."""
+        (with .github/review/held.sh in the place of the line that sources it) reads the name that a step maps to
+        ${{ vars.REPO_PAIRS_IMPORT_PATHS }} maps that name to it in its own env, and reads each name that it maps. The
+        post job's decision step, the comment job's label step, the rescreen pass's step (which relabels a head whose
+        recorded value is not the value now) and the trust job's step (which runs the pass's functions again for a
+        stop) do, and no script holds the expression itself."""
         jobs = [(job, JOBS[job]) for job in ("trust", "post", "comment")] + [("rescreen", RESCREEN["jobs"]["rescreen"])]
         steps = [(job, s) for job, value in jobs for s in value["steps"]]
         names = {k for _job, s in steps for k, v in s.get("env", {}).items() if v == self.VARIABLE}
         self.assertTrue(names)
         mapped = set()
         for job, s in steps:
-            run = s.get("run", "")
+            run = sourced(s.get("run", ""))
             self.assertNotIn("vars.REPO_PAIRS_IMPORT_PATHS", run)
             for name in names:
                 reads = re.search(rf"\$\{{?{name}\b", run) is not None
