@@ -16,9 +16,10 @@
 # an if: the step of the trust job, which every other job needs, also compares the ref byte for byte in the shell, and
 # stops on any other ref. The rescreen pass (.github/workflows/rescreen.yml) runs on events alone too, and starts the
 # runs of this file that the open items are due (below); it holds no identity and no secret, and writes nothing but
-# those runs. Each event of a pull request from a fork starts it too, through .github/workflows/screen-start.yml, the
-# one workflow of this repository that runs on pull_request_target: it holds actions: write alone, and only starts the
-# pass.
+# those runs. Each event of a pull request from a fork on which CI runs (opened, synchronize and reopened) starts it
+# too, through .github/workflows/screen-start.yml, the one workflow of this repository that runs on
+# pull_request_target: it holds actions: write alone, and only starts the pass, which then takes the open items only
+# when GitHub holds a run of the head of that pull request.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -76,10 +77,11 @@
 #   hold comment says that it is not tried again; a run that ended at a failed sign-in counts no try. The review, the
 #   answer, the draft and the approval of an item each have their own hold comment, so that a hold of one never takes
 #   the place of the hold of another. The rescreen pass (rescreen.yml) runs at each completed CI run, each push to
-#   main, each new or reopened issue and each event of a pull request from a fork (screen-start.yml starts it for such
-#   an event), and by hand. It lists the open pull requests and issues labelled review-held, and for each of those
-#   works whose newest hold comment is such a hold, not the screen's, and is over an hour old, it starts this workflow
-#   with the task that the marker of the hold names: the answer of the comment that it names (-f task=answer
+#   main, each new or reopened issue, each event of a pull request from a fork on which CI runs when GitHub holds a
+#   run of its head (screen-start.yml starts it for such an event), and by hand. It lists the open pull requests and
+#   issues labelled review-held, and for each of those works whose newest hold comment is such a hold, not the
+#   screen's, and is over an hour old, it starts this workflow with the task that the marker of the hold names: the
+#   answer of the comment that it names (-f task=answer
 #   -f comment=<id>), the draft, the approval, or else -f task=rescreen, with the account the hold names
 #   (-f account=<login>). A run that GitHub holds starts no workflow_run, so a held item waits for the next of those
 #   events. Such a run takes an outsider's path: the trust job reads the author, the hold and the account
@@ -4732,10 +4734,12 @@ jobs:
           # run after that, which an event starts. Such a hold says that first, then that the author does not need to do
           # anything, then why. A limit hold ends with what happens if the account is still at its limit; the other
           # holds end with only that a new hold replaces this comment, since a rescreen can be held for another cause
-          # than theirs.
+          # than theirs. The events are those on which the pass takes the open items (the top of rescreen.yml): an
+          # event of a pull request from a fork starts screen-start.yml only when CI runs on it (opened, synchronize and
+          # reopened), and the pass then takes the open items only when GitHub holds a run of its head.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
           events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."
-          events+=$'\n'"- Someone opens, reopens, changes, labels or closes a pull request from a fork."$'\n\n'
+          events+=$'\n'"- Someone opens, reopens or pushes to a pull request from a fork, and its checks wait for approval."$'\n\n'
           again="The workflow screens $what again at the first of these events after $next:${events}You do not need to do anything."$'\n\n'
           again_other="If the workflow holds $what again, this comment says why."
           # The account that the screen was for (OUTSIDER): the item's author, or else the account of the latest event.
@@ -4749,22 +4753,22 @@ jobs:
             account=${ACCOUNT:-$OUTSIDER}
             [[ $account =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $account"; exit 1; }
             kind=limit
-            limit="Each hour, the workflow screens at most $OUTSIDE_HOURLY_LIMIT pull requests, issues, pushes and comments of such an account, before it reviews or answers them."
+            limit="The workflow screens the pull requests, issues, pushes and comments of such an account before it reviews or answers them. The limit for one such account is $OUTSIDE_HOURLY_LIMIT screens in the last hour."
             who="this account"
             if [ "$account" != "$author" ]; then
-              why="The latest event of $what comes from an account with no write access to this repository. $limit This account is at that limit."
+              why="The latest event of $what comes from an account without write access to this repository. $limit This account is at that limit."
             elif [ "$OUTSIDER" = "$account" ]; then
-              why="The account of the author of $what has no write access to this repository. $limit This account is at that limit."
+              why="The author of $what has an account without write access to this repository. $limit This account is at that limit."
             else
               who="the account of the author"
-              why="The latest event of $what comes from an account with no write access to this repository. For this event, the workflow uses the limit of the author of $what, whose account has no write access either. $limit The account of the author is at that limit."
+              why="The latest event of $what comes from an account without write access to this repository. For this event, the workflow uses the limit of the author of $what, who also has an account without write access. $limit The account of the author is at that limit."
             fi
-            why="$again$why If $who is still at the limit when the workflow screens $what again, the workflow holds it again. This comment then gives the new time."
+            why="$again$why If $who is still at the limit at that event, the workflow holds $what again. This comment then gives the new time."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
               fact=tries_used_up
-              why="The automated screen passed $what, but the automated review did not finish. The workflow does not try it again."
+              why="The automated review did not finish. The workflow does not try it again. The automated screen passed $what."
             else
               fact=screen_held
               why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
@@ -4782,7 +4786,7 @@ jobs:
                 why="$again$from The automated screen passed $what, but $work_of did not finish. This was try $tries of $REVIEW_TRIES. $again_other"
               else
                 fact=tries_used_up
-                why="$from The automated screen passed $what, but $work_of did not finish after $tries tries. The workflow does not try it again."
+                why="${work_of^} did not finish after $tries tries. The workflow does not try it again. $from The automated screen passed $what."
               fi
             fi
           else

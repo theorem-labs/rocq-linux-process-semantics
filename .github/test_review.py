@@ -22,8 +22,10 @@ stand-in gh, with a stand-in token from each of the App's sign-in steps, only wh
 condition is evaluated for every task and route, to show which jobs run, and that a run by hand off main runs none,
 with a ref that is main in another case too. The rest checks what each job holds, that no job of these workflows
 holds a right on pull_request, that none runs on a schedule, that screen-start.yml alone runs on pull_request_target,
-with actions: write alone, and starts the rescreen pass once for each event, and the settings that keep Claude to the
-checkout and to the pinned binaries. .github/test_screen.py tests the screen itself.
+with actions: write alone, on the types of the pull_request workflows, and starts the rescreen pass once for each
+event with the number of the pull request, and that such a run of the pass ends after a few calls of the API when the
+head has no run that GitHub holds, and the settings that keep Claude to the checkout and to the pinned binaries.
+.github/test_screen.py tests the screen itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -50,7 +52,8 @@ WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows",
 CI_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "ci.yml")
 # The rescreen pass, which starts the runs of review.yml that the open items are due.
 RESCREEN_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "rescreen.yml")
-# The one workflow on pull_request_target: at each event of a pull request from a fork, it starts the rescreen pass.
+# The one workflow on pull_request_target: at each event of a pull request from a fork on which CI runs, it starts the
+# rescreen pass with the number of the pull request.
 SCREEN_START_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "screen-start.yml")
 # main's .github/, as the checkout of the comment, hold and post jobs gives it, the rule they run from it, and the
 # fresh reader that the review job runs from main's checkout.
@@ -2763,29 +2766,34 @@ class HoldTest(Holding):
                 self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
 
     # A hold that is tried again says first from when, and which events start the run that takes it again (there is
-    # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why.
+    # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why. An event
+    # of a pull request from a fork starts the pass that takes it only when CI runs on it and GitHub holds a run of its
+    # head (rescreen.yml, RescreenEventsTest).
     AGAIN = (r"^<!-- review-held -->\n\*\*Automated [a-z ]+ held\.\*\*\n\n"
              r"The workflow screens this (pull request|issue) again at the first of these events after "
              r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:\n\n- A CI run in this repository ends\.\n"
              r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n"
-             r"- Someone opens, reopens, changes, labels or closes a pull request from a fork\.\n\n"
+             r"- Someone opens, reopens or pushes to a pull request from a fork, and its checks wait for approval\.\n\n"
              r"You do not need to do anything\.\n\n[^\n]* ")
     # A limit hold ends with what happens while the account stays at its limit; a cap or transient hold, whose rescreen
     # can be held for another reason, ends with only that a new hold says why. The marker follows, and nothing asks
     # anyone to start a run.
-    AGAIN_LIMIT = AGAIN + (r"If (this account|the account of the author) is still at the limit when the workflow "
-                           r"screens this (pull request|issue) again, the workflow holds it again\. This comment then "
-                           r"gives the new time\.\n\n<!-- ")
+    AGAIN_LIMIT = AGAIN + (r"If (this account|the account of the author) is still at the limit at that event, the "
+                           r"workflow holds this (pull request|issue) again\. This comment then gives the new time\.\n\n"
+                           r"<!-- ")
     AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
+    # The limit as a limit hold gives it: the count at which the workflow holds, and no promise of how many screens an
+    # hour can have (the trust job counts other accounts' CI runs on an author within its read budget alone).
+    LIMIT_WORDS = ("The workflow screens the pull requests, issues, pushes and comments of such an account before it "
+                   "reviews or answers them. The limit for one such account is "
+                   f"{WF['env']['OUTSIDE_HOURLY_LIMIT']} screens in the last hour.")
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
         of the screen carries no such marker, so it is never screened again on its own. The workflow still works on
         the item: no state label."""
         _calls, _post, body = self.hold("limit", tries="1")
-        self.assertIn(f"Each hour, the workflow screens at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, "
-                      "issues, pushes and comments of such an account, before it reviews or answers them. This account "
-                      "is at that limit.", body)
+        self.assertIn(f"{self.LIMIT_WORDS} This account is at that limit.", body)
         self.assertRegex(body, self.AGAIN_LIMIT)
         self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 1 -->"), body)
         self.assertNotIn("mallory", body)
@@ -2795,24 +2803,27 @@ class HoldTest(Holding):
         """The run counts on the limit of the item's author when the author's own event started it, and a CI run of a
         pull request whose author and pusher both have no write access counts on the author: the hold names the
         account of the author, and for the event of another account, says that the workflow uses the limit of the
-        author for it. A run that counts on the account of its event names that account. No hold names a login."""
-        limit = (f"Each hour, the workflow screens at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, "
-                 "pushes and comments of such an account, before it reviews or answers them.")
+        author for it. A run that counts on the account of its event names that account. No hold names a login. Each
+        sentence says "without write access", as the cap and transient holds do: one hold comment can be each of them
+        over time."""
+        limit = self.LIMIT_WORDS
         for outsider, account, words, who in (
-                ("mallory", "mallory", "The account of the author of this pull request has no write access to this "
+                ("mallory", "mallory", "The author of this pull request has an account without write access to this "
                                        f"repository. {limit} This account is at that limit.", "this account"),
-                ("eve", "mallory", "The latest event of this pull request comes from an account with no write access "
+                ("eve", "mallory", "The latest event of this pull request comes from an account without write access "
                                    "to this repository. For this event, the workflow uses the limit of the author of "
-                                   "this pull request, whose account has no write access either. "
+                                   "this pull request, who also has an account without write access. "
                                    f"{limit} The account of the author is at that limit.", "the account of the author"),
-                ("eve", "eve", "The latest event of this pull request comes from an account with no write access to "
+                ("eve", "eve", "The latest event of this pull request comes from an account without write access to "
                                f"this repository. {limit} This account is at that limit.", "this account")):
             with self.subTest(outsider=outsider, account=account):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory")
                 self.assertRegex(body, self.AGAIN_LIMIT)
-                self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit when ", body)
+                self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit at that "
+                              "event, the workflow holds this pull request again.", body)
+                self.assertNotIn("no write access", body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
@@ -2873,7 +2884,8 @@ class HoldTest(Holding):
 
     def test_a_review_that_did_not_finish_is_tried_again_up_to_review_tries(self):
         """Each try but the last gives no state label; the last try gives waits-on-theorem, with the label comment's
-        step for Sami, and a hold that names no maintainer."""
+        step for Sami, and a hold that names no maintainer. That hold opens with its outcome: the work did not finish,
+        and the workflow does not try it again; then whose action the screen was for, and that the screen passed."""
         self.assertGreater(self.TRIES, 1)
         for review in ("failure", "cancelled"):
             for before in range(self.TRIES - 1):
@@ -2890,7 +2902,11 @@ class HoldTest(Holding):
                 self.tearDown()
                 self.setUp()
                 _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(self.TRIES - 1))
-                self.assertIn(f"did not finish after {self.TRIES} tries. The workflow does not try it again.", body)
+                self.assertTrue(body.startswith(
+                    f"<!-- review-held -->\n**Automated review held.**\n\nThe automated review did not finish after "
+                    f"{self.TRIES} tries. The workflow does not try it again. The latest event of this pull request "
+                    "comes from an account without write access to this repository. The automated screen passed this "
+                    "pull request."), body)
                 self.assertNotIn("maintainer", body)
                 self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
                 self.assertWaitsOnSami("Sami starts again, by hand, the work that the hold comment names.")
@@ -3042,8 +3058,8 @@ class HoldTest(Holding):
         screen did not finish."""
         held = ("The automated screen held this pull request, so the automated review did not run. You do not need to "
                 "do anything.")
-        unfinished = ("The automated screen passed this pull request, but the automated review did not finish. The "
-                      "workflow does not try it again.")
+        unfinished = ("The automated review did not finish. The workflow does not try it again. The automated screen "
+                      "passed this pull request.")
         for review, step, words in (("skipped", "Sami starts the work that the hold comment names, by hand.", held),
                                     ("failure", "Sami starts again, by hand, the work that the hold comment names.",
                                      unfinished),
@@ -3197,7 +3213,7 @@ class HoldTest(Holding):
         for the answer. The screen's hold of an answer, and its last try, give waits-on-theorem."""
         label = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("change")}
         for route, kwargs, words, marker in (
-                ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
+                ("limit", {}, self.LIMIT_WORDS,
                  "<!-- review-held-limit 50 0 answer 900 -->"),
                 ("screen", {"review": "failure", "capped": True},
                  f"at most {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers each hour",
@@ -3227,7 +3243,7 @@ class HoldTest(Holding):
         self.setUp()
         _calls, _post, body = self.hold("screen", task="answer", comment="900", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated answer to your comment did not finish after {self.TRIES} tries. "
+        self.assertIn(f"The automated answer to your comment did not finish after {self.TRIES} tries. "
                       "The workflow does not try it again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
         self.assertWaitsOnSami("Sami starts again, by hand, the work that the hold comment names.")
@@ -3247,7 +3263,7 @@ class HoldTest(Holding):
         try, give waits-on-theorem."""
         self.permissions(mallory="read")
         for route, kwargs, words, marker in (
-                ("limit", {}, f"at most {WF['env']['OUTSIDE_HOURLY_LIMIT']} pull requests, issues, pushes and comments",
+                ("limit", {}, self.LIMIT_WORDS,
                  "<!-- review-held-limit 50 0 draft -->"),
                 ("screen", {"review": "failure", "capped": True},
                  f"at most {WF['env']['SCREENED_HOURLY_CAP']} automated reviews and answers each hour",
@@ -3280,7 +3296,7 @@ class HoldTest(Holding):
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue", review="failure", origin="50",
                                         tries=str(self.TRIES - 1))
-        self.assertIn(f"the automated reply did not finish after {self.TRIES} tries. The workflow does not try it "
+        self.assertIn(f"The automated reply did not finish after {self.TRIES} tries. The workflow does not try it "
                       "again.", body)
         self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
         self.assertWaitsOnSami("Sami starts again, by hand, the work that the hold comment names.")
@@ -7618,15 +7634,18 @@ class RescreenTrustTest(Held):
                 self.assertEqual(RESCREEN["env"][name], WF["env"][name])
 
 
-def schedule(test, post_review=None, variable=None):
-    """The step of the rescreen pass (rescreen.yml), run against test's stand-in gh with that workflow's env, and with
-    the variable REPO_PAIRS_IMPORT_PATHS variable (None: not set, so GitHub gives an empty value) in the name that its
-    env maps: its exit status, its log, and each run of review.yml that it started, in order, as the inputs of its call:
-    (number, task, account, head, comment)."""
+def schedule(test, post_review=None, variable=None, number=None):
+    """The step of the rescreen pass (rescreen.yml), run against test's stand-in gh with that workflow's env, with the
+    variable REPO_PAIRS_IMPORT_PATHS variable (None: not set, so GitHub gives an empty value) and the input number
+    number (None: a run with no number, or of another event, for which GitHub gives an empty value) in the names that
+    its env maps: its exit status, its log, and each run of review.yml that it started, in order, as the inputs of its
+    call: (number, task, account, head, comment)."""
     s = pass_step()
     (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
+    (given,) = [k for k, v in s["env"].items() if v == "${{ inputs.number }}"]
     env = dict(RESCREEN["env"], **({} if post_review is None else {"POST_REVIEW": post_review}))
-    rc, out, _ = test.run_script(s["run"], **{name: "" if variable is None else variable}, **env)
+    rc, out, _ = test.run_script(s["run"], **{name: "" if variable is None else variable,
+                                              given: "" if number is None else str(number)}, **env)
     runs = []
     for call in gh_calls(test.api):
         if call[:3] == ["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]:
@@ -8154,11 +8173,17 @@ class RescreenJobTest(Held):
 
     def test_it_runs_on_events_alone_in_the_public_repository_on_main(self):
         """b13: rescreen.yml runs on a completed run of CI, a push to main, a new or reopened issue and a run by hand,
-        and on nothing else: no schedule. Its job runs for each of them on main of the public repository alone (its
-        step compares the ref byte for byte too: test_a_run_on_main_in_another_case_starts_no_run)."""
-        self.assertEqual(RESCREEN["on"], {"workflow_run": {"workflows": [CI["name"]], "types": ["completed"]},
-                                          "push": {"branches": ["main"]}, "issues": {"types": ["opened", "reopened"]},
-                                          "workflow_dispatch": None})
+        and on nothing else: no schedule. A run by hand has one input, optional, the number of a pull request, which
+        screen-start.yml gives (RescreenEventsTest). Its job runs for each of them on main of the public repository
+        alone (its step compares the ref byte for byte too: test_a_run_on_main_in_another_case_starts_no_run)."""
+        on = dict(RESCREEN["on"])
+        dispatch = on.pop("workflow_dispatch")
+        self.assertEqual(on, {"workflow_run": {"workflows": [CI["name"]], "types": ["completed"]},
+                              "push": {"branches": ["main"]}, "issues": {"types": ["opened", "reopened"]}})
+        self.assertEqual(list(dispatch), ["inputs"])
+        self.assertEqual(list(dispatch["inputs"]), ["number"])
+        self.assertEqual({k: v for k, v in dispatch["inputs"]["number"].items() if k != "description"},
+                         {"required": False, "type": "number"})
         cond = RESCREEN["jobs"]["rescreen"]["if"]
         for event in ("workflow_run", "push", "issues", "workflow_dispatch"):
             here = {"github.event_name": event, "github.repository": "theorem-labs/rocq-linux-process-semantics",
@@ -8389,11 +8414,11 @@ class Scheduled(Held):
         for i in (61, 62):
             self.serve(f"repos/{REPO}/actions/runs/{i}/approve", {})
 
-    def started(self, variable=None):
+    def started(self, variable=None, number=None):
         """The step of the rescreen pass on what is served now (schedule), with the variable REPO_PAIRS_IMPORT_PATHS
-        variable, after the stand-in gh forgot its calls."""
+        variable and the input number number, after the stand-in gh forgot its calls."""
         self.forget()
-        return schedule(self, variable=variable)
+        return schedule(self, variable=variable, number=number)
 
     @staticmethod
     def screened(failed=None):
@@ -9761,6 +9786,87 @@ class RescreenEventsTest(Scheduled):
         rc, out, runs, wrote = self.on("issues")
         self.assertEqual((rc, runs, wrote), (0, [], []), out)
 
+    def numbered(self, number):
+        """A run of the pass that screen-start.yml started (workflow_dispatch, -f number=<number>), on main of the
+        public repository: its job runs, and its step runs on what is served now. Its exit status and log, the runs
+        that it started, every write of the stand-in gh, and the endpoint of each call of the API that it made."""
+        github = {"github.event_name": "workflow_dispatch",
+                  "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                  "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
+        self.assertTrue(evaluate(RESCREEN["jobs"]["rescreen"]["if"], github))
+        rc, out, runs = self.started(number=number)
+        return rc, out, runs, writes(self.api), self.calls()
+
+    def waiting(self):
+        """mallory's issue #8, held at SCREENED_HOURLY_CAP over an hour ago: a run of the pass that takes the open
+        items starts its rescreen."""
+        self.origin(51, "mallory", title="review #8")
+        self.item(8, labels=("review-held",), comments=[dict(limit_hold(51, at=ago(300), kind="cap", tries=0), id=51)])
+
+    def test_screen_start_a_pass_with_a_number_whose_head_has_no_held_run_ends_after_3_calls_at_most(self):
+        """R14 and b14: a run of the pass that screen-start.yml started with the number of a pull request whose head has
+        no run that GitHub holds from its head repository and head branch reads that pull request and the held runs of
+        its head, at most 3 calls of the API, and ends there: it starts nothing and writes nothing, though another item
+        waits, whose rescreen a run with no number starts. So it does for a head whose CI run GitHub does not hold, for
+        held runs of the same commit from another fork, for a head repository that is gone, and for a pull request
+        that is not open. A number that is not a number, or that names no pull request, fails the run."""
+        def not_held():
+            self.ci(ended=2)
+
+        def other_fork():
+            self.held_runs()
+            self.of_heads[:] = [dict(r, head_repository={"id": FORK_ID + 1}) for r in self.of_heads]
+            self.publish()
+
+        def closed():
+            self.held_runs()
+            self.merge(7, "clean", state="closed")
+        pull, runs_of_head = f"repos/{REPO}/pulls/7", f"repos/{REPO}/actions/runs"
+        for case, kwargs, given, want in (("a CI run that GitHub does not hold", {}, not_held, [pull, runs_of_head]),
+                                          ("held runs of another fork", {}, other_fork, [pull, runs_of_head]),
+                                          ("a head repository that is gone", {"repository": None}, self.held_runs,
+                                           [pull]),
+                                          ("a pull request that is not open", {}, closed, [pull])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.waiting()
+                self.item(kind="pr", **kwargs)
+                given()
+                rc, out, runs, wrote, calls = self.numbered(7)
+                self.assertEqual((rc, runs, wrote), (0, [], []), out)
+                self.assertLessEqual(len(calls), 3, calls)
+                self.assertEqual(calls, want, out)
+                self.assertIn("the rescreen pass starts no run", out)
+        # The same items, in a run with no number: the rescreen of #8 starts.
+        self.tearDown()
+        self.setUp()
+        self.waiting()
+        self.item(kind="pr")
+        not_held()
+        self.assertEqual(self.started()[::2], (0, [("8", "rescreen", "mallory", "", "")]))
+        for number, text in (("7x", "The input number is not a number"), ("8", "pull request #8 could not be read")):
+            with self.subTest(number=number):
+                rc, out, runs, wrote, calls = self.numbered(number)
+                self.assertEqual((rc, runs, wrote), (1, [], []), out)
+                self.assertLessEqual(len(calls), 1, calls)
+                self.assertIn(text, out)
+
+    def test_screen_start_a_pass_with_a_number_whose_head_has_a_held_run_does_its_pass(self):
+        """R14: when GitHub holds a run of the head of that pull request, from its head repository and head branch, the
+        run does its pass as a run with no number does: the approval of that head, which only a run of the pass starts,
+        and the rescreen of another item that waits."""
+        self.waiting()
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        rc, out, runs, wrote, _calls = self.numbered(7)
+        self.assertEqual((rc, sorted(runs)), (0, [("7", "approve", "mallory", HEAD, ""),
+                                                  ("8", "rescreen", "mallory", "", "")]), out)
+        self.assertEqual(len(wrote), 2, wrote)
+        self.assertIn(f"#7: GitHub holds a run of its head {HEAD}", out)
+        self.assertEqual(self.started()[::2], (0, runs))
+        self.assertEqual(self.dispatched("approve", account="mallory")["route"], "screen")
+
     def approval_tried(self, tries):
         """mallory's pull request at HEAD, whose runs GitHub holds, and tries approve runs of HEAD whose post job
         failed at the approval: at REVIEW_TRIES, the pass decides the stop head-approve."""
@@ -10491,24 +10597,40 @@ class TriggerTest(unittest.TestCase):
 
 # The step of screen-start.yml, and the fields of a pull_request_target event that the author writes, which no run:
 # line and no env: value of screen-start.yml may name.
-SCREEN_START_STEP = "Start the rescreen pass once GitHub lists the runs of the head commit"
+SCREEN_START_STEP = "Wait up to 2 minutes for a CI run of this event, then start the rescreen pass"
 AUTHOR_FIELDS = re.compile(r"\bgithub\.(?:event\.pull_request\.(?:title|body|head\.ref|head\.label)|head_ref)\b")
+# The types of pull_request on which GitHub runs a workflow whose pull_request names none (GitHub's docs, "Events that
+# trigger workflows").
+DEFAULT_PULL_REQUEST_TYPES = ["opened", "synchronize", "reopened"]
+
+
+def pull_request_types(wf):
+    """The types of pull_request on which the workflow wf runs, whichever form its on: has. None when it does not run
+    on pull_request, and GitHub's default when its pull_request names no types."""
+    on = wf["on"]
+    on = {on: None} if isinstance(on, str) else dict.fromkeys(on) if isinstance(on, list) else on
+    if "pull_request" not in on:
+        return set()
+    types = (on["pull_request"] or {}).get("types", DEFAULT_PULL_REQUEST_TYPES)
+    return {types} if isinstance(types, str) else set(types)
 
 
 class ScreenStartTest(Runner):
     """b14 (R14): .github/workflows/screen-start.yml, the one workflow on pull_request_target. The file: its trigger
-    and types, the fork condition of its job, its permissions, its concurrency group, and what its step reads. Its
-    step against the stand-in gh, with a stand-in clock that only its sleeps move: a read of the runs of the head
-    commit, at most every 10 seconds, until GitHub lists one or 2 minutes pass, then one write, the start of
-    rescreen.yml on main, and exit 0."""
+    and types (those of the repository's pull_request workflows), the fork condition of its job, its permissions, its
+    concurrency group, and what its step reads. Its step against the stand-in gh, with a stand-in clock that only its
+    sleeps move: a read of the runs of the head commit, at most every 10 seconds, until GitHub lists one that it made
+    at or after the event or 2 minutes pass, then one write, the start of rescreen.yml on main with the number of the
+    pull request, and exit 0. The run of rescreen.yml that it starts ends after a few calls of the API when the head
+    has no run that GitHub holds (RescreenEventsTest)."""
 
-    TYPES = ["opened", "synchronize", "reopened", "edited", "ready_for_review", "labeled", "closed"]
-    START = ["workflow", "run", "rescreen.yml", "--ref", "main"]
+    START = ["workflow", "run", "rescreen.yml", "--ref", "main", "-f", "number=7"]
     TOKEN = "screen-start-token"   # the step's github.token
     CLOCK = 1_000_000_000          # the stand-in clock at the start of the step, in seconds
-    # The contexts that screen-start.yml's env may give its step: GitHub writes each of them, the author none.
+    # The contexts that screen-start.yml's env may give its step: GitHub writes each of them, the author none. The
+    # pull request's updated_at is the time of the event, which GitHub writes at the event.
     CONTEXTS = {"github.token", "github.repository", "github.event.pull_request.head.sha",
-                "github.event.pull_request.number"}
+                "github.event.pull_request.number", "github.event.pull_request.updated_at"}
 
     def setUp(self):
         super().setUp()
@@ -10550,12 +10672,15 @@ class ScreenStartTest(Runner):
         return {"id": 31, "head_sha": head, "event": event, "path": ".github/workflows/ci.yml",
                 "status": "action_required", "conclusion": None}
 
-    def start(self):
-        """The step, against the stand-in gh and the stand-in clock, for #7 at HEAD of REPO: its exit status, its log,
-        and each call of gh and of sleep, in order, as ("gh", GH_TOKEN, GH_REPO, *arguments) or ("sleep", seconds)."""
+    def start(self, at=None):
+        """The step, against the stand-in gh and the stand-in clock, for #7 at HEAD of REPO, with at as the time of the
+        event (the pull request's updated_at; none: GitHub gives none, and any run of the head counts): its exit
+        status, its log, and each call of gh and of sleep, in order, as ("gh", GH_TOKEN, GH_REPO, *arguments) or
+        ("sleep", seconds)."""
         (s,) = [s for s in self.job()["steps"] if s.get("name") == SCREEN_START_STEP]
         env = filled(s["env"], {"github.token": self.TOKEN, "github.repository": REPO,
-                                "github.event.pull_request.head.sha": HEAD, "github.event.pull_request.number": 7})
+                                "github.event.pull_request.head.sha": HEAD, "github.event.pull_request.number": 7,
+                                **({} if at is None else {"github.event.pull_request.updated_at": at})})
         rc, out, _ = self.run_script(s["run"], **env)
         path = os.path.join(self.api, "every")
         log = []
@@ -10576,8 +10701,8 @@ class ScreenStartTest(Runner):
         return not {"-f", "-F", "--field", "--raw-field", "--input"} & set(args)
 
     def steps(self, log):
-        """The log as words: "read" for a read, "sleep <seconds>", "start" for the start of rescreen.yml on main, and
-        "write <arguments>" for any other call of gh."""
+        """The log as words: "read" for a read, "sleep <seconds>", "start" for the start of rescreen.yml on main with
+        the number of #7, and "write <arguments>" for any other call of gh."""
         words = []
         for entry in log:
             if entry[0] == "sleep":
@@ -10589,8 +10714,9 @@ class ScreenStartTest(Runner):
         return words
 
     def assertOneStart(self, log):
-        """The step's one write is the start of rescreen.yml on main, with the step's token and the repository in
-        GH_REPO, as no checkout gives gh a repository; each read is one of the pull_request runs of the head."""
+        """The step's one write is the start of rescreen.yml on main with the number of the pull request (-f
+        number=7), with the step's token and the repository in GH_REPO, as no checkout gives gh a repository; each
+        read is one of the pull_request runs of the head."""
         calls = [entry[1:] for entry in log if entry[0] == "gh"]
         self.assertEqual([c for c in calls if not self.reads(c[2:])], [[self.TOKEN, REPO, *self.START]])
         for token, _repo, *args in calls:
@@ -10608,13 +10734,23 @@ class ScreenStartTest(Runner):
             self.assertEqual((token, endpoint), (self.TOKEN, [f"repos/{REPO}/actions/runs"]), args)
             self.assertLessEqual({f"head_sha={HEAD}", "event=pull_request"}, fields, args)
 
-    def test_screen_start_starts_on_pull_request_target_alone_with_its_seven_types(self):
-        """R14: the one trigger is pull_request_target, with the types opened, synchronize, reopened, edited,
-        ready_for_review, labeled and closed, and no filter of branches or paths: no run by hand, no other event."""
+    def test_screen_start_starts_on_pull_request_target_alone_with_the_types_of_the_pull_request_workflows(self):
+        """R14: the one trigger is pull_request_target, with no filter of branches or paths: no run by hand, no other
+        event. Its types are exactly those on which a pull_request workflow of this repository runs, read from the
+        other files of .github/workflows (GitHub's default, opened, synchronize and reopened, for a pull_request that
+        names no types, as ci.yml's does): only such an event can make a run that GitHub holds, so an edit, a label or
+        a close starts nothing."""
         self.assertEqual(list(SCREEN_START["on"]), ["pull_request_target"])
         on = SCREEN_START["on"]["pull_request_target"]
         self.assertEqual(list(on), ["types"])
-        self.assertEqual(sorted(on["types"]), sorted(self.TYPES))
+        workflows = os.path.dirname(WORKFLOW)
+        want = set()
+        for name in sorted(os.listdir(workflows)):
+            if name.endswith((".yml", ".yaml")) and name != os.path.basename(SCREEN_START_WORKFLOW):
+                want |= pull_request_types(load(os.path.join(workflows, name)))
+        self.assertTrue(want, "no workflow of the repository runs on pull_request")
+        self.assertEqual(sorted(on["types"]), sorted(want))
+        self.assertEqual(len(on["types"]), len(want))
 
     def test_screen_start_runs_only_for_a_pull_request_from_a_fork_in_the_public_repository(self):
         """R14: its one job runs for a pull request whose head repository is not this repository, also when GitHub
@@ -10650,7 +10786,8 @@ class ScreenStartTest(Runner):
     def test_screen_start_reads_no_field_that_the_author_writes(self):
         """R14: no run: line names a field of the event that the author writes (the title, the body, the branch
         name), nor any expression: the step reads the event through its env alone. Each env value gives only a
-        context that GitHub writes: the token, the repository, the head commit and the number."""
+        context that GitHub writes: the token, the repository, the head commit, the number and the time of the
+        event."""
         job = self.job()
         for s in job["steps"]:
             with self.subTest(step=s.get("name")):
@@ -10688,11 +10825,11 @@ class ScreenStartTest(Runner):
                 self.assertNotIn(word, out + calls)
 
     def test_screen_start_a_newer_event_of_the_pull_request_cancels_the_run_that_waits(self):
-        """A burst of events of one pull request (an author who edits the title many times): the runs of one pull
-        request share one group of the whole workflow, by its number, and a newer one cancels the one that waits.
-        Each event still ends in a start of the pass: a run that a newer event cancelled while it waited started
-        nothing, and the newest run starts the pass, which reads every open item again. The runs of another pull
-        request, and the runs of rescreen.yml, are in other groups."""
+        """A burst of events of one pull request (an author who pushes many times): the runs of one pull request share
+        one group of the whole workflow, by its number, and a newer one cancels the one that waits. Each event still
+        ends in a start of the pass: a run that a newer event cancelled while it waited started nothing, and the newest
+        run starts the pass, which reads the runs of the head, and every open item again when GitHub holds one of them.
+        The runs of another pull request, and the runs of rescreen.yml, are in other groups."""
         group = SCREEN_START["concurrency"]["group"]
         self.assertEqual(SCREEN_START["concurrency"], {"group": group, "cancel-in-progress": True})
         self.assertNotIn("concurrency", self.job())
@@ -10703,7 +10840,7 @@ class ScreenStartTest(Runner):
 
     def test_screen_start_starts_the_pass_once_when_github_lists_a_run_of_the_head(self):
         """R14: once GitHub lists a pull_request run of the head commit, at the first read or at a later one, the
-        step ends its wait and makes one write, gh workflow run rescreen.yml --ref main, and exits 0."""
+        step ends its wait and makes one write, gh workflow run rescreen.yml --ref main -f number=7, and exits 0."""
         listed = {"total_count": 1, "workflow_runs": [self.run_of(HEAD)]}
         for case, first, then, want in (("at once", listed, None, ["read", "start"]),
                                         ("after 10 seconds", {"total_count": 0, "workflow_runs": []}, listed,
@@ -10757,19 +10894,23 @@ class ScreenStartTest(Runner):
         self.assertEqual((rc, [entry[0] for entry in log]), (0, ["gh", "gh"]), out)
 
     def test_screen_start_starts_the_pass_once_after_2_minutes_when_github_lists_no_run(self):
-        """R14: when GitHub lists no pull_request run of the head commit (a read that fails lists none; an event that
-        starts no CI run, such as edited, labeled or closed, or a pull request with a merge conflict), the step reads
-        again at most every 10 seconds, until 2 minutes pass. Then it makes the same one write, and exits 0."""
-        for case, data in (("a read that fails", None),
-                           ("no run", {"total_count": 0, "workflow_runs": []}),
-                           ("runs of another commit or event", {"total_count": 2, "workflow_runs": [
-                               self.run_of(OTHER_HEAD), self.run_of(HEAD, event="push")]})):
+        """R14: when GitHub lists no pull_request run of the head commit made at or after the event (a read that fails
+        lists none; a pull request with a merge conflict, for which GitHub starts no CI run; the runs of an earlier
+        event of the head commit alone), the step reads again at most every 10 seconds, until 2 minutes pass. Then it
+        makes the same one write, and exits 0."""
+        earlier = dict(self.run_of(HEAD), status="completed", conclusion="success", created_at="2026-11-02T09:00:00Z")
+        for case, data, at in (("a read that fails", None, None),
+                               ("no run", {"total_count": 0, "workflow_runs": []}, None),
+                               ("runs of another commit or event", {"total_count": 2, "workflow_runs": [
+                                   self.run_of(OTHER_HEAD), self.run_of(HEAD, event="push")]}, None),
+                               ("runs of an earlier event", {"total_count": 1, "workflow_runs": [earlier]},
+                                "2026-11-02T10:00:00Z")):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
                 if data is not None:
                     self.serve(f"repos/{REPO}/actions/runs", data)
-                rc, out, log = self.start()
+                rc, out, log = self.start(at=at)
                 words = self.steps(log)
                 self.assertEqual((rc, words[-1:]), (0, ["start"]), out)
                 wait = words[:-1]

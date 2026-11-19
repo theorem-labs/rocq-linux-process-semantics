@@ -3,20 +3,24 @@
 # else.
 #
 # It runs on events alone, never on a schedule: each completed run of CI (workflow_run), each push to main, each new
-# or reopened issue, each event of a pull request from a fork (.github/workflows/screen-start.yml starts it on main by
-# workflow_dispatch), and a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics,
-# or "Run workflow" on this workflow's page in the Actions tab). Each run takes the items that wait, oldest reason
-# first and under the limits below, and starts one workflow_dispatch run of review.yml for each item and task. The
-# runs of this file queue in one concurrency group, so that two of them never start the same item.
+# or reopened issue, each event of a pull request from a fork on which CI runs (opened, synchronize and reopened:
+# .github/workflows/screen-start.yml starts it on main by workflow_dispatch, with the number of the pull request), and
+# a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics, or "Run workflow" on this
+# workflow's page in the Actions tab). A run with a number first reads that pull request and the runs of its head that
+# GitHub holds, and when there is none, it ends there and starts nothing (the step below says why). Each other run
+# takes the items that wait, oldest reason first and under the limits below, and starts one workflow_dispatch run of
+# review.yml for each item and task. The runs of this file queue in one concurrency group, so that two of them never
+# start the same item.
 #
 # A run that GitHub holds starts no workflow_run: GitHub holds the CI run of a first-time contributor's pull request
 # for a person's approval, and such a held run starts no run of a workflow that waits for it (on
 # theorem-labs/oss-verify, the held Tests runs 44140189670 and 43931972100 started no run of the workflow that waits
 # for Tests, read 2026-11-18). GitHub holds no run of pull_request_target (GitHub's docs, "Managing GitHub Actions
-# settings for a repository", read 2026-11-19), so screen-start.yml starts this pass at each event of a pull request
-# from a fork, once GitHub lists a CI run of its head commit, held or not, or after 2 minutes. Beyond that, an item
-# that waits, a held one among them, waits for the next of these events in this repository: another pull request's
-# CI run, a push to main, a new or reopened issue, an event of a pull request from a fork, or a run by hand.
+# settings for a repository", read 2026-11-19), so screen-start.yml starts this pass at each such event of a pull
+# request from a fork, once GitHub lists a CI run of that event, held or not, or after 2 minutes. The pass then takes
+# the open items only when GitHub holds a run of that head. Beyond that, an item that waits, a held one among them,
+# waits for the next of these events in this repository: a CI run that ends, a push to main, a new or reopened issue,
+# an event of a pull request from a fork on which CI runs, when GitHub holds a run of its head, or a run by hand.
 #
 # Why a file of its own: the OSSV controller wakes on each completed run of review.yml and reads its artifact, so a
 # pass inside review.yml would wake it for nothing at each event.
@@ -42,8 +46,14 @@ on:
     branches: [main]
   issues:
     types: [opened, reopened]
-  # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork.
+  # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork on which CI
+  # runs, with the number of the pull request.
   workflow_dispatch:
+    inputs:
+      number:
+        description: A pull request; the pass then runs only when GitHub holds a run of its head (screen-start.yml sets it)
+        required: false
+        type: number
 
 permissions: {}
 
@@ -155,10 +165,12 @@ jobs:
   # list at 1,000 runs), the head's CI runs only for a catch-up or a review (as if one has not finished, when GitHub cut
   # that list), and the head's check runs only for the variable. Oldest reason first, each account gets at most
   # OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose name
-  # ends with the account), less those that it had in the last hour, as the trust job counts them; the trust job of
-  # each run counts again, with the account's own events, and holds the item again at the limit. A catch-up, a
-  # conflict, a relabel and a stop screen nothing, run no model and count toward no limit and no cap. The trust job of
-  # each run reads again from the API why this pass started it, and stops when the reason no longer holds.
+  # ends with the account), less those that it had in the last hour, as the trust job counts them. The trust job of
+  # each run counts again (earlier, in review.yml), with the account's own events, and with the CI runs of other
+  # accounts whose screen job names the account among the runs whose jobs it reads (at most 2 * OUTSIDE_HOURLY_LIMIT
+  # of them). It holds the item again at the limit. A catch-up, a conflict, a relabel and a stop screen nothing, run
+  # no model and count toward no limit and no cap. The trust job of each run reads again from the API why this pass
+  # started it, and stops when the reason no longer holds.
   # The work that a hold names is tried up to REVIEW_TRIES times since the hold: each run of its task since the hold
   # counts, as one that ended with neither a new hold nor a post, but a run that ended at a failed sign-in, which
   # judged nothing and counts no try (D19). Each try waits until the newest run of the task is over an hour old, as the
@@ -202,6 +214,9 @@ jobs:
           # read them: the relabel of each head whose recorded value is not this one. An empty value is no variable:
           # GitHub gives an empty value for a variable that is not set.
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
+          # The input number of a run by hand: the pull request whose event started screen-start.yml, which passes it.
+          # Empty for a run with no number, and for a run of any other event, which has no inputs.
+          NUMBER: ${{ inputs.number }}
         run: |
           set -euo pipefail
           # The if of this job compares the ref with no case, as GitHub's == does, so refs/heads/MAIN passes it. The
@@ -215,6 +230,49 @@ jobs:
           if [ "$POST_REVIEW" != true ]; then
             echo "::notice::POST_REVIEW is not true: reviews are not posted, so the rescreen pass starts no run."
             exit 0
+          fi
+          # A run with a number: screen-start.yml starts it at each event of a pull request from a fork on which CI
+          # runs. Such an event can make a run that GitHub holds, which starts no workflow_run: only a run of this pass
+          # starts its approval (approve). The other work of the pass waits for the next of its other events (the top
+          # of this file). So when GitHub holds no run of the head of that pull request from its head repository and
+          # head branch (the runs that held_at gives, which the post job approves), the run ends after that read and
+          # starts nothing. A burst of events then costs at most 2 calls of the API each, and one more for each 100
+          # runs of that commit past the first 100 that GitHub holds (R14). A head repository that is gone has no such
+          # run. A number that is not a number, or a pull request that cannot be read, ends the run with a failure. A
+          # pull request that is not open ends it too. A run with no number takes every open item.
+          if [ -n "${NUMBER:-}" ]; then
+            [[ $NUMBER =~ ^[1-9][0-9]*$ ]] \
+              || { echo "::error::The input number is not a number, so the rescreen pass starts no run."; exit 1; }
+            pull=$(gh api "repos/$REPO/pulls/$NUMBER" \
+              --jq '"\(.state // "-") \(.head.sha // "-") \(.head.repo.id // 0) \(.head.ref // "-")"') \
+              || { echo "::error::pull request #$NUMBER could not be read, so the rescreen pass starts no run."; exit 1; }
+            read -r state sha repository branch <<< "$pull"
+            if [ "$state" != open ]; then
+              echo "#$NUMBER is not an open pull request, so the rescreen pass starts no run."
+              exit 0
+            fi
+            [[ $sha =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::pull request #$NUMBER names no head commit, so the rescreen pass starts no run."; exit 1; }
+            if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
+              echo "#$NUMBER: the head repository of $sha is gone, so the workflow approves no run of it, and the" \
+                "rescreen pass starts no run."
+              exit 0
+            fi
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            held=$(SHA=$sha REPOSITORY=$repository BRANCH=$branch gh api --method GET --paginate \
+              "repos/$REPO/actions/runs" -f head_sha="$sha" -f status=action_required -f event=pull_request \
+              -F per_page=100 --jq '.workflow_runs[]
+                | select((.status == "action_required" or .conclusion == "action_required")
+                         and .head_sha == $ENV.SHA and .event == "pull_request"
+                         and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
+                         and .head_branch == $ENV.BRANCH) | .id') \
+              || { echo "::error::the held runs of $sha could not be read, so the rescreen pass starts no run."; exit 1; }
+            if [ -z "$held" ]; then
+              echo "#$NUMBER: GitHub holds no run of its head $sha from its head repository and branch, so the" \
+                "rescreen pass starts no run."
+              exit 0
+            fi
+            echo "#$NUMBER: GitHub holds a run of its head $sha, so the rescreen pass takes every open item."
           fi
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
