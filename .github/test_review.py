@@ -8808,6 +8808,25 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_stopped_ci_run_of_another_pull_request_of_the_head_leaves_the_apps_retry_as_it_is(self):
+        """D16 (the App's retry): the post job of run 10, the workflow_run review of mallory's #7, failed at token A's
+        mint. Eve pushes the same commit to her fork and opens #9 of it into dev: the trust job stops its CI run
+        (another branch), which posted nothing. That run, newer than run 10, is not the newest run of the head: an hour
+        after run 10 ended, the head gets its one relabel run, whether eve's run ended 20 or 65 minutes ago."""
+        for ended in (20, 65):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
+                self.item(9, kind="pr", author="eve", base="dev", repository=999)
+                self.ran(10, f"review {HEAD} by mallory", made=101, ended=61, event="workflow_run", jobs=[
+                    attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                    post_job({self.DECIDE: "success", MINT_A: "failure"})])
+                self.ran(20, f"review {HEAD} by eve", made=ended + 1, ended=ended, event="workflow_run",
+                         jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+
     def test_an_import_check_that_the_app_could_not_record_is_tried_up_to_review_tries(self):
         """D16: a review or relabel run of the head whose post job failed at the check run itself counts a try of the
         head. At REVIEW_TRIES the head gets the hold comment of D16 (c) for the import check, which names the head,
