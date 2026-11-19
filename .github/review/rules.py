@@ -13,22 +13,27 @@ labels").
         <hold> <request.json> [<import paths>]
     python3 .github/review/rules.py import-marker <head> [<import paths>]
     python3 .github/review/rules.py verdict <number> <head>
+    python3 .github/review/rules.py withdrawal <number> <head> <why> <checks.jsonl> <directory>
+    python3 .github/review/rules.py steering <files.jsonl>
     python3 .github/review/rules.py relabel <number> <head> [<fact>=<value> ...] [marker=<line> ...]
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
-waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's, and none while the workflow
-works on the item. Setting one label takes the other off. review-held, the mark of a hold, stays beside them. The
-label comment is one comment of github-actions[bot] on the item, edited in place (label_comment). Its first line is
-<!-- review-label -->, its text names the next step and who takes it, and with a state label its last line is the
-marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds,
-and a marker=<line> of the same kind takes the place of that line. It holds <!-- review-conflict-state <head> -->
-while it gives the head waits-on-author for a merge conflict, and loses that line with any other state. In a state
-with no state label (working, or import), an item that has a label comment gets the text of its state, and an item
-that has none gets none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or
-person, the text also names the step of R12 for the import into the internal repository (import_steps), from the
-facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the
-post job's decision (import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in
+the state steering), and none while the workflow works on the item. Setting one label takes the other off.
+review-held, the mark of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the
+item, edited in place (label_comment). Its first line is <!-- review-label -->, its text names the next step and who
+takes it, and with a state label its last line is the marker <!-- waits-on-author --> or
+<!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds, and a marker=<line> of the same kind
+takes the place of that line. It holds <!-- review-conflict-state <head> --> while it gives the head waits-on-author
+for a merge conflict, and loses that line with any other state. The state steering (the fact steering=true, with
+head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the
+post job approves none of its runs, and the rescreen pass starts no approval of it. In a state with no state label
+(working, or import), an item that has a label comment gets the text of its state, and an item that has none gets
+none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or person, the text also
+names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths, the
+text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
+(import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -110,9 +115,25 @@ check run and each label comment of an outside pull request hold (import_marker)
 JSON string, or null when it is not given. The JSON writes each character outside ASCII, <, > and & as a \\u escape,
 so that the line holds no line break and no --> before its end.
 
-verdict: the review's verdict at <head> of the pull request <number>, from the marker
-<!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment of github-actions[bot] that names <head>
-(review_verdict): <verdict> on standard output, and an empty line when no review comment names <head>.
+verdict: "<verdict> <state>" on standard output for <head> of the pull request <number> (review_verdict), from the
+comments of github-actions[bot]: <verdict> is the verdict of the marker
+<!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment that names <head>, or - when none does.
+<state> is held when a hold comment of the screen that names <head> is newer than that review comment, or there is
+no such review comment: a later screen held <head>. Else it is screened when the next marker line of that review
+comment is <!-- review-screened <head> -->, so that the screen passed <head> in the run of that review, and
+unscreened when it is not (a writer's review by hand runs no screen). A relabel records the import check run only for
+screened, and withdraws it for held.
+
+withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
+<number> (withdrawal), for <why>: blocking or person, the verdict of a later review of <head>, or screen, a later
+screen that held it (R12). <checks.jsonl> holds each check run {id, text}, its id and its output text, one on each
+line. Each request goes to <directory>/withdraw-<id>.json, for PATCH repos/<repo>/check-runs/<id>, and each id goes
+to standard output, one on each line. The status is 2 when an argument or a line is not one of these.
+
+steering: whether a pull request changes a steering file (steering, a file under .github/), from <files.jsonl>, its
+files as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line: true
+when the path of a file, or the path that it had before a rename, is one, else false, on standard output. The post
+job approves no held run of such a head (R10). The status is 2 when a line is not such a file.
 
 relabel: label (above) for the head <head> of the pull request <number>, with the facts that the workflow wrote of
 that head (relabel_facts) beside the facts and the marker lines of the job: the verdict and will-fix of the review
@@ -170,6 +191,9 @@ FACTS = {
     "refused": "",
     # The screen held the item.
     "screen_held": False,
+    # A held pull request whose head changes a file under .github/, so the post job approved none of its runs (R10):
+    # a person at Theorem approves them.
+    "steering": False,
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
     "held": False,
@@ -198,6 +222,10 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 # import is paused, so the comment names each step that can come next. With the variable, it names the step for the
 # paths that the pull request changes.
 PASSED = "The automated screen and the automated review passed this pull request."
+# The decision screen of an outside pull request whose review passed: no screen passed its head (a writer's review by
+# hand runs none), so the text says so in the place of PASSED.
+UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit, so the "
+              "workflow did not record the check `repo-pairs/import-approved`.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -249,6 +277,12 @@ STATES = {
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
+    # A held pull request whose head changes a file under .github/ (R10): the post job approved none of its runs. The
+    # label comment records the head (steering_line).
+    "steering": (
+        THEOREM, "A person at Theorem approves the checks of this pull request.",
+        "This pull request changes a file under `.github/`, so the workflow does not approve its checks. You do not "
+        "need to do anything."),
     "will-fix": (
         THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
@@ -282,10 +316,12 @@ FIRST = "<!-- review-label -->"
 HEAD = re.compile(r"[0-9a-f]{40}")
 NUMBER = re.compile(r"[1-9][0-9]*")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
-# (R12), the stored draft of an issue's reply, the approved reply that posted, and the head that a catch-up closed and
-# reopened the pull request at (D16 (a): once for each head).
+# (R12), the stored draft of an issue's reply, the approved reply that posted, the head that a catch-up closed and
+# reopened the pull request at (D16 (a): once for each head), and the head whose runs the post job did not approve
+# because it changes a file under .github/ (R10: the rescreen pass starts no approval of it again).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
-                  r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->")
+                  r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
+                  r"|<!-- (review-steering) [0-9a-f]{40} -->")
 
 
 def marker_line(line):
@@ -295,8 +331,8 @@ def marker_line(line):
 
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
-                conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, held=False,
-                tries_used_up=False, left_closed=False, recorded=False, import_paths=None, decision=""):
+                conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, steering=False,
+                held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None, decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
     if kind not in ("", "pr", "issue"):
@@ -316,6 +352,8 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         return "stopped"
     if screen_held:
         return "screen"
+    if steering:
+        return "steering"
     if held:
         return "working"
     if reply_posted:
@@ -351,7 +389,8 @@ def label_of(state):
 
 
 def marker_kind(line):
-    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted or review-catchup."""
+    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted, review-catchup or
+    review-steering."""
     m = KEPT.fullmatch(line)
     if not m:
         raise ValueError(f"not a marker line that the label comment keeps: {line!r}")
@@ -364,7 +403,8 @@ def import_steps(state, value, decision):
     variable, the step is Sami's approval of the head commit when the import takes each changed path, and a copy by
     hand when it does not take one or a file is under .github/. A decision that does not say which, as when the list of
     changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
-    MERGE_STEPS."""
+    MERGE_STEPS. For the decision screen, the text says that no screen passed the head (UNSCREENED), in the place of
+    PASSED."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -372,13 +412,14 @@ def import_steps(state, value, decision):
     live = value is not None
     steps = IMPORT_STEPS if live else MERGE_STEPS
     unread = f"{UNREAD} " if decision == "unread" else ""
+    passed = UNSCREENED if decision == "screen" else PASSED
     if state == "decide":
         if live and decision in ("person", "markdown"):
-            return APPROVE, (f"{PASSED} The import copies each path that this pull request changes. You do not need "
+            return APPROVE, (f"{passed} The import copies each path that this pull request changes. You do not need "
                              "to do anything.")
         if live and decision in NOT_TAKEN:
-            return COPY, f"{PASSED} {NOT_TAKEN[decision]} You do not need to do anything."
-        return STATES[state][1], f"{PASSED} {unread}You do not need to do anything.\n\n{steps}"
+            return COPY, f"{passed} {NOT_TAKEN[decision]} You do not need to do anything."
+        return STATES[state][1], f"{passed} {unread}You do not need to do anything.\n\n{steps}"
     _label, step, text = STATES[state]
     # No text promises a merge or an import before the questions have their answers.
     answered = "If the answers to the questions leave no change to make,"
@@ -396,18 +437,26 @@ def conflict_state(head):
     return f"<!-- review-conflict-state {head} -->"
 
 
+def steering_line(head):
+    """The marker line of KEPT that records head as a head that changes a file under .github/ (the state steering):
+    the post job approved none of its runs, and the rescreen pass starts no approval of it again."""
+    return f"<!-- review-steering {head} -->"
+
+
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
-    or markers gives (a marker of markers takes the place of old's line of its kind), the conflict-state line of head
-    for a conflict, and the marker of the state label. imports is (value, decision) of import_steps for an outside
-    pull request, and None for any other item. The state decide is an outside pull request's alone, so there None
-    reads as no variable and no decision."""
+    or markers gives (a marker of markers takes the place of old's line of its kind), with the steering line of head
+    in the state steering, the conflict-state line of head for a conflict, and the marker of the state label. imports
+    is (value, decision) of import_steps for an outside pull request, and None for any other item. The state decide is
+    an outside pull request's alone, so there None reads as no variable and no decision."""
     label, step, text = STATES[state]
     if state == "decide" or (state == "person" and imports is not None):
         step, text = import_steps(state, *(imports or (None, "")))
-    if state == "conflict" and not HEAD.fullmatch(head):
-        raise ValueError(f"a conflict needs its head commit, not {head!r}")
+    if state in ("conflict", "steering") and not HEAD.fullmatch(head):
+        raise ValueError(f"the state {state} needs its head commit, not {head!r}")
+    if state == "steering":
+        markers = [*markers, steering_line(head)]
     kept = {}
     for line in old.split("\n"):
         if KEPT.fullmatch(line):
@@ -638,10 +687,12 @@ ANY_RUN = r"[^\n\r\x85\u2028\u2029]*"
 # Copybara's FileUtil.RELATIVISM, (.*/)?[.][.]?(/.*)?, with Java's `.`.
 RELATIVISM = re.compile(rf"(?:{ANY_RUN}/)?\.\.?(?:/{ANY_RUN})?")
 SURROGATE = re.compile(r"[\ud800-\udfff]")
-# The markers at the start of a review comment (D8): the head that it reviewed, and the review's verdict at that head,
-# after the soundness rule, with will-fix when the author said they will make the change.
+# The markers at the start of a review comment (D8): the head that it reviewed, the review's verdict at that head,
+# after the soundness rule, with will-fix when the author said they will make the change, and, when the screen passed
+# that head in the run of the review, the marker <!-- review-screened <head> --> (R12).
 REVIEWED = re.compile(r"<!-- review -->\n<!-- review-head ([0-9a-f]{40}) -->\n"
-                      r"<!-- review-verdict \1 (pass|blocking|person)( will-fix)? -->(?:\n|$)")
+                      r"<!-- review-verdict \1 (pass|blocking|person)( will-fix)? -->"
+                      r"(\n<!-- review-screened \1 -->)?(?:\n|$)")
 
 
 def compile_glob(pattern):
@@ -942,16 +993,54 @@ def check_run(number, head, value, hold):
                        "summary": " ".join(summary), "text": import_marker(head, value)}}
 
 
+# Why a later run of a head withdraws the import check run that the workflow recorded on it (R12): its review gave a
+# blocking finding or the verdict person, or its screen held the head. Each is (the end of the output title, the
+# summary's first sentence).
+WITHDRAWN = {
+    "blocking": ("a later review asks for a change", "A later automated review of this head commit asks for a change."),
+    "person": ("a later review has questions for Sami",
+               "A later automated review of this head commit has questions for Sami."),
+    "screen": ("a later screen held it", "A later automated screen held this head commit."),
+}
+
+
+def withdrawal(number, head, why, text):
+    """The body of the request that updates an import check run on head of pull request number (PATCH
+    repos/<repo>/check-runs/<id>) for why (WITHDRAWN): the conclusion neutral, so that the import no longer reads it as
+    the approval of the pull request, and an output title that names the pull request and says why. Its name and its
+    external_id stay, and so does text, its output text: the marker line of the value that it recorded."""
+    if not (NUMBER.fullmatch(number) and HEAD.fullmatch(head)) or why not in WITHDRAWN:
+        raise ValueError(f"not a pull request number, a head commit and a reason: {number!r} {head!r} {why!r}")
+    end, first = WITHDRAWN[why]
+    return {"status": "completed", "conclusion": "neutral",
+            "output": {"title": f"Not approved for the import: pull request #{number} at {head[:12]}, {end}",
+                       "summary": f"{first} So this check is no longer an approval for the import.", "text": text}}
+
+
 def review_verdict(comments, head):
-    """The verdict of the review comment of BOT that names head, from comments, the item's comments as the API lists
-    them (issues/<n>/comments), the last one when more name it. "" when none names head. Only the markers at the start
-    of the comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert)."""
-    found = ""
+    """(verdict, state) of the review comment of BOT that names head, from comments, the item's comments as the API
+    lists them (issues/<n>/comments, with updated_at), the last one when more name it. verdict is its verdict ("" when
+    none names head). state is held when a hold comment of BOT of the screen (hold_fact screen_held) names head and
+    is newer than that review comment, or there is no such review: a later screen held the head. Else it is screened
+    when the review comment holds the marker <!-- review-screened <head> --> after its verdict, so that the screen
+    passed head in the run of that review (R12), and unscreened when it holds none (a writer's review by hand runs no
+    screen). Only the markers at the start of a review comment count: no marker of the model's or the reader's text
+    reaches a comment (trim.py inert). The marker of a hold comment is the workflow's own: its text is fixed."""
+    verdict, screened, reviewed, held = "", False, "", ""
     for c in comments:
-        m = REVIEWED.match(c.get("body") or "")
-        if m and of_bot(c) and m.group(1) == head:
-            found = m.group(2)
-    return found
+        if not of_bot(c):
+            continue
+        body, at = c.get("body") or "", c.get("updated_at") or ""
+        m = REVIEWED.match(body)
+        if m and m.group(1) == head:
+            verdict, screened, reviewed = m.group(2), bool(m.group(4)), at
+        elif body.startswith("<!-- review-held -->"):
+            m = HELD_HEAD.search(body)
+            if m and m.group(1) == head and hold_fact(body) == "screen_held":
+                held = max(held, at)
+    if held and held > reviewed:
+        return verdict, "held"
+    return verdict, "screened" if screened else "unscreened"
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
@@ -1668,8 +1757,22 @@ def main(argv):
         if len(argv) == 3 and argv[0] == "verdict" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
-                                  " | {user: {login: .user.login}, body} | @json")
-            print(review_verdict(comments, argv[2]))
+                                  " | {user: {login: .user.login}, body, updated_at} | @json")
+            verdict, state = review_verdict(comments, argv[2])
+            print(f"{verdict or '-'} {state}")
+            return 0
+        if len(argv) == 6 and argv[0] == "withdrawal":
+            number, head, why, path, directory = argv[1:]
+            for check in json_lines(path):
+                if not (isinstance(check, dict) and NUMBER.fullmatch(str(check.get("id")))
+                        and isinstance(check.get("text"), str)):
+                    raise ValueError(f"not a check run with its id and its output text: {check!r}")
+                with open(os.path.join(directory, f"withdraw-{check['id']}.json"), "w", encoding="utf-8") as f:
+                    json.dump(withdrawal(number, head, why, check["text"]), f)
+                print(check["id"])
+            return 0
+        if len(argv) == 2 and argv[0] == "steering":
+            print("true" if any(steering(p) for p in changed_paths(json_lines(argv[1]))) else "false")
             return 0
         if len(argv) >= 3 and argv[0] == "relabel" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
             number, head = argv[1], argv[2]

@@ -507,6 +507,13 @@ class Runner(unittest.TestCase):
                            "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}})
         self.serve(f"repos/{REPO}/pulls", listed)
 
+    def serve_files(self, number, *paths):
+        """The files of pull request #number as the API lists them on one page (pulls/<n>/files): each path, or (its
+        path, the path that it had before a rename)."""
+        self.serve(f"repos/{REPO}/pulls/{number}/files", [
+            {"filename": p, "previous_filename": None} if isinstance(p, str)
+            else {"filename": p[0], "previous_filename": p[1]} for p in paths])
+
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
                   head_repository="", title=None, reply="", pulls=None, variable=None, head_branch=None):
         """The trust step, with the event and the inputs as GitHub gives them. A run by hand has run 100's name:
@@ -871,8 +878,8 @@ class TrustTest(Runner):
         self.assertEqual(job["permissions"], {"actions": "read", "contents": "read", "issues": "read",
                                               "pull-requests": "read", "checks": "read"})
         self.assertEqual([(s["uses"], s["with"]) for s in job["steps"] if "uses" in s], [(CHECKOUT, HELD_CHECKOUT)])
-        names = ("task", "route", "uncounted", "outsider", "account", "number", "head", "comment", "origin", "tries",
-                 "started", "stop")
+        names = ("task", "route", "uncounted", "outsider", "outside", "account", "number", "head", "comment", "origin",
+                 "tries", "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
         for name in names:
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
@@ -1702,7 +1709,17 @@ class RouteTest(unittest.TestCase):
         return ran_jobs(run_graph(trust, results, outputs, **kwargs)) - {"trust"}
 
     def test_a_writers_item_is_reviewed_without_a_screen(self):
-        self.assertEqual(self.ran({"task": "review", "route": "review", "number": "7"}), {"gather", "review", "comment"})
+        """A writer's review by hand of an outside pull request (the gather job's outside) runs no screen either, and
+        the App's job follows it, to withdraw the import check run of the head when the review does not pass it
+        (R12). Not for a writer's pull request or an outside issue."""
+        writer = {"task": "review", "route": "review", "number": "7"}
+        self.assertEqual(self.ran(writer), {"gather", "review", "comment"})
+        self.assertEqual(self.ran(writer, outputs={"gather": {"kind": "pr", "number": "7", "digest": "0" * 64,
+                                                              "outside": "true"}}),
+                         {"gather", "review", "post", "comment"})
+        self.assertEqual(self.ran(writer, outputs={"gather": {"kind": "issue", "number": "7", "digest": "0" * 64,
+                                                              "outside": "true"}}),
+                         {"gather", "review", "comment"})
 
     def test_an_outsiders_clean_item_is_reviewed_with_no_person(self):
         """And the App's job follows the review of an outside pull request, not of an issue."""
@@ -1727,9 +1744,14 @@ class RouteTest(unittest.TestCase):
                                                      "needs.post.outputs.recorded": value}), want)
 
     def test_an_outsiders_held_item_gets_no_review_and_is_held(self):
+        """And the App's job runs for a pull request, to withdraw the import check run of its head (R12): the screen
+        held that head. Not for an issue."""
+        issue = {"kind": "issue", "number": "7", "digest": "0" * 64}
         for verdict in ("held", "", "suspicious", "CLEAN?"):
             with self.subTest(verdict=verdict):
                 self.assertEqual(self.ran(self.OUTSIDER, outputs={"screen": {"verdict": verdict}}),
+                                 {"gather", "screen", "post", "hold"})
+                self.assertEqual(self.ran(self.OUTSIDER, outputs={"screen": {"verdict": verdict}, "gather": issue}),
                                  {"gather", "screen", "hold"})
 
     def test_a_screen_that_fails_reaches_the_hold_job(self):
@@ -1750,15 +1772,17 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(self.ran(dict(self.OUTSIDER, route="limit")), {"hold"})
 
     def test_a_rescreen_takes_the_outsiders_path(self):
-        """screen, then review, the App's job for the import check run of the pull request, and the comment; or held
-        again at the limit; never the writer's path while it screens."""
+        """screen, then review, the App's job for the import check run of the pull request, and the comment; or held by
+        the screen, with the App's job, which withdraws the import check run of the head; or held again at the limit;
+        never the writer's path while it screens."""
         rescreen = dict(self.OUTSIDER, task="rescreen", origin="50")
         self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "clean"}}),
                          {"gather", "screen", "review", "post", "comment"})
         self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "clean"},
                                                      "gather": {"kind": "issue", "number": "7", "digest": "0" * 64}}),
                          {"gather", "screen", "review", "comment"})
-        self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "held"}}), {"gather", "screen", "hold"})
+        self.assertEqual(self.ran(rescreen, outputs={"screen": {"verdict": "held"}}),
+                         {"gather", "screen", "post", "hold"})
         self.assertEqual(self.ran(dict(rescreen, route="limit")), {"hold"})
 
     def test_an_authors_comment_is_screened_answered_and_posted_or_held(self):
@@ -1788,10 +1812,12 @@ class RouteTest(unittest.TestCase):
                                           github={"github.event_name": event}), {"comment"})
 
     def test_an_approval_is_screened_then_approved_or_held_and_never_reviewed(self):
-        """b8 (R10): an approval takes the outsider's path with no review job and no comment job: the gather and the
-        screen, then the App's job when the screen passed, or the hold job when the screen held it, failed, or could
-        not gather; the hold job alone at the limit. An App's job that failed holds nothing (ApproveTest). A writer's
-        pull request is not screened, so nothing runs for it."""
+        """b8 (R10): an approval takes the outsider's path with no review job: the gather and the screen, then the
+        App's job when the screen passed, or the hold job when the screen held it, failed, or could not gather; the
+        hold job alone at the limit. The App's job runs beside the hold job of a screen that held the head, to withdraw
+        the import check run of that head (R12). The comment job runs only after an App's job that approved no run
+        because the head changes a file under .github/ (its output steering). An App's job that failed holds nothing
+        (ApproveTest). A writer's pull request is not screened, so nothing runs for it."""
         approve = dict(self.OUTSIDER, task="approve", head=HEAD)
         dispatch = {"github.event_name": "workflow_dispatch"}
         clean = {"screen": {"verdict": "clean"}}
@@ -1800,10 +1826,14 @@ class RouteTest(unittest.TestCase):
             with self.subTest(post=result):
                 self.assertEqual(self.ran(approve, results={"post": result}, outputs=clean, github=dispatch),
                                  {"gather", "screen", "post"})
+                self.assertEqual(self.ran(approve, results={"post": result}, github=dispatch,
+                                          outputs=dict(clean, post={"steering": HEAD})), {"gather", "screen", "post"})
+        self.assertEqual(self.ran(approve, outputs=dict(clean, post={"steering": HEAD}), github=dispatch),
+                         {"gather", "screen", "post", "comment"})
         for verdict in ("held", "", "CLEAN?"):
             with self.subTest(verdict=verdict):
                 self.assertEqual(self.ran(approve, outputs={"screen": {"verdict": verdict}}, github=dispatch),
-                                 {"gather", "screen", "hold"})
+                                 {"gather", "screen", "post", "hold"})
         self.assertEqual(self.ran(approve, results={"screen": "failure"}, github=dispatch), {"gather", "screen", "hold"})
         self.assertEqual(self.ran(approve, results={"screen": "cancelled"}, github=dispatch), {"gather", "screen"})
         self.assertEqual(self.ran(approve, results={"gather": "failure"}, github=dispatch), {"gather", "hold"})
@@ -2683,8 +2713,9 @@ class HoldingsTest(unittest.TestCase):
                 # its pull request when more than one into main has its head.
                 ("hold", {"contents": "read", "issues": "write", "pull-requests": "write", "actions": "read",
                           "checks": "read"}),
-                # The App's job writes nothing with its own token: actions: read lists a head's held runs.
-                ("post", {"contents": "read", "pull-requests": "read", "actions": "read"})):
+                # The App's job writes nothing with its own token: actions: read lists a head's held runs, and checks:
+                # read the check runs of a head that a later review or screen withdraws.
+                ("post", {"contents": "read", "pull-requests": "read", "actions": "read", "checks": "read"})):
             with self.subTest(job=name):
                 job = JOBS[name]
                 self.assertEqual(job["permissions"], permissions)
@@ -3409,10 +3440,11 @@ class HoldTest(Holding):
 
     def test_a_run_that_signed_in_is_held(self):
         """screen.py makes a check that answered an error a held verdict: the screen job, whose sign-ins passed, passes
-        with it, and the item is held. So is a screen job that failed after its sign-in, and a review that failed after
-        its own, which counts a try."""
+        with it, and the item is held, beside the App's job, which withdraws the import check run of that head (R12).
+        So is a screen job that failed after its sign-in, and a review that failed after its own, which counts a
+        try."""
         ran = run_graph(self.OUTSIDER, outputs={"screen": {"verdict": "held"}})
-        self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "hold"})
+        self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "post", "hold"})
         label = ["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held", "--jq", ".[].name"]
         for screen in (attempt_job("screen", name="screen mallory"),
                        attempt_job("screen", "Screen", name="screen mallory")):
@@ -3627,7 +3659,9 @@ class ApproveTest(Holding):
     of the screen, and the post job's own steps against the stand-in gh, with a stand-in token from each sign-in step.
     When the screen passes, the OSS Verify App approves the held runs of the screened head with token B. When it does
     not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
-    request."""
+    request. When the head adds, changes or deletes a file under .github/, nothing is approved either, whatever the
+    screen says: the comment job gives the pull request waits-on-theorem, with a label comment that says that a person
+    at Theorem approves its runs and that records the head."""
 
     # This run's own token (github.token), and the token that each of the App's sign-in steps gives.
     RUN_TOKEN = "token-of-this-run"
@@ -3651,7 +3685,9 @@ class ApproveTest(Holding):
     def setUp(self):
         super().setUp()
         self.permissions(mallory="read")
-        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.serve_files(7, "README.md")
+        self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": []})
         self.logs = []
 
     def runs(self, *runs):
@@ -3675,11 +3711,14 @@ class ApproveTest(Holding):
 
     def post(self, trust, verdict, mint=True):
         """The post job's steps after the trust job's outputs trust and a screen whose verdict is verdict (run_post),
-        with a stand-in token from each sign-in step (TOKENS). The outcome of each step, by its name."""
+        with a stand-in token from each sign-in step (TOKENS), in a run by hand. The outcome of each step, by its name;
+        the contexts of the job, with its steps' outputs, stay in ctx."""
         self.forget()
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"needs.trust.result": "success", "needs.screen.result": "success",
-                    "needs.screen.outputs.verdict": verdict, "github.repository": REPO, "github.token": self.RUN_TOKEN})
+                    "needs.screen.outputs.verdict": verdict, "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                    "github.event_name": "workflow_dispatch"})
+        self.ctx = ctx
         return run_post(self, ctx, self.TOKENS, mint)
 
     def approvals(self):
@@ -3726,21 +3765,111 @@ class ApproveTest(Holding):
         self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
         self.assertEqual(self.approvals(), self.APPROVED)
 
+    # The comment job's step of an approval whose head changes a file under .github/.
+    STEERED = "Say that a person at Theorem approves the runs of the head"
+
+    def commented(self, trust):
+        """The comment job's steps after the post job that post ran last, with the outputs that it gave, after the
+        stand-in gh forgot its calls: the outcome of each step."""
+        post = filled(JOBS["post"]["outputs"], self.ctx)
+        ctx = dict(self.ctx, **{f"needs.post.outputs.{k}": v for k, v in post.items()})
+        ctx.update({"needs.post.result": "success", "needs.gather.result": "success", "needs.review.result": "skipped",
+                    "github.ref": "refs/heads/main", "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        self.forget()
+        return run_job(self, "comment", ctx, {})
+
+    def test_a_head_that_changes_a_file_under_github_gets_no_approval_and_waits_on_a_person_at_theorem(self):
+        """R10 (spec v69, Verification v58 b8): the screen passes a held head that adds a file under
+        .github/workflows/, that changes .github/review.md, or that renames a file out of .github/ (only the path that
+        it had before is under .github/). The post job reads the files of the head from every page of the API, then
+        the head again: it mints no token B, approves no run, writes nothing, and names the head in its output
+        steering. The comment job then runs, gives the pull request waits-on-theorem, and posts the label comment that
+        says that a person at Theorem approves its runs, because it changes a file under .github/, and that records the
+        head. No text names a maintainer or says that anyone decides. A head whose paths only look alike gets its
+        approval: the guard reads only the folder .github/ at the top."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        self.serve(f"repos/{REPO}/issues/7/labels", [])
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
+        for case, files in (("a new workflow", ("README.md", ".github/workflows/mine.yml")),
+                            ("a change of the rules", (".github/review.md",)),
+                            ("a rename out of .github/", (("docs/review.md", ".github/review.md"),))):
+            with self.subTest(case=case):
+                self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=len(files))
+                self.serve_files(7, *files)
+                steps = self.post(trust, "clean")
+                self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
+                                 ("success", "skipped", "skipped"), self.logs)
+                self.assertEqual((self.approvals(), writes(self.api)), ([], []))
+                self.assertEqual(self.calls().count(f"repos/{REPO}/pulls/7"), 2)
+                self.assertIn(f"repos/{REPO}/pulls/7/files", self.calls())
+                post = filled(JOBS["post"]["outputs"], self.ctx)
+                self.assertEqual(post["steering"], HEAD)
+                self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}, "post": post}),
+                                 {"trust", "gather", "screen", "post", "comment"})
+                steps = self.commented(trust)
+                self.assertEqual([n for n, o in steps.items() if o == "success"],
+                                 ["Run actions/checkout", self.STEERED])
+                self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+                (method, _endpoint, body), = label_comments(self.api)
+                self.assertEqual((method, body), ("POST", rules.label_comment("steering", head=HEAD)))
+                self.assertEqual(body, "<!-- review-label -->\n**Next step:** A person at Theorem approves the checks "
+                                       "of this pull request.\n\nThis pull request changes a file under `.github/`, so "
+                                       "the workflow does not approve its checks. You do not need to do anything.\n\n"
+                                       f"<!-- review-steering {HEAD} -->\n<!-- waits-on-theorem: Sami -->")
+                self.assertNotRegex(body, r"(?i)maintainer|decide|will look")
+        for files in (("docs/.github/x.md", ".githubx/y.md", "github/z.md"),):
+            self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=len(files))
+            self.serve_files(7, *files)
+            steps = self.post(trust, "clean")
+            self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
+            self.assertEqual(self.approvals(), self.APPROVED)
+            self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["steering"], "")
+
+    def test_a_list_of_files_that_fails_or_is_not_whole_approves_nothing(self):
+        """R10: the files of the head decide the approval, so the post job approves no run when it cannot read them,
+        when GitHub lists fewer files than the pull request changes (it lists at most 3,000), or when the head moved
+        while they were read. The first two fail the job: the rescreen pass takes the head again."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=2)
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B]), ("failure", "skipped"), self.logs)
+        self.assertIn("GitHub lists 1 of the 2 changed files of #7. No run is approved.", self.logs[-1])
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B]), ("failure", "skipped"), self.logs)
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_7_files.fail"))
+        pull = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_7.json")
+        with open(pull) as f:
+            moved = json.load(f)
+        moved["head"]["sha"] = OTHER_HEAD
+        self.serve(f"repos/{REPO}/pulls/7.then", moved)
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B]), ("success", "skipped"), self.logs)
+        self.assertIn(f"#7 moved from {HEAD} to {OTHER_HEAD} while its files were read", self.logs[-1])
+        self.assertEqual((self.approvals(), writes(self.api)), ([], []))
+
     def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
-        """No post job runs, and token B's step would not run even with held runs found: no approval. The hold job
-        posts D21's text, which names no maintainer, labels the pull request review-held, and gives it
-        waits-on-theorem, whose label comment names Sami's step."""
+        """The post job runs only to withdraw an import check run of the head, of which there is none here, and token
+        B's step would not run even with held runs found: no approval. The hold job posts D21's text, which names no
+        maintainer, labels the pull request review-held, and gives it waits-on-theorem, whose label comment names
+        Sami's step."""
         self.runs(*self.RUNS)
         trust = self.by_hand()
         for verdict in ("held", ""):
             with self.subTest(verdict=verdict):
                 self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": verdict}}),
-                                 {"trust", "gather", "screen", "hold"})
+                                 {"trust", "gather", "screen", "post", "hold"})
                 self.assertFalse(evaluate(step("post", MINT_B)["if"], {
                     "needs.trust.outputs.task": "approve", "needs.screen.outputs.verdict": verdict,
                     "steps.held.outputs.runs": "61 62"}))
                 steps = self.post(trust, verdict)
-                self.assertEqual((steps[MINT_B], steps[self.APPROVE]), ("skipped", "skipped"))
+                self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
+                                 ("skipped", "skipped", "skipped"))
                 self.assertEqual(writes(self.api), [])
         self.forget()
         calls, _post, body = self.hold("screen", task="approve", jobs=[
@@ -4594,13 +4723,13 @@ class ReaderRunner(Runner):
         return self.run_script(s["run"], **dict(ANTHROPIC, ANTHROPIC_URL=f"{self.url}/anthropic"))
 
     def post(self, review, items, trimmed="", verdict="blocking", will_fix=False, reader=None, result=None,
-             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED):
+             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED, route="", screen=""):
         """The sign-in, then the comment step on the model's output, with a reader that answers trimmed (or reader, the
         stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing).
         When the test wrote no soundness.json, the step reads the one that the gather job writes for a whole list of
         changed files of which none can change a proof. The step's env is the one that the workflow gives it, for the
-        gather job's outside and the trust job's started, with SOUNDNESS_HOLD hold (None: not set). The step's exit
-        status, output and outputs."""
+        gather job's outside, the trust job's started and route, and the screen's verdict screen, with SOUNDNESS_HOLD
+        hold (None: not set). The step's exit status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
         with open(path, "w") as f:
@@ -4618,8 +4747,9 @@ class ReaderRunner(Runner):
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         s = step("review", self.STEP)
-        env = {name: interpolate(value, {"needs.gather.outputs.outside": outside, "needs.trust.outputs.started": started})
-               for name, value in s["env"].items()}
+        given = {"needs.gather.outputs.outside": outside, "needs.trust.outputs.started": started,
+                 "needs.trust.outputs.route": route, "needs.screen.outputs.verdict": screen}
+        env = {name: interpolate(value, given) for name, value in s["env"].items()}
         env.update(RESULT=path, RULES=RULES, RUN=RUN, ANTHROPIC_URL=f"{self.url}/anthropic")
         if hold is not None:
             env["SOUNDNESS_HOLD"] = hold
@@ -8535,12 +8665,13 @@ class Scheduled(Held):
         elif os.path.exists(then_path):
             os.remove(then_path)
 
-    def ci(self, ended=None, head=HEAD, status="completed", run=70):
-        """A CI run of head of the event pull_request, ended that many minutes ago, or with status."""
+    def ci(self, ended=None, head=HEAD, status="completed", run=70, actor=None):
+        """A CI run of head of the event pull_request, ended that many minutes ago, or with status, which the account
+        actor started (GitHub names none when actor is None)."""
         self.of_heads.append({"id": run, "status": status, "event": "pull_request", "head_sha": head,
                               "path": ".github/workflows/ci.yml", "head_branch": BRANCH,
                               "head_repository": {"id": FORK_ID}, "created_at": ago((ended or 0) + 40),
-                              "updated_at": ago(ended or 0)})
+                              "updated_at": ago(ended or 0), **({"actor": {"login": actor}} if actor else {})})
         self.publish()
 
     def ran(self, run, title, made, ended=None, event="workflow_dispatch", status="completed", jobs=(), attempt=None):
@@ -9157,12 +9288,14 @@ class ScheduleTest(Scheduled):
         """b8 (R10, D16 (f)): a first-time contributor's pull request whose head has runs that GitHub holds, and that no
         run screened: one approve run of that head, for its author. That run goes as t10's: the trust job takes it (its
         name is the rescreen job's, and the head is still held), the gather, screen and post jobs run, and when the
-        screen passes, the post job approves each held run of the head with token B."""
+        screen passes, the post job approves each held run of the head, which changes no file under .github/, with
+        token B."""
         self.item(kind="pr")
         self.held_runs()
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
-        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.serve_files(7, "README.md")
         rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="approve", head=HEAD, account="mallory")
         self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("head"), trust.get("account")),
                          (0, "approve", "screen", HEAD, "mallory"), out)
@@ -9179,6 +9312,55 @@ class ScheduleTest(Scheduled):
         self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
         self.assertEqual([(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api))
                           if any(a.endswith("/approve") for a in c)], ApproveTest.APPROVED)
+
+    def test_a_held_head_that_changes_a_file_under_github_gets_no_second_approve_run(self):
+        """R10 (spec v69, Verification v58 b8): the approve run that the pass starts for a held head that adds a file
+        under .github/workflows/ passes the screen, and its post job approves no run. Its comment job records the head
+        in the label comment and gives waits-on-theorem. The next runs of the pass, with a number and with none, start
+        no approve run of that head, also for a held run made after that approve run (a CI run that its author started
+        again, say), which would start one an hour after the approve run ended. The trust job of an approve run of the
+        pass for that head stops."""
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=2)
+        self.serve_files(7, "README.md", ".github/workflows/mine.yml")
+        trust = self.dispatched("approve", account="mallory")
+        self.assertEqual((trust["task"], trust["route"]), ("approve", "screen"))
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                                 "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean"})
+        steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+        self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]), ("success", "skipped", "skipped"),
+                         self.logs)
+        self.assertEqual(writes(self.api), [])
+        post = filled(JOBS["post"]["outputs"], ctx)
+        self.assertEqual(post["steering"], HEAD)
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.post.result": "success",
+                                 **{f"needs.post.outputs.{k}": v for k, v in post.items()}})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        steps = run_job(self, "comment", ctx, {})
+        self.assertEqual(steps[ApproveTest.STEERED], "success", self.logs)
+        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+        (_method, _endpoint, body), = label_comments(self.api)
+        self.assertIn(f"\n<!-- review-steering {HEAD} -->\n", body)
+        self.merge(7, "clean")
+        self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(80), "updated_at": ago(80), "body": body})
+        self.ran(10, f"approve #7 at {HEAD} of mallory", made=100, ended=90,
+                 jobs=[attempt_job("gather"), self.screened(),
+                       post_job({self.HELD: "success"}), attempt_job("comment")])
+        self.held_runs(made=5)
+        for number in (None, 7):
+            with self.subTest(number=number):
+                rc, out, runs = self.started(number=number)
+                self.assertEqual((rc, runs), (0, []), out)
+                self.assertIn(f"#7: {HEAD} changes a file under .github/, as its label comment records", out)
+        rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="approve", head=HEAD, account="mallory")
+        self.assertEqual((rc, got.get("route")), (0, None), out)
+        self.assertIn(f"its label comment records that {HEAD} changes a file under .github/, so a person at Theorem "
+                      "approves its runs.", out)
 
     def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
         """b8 (R10, D16 (a) and (f)): GitHub lists a run that it holds for a person's approval with status completed
@@ -10304,12 +10486,14 @@ class RescreenEventsTest(Scheduled):
         self.assertIn("#7: a run of it has not finished", out)
 
 
-def review_of(head, verdict="pass", will_fix=False, at=OLD, id_=30, login=BOT):
+def review_of(head, verdict="pass", will_fix=False, at=OLD, id_=30, login=BOT, screened=True):
     """The review comment of head, with its markers (D8), as the comment job posts it (as login posts it, when login is
-    another account), last changed at at."""
+    another account), last changed at at: of a run whose screen passed head, so with the marker
+    <!-- review-screened <head> -->, unless screened is False."""
+    marker = f"<!-- review-screened {head} -->\n" if screened else ""
     return {"id": id_, "user": {"login": login}, "created_at": at, "updated_at": at,
             "body": f"<!-- review -->\n<!-- review-head {head} -->\n<!-- review-verdict {head} {verdict}"
-                    f"{' will-fix' if will_fix else ''} -->\n**Automated review** of commit {head[:12]}"}
+                    f"{' will-fix' if will_fix else ''} -->\n{marker}**Automated review** of commit {head[:12]}"}
 
 
 class HeadScheduleTest(Scheduled):
@@ -10527,6 +10711,47 @@ class HeadScheduleTest(Scheduled):
             with self.subTest(number=number):
                 got = self.dispatched("review", account=account, number=number)
                 self.assertEqual((got["task"], got["route"], got["outsider"]), ("review", "screen", account))
+
+    def test_the_review_of_a_writers_pull_request_whose_head_an_outsider_pushed_is_screened_on_the_pusher(self):
+        """Review round 1 ("Who is screened"): eve, with read access, pushes to the branch of alice's #7, and mallory
+        opens #11 from that branch. The CI run of the push is the run of neither pull request alone, so the trust job
+        stops it. The next run of the pass starts a review run of each: the run of #7 is named
+        "review #7 at <head> of eve", as eve started the newest CI run of the head, and its trust job reads her from
+        the CI runs again and gives the route screen, with eve the outsider, on her limit, as the run of that CI run's
+        own event does. A name with no account, or with another one, is not the pass's for it. When alice pushed the
+        head, the run names no account, and its trust job gives the route review, with no screen, as before."""
+        self.item(7, kind="pr", author="alice")
+        self.item(11, kind="pr")
+        self.ci(ended=90, actor="eve")
+        rc, out, trust = self.run_trust("workflow_run", actor="eve", number="", head=HEAD,
+                                        head_repository=str(FORK_ID), pulls=[])
+        self.assertEqual((rc, trust.get("route")), (0, None), out)
+        self.assertIn("2 open pull requests have this head from its repository and branch", out)
+        for run in (40, 41):
+            self.ran(run, f"review {HEAD} by eve", made=80, ended=79, event="workflow_run", jobs=self.stopped_jobs())
+        rc, out, runs = self.started()
+        self.assertEqual((rc, sorted(runs)),
+                         (0, [("11", "review", "mallory", HEAD, ""), ("7", "review", "eve", HEAD, "")]), out)
+        self.assertEqual(run_name(**{"github.event_name": "workflow_dispatch", "inputs.task": "review",
+                                     "inputs.number": 7, "inputs.head": HEAD, "inputs.comment": "",
+                                     "inputs.account": "eve"}), f"review #7 at {HEAD} of eve")
+        got = self.dispatched("review", account="eve")
+        self.assertEqual((got["task"], got["route"], got["outsider"], got["account"]),
+                         ("review", "screen", "eve", "eve"))
+        for account in ("", "mallory"):
+            with self.subTest(account=account):
+                rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="review", head=HEAD,
+                                              account=account)
+                self.assertEqual((rc, got.get("route")), (0, None), out)
+                self.assertIn("the account without write access that started the newest CI run of "
+                              f"{HEAD} is eve, not {account or 'none'}.", out)
+        self.of_heads.clear()
+        self.ci(ended=90, actor="alice")
+        rc, out, runs = self.started()
+        self.assertEqual((rc, sorted(runs)),
+                         (0, [("11", "review", "mallory", HEAD, ""), ("7", "review", "", HEAD, "")]), out)
+        got = self.dispatched("review")
+        self.assertEqual((got["task"], got["route"], got["outsider"]), ("review", "review", ""))
 
     def test_a_draft_marked_ready_and_a_base_changed_to_main_get_a_review_at_the_next_run(self):
         """The trust job stopped the run of the head's CI run (a draft, or another base): no review while it is so,
@@ -11594,6 +11819,8 @@ class LabelRuleTest(unittest.TestCase):
         ("a review or a fix in flight, or a first-time contributor's held run: nothing judged", {}, "working", None),
         ("a hold at the limit, at the cap, or of a review that did not finish", {"held": True}, "working", None),
         ("a screen hold", {"screen_held": True}, "screen", THEOREM_LABEL),
+        ("a held head that changes a file under .github/, whose runs a person approves", pr(steering=True),
+         "steering", THEOREM_LABEL),
         ("the last try of the work", {"tries_used_up": True}, "stopped", THEOREM_LABEL),
         ("a catch-up left closed", {"left_closed": True, "conflict": True}, "reopen", THEOREM_LABEL),
         ("a conflict, before all else of its head", {"conflict": True, "tries_used_up": True, **pr(verdict="person")},
@@ -11644,10 +11871,11 @@ class LabelRuleTest(unittest.TestCase):
         self.assertEqual({row[2] for row in self.TABLE}, set(rules.STATES))
 
     def test_each_label_comment_names_the_next_step_and_who_takes_it(self):
-        """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's and whose last line is
-        the marker of Sami, for each state of the variable and each decision of the post job too; each waits-on-author
-        with one whose next step is the author's; no label, with one that names no one at Theorem. No text says that
-        anyone decides or will look at the item."""
+        """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's (a person's at
+        Theorem, who approves the checks of a pull request that changes a file under .github/: R10 names no one) and
+        whose last line is the marker of Sami, for each state of the variable and each decision of the post job too;
+        each waits-on-author with one whose next step is the author's; no label, with one that names no one at
+        Theorem. No text says that anyone decides or will look at the item."""
         variants = [(state, None) for state in rules.STATES] + [
             (state, (value, decision)) for state in ("decide", "person") for value in (None, "README.md")
             for decision in rules.DECISIONS]
@@ -11660,7 +11888,8 @@ class LabelRuleTest(unittest.TestCase):
                 self.assertNotIn(";", body)
                 label = rules.label_of(state)
                 if label == THEOREM_LABEL:
-                    self.assertTrue(step_line.startswith("**Next step:** Sami "), step_line)
+                    who = "A person at Theorem " if state == "steering" else "Sami "
+                    self.assertTrue(step_line.startswith(f"**Next step:** {who}"), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
                 elif label == AUTHOR_LABEL:
                     self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
@@ -11751,6 +11980,21 @@ class LabelRuleTest(unittest.TestCase):
         for head in ("", HEAD[:12]):
             with self.subTest(head=head), self.assertRaises(ValueError):
                 rules.label_comment("conflict", head=head)
+
+    def test_the_steering_state_records_its_head_and_every_later_state_keeps_it(self):
+        """R10: the label comment of a head that changes a file under .github/, whose runs a person at Theorem
+        approves, holds the line <!-- review-steering <head> -->, which the rescreen pass and the trust job read. Each
+        later state keeps that line, and the line of a newer such head takes its place. The state needs its head."""
+        body = rules.label_comment("steering", head=HEAD)
+        self.assertIn(f"\n<!-- review-steering {HEAD} -->\n", body)
+        later = rules.label_comment("person", body, [rules.import_marker(HEAD, None)])
+        self.assertIn(f"<!-- review-steering {HEAD} -->", later.split("\n"))
+        newer = rules.label_comment("steering", later, head=OTHER_HEAD).split("\n")
+        self.assertIn(f"<!-- review-steering {OTHER_HEAD} -->", newer)
+        self.assertNotIn(f"<!-- review-steering {HEAD} -->", newer)
+        for head in ("", HEAD[:12]):
+            with self.subTest(head=head), self.assertRaises(ValueError):
+                rules.label_comment("steering", head=head)
 
     def test_the_labels_are_described_in_words_github_takes(self):
         """GitHub refuses a label description over 100 characters, which would leave the label with none."""
@@ -12047,11 +12291,12 @@ class ImportCheckTest(ReaderRunner):
     VARIABLE = "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"
     LPS = GlobTest.LPS
     MARKER = re.compile(r"^<!-- repo-pairs-import-paths ([0-9a-f]{40}): (.*) -->$")
-    # The trust job's outputs of the workflow_run review of mallory's pull request #7 at its head, and of a relabel.
-    REVIEWED = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7", "head": HEAD,
-                "started": PostLabelTest.STARTED}
-    RELABEL = {"task": "relabel", "route": "review", "outsider": "mallory", "number": "7", "head": HEAD,
-               "started": PostLabelTest.STARTED}
+    # The trust job's outputs of the workflow_run review of mallory's pull request #7 at its head, and of a relabel:
+    # mallory, its author, has no write access (outside).
+    REVIEWED = {"task": "review", "route": "screen", "outsider": "mallory", "outside": "true", "number": "7",
+                "head": HEAD, "started": PostLabelTest.STARTED}
+    RELABEL = {"task": "relabel", "route": "review", "outsider": "mallory", "outside": "true", "number": "7",
+               "head": HEAD, "started": PostLabelTest.STARTED}
     # The steps of R12 that a label comment names.
     SOME = "Sami takes one of the steps below."
     PERSON = "Sami answers the questions of the automated review."
@@ -12071,15 +12316,18 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": f"https://github.com/{REPO}/pull/7#c40"})
 
     def judge(self, paths, verdict="pass", value=None, trust=None, screen="clean", mint=True, event="workflow_run",
-              changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",)):
+              changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",), outside="true",
+              listed=()):
         """The post job, then the comment job's label step, each when its if holds, for a run whose trust job gave
-        trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen and whose review gave
-        verdict, while the variable REPO_PAIRS_IMPORT_PATHS is value (None: not set, so GitHub gives an empty value).
-        #7's head is now (then, when given, from its second read on), and its files are paths, each a path or (the
-        path, the path before a rename), on pages of per_page files; its changed_files is changed, their count by
-        default. comments and labels are #7's own. A sign-in step of the App fails when mint is False. What the run
-        did: each post step's outcome, the post job's result and outputs, its writes, the check runs that it recorded
-        as (token, body), the state labels set, and the label comments posted or edited."""
+        trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen (none for the route review)
+        and whose review gave verdict, while the variable REPO_PAIRS_IMPORT_PATHS is value (None: not set, so GitHub
+        gives an empty value). #7's head is now (then, when given, from its second read on), and its files are paths,
+        each a path or (the path, the path before a rename), on pages of per_page files; its changed_files is changed,
+        their count by default. comments and labels are #7's own, outside the gather job's outside, and listed the
+        check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False.
+        What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
+        it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
+        and the label comments posted or edited."""
         trust = dict(trust or self.REVIEWED)
         files = [{"filename": p, "previous_filename": None} if isinstance(p, str)
                  else {"filename": p[0], "previous_filename": p[1]} for p in paths]
@@ -12097,14 +12345,20 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/pulls/7/reviews", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
+        self.serve(f"repos/{REPO}/commits/{trust['head']}/check-runs", {"check_runs": list(listed)})
+        for check in listed:
+            self.serve(f"repos/{REPO}/check-runs/{check['id']}", {"id": check["id"], "conclusion": "neutral"})
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
                     "github.token": self.RUN_TOKEN, "vars.REPO_PAIRS_IMPORT_PATHS": "" if value is None else value,
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success"})
         if trust["task"] in ("review", "rescreen"):
-            passed = screen == "clean"
+            screened = trust.get("route") == "screen"
+            passed = screen == "clean" or not screened
             ctx.update({"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
-                        "needs.screen.result": "success", "needs.screen.outputs.verdict": screen,
+                        "needs.gather.outputs.outside": outside,
+                        "needs.screen.result": "success" if screened else "skipped",
+                        "needs.screen.outputs.verdict": screen if screened else "",
                         "needs.review.result": "success" if passed else "skipped",
                         "needs.review.outputs.head": trust["head"] if passed else "",
                         "needs.review.outputs.verdict": verdict if passed else "",
@@ -12118,8 +12372,10 @@ class ImportCheckTest(ReaderRunner):
             got["result"] = "failure" if "failure" in got["steps"].values() else "success"
             got["post"] = filled(JOBS["post"]["outputs"], ctx)
         got["writes"] = writes(self.api)
-        posted = [t for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if f"repos/{REPO}/check-runs" in c]
-        got["checks"] = list(zip(posted, gh_inputs(self.api)))
+        paired = list(zip([(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if "--input" in c],
+                          gh_inputs(self.api)))
+        got["checks"] = [(t, body) for (t, c), body in paired if f"repos/{REPO}/check-runs" in c]
+        got["withdrawn"] = [(t, c[2], body) for (t, c), body in paired if c[:2] == ["--method", "PATCH"]]
         got["read with"] = {t for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if c not in got["writes"]}
         ctx.update({"needs.post.result": got["result"],
                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
@@ -12144,7 +12400,8 @@ class ImportCheckTest(ReaderRunner):
         """One check run repo-pairs/import-approved, with conclusion success on head, recorded with token A as the
         post job's only write, whose external_id (7:<head>) and output title name pull request #7 and head, and one
         marker line of value in its output text: recorded is true, the output imports gives the comment job value as
-        JSON, and the job caught up no head (caught is empty), so the comment job records no catch-up."""
+        JSON, and the job caught up no head (caught is empty) and names no head that changes a file under .github/
+        (steering is empty), so the comment job records neither."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -12160,7 +12417,7 @@ class ImportCheckTest(ReaderRunner):
                          (f"7:{head}", f"Approved for the import: pull request #7 at {head[:12]}"))
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
-                         {"recorded": "true", "decision": "record", "caught": ""})
+                         {"recorded": "true", "decision": "record", "caught": "", "steering": ""})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -12243,10 +12500,10 @@ class ImportCheckTest(ReaderRunner):
 
     def test_a_blocking_finding_a_person_verdict_a_screen_hold_or_a_file_under_github_gets_no_check_run(self):
         """With the variable set to the pair's import_paths: a blocking finding waits on the author; a person verdict
-        on a file that the import takes waits on Sami's approval of the head for the import; a screen hold runs no
-        post job, and its decision step would not run either; a file under .github/, or one renamed from there, waits
-        on a copy by hand. A writer's pull request that a run by hand screened (no outsider) is no outside pull
-        request, and gets no check run either."""
+        on a file that the import takes waits on Sami's approval of the head for the import; a screen hold runs a post
+        job that only looks for an import check run of the head to withdraw (there is none here), and its decision step
+        would not run; a file under .github/, or one renamed from there, waits on a copy by hand. A writer's pull
+        request that a run by hand screened (no outsider) is no outside pull request, and gets no check run either."""
         got = self.judge(["README.md"], "blocking", self.LPS)
         self.assertNotRecorded(got, "verdict")
         self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
@@ -12255,7 +12512,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertWaits(got, self.PERSON, f"{self.ANSWERED} {self.APPROVE}", value=self.LPS)
         got = self.judge(["README.md"], "pass", self.LPS, screen="held")
         self.assertNotRecorded(got)
-        self.assertEqual((got["result"], got["labels"], got["comments"]), ("skipped", [], []))
+        self.assertEqual((got["result"], got["labels"], got["comments"]), ("success", [], []))
+        self.assertEqual(got["steps"][self.DECIDE], "skipped")
         self.assertFalse(evaluate(step("post", self.DECIDE)["if"], {
             "github.event_name": "workflow_run", "needs.trust.outputs.task": "review",
             "needs.screen.outputs.verdict": "held"}))
@@ -12698,6 +12956,178 @@ class ImportCheckTest(ReaderRunner):
                 self.assertNotRecorded(got, "screen")
                 want = [("-", THEOREM_LABEL)] if case == "a writer's pull request" else []
                 self.assertEqual((got["labels"], got["comments"]), (want, []))
+
+    def test_a_relabel_records_the_check_run_only_for_a_head_that_a_screen_passed(self):
+        """R12 (review round 1): alice, a writer, runs the review of mallory's pull request by hand with no
+        -f screen=true. The trust job gives the route review and no outsider, so no screen runs, and the review comment
+        of that run holds no marker <!-- review-screened <head> -->. The review passes a change of Markdown files
+        alone. A relabel of the head then records no import check run: its decision is screen, and the label comment
+        says that no screen passed the head. The same path after a run whose route was screen and whose screen passed
+        records the check run: the review comment of that run holds the marker."""
+        self.permissions(alice="write", mallory="read")
+        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        rc, out, by_hand = self.run_trust("workflow_dispatch", actor="alice")
+        self.assertEqual((rc, by_hand.get("task"), by_hand.get("route"), by_hand.get("outsider")),
+                         (0, "review", "review", ""), out)
+        rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task="relabel", head=HEAD)
+        self.assertEqual((rc, trust.get("task"), trust.get("outsider")), (0, "relabel", "mallory"), out)
+        relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+        for route, screen, screened in ((by_hand["route"], "", False), ("screen", "clean", True)):
+            with self.subTest(route=route):
+                rc, out, made = self.post("No blocking finding.", [], "No blocking finding.", "pass", route=route,
+                                          screen=screen)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(f"\n<!-- review-verdict {HEAD} pass -->\n<!-- review-screened {HEAD} -->\n"
+                                 in made["body"], screened, made["body"])
+                self.assertEqual(f"<!-- review-screened {HEAD} -->" in made["body"], screened, made["body"])
+                review = {"id": 30, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD, "body": made["body"]}
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=[review])
+                if screened:
+                    self.assertRecorded(got, self.LPS)
+                else:
+                    self.assertNotRecorded(got, "screen")
+                    self.assertWaits(got, self.SOME, rules.UNSCREENED, value=self.LPS)
+
+    # The trust job's outputs of alice's review by hand of mallory's pull request #7 at its head, with no screen.
+    BY_HAND = {"task": "review", "route": "review", "outsider": "", "outside": "true", "number": "7", "head": HEAD,
+               "started": PostLabelTest.STARTED}
+
+    def recorded(self):
+        """The check run that the review of #7 at HEAD recorded, as GitHub lists it (id 901, of the OSS Verify App),
+        and three that a withdrawal leaves: one of #8 at the same commit, one of another App, and one that is neutral
+        already."""
+        got = self.judge(["README.md"], value=self.LPS)
+        self.assertRecorded(got, self.LPS)
+        (_token, body), = got["checks"]
+        listed = dict(body, id=901, app={"id": 5447700})
+        return listed, [dict(listed, id=902, external_id=f"8:{HEAD}"), dict(listed, id=903, app={"id": 1}),
+                        dict(listed, id=904, conclusion="neutral")]
+
+    def test_a_later_review_or_screen_of_a_head_that_does_not_meet_r12_withdraws_its_check_run(self):
+        """R12 (spec v71): the review of HEAD recorded the check run with conclusion success. A later review of the same
+        head that gives the verdict person (alice's review by hand, which runs no screen), or a blocking finding (a
+        review whose screen passed), or a later screen that holds the head, and the relabel of a head whose review
+        comment gives the verdict person (the App's retry of a post job that failed): the post job of that run reads
+        the check runs of HEAD with its own token, and then updates the check run of #7, with token A, to the
+        conclusion neutral. The request's output title names #7 and says why, and its output text is the check run's
+        own, the marker line of the value that it recorded. The request names no name and no external_id, so both
+        stay. The other check runs of the commit stay as they are."""
+        listed, others = self.recorded()
+        person = ("a later review has questions for Sami",
+                  "A later automated review of this head commit has questions for Sami.")
+        for case, verdict, trust, screen, comments, (why, said) in (
+                ("a review by hand with the verdict person", "person", self.BY_HAND, "", (), person),
+                ("a screened review with a blocking finding", "blocking", None, "clean", (),
+                 ("a later review asks for a change",
+                  "A later automated review of this head commit asks for a change.")),
+                ("a screen that held the head", "pass", None, "held", (),
+                 ("a later screen held it", "A later automated screen held this head commit.")),
+                ("a relabel of a review with the verdict person", "", self.RELABEL, "", (review_of(HEAD, "person"),),
+                 person)):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], verdict, self.LPS, trust=trust, screen=screen, comments=comments,
+                                 event="workflow_run" if trust is None else "workflow_dispatch",
+                                 listed=[listed, *others])
+                self.assertEqual((got["result"], got["checks"]), ("success", []), self.logs)
+                self.assertEqual(got["steps"][MINT_A], "success")
+                (token, endpoint, body), = got["withdrawn"]
+                self.assertEqual((token, endpoint), ("token-A", f"repos/{REPO}/check-runs/901"))
+                self.assertEqual(body, {"status": "completed", "conclusion": "neutral", "output": {
+                    "title": f"Not approved for the import: pull request #7 at {HEAD[:12]}, {why}",
+                    "summary": f"{said} So this check is no longer an approval for the import.",
+                    "text": listed["output"]["text"]}})
+                self.assertMarker(body["output"]["text"], self.LPS)
+                self.assertEqual(got["writes"], [["--method", "PATCH", f"repos/{REPO}/check-runs/901", "--input",
+                                                  os.path.join(self.temp, "withdraw-901.json"), "--jq",
+                                                  ".conclusion"]])
+                self.assertEqual(got["read with"], {self.RUN_TOKEN})
+
+    def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
+        """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only
+        the others of the commit): the post job reads the check runs of the head, mints no token A and sends no
+        PATCH. A later review of the head that meets the rule leaves the check run with conclusion success: the post
+        job records a new one, and withdraws none."""
+        listed, others = self.recorded()
+        for case, checks in (("no check run", []), ("only the others", others)):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], "person", self.LPS, trust=self.BY_HAND, event="workflow_dispatch",
+                                 listed=checks)
+                self.assertEqual((got["result"], got["withdrawn"], got["writes"]), ("success", [], []), self.logs)
+                self.assertEqual(got["steps"][MINT_A], "skipped")
+                self.assertIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
+        got = self.judge(["README.md"], value=self.LPS, listed=[listed, *others])
+        self.assertRecorded(got, self.LPS)
+        self.assertEqual(got["withdrawn"], [])
+
+    def test_a_writers_pull_request_whose_head_an_outsider_pushed_gets_no_check_run(self):
+        """R12 (spec, Terms): the import check run is for an outside pull request alone, whose author has no write
+        access. eve, with read access, pushes to the branch of alice's #7. The trust job of that CI run screens it on
+        eve: its outsider is eve, and its outside is false. The screen passes, and the review passes a change of
+        Markdown files alone: no check run, and the decision is screen. The same push to mallory's #7 records it."""
+        self.permissions(alice="write", mallory="read", eve="read")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        for author, outside in (("alice", "false"), ("mallory", "true")):
+            with self.subTest(author=author):
+                self.serve_item(7, author, kind="pr", head=HEAD)
+                rc, out, trust = self.run_trust("workflow_run", actor="eve", head=HEAD, head_repository=str(FORK_ID),
+                                                pulls=[named_pr(7)])
+                self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"),
+                                  trust.get("outside")), (0, "review", "screen", "eve", outside), out)
+                got = self.judge(["README.md"], value=self.LPS, trust={k: trust[k] for k in (
+                    "task", "route", "outsider", "outside", "number", "head", "started")})
+                if outside == "true":
+                    self.assertRecorded(got, self.LPS)
+                else:
+                    self.assertNotRecorded(got, "screen")
+
+    def test_a_relabel_after_a_later_screen_hold_of_the_head_records_nothing_and_withdraws_the_check_run(self):
+        """R12: the screen passed HEAD, the review passed it, and the check run was recorded. A later screen of the same
+        head held it: its hold comment names HEAD and is newer than the review comment. A relabel of the head (after a
+        change of the variable, say) then records no new check run (the decision is screen), and updates the check run
+        that is still success to neutral, as the later screen held the head. One that the held run withdrew already
+        stays as it is. A hold of the screen that is older than the review comment stops no check run."""
+        listed, _others = self.recorded()
+        review = review_of(HEAD, at=ago(60))
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(10), "updated_at": ago(10),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        for case, checks, withdrawn in (("a check run that is still success", [listed], [901]),
+                                        ("a check run that is neutral already", [dict(listed, conclusion="neutral")],
+                                         [])):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
+                                 comments=[review, hold], listed=checks)
+                self.assertEqual((got["result"], got["checks"], got["post"]["decision"]), ("success", [], "screen"),
+                                 self.logs)
+                self.assertEqual([endpoint for _t, endpoint, _b in got["withdrawn"]],
+                                 [f"repos/{REPO}/check-runs/{i}" for i in withdrawn])
+                for _token, _endpoint, body in got["withdrawn"]:
+                    self.assertEqual((body["conclusion"], body["output"]["title"]),
+                                     ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, a "
+                                                 "later screen held it"))
+        got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
+                         comments=[dict(hold, updated_at=ago(90)), review])
+        self.assertRecorded(got, self.LPS)
+
+    def test_a_withdrawal_that_github_refuses_fails_the_job_and_names_the_head_and_the_check_run(self):
+        """A PATCH of the check run that GitHub refuses fails the post job, with an error that names the head and the
+        check run. After a screen that held the head, the error also says that no run of the rescreen pass tries it
+        again: the hold comment of the screen names the head, so the pass makes no App write of it (held.sh,
+        consider). After a blocking finding, the pass's retry of the App's writes (a relabel) withdraws it again."""
+        listed, _others = self.recorded()
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        for case, verdict, screen, again in (("a screen that held the head", "pass", "held", True),
+                                             ("a review with a blocking finding", "blocking", "clean", False)):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], verdict, self.LPS, screen=screen, listed=[listed])
+                self.assertEqual((got["result"], got["steps"]["Withdraw the import check of the head"]),
+                                 ("failure", "failure"), self.logs)
+                self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.", self.logs[-1])
+                self.assertEqual("No run of the rescreen pass tries this again: a person withdraws it by hand."
+                                 in self.logs[-1], again, self.logs[-1])
 
 
 if __name__ == "__main__":

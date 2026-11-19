@@ -88,7 +88,7 @@ waiting() {
       then {held: ($b | capture("\n<!-- review-held-[a-z]+ [0-9]+ [0-9]+ answer (?<c>[0-9]+) -->") | .c)}
       elif ($b | test("^<!-- review-answer [0-9]+")) then {answers: ($b | capture("^<!-- review-answer (?<c>[0-9]+)") | .c)}
       elif ($b | test("^<!-- review(-held)? -->")) then {read: (($b
-        | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
+        | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict|screened) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
         | .t) // .updated_at)}
       else null end)}') \
     || return 1
@@ -97,7 +97,7 @@ waiting() {
     found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/reviews" --jq '.[] | (.body // "") as $b
       | {made: .submitted_at, at: .submitted_at, id, author: .user.login, text: ($b | test("\\S")),
          own: (if .user.login == "github-actions[bot]" and ($b | startswith("<!-- review-fix ")) then {read: (($b
-           | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
+           | capture("^<!-- review(-held|-fix [0-9a-f]{40})? -->(\n<!-- review-(head|verdict|screened) [^\n]* -->)*\n<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)")
            | .t) // .submitted_at)} else null end)}
       | @json') || return 1
     found+=$'\n'$(gh api --paginate "repos/$REPO/pulls/$1/comments" \
@@ -166,17 +166,18 @@ held_account() {
   esac
 }
 # head_marks <number> <head>: what the comments of github-actions[bot] on <number> say of <head>, as
-# "<review> <held> <conflict> <caught>", from the lines that the workflow writes alone, never from the text of
-# a review: the model writes that text, and a review of before the move off pull_request_target holds it
-# with no change, so it can name any commit and hold any marker. review is new when a comment starts with
-# <!-- review --> and, on its next line, the marker <!-- review-head <head> --> of this workflow's review;
+# "<review> <held> <conflict> <caught> <steered>", from the lines that the workflow writes alone, never from
+# the text of a review: the model writes that text, and a review of before the move off pull_request_target
+# holds it with no change, so it can name any commit and hold any marker. review is new when a comment starts
+# with <!-- review --> and, on its next line, the marker <!-- review-head <head> --> of this workflow's review;
 # old when its first two lines are <!-- review --> and "**Automated review** of commit " with the first 12
 # characters of <head>, the header of the review of before that move (a review of now has the marker of its
 # head on its second line, so it is never old); and none else. held is true when a hold comment names <head>
 # (<!-- review-held-head <head> -->). conflict is true when the label comment holds
 # <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict. caught is true when
 # the label comment holds <!-- review-catchup <head> -->: a catch-up closed and reopened the pull request at
-# <head>.
+# <head>. steered is true when the label comment holds <!-- review-steering <head> -->: <head> changes a file
+# under .github/, so the post job approves no run of it, and a person at Theorem approves its runs.
 head_marks() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs 'map(select(.user.login == "github-actions[bot]") | .body // "") as $b
@@ -189,7 +190,9 @@ head_marks() {
        any($b[]; startswith("<!-- review-label -->")
          and test("\n<!-- review-conflict-state " + $ENV.SHA + " -->(\n|$)")),
        any($b[]; startswith("<!-- review-label -->")
-         and test("\n<!-- review-catchup " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
+         and test("\n<!-- review-catchup " + $ENV.SHA + " -->(\n|$)")),
+       any($b[]; startswith("<!-- review-label -->")
+         and test("\n<!-- review-steering " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
 }
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
@@ -253,6 +256,23 @@ ci_of() {
         end)') || return 1
   if ! rows=$(whole <<< "$out"); then echo pending; return 0; fi
   sort <<< "$rows" | awk '$0 == "pending" { p = 1 } NF { last = $0 } END { print (p ? "pending" : last) }'
+}
+# pusher <head> <repository> <branch>: the account that started the newest of the CI runs that ci_of reads (by
+# when GitHub made it): the actor of that run, whose action the trust job screens on that run's own event
+# (workflow_run). Nothing when there is no such run, or when GitHub names no account of it. It fails when GitHub
+# could not say, or does not list them all (whole).
+pusher() {
+  local out rows login
+  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+  out=$(SHA=$1 REPOSITORY=$2 BRANCH=$3 gh api --method GET --paginate "repos/$REPO/actions/runs" \
+    -f head_sha="$1" -F per_page=100 --jq "$pages"'(.workflow_runs[]
+      | select(.head_sha == $ENV.SHA and .event == "pull_request" and .path == ".github/workflows/ci.yml"
+               and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
+               and .head_branch == $ENV.BRANCH)
+      | "\(.created_at // "-") \(.actor.login // "")")') || return 1
+  rows=$(whole <<< "$out") || return 1
+  login=$(sort <<< "$rows" | awk 'NF { last = $2 } END { print last }')
+  [[ ! $login =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || echo "$login"
 }
 hour=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
 quarter=$(date -u -d '-15 minutes' +%Y-%m-%dT%H:%M:%SZ)
@@ -844,7 +864,8 @@ due_draft() {
 # verdict), or a hold that is not tried again, the newest of its work, names the head. Once an hour after the
 # newest approval run of the head. A post job that failed at a step that is not a sign-in counts a try of the
 # head; after REVIEW_TRIES of them, the head is not tried again (head_stopped). A hold of an approval that is
-# tried again leaves it to that hold (due_held).
+# tried again leaves it to that hold (due_held). Never for a head that the label comment records as one that
+# changes a file under .github/ (head_marks, steered): the post job approves no run of such a head.
 due_approve() {
   local list n last created ended run f screen post tries
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
@@ -854,6 +875,12 @@ due_approve() {
   (( n > 0 )) || return 0
   last=$(sort <<< "$list" | tail -n 1)
   [[ $retaken != *" approve"* ]] || return 0
+  head_of || return 1
+  if [ "$steered" = true ]; then
+    echo "#$number: $head changes a file under .github/, as its label comment records, so a person at Theorem" \
+      "approves its runs."
+    return 0
+  fi
   if [ -n "$(awk -v h="$head" -v last="$last" '$3 == "-" && $9 == h && $2 >= last' <<< "$hold")" ]; then
     echo "#$number: a hold that is not tried again names $head."
     return 0
@@ -926,14 +953,14 @@ merge_of() {
   done
   merge=null
 }
-# head_of: review, held, conflicted and caught, what the comments of #number say of its head (head_marks),
-# read once.
+# head_of: review, held, conflicted, caught and steered, what the comments of #number say of its head
+# (head_marks), read once.
 head_of() {
   local line
   [ -z "$head_read" ] || return 0
   line=$(head_marks "$number" "$head") \
     || { echo "::error::the comments of #$number could not be read."; return 1; }
-  read -r review held conflicted caught <<< "$line"
+  read -r review held conflicted caught steered <<< "$line"
   head_read=1
 }
 # ci_head: ci, what the CI runs of the head of #number from its head repository and head branch say (ci_of),
@@ -1101,10 +1128,14 @@ due_old() {
 # takes it. A CI run that its trust job stopped reviewed nothing, and can be the run of another pull request
 # of the head (one into another branch): it is never that newest run, so it holds back no re-run and no
 # review. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
-# conflict, the head is not tried again (head_stopped).
+# conflict, the head is not tried again (head_stopped). The review of an outsider's pull request counts on its
+# author. The review of a writer's pull request counts on the account that started the newest CI run of the
+# head (pusher), when that account has no write access and is not one of the APPS: the run's name then ends
+# with " of <login>", and its trust job screens it first, on the limit of that account, as the trust job of
+# that CI run's own event does.
 due_unreviewed() {
   local list created ended run task event f signin post early all=true newest="" last="" tries=0
-  local latest="" known="" met=""
+  local latest="" known="" met="" who=""
   [ -z "$retaken" ] || return 0
   list=$(awk -v n="$number" -v h="$head" '$7 == n && $9 == h { print $2, $3, $1, $8, $6 }' "$seen/runs" \
     | sort)
@@ -1147,7 +1178,15 @@ due_unreviewed() {
     return 0
   fi
   rerun "$latest" "$known" && return 0
-  owe "${newest:-$met}" review "$limited" "$head" - "the runs of $head ended with no review"
+  if [ "$outsider" = false ]; then
+    who=$(pusher "$head" "${pr_repo[$number]:-0}" "${pr_ref[$number]:--}") \
+      || { echo "::error::the CI runs of $head could not be read."; return 1; }
+    if [ -n "$who" ]; then
+      access_of "$who" || return 1
+      (( ${access[$who]} != 0 )) || who=""
+    fi
+  fi
+  owe "${newest:-$met}" review "${who:-$limited}" "$head" - "the runs of $head ended with no review"
 }
 # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
 # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
@@ -1202,7 +1241,8 @@ due_variable() {
 consider() {
   local head="" outsider=false limited="" hold=""
   local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
-  local review=none held=false conflicted=false caught=false head_read="" merge=${1:-} ci="" ci_read=""
+  local review=none held=false conflicted=false caught=false steered=false head_read="" merge=${1:-} ci=""
+  local ci_read=""
   if [ "$draft" != false ]; then
     echo "#$number: a draft, of which the trust job takes no run."
     return 0

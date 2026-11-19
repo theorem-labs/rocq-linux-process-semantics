@@ -100,7 +100,9 @@ jobs:
   #   approve   a first-time contributor's pull request whose head has runs that GitHub holds, from its own head
   #             repository and head branch (never another fork's runs of the same commit), while no approval run
   #             screened that head with a verdict since the newest held run (its screen job passed and its post job did
-  #             not fail, or a hold that is not tried again names the head), once an hour.
+  #             not fail, or a hold that is not tried again names the head), once an hour. Never a head that its label
+  #             comment records as one that changes a file under .github/ (<!-- review-steering <head> -->): the post
+  #             job approves no run of such a head, and a person at Theorem approves them.
   #   retry     the App's retry: a run of a head whose post job failed, at a sign-in (until the environment post holds
   #             the App's key) or at a write of the App, gets an approval again for an approval, a relabel for a review
   #             or a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an
@@ -127,13 +129,16 @@ jobs:
   #             failed sign-in or a failed comment job (up to REVIEW_TRIES of the second). Also each open pull request
   #             into main, a writer's too, whose head a run of this workflow names, no review and no hold comment
   #             names, and whose CI runs from its head repository and head branch all finished (an approval's CI run
-  #             comes before its review): at the next run when each run that named the head stopped at its trust
-  #             job, gave a conflict or was a relabel (a draft, another base, a conflict that went away, a head that
-  #             more than one open pull request has, whose CI runs count for none of them), and else once the newest of
-  #             them ended over an hour ago. A workflow_run's name gives its head alone, so its run is taken as a run of
-  #             the pull request into main with that head; when more than one into main has it, as a run of the one
-  #             that the notice of its trust job names, and of each when no notice names one. A CI run that its trust
-  #             job stopped is never the newest run of a head: it reviewed nothing, and it can be another pull
+  #             comes before its review). For a writer's pull request, the name of that run ends with " of <login>"
+  #             when <login>, the account that started the newest of those CI runs, has no write access and is not one
+  #             of the APPS: its trust job screens the head first, on the limit of <login>, as the run of that CI run's
+  #             own event does. Each such review is due at the next run when each run that named the head stopped at
+  #             its trust job, gave a conflict or was a relabel (a draft, another base, a conflict that went away, a
+  #             head that more than one open pull request has, whose CI runs count for none of them), and else once the
+  #             newest of them ended over an hour ago. A workflow_run's name gives its head alone, so its run is taken
+  #             as a run of the pull request into main with that head; when more than one into main has it, as a run of
+  #             the one that the notice of its trust job names, and of each when no notice names one. A CI run that its
+  #             trust job stopped is never the newest run of a head: it reviewed nothing, and it can be another pull
   #             request's. After REVIEW_TRIES such reviews that ended with no failed sign-in and gave no conflict,
   #             the head is not tried again. When the newest run of the head is a review
   #             whose screen passed and whose review job failed at a sign-in, its failed jobs run again (POST
