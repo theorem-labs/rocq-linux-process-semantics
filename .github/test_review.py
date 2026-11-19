@@ -10413,6 +10413,23 @@ class ScreenStartTest(Runner):
         self.assertEqual((rc, self.steps(log)), (0, ["read", "sleep 10", "read", "start"]), out)
         self.assertOneStart(log)
 
+    def test_screen_start_reaches_github_through_gh_alone(self):
+        """R14 and b14: the step's one write is gh workflow run rescreen.yml --ref main, which the stand-in gh sees. No
+        run: line passes the token to another client (curl, wget), whose write the stand-in gh would not see: a call of
+        such a client fails the step here."""
+        for s in self.job()["steps"]:
+            with self.subTest(step=s.get("name")):
+                self.assertNotRegex(s.get("run", ""), r"\$\{?(GH_TOKEN|GITHUB_TOKEN)\b|\b(curl|wget)\b")
+        bin_dir = os.path.join(self.dir, "bin")
+        for name in ("curl", "wget"):
+            with open(os.path.join(bin_dir, name), "w") as f:
+                f.write(f'#!/usr/bin/env bash\nprintf "{name}\\0%s\\0" "$*" >> "$FAKE_GH/every"; printf "\\1" >> '
+                        '"$FAKE_GH/every"\nexit 0\n')
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1, "workflow_runs": [self.run_of(HEAD)]})
+        rc, out, log = self.start()
+        self.assertEqual((rc, [entry[0] for entry in log]), (0, ["gh", "gh"]), out)
+
     def test_screen_start_starts_the_pass_once_after_2_minutes_when_github_lists_no_run(self):
         """R14: when GitHub lists no pull_request run of the head commit (a read that fails lists none; an event that
         starts no CI run, such as edited, labeled or closed, or a pull request with a merge conflict), the step reads
