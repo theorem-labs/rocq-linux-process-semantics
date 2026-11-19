@@ -6005,6 +6005,23 @@ class SoundnessScanTest(unittest.TestCase):
                 facts = json.loads(r.stdout)
                 self.assertTrue(facts["files"] or facts["unfollowed"] or not facts["whole"], facts)
 
+    def test_a_file_whose_name_holds_a_bracket_or_a_brace_counts_where_a_rule_names_it_and_no_glob(self):
+        """R8: "any other file that a dune rule of the repository reads or writes", and review.md: "a file that a dune
+        file of the head or of main names". Only a glob field (glob_files, glob_files_rec, copy_files) reads a name as
+        a glob: dune 3.23 builds (rule (target o) (deps "data[1].txt" "conf{a}.txt") (action ... (cat "data[1].txt")
+        (cat "conf{a}.txt"))) and reads the files t/data[1].txt and t/conf{a}.txt. So a change of either counts, by
+        main's t/dune, for a head that changes nothing else. A Markdown file does not."""
+        files = {"t/dune": "(rule (target o) (deps \"data[1].txt\" \"conf{a}.txt\")\n"
+                           " (action (with-stdout-to o (progn (cat \"data[1].txt\") (cat \"conf{a}.txt\")))))\n",
+                 "t/data[1].txt": "1\n", "t/conf{a}.txt": "a\n", "README.md": "# Model\n"}
+        d, main = self.repository(files)
+        changed = {"t/data[1].txt": "2\n", "t/conf{a}.txt": "b\n", "README.md": "# Model, again\n"}
+        _d, head = self.repository(dict(files, **changed), at=d)
+        facts = rules.proofs(head, [{"filename": p, "previous_filename": None} for p in changed], len(changed), cwd=d,
+                             main=main)
+        self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
+                         {"t/data[1].txt": ("named", "t/dune"), "t/conf{a}.txt": ("named", "t/dune")})
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
