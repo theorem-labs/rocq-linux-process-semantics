@@ -167,10 +167,12 @@ jobs:
   # OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose name
   # ends with the account), less those that it had in the last hour, as the trust job counts them. The trust job of
   # each run counts again (earlier, in review.yml), with the account's own events, and with the CI runs of other
-  # accounts whose screen job names the account among the runs whose jobs it reads (at most 2 * OUTSIDE_HOURLY_LIMIT
-  # of them). It holds the item again at the limit. A catch-up, a conflict, a relabel and a stop screen nothing, run
-  # no model and count toward no limit and no cap. The trust job of each run reads again from the API why this pass
-  # started it, and stops when the reason no longer holds.
+  # accounts whose screen job names the account. It reads the jobs only of the runs that could count on the account (a
+  # CI run of another account only when that account owns the head repository of an open pull request of this one), and
+  # of at most 2 * OUTSIDE_HOURLY_LIMIT of them. It holds the item again at the limit, and also when runs that could
+  # count are left past those reads, or GitHub does not list them all, or the open pull requests cannot be read. A
+  # catch-up, a conflict, a relabel and a stop screen nothing, run no model and count toward no limit and no cap. The
+  # trust job of each run reads again from the API why this pass started it, and stops when the reason no longer holds.
   # The work that a hold names is tried up to REVIEW_TRIES times since the hold: each run of its task since the hold
   # counts, as one that ended with neither a new hold nor a post, but a run that ended at a failed sign-in, which
   # judged nothing and counts no try (D19). Each try waits until the newest run of the task is over an hour old, as the

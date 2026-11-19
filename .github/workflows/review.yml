@@ -67,10 +67,14 @@
 #   open a pull request whose head is another account's fork branch. Toward the author's limit, the trust job counts
 #   the author's own runs, the runs by hand whose names end with the author, and the CI runs that another account's
 #   pushes start for the author's pull request (their names give the pusher, and their screen jobs give the author).
-#   It reads the jobs of at most 2 * OUTSIDE_HOURLY_LIMIT runs, the author's own first. Past those reads, a CI run of
-#   another account does not count on the author: any account can start CI runs, so to count the runs that the trust
-#   job did not read would let any account put the author at the limit. Such runs can then be screened more than
-#   OUTSIDE_HOURLY_LIMIT times in an hour, and only SCREENED_HOURLY_CAP bounds their reviews.
+#   A CI run of another account can count on the author only when that account owns the head repository of an open
+#   pull request of the author: the trust job reads the jobs of no other account's CI run, and of at most
+#   2 * OUTSIDE_HOURLY_LIMIT runs, the author's own first. When runs that could count are left past those
+#   reads, or GitHub does not list them all, or the open pull requests cannot be read, the author counts as at the
+#   limit: the run is held without a screen, and a later run tries again. So no padding of runs moves an account past
+#   its limit, and the owner of such a head repository can hold the author's items in this way until its runs are an
+#   hour old. The pushes of a collaborator of that fork who is not its owner count on no one, and SCREENED_HOURLY_CAP
+#   bounds their reviews.
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
 #   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
@@ -342,11 +346,15 @@ env:
   # counts once: the rescreen pass runs its failed jobs again, with no new screen. A CI run of the account's push whose
   # screen job names another account (the author of the pull request, the top of this file) used that account's limit
   # and does not count for this one. A CI run of another account's push whose screen job names this account counts for
-  # this one. Only a run's jobs show those. The trust job reads the jobs of at most twice this number of runs: first
-  # the account's own runs that finished or are CI runs, then the CI runs of other accounts. Past those reads, each run
-  # of the account's own counts, but no CI run of another account counts: any account can start CI runs, so to count
-  # them would let any account put this one at its limit. Such runs can then be screened more than this number of
-  # times in an hour, and only SCREENED_HOURLY_CAP bounds their reviews.
+  # this one. Only a run's jobs show those. The trust job reads the jobs only of the runs that could count on this
+  # account: a CI run of another account only when that account owns the head repository of an open pull request of
+  # this one, and has no write access. It reads at most twice this number of them: first the account's own runs that
+  # finished or are CI runs, then those CI runs of other accounts. When runs that could count are left past those
+  # reads, or GitHub does not list them all, or the open pull requests cannot be read, and the count is under this
+  # number, the account counts as at its limit: the run is held, and a later run tries again. So no padding of runs
+  # moves an account past its limit, and the owner of such a head repository can hold this account's items in this way
+  # until its runs are an hour old. The pushes of a collaborator of such a fork who is not its owner count on no one,
+  # and SCREENED_HOURLY_CAP bounds their reviews.
   # The runs that the rescreen pass starts and that screen (a rescreen, a review, an answer, a draft or an approval)
   # count toward the same limit, with its events (their names end with " of <account>"): so N, the most such runs of
   # one account that are screened in an hour, is this number less what its own events used. (The rescreen pass starts
@@ -414,6 +422,9 @@ jobs:
       task: ${{ steps.trust.outputs.task }}
       # review (no screen), screen (the screen first), limit (held at OUTSIDE_HOURLY_LIMIT) or measure.
       route: ${{ steps.trust.outputs.route }}
+      # For the route limit, true when the account counts as at its limit because the trust job did not read every
+      # run of the last hour that could count on it (earlier), which the hold says; else empty.
+      uncounted: ${{ steps.trust.outputs.uncounted }}
       outsider: ${{ steps.trust.outputs.outsider }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on (an account with write access has none), which the
       # name of the screen job gives: earlier and held_account read it back from there.
@@ -1796,6 +1807,26 @@ jobs:
             any(.labels[]?; .name == $ENV.HELD_LABEL), (.created_at // "-"), (.user.login // "")] | map(tostring)
             | join(" ")'
           # end of held
+          # open_pulls: open_rows, the open pull requests, read once in this step, one on each line: "<number> <head
+          # commit> <id of the head repository, 0 when it is gone> <head branch> <base> <draft> <author> <owner of the
+          # head repository, - when it is gone>". It fails when GitHub could not say.
+          open_rows="" open_read=""
+          open_pulls() {
+            [ -z "$open_read" ] || return 0
+            open_rows=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[] | "\(.number) \(
+              .head.sha) \(.head.repo.id // 0) \(.head.ref // "-") \(.base.ref) \((.draft // false) | tostring) \(
+              .user.login // "-") \(.head.repo.owner.login // "-")"') || return 1
+            open_read=1
+          }
+          # open_with <head> <repository> <branch>: "<number> <base> <draft> <author>" of each open pull request whose
+          # head commit, head repository and head branch are those (open_rows).
+          open_with() {
+            local number sha repository ref base draft author owner
+            while read -r number sha repository ref base draft author owner; do
+              [[ -n $number && $sha == "$1" && $repository == "$2" && $ref == "$3" ]] || continue
+              echo "$number $base $draft $author"
+            done <<< "$open_rows"
+          }
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
           # job did not skip or stop and counted on <login>: each run that <login> started by an event (workflow_run,
           # issues or issue_comment); each run whose name, a name of the rescreen pass's (titled), ends with
@@ -1820,20 +1851,27 @@ jobs:
           # could not sign in counts, once: its screen ran, and the rescreen pass runs its failed jobs again with no new
           # screen. The job rescreen, which this file had before the pass moved to rescreen.yml and which each of its
           # dispatched runs skipped, is not one of those jobs. A run of the first two lists whose trust job is not
-          # listed counts. The jobs of each run are read once, also when two pages or two lists give it, and of at most
-          # 2 * OUTSIDE_HOURLY_LIMIT runs in this run: first the runs of the first two lists, then the CI runs of other
-          # accounts, each list newest first. Past those reads, each run of the first two lists counts, as it may: the
-          # count fails closed, so that a burst of runs that screened nothing costs each later run no more reads than
-          # that. Past them, no CI run of another account counts: the count fails open, because any account can start
-          # CI runs, and to count the runs that this run did not read would let any account put <login> at its limit.
-          # Such runs can then be screened more than OUTSIDE_HOURLY_LIMIT times in an hour, and only SCREENED_HOURLY_CAP
-          # bounds their reviews. No jobs are read once count is at OUTSIDE_HOURLY_LIMIT: the account is at its limit.
-          # The CI runs are not listed then, nor when no read is left. When GitHub does not list every run of one of the
-          # first two lists (whole), the runs that it leaves out can be the account's: the account is at its limit. When
-          # it does not list every CI run, the runs that it lists are read, and the runs that it leaves out do not
-          # count, as the runs past the reads do not. The run stops when GitHub could not say.
+          # listed counts. Only a run that could count on <login> has its jobs read. A CI run of another account can
+          # count on <login> only when that account owns the head repository of an open pull request of <login>
+          # (open_pulls, read once, and only when the list of CI runs gives a run of another account: a head repository
+          # that is gone has no owner). Every other account's CI run cannot count on <login>, and costs no read. A CI
+          # run of such an owner with write access (trusted, as GitHub gives it at this run) counts on that account,
+          # which has no limit, and costs no read either. When the open pull requests cannot be read, <login> counts
+          # as at its limit (uncounted). The pushes of a collaborator of such a fork who is not its owner count on no
+          # one: the trust job of each such run counts it on <login>, and this count leaves it out. SCREENED_HOURLY_CAP
+          # bounds the reviews of those runs. The jobs of each run are read once, also when two pages or two lists give
+          # it, and of at most 2 * OUTSIDE_HOURLY_LIMIT runs in this run: first the runs of the first two lists, then
+          # the CI runs of those owners, each list newest first. No jobs are read once count is at OUTSIDE_HOURLY_LIMIT:
+          # the account is at its limit. When count is under it and runs that could count are left past those reads,
+          # or GitHub does not list every run of a list (whole: the runs that it leaves out can count, those of the CI
+          # runs only when such an owner exists), the count is not known: <login> counts as at its limit (uncounted),
+          # the item is held, and a later run tries again. So a burst of runs that screened nothing costs each later run
+          # no more reads than that, and no padding of runs moves <login> past its limit. The owner of the head
+          # repository of a pull request of <login> can hold the items of <login> in this way with CI runs, until those
+          # runs are an hour old. The run stops when GitHub could not say what runs there are or what jobs a run has.
           earlier() {
-            local from round list out rows runs id state own entry verdict reads=0
+            local from round list out rows runs id state own actor entry verdict reads=0 cut owners
+            local number sha repository ref base draft author owner
             local -a lists unread
             local -A once=()
             count=0
@@ -1844,13 +1882,13 @@ jobs:
               if [ "$round" = own ]; then
                 lists=("actor=$1" event=workflow_dispatch)
               else
-                (( count < OUTSIDE_HOURLY_LIMIT && reads < 2 * OUTSIDE_HOURLY_LIMIT )) || return 0
+                (( count < OUTSIDE_HOURLY_LIMIT )) || return 0
                 lists=(event=workflow_run)
               fi
-              runs="" unread=()
-              # Each run of a list on one line: "<id> <state> <own>", state count for a run that counts with no read
-              # of its jobs, else read, and own 1 for a run of <login>'s event, 0 for a run by hand, 2 for a CI run of
-              # another account.
+              runs="" unread=() cut=""
+              # Each run of a list on one line: "<id> <state> <own> <actor>", state count for a run that counts with no
+              # read of its jobs, else read, own 1 for a run of <login>'s event, 0 for a run by hand, 2 for a CI run of
+              # another account, and actor the account that started it ("-" for none).
               for list in "${lists[@]}"; do
                 # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
                 out=$(LOGIN=$1 LIST=$list TITLED=$titled gh api --method GET --paginate \
@@ -1865,32 +1903,58 @@ jobs:
                                        or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
                                            and ($title | endswith(" of " + $ENV.LOGIN))) end))
                     | "\(.id) \(if .status != "completed" and .event != "workflow_run" then "count" else "read" end) \(
-                      if .event == "workflow_dispatch" then 0 elif .actor.login == $ENV.LOGIN then 1 else 2 end)")') \
+                      if .event == "workflow_dispatch" then 0 elif .actor.login == $ENV.LOGIN then 1 else 2 end) \(
+                      .actor.login // "-")")') \
                   || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
-                if [ "$round" = other ]; then
-                  rows=$(awk '$1 != "="' <<< "$out")
-                elif ! rows=$(whole <<< "$out"); then
-                  echo "::notice::GitHub lists at most 1,000 runs of this workflow with $list since $from, and more" \
-                    "of them match. The runs that it does not list can be runs of $1, so $1 is held at the limit."
-                  count=$OUTSIDE_HOURLY_LIMIT
+                if rows=$(whole <<< "$out"); then
+                  runs+=$rows$'\n'
+                else
+                  cut=$list
+                fi
+              done
+              owners=" "
+              if [ "$round" = other ]; then
+                # The owners of the head repositories of the open pull requests of <login>, " <owner> " each: only
+                # their CI runs can count on <login>. No CI run of another account listed: none can count.
+                [[ -n $cut || $runs =~ [0-9] ]] || return 0
+                if ! open_pulls; then
+                  echo "::notice::The open pull requests could not be read, so the CI runs that can count on $1 are" \
+                    "not known, and $1 is held at the limit."
+                  count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
-                runs+=$rows$'\n'
-              done
-              while read -r id state own; do
+                while read -r number sha repository ref base draft author owner; do
+                  [[ -n $number && $author == "$1" && $owner != - ]] || continue
+                  owners+="$owner "
+                done <<< "$open_rows"
+                [ "$owners" != " " ] || return 0
+              fi
+              if [ -n "$cut" ]; then
+                echo "::notice::GitHub lists at most 1,000 runs of this workflow with $cut since $from, and more" \
+                  "of them match. The runs that it does not list can count on $1, so $1 is held at the limit."
+                count=$OUTSIDE_HOURLY_LIMIT uncounted=true
+                return 0
+              fi
+              while read -r id state own actor; do
                 [ -n "$id" ] || continue
                 [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
                 [ -z "${once[$id]:-}" ] || continue
                 once[$id]=1
-                if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $own"); fi
+                # A CI run of another account that owns no head repository of a pull request of <login>: no read.
+                [[ $own != 2 || $owners == *" $actor "* ]] || continue
+                if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $own $actor"); fi
               done <<< "$runs"
               for entry in "${unread[@]}"; do
-                read -r id own <<< "$entry"
+                read -r id own actor <<< "$entry"
                 (( count < OUTSIDE_HOURLY_LIMIT )) || return 0
+                # A CI run of a push of an owner with write access counts on that account, never on <login>: no read.
+                # When GitHub does not say whether the account has write access, the run could count: it is read.
+                if [ "$own" = 2 ] && trusted "$actor"; then continue; fi
                 if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
-                  [ "$own" != 2 ] || return 0
-                  count=$((count + 1))
-                  continue
+                  echo "::notice::This run read the jobs of $reads runs that could count on $1, and more such runs of" \
+                    "the last hour are left, so $1 is held at the limit."
+                  count=$OUTSIDE_HOURLY_LIMIT uncounted=true
+                  return 0
                 fi
                 reads=$((reads + 1))
                 # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1917,8 +1981,9 @@ jobs:
           # reviews of the item that failed so far, which a rescreen carries from its hold to the next; account: the
           # account whose limit the run counts on, which the screen job's name gives (the account that started the run,
           # or the one that the inputs of the rescreen pass's run give, and the author of a CI run's pull request when
-          # neither the author nor the pusher has write access).
-          task="" head="" comment="" of="" tries=0 origin=$RUN_ID account=$ACTOR
+          # neither the author nor the pusher has write access); uncounted: true when earlier did not read every run
+          # that could count on that account, which then counts as at its limit.
+          task="" head="" comment="" of="" tries=0 origin=$RUN_ID account=$ACTOR uncounted=""
           # route <route> <outsider>: the outputs, and the end of this step. Its notice names the item, so that the
           # rescreen pass tells which pull request a CI run reviewed when more than one into main has its head
           # (reviewed).
@@ -1926,7 +1991,7 @@ jobs:
             echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
               echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"; echo "tries=$tries"
-              echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
+              echo "uncounted=$uncounted"; echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
           # stop <why>: no route, so no job after this one runs. Its notice names the item once the step knows it
@@ -1941,9 +2006,9 @@ jobs:
           # both have write access; else the screen first, for the account without write access whose action it is
           # (<account>, or else <author>); or held at the limit with no screen, when <account> has no write access and
           # the runs of account (the account whose limit the run counts on: <account>, or the author of a CI run's pull
-          # request) reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour. A writer's action on an outsider's
-          # item has no limit. No <account> is the action of a person or an App that started a run by hand, which
-          # GitHub lets only a writer do: the API is not asked.
+          # request) reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, or could not all be read (earlier).
+          # A writer's action on an outsider's item has no limit. No <account> is the action of a person or an App that
+          # started a run by hand, which GitHub lets only a writer do: the API is not asked.
           screened() {
             local a=0 b=0 outsider
             known "$1" || a=$?
@@ -2172,13 +2237,9 @@ jobs:
                   || stop "its head is $pr_head of the branch $head_ref of repository $head_repo, not the CI run's."
               else
                 # "<number> <base> <draft> <author>" of each open pull request, of any base, whose head commit, head
-                # repository and head branch are the CI run's.
-                # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-                found=$(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[]
-                  | select(.head.sha == $ENV.HEAD and ((.head.repo.id // 0) | tostring) == $ENV.HEAD_REPOSITORY
-                           and .head.ref == $ENV.HEAD_BRANCH)
-                  | "\(.number) \(.base.ref) \((.draft // false) | tostring) \(.user.login)"') \
-                  || fail "the open pull requests could not be read."
+                # repository and head branch are the CI run's, from the one read of the open pull requests.
+                open_pulls || fail "the open pull requests could not be read."
+                found=$(open_with "$HEAD" "$HEAD_REPOSITORY" "$HEAD_BRANCH")
                 n=$(grep -c . <<< "$found" || true)
                 (( n > 0 )) || stop "no open pull request has this head from its repository and branch."
                 why="$n open pull requests have this head from its repository and branch, so this run counts for none"
@@ -4577,6 +4638,9 @@ jobs:
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on, which a hold at the limit names: the item's author,
       # or the account of the latest event.
       ACCOUNT: ${{ needs.trust.outputs.account }}
+      # true when the account counts as at its limit because the trust job did not read every run that could count
+      # on it: the hold then does not say that the account had that many screens.
+      UNCOUNTED: ${{ needs.trust.outputs.uncounted }}
       REVIEW: ${{ needs.review.result }}
       ORIGIN: ${{ needs.trust.outputs.origin }}
       TRIES: ${{ needs.trust.outputs.tries }}
@@ -4752,14 +4816,22 @@ jobs:
             [[ $account =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "::error::not a GitHub login: $account"; exit 1; }
             kind=limit
             limit="The workflow screens the pull requests, issues, pushes and comments of such an account before it reviews or answers them. The limit for one such account is $OUTSIDE_HOURLY_LIMIT screens in the last hour."
-            who="this account"
+            who="this account" whose="this account"
             if [ "$account" != "$author" ]; then
-              why="The latest event of $what comes from an account without write access to this repository. $limit This account is at that limit."
+              why="The latest event of $what comes from an account without write access to this repository. $limit"
             elif [ "$OUTSIDER" = "$account" ]; then
-              why="The author of $what has an account without write access to this repository. $limit This account is at that limit."
+              why="The author of $what has an account without write access to this repository. $limit"
             else
-              who="the account of the author"
-              why="The latest event of $what comes from an account without write access to this repository. For this event, the workflow uses the limit of the author of $what, who also has an account without write access. $limit The account of the author is at that limit."
+              who="the account of the author" whose="the author"
+              why="The latest event of $what comes from an account without write access to this repository. For this event, the workflow uses the limit of the author of $what, who also has an account without write access. $limit"
+            fi
+            # A trust job that did not read every run of the last hour that could count on the account counts it as at
+            # its limit (UNCOUNTED): the account can have had fewer screens, so the comment does not say that it had
+            # that many.
+            if [ "${UNCOUNTED:-}" = true ]; then
+              why+=" The workflow did not read all of its runs of the last hour that can count toward the limit of $whose. So the workflow counts $who as at that limit."
+            else
+              why+=" ${who^} is at that limit."
             fi
             why="$again$why If $who is still at the limit at that event, the workflow holds $what again. This comment then gives the new time."
           elif [ -z "$OUTSIDER" ]; then

@@ -72,6 +72,7 @@ RUN = "https://github.com/acme/model/actions/runs/1"
 HEAD = "ab" * 20            # a pull request's head commit
 OTHER_HEAD = "cd" * 20      # another commit
 FORK_ID = 555               # the id of the head repository of that pull request
+FORK_OWNER = "bob"          # the account that owns that repository: bob's fork, as the limit's tests tell it
 REPO_ID = 444               # the id of REPO
 BRANCH = "patch-1"          # its head branch in that repository
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
@@ -474,12 +475,17 @@ class Runner(unittest.TestCase):
 
     def serve_prs(self, *prs):
         """The open pull requests, as GitHub lists them: (number, author, head[, head repository id[, draft[, base[,
-        head branch]]]]), the head branch BRANCH when it is not given."""
-        self.serve(f"repos/{REPO}/pulls", [
-            {"number": p[0], "user": {"login": p[1]},
-             "head": {"sha": p[2], "ref": p[6] if len(p) > 6 else BRANCH,
-                      "repo": {"id": p[3] if len(p) > 3 else FORK_ID}},
-             "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}} for p in prs])
+        head branch[, owner of the head repository]]]]]), the head branch BRANCH when it is not given, and the owner
+        FORK_OWNER for FORK_ID, REPO's owner for REPO_ID and none for another id when it is not given."""
+        listed = []
+        for p in prs:
+            repo = p[3] if len(p) > 3 else FORK_ID
+            owner = p[7] if len(p) > 7 else {FORK_ID: FORK_OWNER, REPO_ID: REPO.split("/")[0]}.get(repo)
+            listed.append({"number": p[0], "user": {"login": p[1]},
+                           "head": {"sha": p[2], "ref": p[6] if len(p) > 6 else BRANCH,
+                                    "repo": {"id": repo, **({"owner": {"login": owner}} if owner else {})}},
+                           "draft": p[4] if len(p) > 4 else False, "base": {"ref": p[5] if len(p) > 5 else "main"}})
+        self.serve(f"repos/{REPO}/pulls", listed)
 
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
                   head_repository="", title=None, reply="", pulls=None, variable=None, head_branch=None):
@@ -838,13 +844,14 @@ class TrustTest(Runner):
     def test_the_job_reads_only_and_checks_nothing_out(self):
         """checks: read is for the check runs of a head, which the check of a stop reads again (due_variable), and for
         the notices of a CI run's trust job (reviewed). account is the account whose limit the run counts on, which the
-        screen job's name gives."""
+        screen job's name gives; uncounted says that the account counts as at its limit because the trust job did not
+        read every run that could count on it."""
         job = JOBS["trust"]
         self.assertEqual(job["permissions"], {"actions": "read", "issues": "read", "pull-requests": "read",
                                               "checks": "read"})
         self.assertFalse(any("uses" in s for s in job["steps"]))
-        names = ("task", "route", "outsider", "account", "number", "head", "comment", "origin", "tries", "started",
-                 "stop")
+        names = ("task", "route", "uncounted", "outsider", "account", "number", "head", "comment", "origin", "tries",
+                 "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
         for name in names:
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
@@ -2095,11 +2102,11 @@ class LimitTest(Runner):
 
     def test_a_burst_of_runs_that_could_not_sign_in_costs_each_later_run_a_fixed_number_of_reads(self):
         """Decision 3, across runs: only the jobs of a run show that it could not sign in, so each trust job reads the
-        jobs of at most 2 * OUTSIDE_HOURLY_LIMIT runs that failed, and each one more of them counts. M = 40 runs of
-        mallory in an hour that each could not sign in, the trust job of each one with the runs before it listed:
-        each reads at most 2 * OUTSIDE_HOURLY_LIMIT jobs, so the 40 read at most 2 * OUTSIDE_HOURLY_LIMIT * 40, where
-        a read of each earlier run would be 40 * 39 / 2 = 780. Once more than 3 * OUTSIDE_HOURLY_LIMIT such runs came
-        before it, a run is at the limit."""
+        jobs of at most 2 * OUTSIDE_HOURLY_LIMIT runs that failed. M = 40 runs of mallory in an hour that each could
+        not sign in, the trust job of each one with the runs before it listed: each reads at most
+        2 * OUTSIDE_HOURLY_LIMIT jobs, so the 40 read at most 2 * OUTSIDE_HOURLY_LIMIT * 40, where a read of each
+        earlier run would be 40 * 39 / 2 = 780. Spec v61 R1: once more than 2 * OUTSIDE_HOURLY_LIMIT such runs came
+        before it, the budget is used up before the count is known, and a run is at the limit."""
         signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
         budget, m, total = 2 * self.LIMIT, 40, 0
         for k in range(m):
@@ -2108,7 +2115,7 @@ class LimitTest(Runner):
             self.forget()
             route = self.route("mallory", "mallory")
             reads = [c for c in self.calls() if c.endswith("/jobs")]
-            self.assertEqual((len(reads), route), (min(k, budget), "screen" if k < budget + self.LIMIT else "limit"),
+            self.assertEqual((len(reads), route), (min(k, budget), "screen" if k <= budget else "limit"),
                              f"run {k + 1}")
             total += len(reads)
         self.assertLessEqual(total, budget * m)
@@ -2133,9 +2140,9 @@ class LimitTest(Runner):
     def test_the_runs_of_other_accounts_never_cut_the_list_of_an_account(self):
         """Each comment of anyone on any item starts a run of this file. The trust job never reads the list of every
         run: it lists the runs of the account (actor=<login>), the runs by hand (event=workflow_dispatch), which only
-        writers and the rescreen job start, and the CI runs of other accounts (event=workflow_run), whose list GitHub
-        may cut without effect. 1,000 newer runs of eve's comments, which cut the list of every run, leave mallory
-        judged by her own runs and the rescreen job's runs of her."""
+        writers and the rescreen job start, and the CI runs (event=workflow_run). 1,000 newer runs of eve's comments,
+        which cut the list of every run, are in none of those lists, and leave mallory judged by her own runs and the
+        rescreen job's runs of her. (A cut list of CI runs puts her at her limit: spec v61 R1, below.)"""
         eve = [{"id": 5000 - i, "actor": {"login": "eve"}, "event": "issue_comment", "status": "completed",
                 "conclusion": "skipped", "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
         endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
@@ -2147,6 +2154,7 @@ class LimitTest(Runner):
             with self.subTest(own=own):
                 self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(own)], of="actor=mallory")
                 self.runs(rescreen, of="event=workflow_dispatch")
+                self.runs(of="event=workflow_run")
                 rc, out, got = self.run_script(step("trust", TRUST)["run"], EVENT="issues", AUTHOR="mallory",
                                                ACTOR="mallory", NUMBER="7", TASK="", SCREEN="", ACCOUNT="",
                                                COMMENT="", HEAD="", HEAD_REPOSITORY="", REPLY="", RUN_ID="6000",
@@ -2300,32 +2308,91 @@ class LimitTest(Runner):
                                       head_repository=str(FORK_ID), pulls=[])
         self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")), (0, "20", "eve", "limit"), out)
 
-    def test_the_authors_own_runs_take_the_reads_first_and_other_accounts_ci_runs_past_them_do_not_count(self):
-        """Ruling 1 and decision 3: the 2 * OUTSIDE_HOURLY_LIMIT reads of jobs of a trust job go to the author's own
-        runs first, then to the CI runs of other accounts, newest first. Past those reads, a CI run of another account
-        does not count: any account can start CI runs, and a count of the runs that the trust job did not read would
-        let any account put the author at her limit. Bob's OUTSIDE_HOURLY_LIMIT pushes to the head of eve's #20 (screen
-        eve) are newer than eve's own runs, which could not sign in and count for nothing. With
-        2 * OUTSIDE_HOURLY_LIMIT of eve's runs, no read is left for bob's runs, and eve is screened. With one read left,
-        one of bob's runs counts, and eve is screened. With OUTSIDE_HOURLY_LIMIT reads left, bob's runs put eve at her
-        limit."""
+    def test_the_authors_own_runs_take_the_reads_first_and_other_accounts_ci_runs_past_them_put_her_at_her_limit(self):
+        """Ruling 1, decision 3 and spec v61 R1: the 2 * OUTSIDE_HOURLY_LIMIT reads of jobs of a trust job go to the
+        author's own runs first, then to the CI runs of other accounts, newest first. When runs that could count on the
+        author are left past those reads, the count is not known, and the author counts as at her limit (uncounted):
+        no padding of runs moves her past it. Bob's OUTSIDE_HOURLY_LIMIT pushes to the head of eve's #20 (screen eve)
+        are newer than eve's own runs, which could not sign in and count for nothing. With 2 * OUTSIDE_HOURLY_LIMIT of
+        eve's runs, no read is left for bob's runs, and eve is at her limit. With one read left, one of bob's runs
+        counts, the others are not read, and eve is at her limit. With OUTSIDE_HOURLY_LIMIT reads left, bob's runs are
+        all read and put eve at her limit by her count."""
         self.permissions(bob="read")
         self.serve_prs((20, "eve", HEAD))
         budget = 2 * self.LIMIT
         pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(self.LIMIT)]
         screened = [attempt_job("screen", name="screen eve"), attempt_job("review", name="review (screened)")]
         signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen eve")]
-        for own, want, read in ((budget, "screen", 0), (budget - 1, "screen", 1),
-                                (budget - self.LIMIT, "limit", self.LIMIT)):
+        for own, read, uncounted in ((budget, 0, "true"), (budget - 1, 1, "true"),
+                                     (budget - self.LIMIT, self.LIMIT, "")):
             with self.subTest(own=own):
                 mine = [(50 - i, "eve", "issues", "success") for i in range(own)]
                 self.runs(*pushes, *mine, jobs={**{r[0]: screened for r in pushes}, **{r[0]: signed_out for r in mine}})
                 self.forget()
                 rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
                                               head_repository=str(FORK_ID), pulls=[])
-                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
+                self.assertEqual((rc, got.get("account"), got.get("route"), got.get("uncounted")),
+                                 (0, "eve", "limit", uncounted), out)
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
                                  [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in mine + pushes[:read]])
+
+    def test_ci_runs_of_accounts_that_own_no_head_repository_of_the_authors_pull_requests_cost_no_read(self):
+        """Spec v68 R1: a CI run of another account can count on the author only when that account owns the head
+        repository of an open pull request of hers (the open pull requests, read once). mallory's
+        2 * OUTSIDE_HOURLY_LIMIT + 1 pushes to her own #8, from her own fork, and as many CI runs of alice, who has
+        write access, cannot count on eve: none of their jobs is read, no access of theirs is asked, and eve's next
+        comment on her #7, whose head repository is bob's fork, is screened."""
+        self.serve_prs((7, "eve", HEAD), (8, "mallory", OTHER_HEAD, 666, False, "main", BRANCH, "mallory"))
+        others = [(90 - i, "mallory", "workflow_run", "success", f"review {OTHER_HEAD} by mallory")
+                  for i in range(2 * self.LIMIT + 1)]
+        others += [(70 - i, "alice", "workflow_run", "success", f"review {OTHER_HEAD} by alice")
+                   for i in range(2 * self.LIMIT + 1)]
+        self.runs(*others, jobs={r[0]: [attempt_job("screen", name=f"screen {r[1]}"),
+                                        attempt_job("review", name="review (screened)")] for r in others})
+        self.forget()
+        rc, out, got = self.trust("eve", "eve", event="issue_comment")
+        self.assertEqual((rc, got.get("account"), got.get("route"), got.get("uncounted")),
+                         (0, "eve", "screen", ""), out)
+        self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], [])
+        self.assertEqual(self.calls().count(f"repos/{REPO}/pulls"), 1)
+        self.assertFalse({f"repos/{REPO}/collaborators/{login}/permission" for login in ("mallory", "alice")}
+                         & set(self.calls()))
+
+    def test_the_owner_of_the_head_repository_of_the_authors_pull_request_puts_her_at_her_limit_past_the_budget(self):
+        """Spec v68 R1: bob owns the head repository of eve's #7, so his CI runs could count on her and are read,
+        within the 2 * OUTSIDE_HOURLY_LIMIT reads of a trust job. 2 * OUTSIDE_HOURLY_LIMIT of his pushes whose screens
+        could not sign in count for nothing, and leave eve's next comment screened. One more is past the reads: the
+        count is not known, and eve counts as at her limit (uncounted)."""
+        self.permissions(bob="read")
+        self.serve_prs((7, "eve", HEAD))
+        budget = 2 * self.LIMIT
+        signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen eve")]
+        for n, want, uncounted in ((budget, "screen", ""), (budget + 1, "limit", "true")):
+            with self.subTest(pushes=n):
+                pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(n)]
+                self.runs(*pushes, jobs={r[0]: signed_out for r in pushes})
+                self.forget()
+                rc, out, got = self.trust("eve", "eve", event="issue_comment")
+                self.assertEqual((rc, got.get("account"), got.get("route"), got.get("uncounted")),
+                                 (0, "eve", want, uncounted), out)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
+                                 [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in pushes[:budget]])
+
+    def test_open_pull_requests_that_cannot_be_read_hold_the_author_at_her_limit(self):
+        """Spec v68 R1: without the open pull requests, the trust job cannot tell which CI runs of other accounts can
+        count on the author, so a CI run of another account in the hour puts her at her limit (uncounted), with no job
+        read. With no CI run of another account in the hour, the open pull requests are not read, and she is
+        screened."""
+        push = (90, "mallory", "workflow_run", "success", f"review {OTHER_HEAD} by mallory")
+        for others, want, uncounted in (([push], "limit", "true"), ([], "screen", "")):
+            with self.subTest(others=len(others)):
+                self.runs(*others)
+                self.forget()
+                rc, out, got = self.trust("eve", "eve", event="issue_comment")   # no open pull requests: GitHub's 404
+                self.assertEqual((rc, got.get("account"), got.get("route"), got.get("uncounted")),
+                                 (0, "eve", want, uncounted), out)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], [])
+                self.assertEqual(self.calls().count(f"repos/{REPO}/pulls"), len(others))
 
     def test_runs_that_cannot_count_on_the_author_leave_the_reads_for_another_accounts_pushes(self):
         """Ruling 1: a limit counts against the reviewed pull request's author, and bob does not start screened runs
@@ -2394,18 +2461,19 @@ class LimitTest(Runner):
                                               head_repository=str(FORK_ID), pulls=[])
                 self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
 
-    def test_a_list_of_other_accounts_ci_runs_that_github_cuts_is_read_as_far_as_it_goes(self):
+    def test_a_list_of_other_accounts_ci_runs_that_github_cuts_puts_the_author_at_her_limit(self):
         """GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count says how many
-        match. A cut list of the author's own runs puts her at her limit (above). A cut list of the CI runs of other
-        accounts does not: any account can start CI runs. The trust job reads the runs that such a list gives:
-        OUTSIDE_HOURLY_LIMIT - 1 of bob's pushes to the head of eve's #20 (screen eve) leave her under her limit, and
-        OUTSIDE_HOURLY_LIMIT put her at it."""
+        match. Spec v61 R1: the runs that a cut list of the CI runs of other accounts leaves out can count on the
+        author, so the count is not known, and she counts as at her limit (uncounted), as for a cut list of her own
+        runs (above): no padding of CI runs moves her past it, and no job is read for a count that cannot change the
+        route. bob owns the head repository of eve's #20 (spec v68). With none, OUTSIDE_HOURLY_LIMIT - 1 or
+        OUTSIDE_HOURLY_LIMIT of his pushes to that head (screen eve) in such a list, eve is at her limit."""
         self.permissions(bob="read")
         self.serve_prs((20, "eve", HEAD))
         screened = [attempt_job("screen", name="screen eve"), attempt_job("review", name="review (screened)")]
         endpoint = f"repos/{REPO}/actions/workflows/review.yml/runs"
         path = os.path.join(self.api, (endpoint + ".event=workflow_run").replace("/", "_") + ".json")
-        for n, want in ((self.LIMIT - 1, "screen"), (self.LIMIT, "limit")):
+        for n in (0, self.LIMIT - 1, self.LIMIT):
             with self.subTest(pushes=n):
                 pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(n)]
                 self.runs(*pushes, jobs={r[0]: screened for r in pushes}, of="event=workflow_run")
@@ -2414,16 +2482,19 @@ class LimitTest(Runner):
                 with open(path, "w") as f:
                     json.dump(dict(listed, total_count=1000 + n), f)
                 self.serve(endpoint, {"workflow_runs": []})
+                self.forget()
                 rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
                                               head_repository=str(FORK_ID), pulls=[])
-                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
+                self.assertEqual((rc, got.get("account"), got.get("route"), got.get("uncounted")),
+                                 (0, "eve", "limit", "true"), out)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], [])
 
     def test_runs_that_the_trust_job_stopped_are_read_within_the_budget(self):
         """Decision 1 and decision 3: a run of mallory's event that the trust job stopped (a CI run of a pull request
         into another branch) counts for nothing, and only its jobs show that: each costs a read, within the
-        2 * OUTSIDE_HOURLY_LIMIT reads of a trust job, and each one past them counts, as it may.
-        OUTSIDE_HOURLY_LIMIT + 1 such runs leave her under her limit; 3 * OUTSIDE_HOURLY_LIMIT put her at it after
-        2 * OUTSIDE_HOURLY_LIMIT reads."""
+        2 * OUTSIDE_HOURLY_LIMIT reads of a trust job. OUTSIDE_HOURLY_LIMIT + 1 such runs leave her under her limit;
+        3 * OUTSIDE_HOURLY_LIMIT put her at it after 2 * OUTSIDE_HOURLY_LIMIT reads, as runs that could count are left
+        past them (spec v61 R1)."""
         stopped = [{"name": "trust", "status": "completed", "conclusion": "success"}] + [
             {"name": n, "status": "completed", "conclusion": "skipped"}
             for n in ("gather", "screen", "review", "post", "comment", "hold")]
@@ -2458,6 +2529,8 @@ class LimitTest(Runner):
                 for i in range(self.LIMIT - 1)]
         self.runs(*runs, (20, "mallory", "issues", "success"))
         self.assertEqual(self.route("mallory", "mallory"), "limit")
+        # No open pull request of mallory's has a head repository of eve's, so eve's CI run cannot count on her.
+        self.serve_prs()
         self.runs(*runs, (20, "eve", "workflow_dispatch", "success", "rescreen #9 of eve"),
                   (21, "eve", "workflow_run", "success", "rescreen #9 of mallory"),
                   (22, "alice", "workflow_dispatch", "success", "rescreen #9 of xmallory"),
@@ -2691,7 +2764,8 @@ class Holding(Runner):
 
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
                  uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
-                 labels=("review-held",), comment="", head="", total=None, run_jobs=None, account=None, author=None):
+                 labels=("review-held",), comment="", head="", total=None, run_jobs=None, account=None, author=None,
+                 unread=False):
         """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
         capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
         before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
@@ -2700,7 +2774,8 @@ class Holding(Runner):
         lists them (attempt_job), in place of the ones capped and uncounted give, or False when GitHub cannot list
         them; comment: the comment that an answer answers; head: the head that the trust job gave; account: the account
         whose limit the run counts on, as the trust job gave it (outsider when None); author: the item's author, as the
-        API gives it (none when None). posts are the calls that post or edit the hold comment, and body the first."""
+        API gives it (none when None); unread: the trust job's output uncounted, true when it did not read every run
+        that could count on the account. posts are the calls that post or edit the hold comment, and body the first."""
         n = number
         self.checkout()
         self.serve(f"repos/{REPO}/issues/{n}", {"number": n, **({"pull_request": {}} if kind == "pr" else {}),
@@ -2732,6 +2807,7 @@ class Holding(Runner):
         open(summary, "w").close()
         rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER=str(n), TASK=task, ROUTE=route,
                                      OUTSIDER=outsider, ACCOUNT=outsider if account is None else account,
+                                     UNCOUNTED="true" if unread else "",
                                      REVIEW=review, ORIGIN=origin, TRIES=tries, COMMENT=comment, HEAD=head,
                                      RUN_ID="100",
                                      RUN_ATTEMPT="1", HELD_LABEL=WF["env"]["HELD_LABEL"],
@@ -2817,7 +2893,7 @@ class HoldTest(Holding):
                            r"<!-- ")
     AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
     # The limit as a limit hold gives it: the count at which the workflow holds, and no promise of how many screens an
-    # hour can have (the trust job counts other accounts' CI runs on an author within its read budget alone).
+    # hour an account had (a trust job that did not read every run that could count on it holds it at the limit too).
     LIMIT_WORDS = ("The workflow screens the pull requests, issues, pushes and comments of such an account before it "
                    "reviews or answers them. The limit for one such account is "
                    f"{WF['env']['OUTSIDE_HOURLY_LIMIT']} screens in the last hour.")
@@ -2858,6 +2934,40 @@ class HoldTest(Holding):
                 self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit at that "
                               "event, the workflow holds this pull request again.", body)
                 self.assertNotIn("no write access", body)
+                self.assertNotRegex(body, r"\b(mallory|eve)\b")
+                self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+
+    def test_a_hold_at_the_limit_for_runs_that_the_trust_job_did_not_read_does_not_say_how_many_screens_it_had(self):
+        """Spec v61 R1: when the trust job's read budget is used up before the count is known, or GitHub does not list
+        every run that could count, the account counts as at its limit (uncounted). It can have had fewer screens than
+        the limit: the hold says that the workflow did not read all of those runs, and not that the account is at the
+        limit. Its ending and its marker are those of any limit hold, so the rescreen pass takes it again."""
+        limit = self.LIMIT_WORDS
+        for outsider, account, words, who in (
+                ("mallory", "mallory", "The author of this pull request has an account without write access to this "
+                                       f"repository. {limit} The workflow did not read all of its runs of the last "
+                                       "hour that can count toward the limit of this account. So the workflow counts "
+                                       "this account as at that limit.", "this account"),
+                ("eve", "mallory", "The latest event of this pull request comes from an account without write access "
+                                   "to this repository. For this event, the workflow uses the limit of the author of "
+                                   "this pull request, who also has an account without write access. "
+                                   f"{limit} The workflow did not read all of its runs of the last hour that can count "
+                                   "toward the limit of the author. So the workflow counts the account of the author "
+                                   "as at that limit.", "the account of the author"),
+                ("eve", "eve", "The latest event of this pull request comes from an account without write access to "
+                               f"this repository. {limit} The workflow did not read all of its runs of the last hour "
+                               "that can count toward the limit of this account. So the workflow counts this "
+                               "account as at that limit.", "this account")):
+            with self.subTest(outsider=outsider, account=account):
+                self.tearDown()
+                self.setUp()
+                _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory",
+                                                unread=True)
+                self.assertRegex(body, self.AGAIN_LIMIT)
+                self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit at that "
+                              "event, the workflow holds this pull request again.", body)
+                self.assertNotIn("is at that limit", body)
+                self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 -->"), body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
 
@@ -3079,8 +3189,8 @@ class HoldTest(Holding):
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
-        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "ACCOUNT", "REVIEW",
-                                  "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID", "RUN_ATTEMPT"})
+        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "ACCOUNT", "UNCOUNTED",
+                                  "REVIEW", "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID", "RUN_ATTEMPT"})
         self.assertEqual(e["REVIEW"], "${{ needs.review.result }}")
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
