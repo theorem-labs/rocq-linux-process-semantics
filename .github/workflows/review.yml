@@ -18,8 +18,9 @@
 # runs of this file that the open items are due (below); it holds no identity and no secret, and writes nothing but
 # those runs. Each event of a pull request from a fork on which CI runs (opened, synchronize and reopened) starts it
 # too, through .github/workflows/screen-start.yml, the one workflow of this repository that runs on
-# pull_request_target: it holds actions: write alone, and only starts the pass, which then takes the open items only
-# when GitHub holds a run of the head of that pull request.
+# pull_request_target: it holds actions: write alone, and only starts the pass with the number of that pull request.
+# That run of the pass does the work of that pull request alone: its merge conflict, or the screen and the approval of
+# the runs of its head that GitHub holds.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -81,10 +82,9 @@
 #   hold comment says that it is not tried again; a run that ended at a failed sign-in counts no try. The review, the
 #   answer, the draft and the approval of an item each have their own hold comment, so that a hold of one never takes
 #   the place of the hold of another. The rescreen pass (rescreen.yml) runs at each completed CI run, each push to
-#   main, each new or reopened issue, each event of a pull request from a fork on which CI runs when GitHub holds a
-#   run of its head (screen-start.yml starts it for such an event), and by hand. It lists the open pull requests and
-#   issues labelled review-held, and for each of those works whose newest hold comment is such a hold, not the
-#   screen's, and is over an hour old, it starts this workflow with the task that the marker of the hold names: the
+#   main, each new or reopened issue, and by hand. It lists the open pull requests and issues labelled review-held,
+#   and for each of those works whose newest hold comment is such a hold, not the screen's, and is over an hour old,
+#   it starts this workflow with the task that the marker of the hold names: the
 #   answer of the comment that it names (-f task=answer
 #   -f comment=<id>), the draft, the approval, or else -f task=rescreen, with the account the hold names
 #   (-f account=<login>). A run that GitHub holds starts no workflow_run, so a held item waits for the next of those
@@ -99,7 +99,9 @@
 #   has none stored, the approval of a first-time contributor's held runs, the catch-up and the review of a head that
 #   no run reviewed, the comment on a merge conflict, a relabel when a conflict went away or the import's paths
 #   changed, the App's writes again when the post job could not make them, and a stop when the work of an item reached
-#   its bound of tries (rescreen.yml).
+#   its bound of tries (rescreen.yml). Each event of a pull request from a fork on which CI runs starts a run of the
+#   pass with the number of that pull request (screen-start.yml). That run takes the conflict of that pull request, or
+#   the approval of the runs of its head that GitHub holds and the hold of that approval, and no other work.
 # - An account with write access can start a run by hand for any pull request or issue, with a task (-f task=<task>,
 #   review when none is given) and, for a review, with the screen first (-f screen=true):
 #
@@ -1136,18 +1138,20 @@ jobs:
           held_as() {
             awk -v w="$1" '$1 == w { sub(/^[^ ]+ /, ""); print }' <<< "$hold"
           }
-          # due_held: the work that each hold of #number names, labelled review-held, once the hold is over an hour old:
-          # the newest hold of its review, of its answer, of its draft and of its approval, each for itself (held_work),
-          # so that the hold of one work never keeps the rescreen pass from the hold of another.
+          # due_held [<work>]: the work that each hold of #number names, labelled review-held, once the hold is over an
+          # hour old: the newest hold of its review, of its answer, of its draft and of its approval, each for itself
+          # (held_work), so that the hold of one work never keeps the rescreen pass from the hold of another. With
+          # <work>, the hold of that work alone.
           due_held() {
             local work h_at h_origin h_task h_comment tried=""
             for work in review answer draft approve; do
+              [[ -z ${1:-} || $work == "$1" ]] || continue
               read -r h_at h_origin _ _ h_task h_comment _ <<< "$(held_as "$work")"
               [[ -n ${h_origin:-} && $h_origin != - ]] || continue
               tried=1
               held_work || return 1
             done
-            [ -n "$tried" ] \
+            [ -n "$tried" ] || [ -n "${1:-}" ] \
               || echo "#$number: no hold that is tried again (the screen held it, or its tries are used up)."
           }
           # held_work: the work of the hold that due_held read (h_at, h_origin, h_task, h_comment), once that hold is
@@ -1679,14 +1683,19 @@ jobs:
             owe "${at:-$opened}" relabel "" "$head" - \
               "the value of REPO_PAIRS_IMPORT_PATHS recorded for $head is not the value now"
           }
-          # consider: the runs that #number is due, by each reason above (due_*), in order. A writer's pull request
-          # gets only the work that its holds name and the review of a head that a run left with no review. A read
-          # that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the head
-          # (taken), no later one takes it in this run. hold is the newest hold of each work of the item (holds).
+          # consider [<merge>]: the runs that #number is due, by each reason above (due_*), in order. A writer's pull
+          # request gets only the work that its holds name and the review of a head that a run left with no review. A
+          # read that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the
+          # head (taken), no later one takes it in this run. hold is the newest hold of each work of the item (holds).
+          # <merge> is the mergeable_state of the pull request #number that a run of the pass with a number read
+          # (rescreen.yml). With it, consider gives only the work that such a run does, for an outside pull request
+          # alone: the conflict of its head when <merge> is dirty (due_conflict), else the approval of the runs of its
+          # head that GitHub holds (due_approve, after due_held for the hold of its approval alone).
+          # shellcheck disable=SC2120 # review.yml's trust job passes no argument, a run with a number passes one
           consider() {
             local head="" outsider=false limited="" hold=""
             local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
-            local review=none held=false conflicted=false caught=false head_read="" merge="" ci="" ci_read=""
+            local review=none held=false conflicted=false caught=false head_read="" merge=${1:-} ci="" ci_read=""
             if [ "$draft" != false ]; then
               echo "#$number: a draft, of which the trust job takes no run."
               return 0
@@ -1715,6 +1724,20 @@ jobs:
             [ "$labelled" = true ] || [ "$outsider" = true ] || [ "$kind" = pr ] || return 0
             if [ "$labelled" = true ] || [ "$outsider" = true ]; then
               hold=$(holds "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
+            fi
+            if (( $# > 0 )); then
+              if [ "$outsider" = false ]; then
+                echo "#$number: its author has write access, so a run of the pass with a number takes no work of it."
+                return 0
+              fi
+              if [ "$merge" = dirty ]; then
+                head_of || return 1
+                due_conflict
+                return
+              fi
+              if [ "$labelled" = true ]; then due_held approve || return 1; fi
+              due_approve
+              return
             fi
             if [ "$labelled" = true ]; then due_held || return 1; fi
             if [ "$outsider" = false ]; then
@@ -4796,12 +4819,15 @@ jobs:
           # run after that, which an event starts. Such a hold says that first, then that the author does not need to do
           # anything, then why. A limit hold ends with what happens if the account is still at its limit; the other
           # holds end with only that a new hold replaces this comment, since a rescreen can be held for another cause
-          # than theirs. The events are those on which the pass takes the open items (the top of rescreen.yml): an
-          # event of a pull request from a fork starts screen-start.yml only when CI runs on it (opened, synchronize and
-          # reopened), and the pass then takes the open items only when GitHub holds a run of its head.
+          # than theirs. The events are those on which the pass takes the open items (the top of rescreen.yml). The hold
+          # of an approval has one more: a push to its own pull request, or a reopen, on which CI runs, starts
+          # screen-start.yml. Its run of the pass, with the number of that pull request, takes the hold of that
+          # approval when GitHub holds a run of the head. That run takes no other hold, and no other item.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
           events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."
-          events+=$'\n'"- Someone opens, reopens or pushes to a pull request from a fork, and its checks wait for approval."$'\n\n'
+          [ "$TASK" != approve ] \
+            || events+=$'\n'"- Someone pushes to this pull request or reopens it, and its checks wait for approval."
+          events+=$'\n\n'
           again="The workflow screens $what again at the first of these events after $next:${events}You do not need to do anything."$'\n\n'
           again_other="If the workflow holds $what again, this comment says why."
           # The account that the screen was for (OUTSIDER): the item's author, or else the account of the latest event.

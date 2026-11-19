@@ -1,8 +1,8 @@
 # screen-start.yml: at each event of a pull request from a fork on which CI runs (opened, synchronize and reopened,
 # below), it starts the rescreen pass (.github/workflows/rescreen.yml) on main with the number of the pull request, and
-# writes nothing else. The pass first reads the runs of the head of that pull request: when GitHub holds none of them,
-# the pass ends there and starts nothing. Else it decides by its own rules which runs of review.yml the open items are
-# due (rescreen.yml lists the reasons).
+# writes nothing else. That run of the pass does the work of that pull request alone, by the rules of the pass
+# (rescreen.yml): the conflict run when the pull request has a merge conflict, else the screen and the approval of the
+# runs of its head that GitHub holds, else nothing.
 #
 # Why pull_request_target: GitHub holds the CI run (pull_request) of a first-time contributor's pull request for a
 # person's approval, and a run that GitHub holds starts no workflow_run. Without this file, such a pull request waits
@@ -31,25 +31,27 @@
 # event, which GitHub writes at the event. So the runs of an earlier event of the same head commit do not end the wait:
 # a reopen, or a new pull request of a commit that has runs, lists them at once. With no such time, any pull_request
 # run of the head commit ends the wait. A read that fails counts as no run listed. GitHub starts no CI run for a pull
-# request with a merge conflict: the wait then ends at the 2 minutes, as R14 says. Then the step starts the pass and
-# exits 0. When GitHub refuses that start, the step fails. That is right: the work of the event then waits for the next
-# run of the pass, which the next of its events starts (rescreen.yml lists them).
+# request with a merge conflict: the wait then ends at the 2 minutes, as R14 says, and the run of the pass that the step
+# starts takes the conflict. Then the step exits 0. When GitHub refuses the start of the pass, the step fails. That is
+# right: the work of the event then waits for the next run of the pass (rescreen.yml lists its events).
 #
 # A burst: a newer event of the same pull request cancels the run of this file that waits (the concurrency group of
 # the pull request's number). So in a burst of events (an author who pushes many times), each run that a newer event
 # cancelled while it waited starts nothing, and the newest event starts the pass. A run of the pass with a number
-# whose head has no run that GitHub holds reads that pull request and the held runs of its head, and ends: a burst
-# costs a few calls of the API for each event, and cannot use up the token's 1,000 requests an hour. A run of the pass
-# that goes on reads every open item again from the API, so that one start does the work of the events before it. The
-# runs of rescreen.yml queue in their own group, and none of them is cancelled.
+# reads that pull request and the held runs of its head, and ends there when it has no merge conflict and no held run.
+# With a held run, it reads the runs of review.yml of the last hour, and starts no approval, with no more reads, when
+# the author is at OUTSIDE_HOURLY_LIMIT or a run of the pull request has not finished. The runs of the pass with the
+# number of one pull request share a group of their own, in which a newer run takes the place of the one that waits.
+# So a burst costs a few calls of the API for each event, and cannot use up the token's 1,000 requests an hour. The
+# runs of the pass with no number queue in another group, and none of them is cancelled.
 #
 # No loop: review.yml's jobs write their labels, comments and reviews with github.token, and an event that
 # github.token makes starts no run of this file (GitHub's docs, "Events that trigger workflows": its workflow_dispatch
 # and repository_dispatch start runs, and so does a pull request that it opens or pushes to, which review.yml never
 # does). The OSS Verify App's reopen of a catch-up is an event of the pull request, and starts this file again: the
-# pass decides it by its own rules, which give each head one catch-up. So an event starts no loop of screens. Its
-# cost: one job of up to 2 minutes for each event, on a standard runner, whose minutes GitHub does not bill in a
-# public repository.
+# run of the pass with the number of the pull request takes only its conflict or the approval of its held runs, and
+# starts no catch-up. So an event starts no loop of screens. Its cost: one job of up to 2 minutes for each event, on a
+# standard runner, whose minutes GitHub does not bill in a public repository.
 name: screen-start
 
 on:

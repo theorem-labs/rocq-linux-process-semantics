@@ -6,21 +6,23 @@
 # or reopened issue, each event of a pull request from a fork on which CI runs (opened, synchronize and reopened:
 # .github/workflows/screen-start.yml starts it on main by workflow_dispatch, with the number of the pull request), and
 # a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics, or "Run workflow" on this
-# workflow's page in the Actions tab). A run with a number first reads that pull request and the runs of its head that
-# GitHub holds, and when there is none, it ends there and starts nothing (the step below says why). Each other run
-# takes the items that wait, oldest reason first and under the limits below, and starts one workflow_dispatch run of
-# review.yml for each item and task. The runs of this file queue in one concurrency group, so that two of them never
-# start the same item.
+# workflow's page in the Actions tab). A run with a number does the work of that pull request alone (the step below
+# says how): the conflict run when it has a merge conflict, else the task approve (the screen of its head, then the
+# approval of the runs of that head that GitHub holds) under the limits below, else nothing. Each other run takes every
+# item that waits, oldest reason first and under the limits below, and starts one workflow_dispatch run of review.yml
+# for each item and task. The runs with no number queue in one concurrency group, so that two of them never start the
+# same item. The runs with the number of one pull request share a group of their own (below).
 #
 # A run that GitHub holds starts no workflow_run: GitHub holds the CI run of a first-time contributor's pull request
 # for a person's approval, and such a held run starts no run of a workflow that waits for it (on
 # theorem-labs/oss-verify, the held Tests runs 44140189670 and 43931972100 started no run of the workflow that waits
 # for Tests, read 2026-11-18). GitHub holds no run of pull_request_target (GitHub's docs, "Managing GitHub Actions
 # settings for a repository", read 2026-11-19), so screen-start.yml starts this pass at each such event of a pull
-# request from a fork, once GitHub lists a CI run of that event, held or not, or after 2 minutes. The pass then takes
-# the open items only when GitHub holds a run of that head. Beyond that, an item that waits, a held one among them,
-# waits for the next of these events in this repository: a CI run that ends, a push to main, a new or reopened issue,
-# an event of a pull request from a fork on which CI runs, when GitHub holds a run of its head, or a run by hand.
+# request from a fork, once GitHub lists a CI run of that event, held or not, or after 2 minutes. That run of the pass
+# takes the approval of that pull request when GitHub holds a run of its head, and its conflict run when it has a merge
+# conflict, for which GitHub starts no CI run. Each other item that waits, a held one among them, and each other work
+# of that pull request, waits for the next run with no number: a CI run that ends, a push to main, a new or reopened
+# issue, or a run by hand.
 #
 # Why a file of its own: the OSSV controller wakes on each completed run of review.yml and reads its artifact, so a
 # pass inside review.yml would wake it for nothing at each event.
@@ -47,20 +49,25 @@ on:
   issues:
     types: [opened, reopened]
   # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork on which CI
-  # runs, with the number of the pull request.
+  # runs, with the number of the pull request: such a run does the work of that pull request alone.
   workflow_dispatch:
     inputs:
       number:
-        description: A pull request; the pass then runs only when GitHub holds a run of its head (screen-start.yml sets it)
+        description: >-
+          A pull request, which screen-start.yml gives. The run then does the work of that pull request alone, its
+          merge conflict or the screen and approval of the runs of its head that GitHub holds.
         required: false
         type: number
 
 permissions: {}
 
-# One run at a time, so that two runs cannot start the same item, and none cancelled: GitHub keeps every pending one
-# (queue: max).
+# Two groups, by the input number. A run with no number (each event but the start that screen-start.yml makes, and a
+# run by hand with no number) is in the group rescreen: one at a time, so that two such runs cannot start the same item,
+# and none cancelled (queue: max keeps up to 100 that wait). A run with a number is in the group rescreen-<n> of its
+# job, by the number of the pull request (the job below), and in a group of its own here, by its run id. So it never
+# waits for a run with no number, and never cancels one.
 concurrency:
-  group: rescreen
+  group: ${{ inputs.number && github.run_id || 'rescreen' }}
   cancel-in-progress: false
   queue: max
 
@@ -75,7 +82,9 @@ env:
 
 jobs:
   # The rescreen pass, in the public repository alone. At each run it starts, on main, the runs of review.yml that the
-  # open items are due, at most one for each item and task (-f task=<task>, the top of review.yml):
+  # open items are due, at most one for each item and task (-f task=<task>, the top of review.yml). A run with a number
+  # takes its pull request alone, by the reasons conflict and approve below and the hold of its approval (the step says
+  # how):
   #   held      the work that each hold names, once the hold is over an hour old: a hold at OUTSIDE_HOURLY_LIMIT, of a
   #             screened review stopped at SCREENED_HOURLY_CAP, or of a screened review, answer or draft that failed or
   #             ran out of time, under REVIEW_TRIES. The marker of the hold names the task: answer (with the comment
@@ -159,12 +168,15 @@ jobs:
   # the last 8 days by their names: the runs by hand one day at a time, as the App's retry can start 24 a day for each
   # item, and the runs of workflow_run, issue_comment and issues once each. GitHub gives at most 1,000 runs for a list
   # with created, and its total_count then says that more match: such a list is read again a day at a time, a day an
-  # hour at a time, and a list of one hour that GitHub cut fails this run. It reads the closed pull requests that are
-  # not merged in one GraphQL query, with the newest close of each. It reads the jobs only of the runs that decide an
-  # item, the runs that GitHub holds for a person's approval once for all heads (each head's own when GitHub cut that
-  # list at 1,000 runs), the head's CI runs only for a catch-up or a review (as if one has not finished, when GitHub cut
-  # that list), and the head's check runs only for the variable. Oldest reason first, each account gets at most
-  # OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or an approval whose name
+  # hour at a time, and a list of one hour that GitHub cut fails this run. A run with a number reads the runs by hand
+  # of the last hour first, and those of the 8 days only for an approval under the limit (the step). A run with no
+  # number reads the closed pull requests that are not merged in one GraphQL query, with the newest close of each, and
+  # a run with a number does not. It reads the jobs only of the runs that decide an item, the runs that GitHub holds
+  # for a person's approval once for all heads (each head's own when GitHub cut that list at 1,000 runs, and the runs
+  # of its head alone in a run with a number), the head's CI runs only for a catch-up or a review (as if one has not
+  # finished, when GitHub cut that list), and the head's check runs only for the variable. Oldest reason first, each
+  # account gets at most OUTSIDE_HOURLY_LIMIT runs that screen in an hour (a rescreen, a review, an answer, a draft or
+  # an approval whose name
   # ends with the account), less those that it had in the last hour, as the trust job counts them. The trust job of
   # each run counts again (earlier, in review.yml), with the account's own events, and with the CI runs of other
   # accounts whose screen job names the account. It reads the jobs only of the runs that could count on the account (a
@@ -206,6 +218,12 @@ jobs:
       && github.repository == 'theorem-labs/rocq-linux-process-semantics' && github.repository_id == 1425819621
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # A run with a number: one at a time for each pull request. A newer run takes the place of the one that waits
+    # (GitHub's default, with no queue), and none in progress is cancelled, so that a burst of events of one pull
+    # request starts few runs. A run with no number is in a group of its own here, by its run id (the top of this file).
+    concurrency:
+      group: ${{ inputs.number && format('rescreen-{0}', inputs.number) || github.run_id }}
+      cancel-in-progress: false
     permissions: {actions: write, contents: read, issues: read, pull-requests: read, checks: read}
     steps:
       - name: Start the runs that the open items are due
@@ -216,8 +234,9 @@ jobs:
           # read them: the relabel of each head whose recorded value is not this one. An empty value is no variable:
           # GitHub gives an empty value for a variable that is not set.
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
-          # The input number of a run by hand: the pull request whose event started screen-start.yml, which passes it.
-          # Empty for a run with no number, and for a run of any other event, which has no inputs.
+          # The input number of a run of workflow_dispatch: the pull request whose event started screen-start.yml,
+          # which passes it, or one that a person gives in a run by hand. Empty for a run with no number, and for a
+          # run of any other event, which has no inputs.
           NUMBER: ${{ inputs.number }}
         run: |
           set -euo pipefail
@@ -234,47 +253,68 @@ jobs:
             exit 0
           fi
           # A run with a number: screen-start.yml starts it at each event of a pull request from a fork on which CI
-          # runs. Such an event can make a run that GitHub holds, which starts no workflow_run: only a run of this pass
-          # starts its approval (approve). The other work of the pass waits for the next of its other events (the top
-          # of this file). So when GitHub holds no run of the head of that pull request from its head repository and
-          # head branch (the runs that held_at gives, which the post job approves), the run ends after that read and
-          # starts nothing. A burst of events then costs at most 2 calls of the API each, and one more for each 100
-          # runs of that commit past the first 100 that GitHub holds (R14). A head repository that is gone has no such
-          # run. A number that is not a number, or a pull request that cannot be read, ends the run with a failure. A
-          # pull request that is not open ends it too. A run with no number takes every open item.
+          # runs, and a person can start one by hand. It does the work of that pull request alone, and only the work
+          # that no run of review.yml starts at such an event. GitHub starts no CI run for a pull request with a merge
+          # conflict: the conflict gets the task conflict. A run that GitHub holds starts no workflow_run: a held head
+          # gets the task approve, under the limits of the pass. It never takes another item, nor other work of this
+          # pull request: a run with no number takes them (the top of this file). First it reads the pull request, with
+          # its mergeable_state. With no merge conflict, it reads the runs of its head that GitHub holds from its head
+          # repository and head branch (the runs that held_at gives, which the post job approves). With none of them,
+          # the run ends after that read and starts nothing. So a burst of events costs at most 2 calls of the API
+          # each, and one more for each 100 runs of that commit past the first 100 that GitHub holds (R14). A head
+          # repository that is gone has no such run. While GitHub has not computed the merge state, the pull request
+          # has no merge conflict here: a later run takes its conflict. A number that is not a whole number above 0,
+          # or a pull request that cannot be read, ends the run with a failure. A pull request that is not open, or
+          # whose author GitHub does not name, ends it too. The rest of this run is at the end of the step, after the
+          # functions that it shares with a run with no number.
           if [ -n "${NUMBER:-}" ]; then
-            [[ $NUMBER =~ ^[1-9][0-9]*$ ]] \
-              || { echo "::error::The input number is not a number, so the rescreen pass starts no run."; exit 1; }
-            pull=$(gh api "repos/$REPO/pulls/$NUMBER" \
-              --jq '"\(.state // "-") \(.head.sha // "-") \(.head.repo.id // 0) \(.head.ref // "-")"') \
+            [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::The input number is not a whole number above 0, so the" \
+              "rescreen pass starts no run."; exit 1; }
+            # "<state> <head> <head repository id, 0 when it is gone> <head branch> <base> <draft> <merge> <opened>
+            # <labelled> <author>": merge is the mergeable_state, or null while GitHub has not computed it (merge_of),
+            # and the other values are those that read_pulls and item_row give.
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            pull=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '[.state // "-", .head.sha // "-",
+              (.head.repo.id // 0 | tostring), .head.ref // "-", .base.ref // "-", (.draft // false | tostring),
+              (if .mergeable == null then "null" else .mergeable_state // "unknown" end), .created_at // "-",
+              (any(.labels[]?; .name == $ENV.HELD_LABEL) | tostring), .user.login // ""] | join(" ")') \
               || { echo "::error::pull request #$NUMBER could not be read, so the rescreen pass starts no run."; exit 1; }
-            read -r state sha repository branch <<< "$pull"
+            read -r state sha repository branch base draft merge opened labelled author <<< "$pull"
             if [ "$state" != open ]; then
               echo "#$NUMBER is not an open pull request, so the rescreen pass starts no run."
               exit 0
             fi
             [[ $sha =~ ^[0-9a-f]{40}$ ]] \
               || { echo "::error::pull request #$NUMBER names no head commit, so the rescreen pass starts no run."; exit 1; }
-            if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
-              echo "#$NUMBER: the head repository of $sha is gone, so the workflow approves no run of it, and the" \
-                "rescreen pass starts no run."
+            if [ -z "${author:-}" ]; then
+              echo "#$NUMBER: GitHub names no author of it, so the rescreen pass starts no run."
               exit 0
             fi
-            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            held=$(SHA=$sha REPOSITORY=$repository BRANCH=$branch gh api --method GET --paginate \
-              "repos/$REPO/actions/runs" -f head_sha="$sha" -f status=action_required -f event=pull_request \
-              -F per_page=100 --jq '.workflow_runs[]
-                | select((.status == "action_required" or .conclusion == "action_required")
-                         and .head_sha == $ENV.SHA and .event == "pull_request"
-                         and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
-                         and .head_branch == $ENV.BRANCH) | .id') \
-              || { echo "::error::the held runs of $sha could not be read, so the rescreen pass starts no run."; exit 1; }
-            if [ -z "$held" ]; then
-              echo "#$NUMBER: GitHub holds no run of its head $sha from its head repository and branch, so the" \
-                "rescreen pass starts no run."
-              exit 0
+            # The held runs of the head, as held_of gives them: "<head> <repository> <branch> <created>".
+            head_held=""
+            if [ "$merge" != dirty ]; then
+              if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
+                echo "#$NUMBER: the head repository of $sha is gone, so the workflow approves no run of it." \
+                  "GitHub does not say that it has a merge conflict, so the rescreen pass starts no run."
+                exit 0
+              fi
+              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+              head_held=$(SHA=$sha REPOSITORY=$repository BRANCH=$branch gh api --method GET --paginate \
+                "repos/$REPO/actions/runs" -f head_sha="$sha" -f status=action_required -f event=pull_request \
+                -F per_page=100 --jq '.workflow_runs[]
+                  | select((.status == "action_required" or .conclusion == "action_required")
+                           and .head_sha == $ENV.SHA and .event == "pull_request"
+                           and ((.head_repository.id // 0) | tostring) == $ENV.REPOSITORY
+                           and .head_branch == $ENV.BRANCH)
+                  | "\(.head_sha) \(.head_repository.id // 0) \(.head_branch // "-") \(.created_at // "-")"') \
+                || { echo "::error::the held runs of $sha could not be read, so the rescreen pass starts no" \
+                       "run."; exit 1; }
+              if [ -z "$head_held" ]; then
+                echo "#$NUMBER: GitHub holds no run of its head $sha from its head repository and branch, and GitHub" \
+                  "does not say that it has a merge conflict, so the rescreen pass starts no run."
+                exit 0
+              fi
             fi
-            echo "#$NUMBER: GitHub holds a run of its head $sha, so the rescreen pass takes every open item."
           fi
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           # trusted
@@ -927,18 +967,20 @@ jobs:
           held_as() {
             awk -v w="$1" '$1 == w { sub(/^[^ ]+ /, ""); print }' <<< "$hold"
           }
-          # due_held: the work that each hold of #number names, labelled review-held, once the hold is over an hour old:
-          # the newest hold of its review, of its answer, of its draft and of its approval, each for itself (held_work),
-          # so that the hold of one work never keeps the rescreen pass from the hold of another.
+          # due_held [<work>]: the work that each hold of #number names, labelled review-held, once the hold is over an
+          # hour old: the newest hold of its review, of its answer, of its draft and of its approval, each for itself
+          # (held_work), so that the hold of one work never keeps the rescreen pass from the hold of another. With
+          # <work>, the hold of that work alone.
           due_held() {
             local work h_at h_origin h_task h_comment tried=""
             for work in review answer draft approve; do
+              [[ -z ${1:-} || $work == "$1" ]] || continue
               read -r h_at h_origin _ _ h_task h_comment _ <<< "$(held_as "$work")"
               [[ -n ${h_origin:-} && $h_origin != - ]] || continue
               tried=1
               held_work || return 1
             done
-            [ -n "$tried" ] \
+            [ -n "$tried" ] || [ -n "${1:-}" ] \
               || echo "#$number: no hold that is tried again (the screen held it, or its tries are used up)."
           }
           # held_work: the work of the hold that due_held read (h_at, h_origin, h_task, h_comment), once that hold is
@@ -1470,14 +1512,19 @@ jobs:
             owe "${at:-$opened}" relabel "" "$head" - \
               "the value of REPO_PAIRS_IMPORT_PATHS recorded for $head is not the value now"
           }
-          # consider: the runs that #number is due, by each reason above (due_*), in order. A writer's pull request
-          # gets only the work that its holds name and the review of a head that a run left with no review. A read
-          # that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the head
-          # (taken), no later one takes it in this run. hold is the newest hold of each work of the item (holds).
+          # consider [<merge>]: the runs that #number is due, by each reason above (due_*), in order. A writer's pull
+          # request gets only the work that its holds name and the review of a head that a run left with no review. A
+          # read that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the
+          # head (taken), no later one takes it in this run. hold is the newest hold of each work of the item (holds).
+          # <merge> is the mergeable_state of the pull request #number that a run of the pass with a number read
+          # (rescreen.yml). With it, consider gives only the work that such a run does, for an outside pull request
+          # alone: the conflict of its head when <merge> is dirty (due_conflict), else the approval of the runs of its
+          # head that GitHub holds (due_approve, after due_held for the hold of its approval alone).
+          # shellcheck disable=SC2120 # review.yml's trust job passes no argument, a run with a number passes one
           consider() {
             local head="" outsider=false limited="" hold=""
             local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
-            local review=none held=false conflicted=false caught=false head_read="" merge="" ci="" ci_read=""
+            local review=none held=false conflicted=false caught=false head_read="" merge=${1:-} ci="" ci_read=""
             if [ "$draft" != false ]; then
               echo "#$number: a draft, of which the trust job takes no run."
               return 0
@@ -1506,6 +1553,20 @@ jobs:
             [ "$labelled" = true ] || [ "$outsider" = true ] || [ "$kind" = pr ] || return 0
             if [ "$labelled" = true ] || [ "$outsider" = true ]; then
               hold=$(holds "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
+            fi
+            if (( $# > 0 )); then
+              if [ "$outsider" = false ]; then
+                echo "#$number: its author has write access, so a run of the pass with a number takes no work of it."
+                return 0
+              fi
+              if [ "$merge" = dirty ]; then
+                head_of || return 1
+                due_conflict
+                return
+              fi
+              if [ "$labelled" = true ]; then due_held approve || return 1; fi
+              due_approve
+              return
             fi
             if [ "$labelled" = true ]; then due_held || return 1; fi
             if [ "$outsider" = false ]; then
@@ -1618,50 +1679,81 @@ jobs:
               $8 ~ /^(rescreen|review|answer|draft|approve)$/ { print $1 }' "$seen/runs")
             paced[$1]=1
           }
-          read_pulls || exit 1
-          read_runs || exit 1
-          # The open pull requests and issues, each with its kind, whether it is a draft or labelled review-held, when
-          # it was opened, and its author (item_row).
-          items=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
-            --jq '.[] | select(.state == "open") | '"$item_row") \
-            || { echo "::error::the open pull requests and issues could not be read."; exit 1; }
-          while read -r number kind draft labelled opened author; do
-            [ -n "${number:-}" ] || continue
-            [[ $number =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $number"; failed=1; continue; }
-            if [ -z "${author:-}" ]; then
-              echo "#$number: GitHub names no author of it: left alone."
-              continue
+          if [ -n "${NUMBER:-}" ]; then
+            # The rest of a run with a number (the top of this step): the work of #NUMBER alone, which consider decides
+            # with the mergeable_state that the step read. The step's first read gives the item as item_row gives an
+            # item, and its head as read_pulls gives it. Its second read gives the held runs of the head as held_of
+            # gives them. Then the run reads the runs by hand of the last hour, in one read: those of the item that
+            # have not finished (running), and those that count toward the limit of an account (pace).
+            number=$NUMBER kind=pr
+            pr_head[$number]=$sha pr_base[$number]=$base pr_draft[$number]=$draft pr_repo[$number]=$repository
+            pr_ref[$number]=$branch
+            held_list=$head_held held_read=1
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            FROM=$hour runs_in workflow_dispatch ">=$hour" "$row$pages"'(.workflow_runs[]
+              | select(.event == "workflow_dispatch" and (.created_at // "") >= $ENV.FROM) | row)' > "$seen/listed" \
+              || { echo "::error::the runs of this workflow of the last hour could not be read."; exit 1; }
+            : > "$seen/runs"
+            take "$seen/listed"
+            consider "$merge" || failed=1
+            # When that gives the approval of the head for an account under its limit, the run reads the runs of the 8
+            # days, as a run with no number does (read_runs), and consider decides again from them. The runs of the last
+            # hour can leave out a try of the head, a run that settled the hold of its approval, or a run of the item
+            # of another event that has not finished. At the limit, the approval waits (below) with no more reads. So a
+            # burst of pushes of an account at its limit costs a few calls of the API each.
+            who=$(awk '$3 == "approve" { print $4 }' "$seen/due")
+            if [[ -n $who && $who != - ]] && pace "$who" && (( ${used[$who]} < OUTSIDE_HOURLY_LIMIT )); then
+              : > "$seen/due"
+              owed=()
+              read_runs || exit 1
+              consider "$merge" || failed=1
             fi
-            consider || failed=1
-          done <<< "$items"
-          # The closed pull requests that are not merged, each with its author and its newest close, when and by whom,
-          # - for none, in one GraphQL query: a catch-up left closed among them is due its reopen (consider_closed).
-          # GraphQL names an App <name>, and login gives it as <name>[bot], as the REST API names it. A list that cannot
-          # be read leaves them for the next run.
-          # shellcheck disable=SC2016 # $owner, $name and $endCursor are GraphQL's
-          closed=$(gh api graphql --paginate -f owner="${REPO%%/*}" -f name="${REPO#*/}" -f query='
-            query($owner: String!, $name: String!, $endCursor: String) {
-              repository(owner: $owner, name: $name) {
-                pullRequests(states: CLOSED, first: 100, after: $endCursor) {
-                  nodes {
-                    number
-                    author { __typename login }
-                    timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
-                      nodes { ... on ClosedEvent { createdAt actor { __typename login } } }
+          else
+            read_pulls || exit 1
+            read_runs || exit 1
+            # The open pull requests and issues, each with its kind, whether it is a draft or labelled review-held,
+            # when it was opened, and its author (item_row).
+            items=$(gh api --paginate "repos/$REPO/issues?state=open&per_page=100" \
+              --jq '.[] | select(.state == "open") | '"$item_row") \
+              || { echo "::error::the open pull requests and issues could not be read."; exit 1; }
+            while read -r number kind draft labelled opened author; do
+              [ -n "${number:-}" ] || continue
+              [[ $number =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $number"; failed=1; continue; }
+              if [ -z "${author:-}" ]; then
+                echo "#$number: GitHub names no author of it: left alone."
+                continue
+              fi
+              consider || failed=1
+            done <<< "$items"
+            # The closed pull requests that are not merged, each with its author and its newest close, when and by
+            # whom, - for none, in one GraphQL query: a catch-up left closed among them is due its reopen
+            # (consider_closed). GraphQL names an App <name>, and login gives it as <name>[bot], as the REST API names
+            # it. A list that cannot be read leaves them for the next run.
+            # shellcheck disable=SC2016 # $owner, $name and $endCursor are GraphQL's
+            closed=$(gh api graphql --paginate -f owner="${REPO%%/*}" -f name="${REPO#*/}" -f query='
+              query($owner: String!, $name: String!, $endCursor: String) {
+                repository(owner: $owner, name: $name) {
+                  pullRequests(states: CLOSED, first: 100, after: $endCursor) {
+                    nodes {
+                      number
+                      author { __typename login }
+                      timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
+                        nodes { ... on ClosedEvent { createdAt actor { __typename login } } }
+                      }
                     }
+                    pageInfo { hasNextPage endCursor }
                   }
-                  pageInfo { hasNextPage endCursor }
                 }
-              }
-            }' --jq 'def login: if .__typename == "Bot" then .login + "[bot]" else .login end;
-              .data.repository.pullRequests.nodes[] | (.timelineItems.nodes[0] // {}) as $close
-              | "\(.number) \(.author // {} | login // "-") \($close.createdAt // "-")"
-                + " \($close.actor // {} | login // "-")"') \
-            || { echo "::error::the closed pull requests could not be read."; closed="" failed=1; }
-          while read -r number author at by; do
-            [[ ${number:-} =~ ^[1-9][0-9]*$ && ${author:--} != - ]] || continue
-            consider_closed || failed=1
-          done <<< "$closed"
+              }' --jq 'def login: if .__typename == "Bot" then .login + "[bot]" else .login end;
+                .data.repository.pullRequests.nodes[] | (.timelineItems.nodes[0] // {}) as $close
+                | "\(.number) \(.author // {} | login // "-") \($close.createdAt // "-")"
+                  + " \($close.actor // {} | login // "-")"') \
+              || { echo "::error::the closed pull requests could not be read."; closed="" failed=1; }
+            while read -r number author at by; do
+              [[ ${number:-} =~ ^[1-9][0-9]*$ && ${author:--} != - ]] || continue
+              consider_closed || failed=1
+            done <<< "$closed"
+          fi
           # The runs due, oldest reason first, and the stops after them. A run that screens counts toward the limit of
           # the account that its name ends with: at OUTSIDE_HOURLY_LIMIT runs of the last hour, the next one of that
           # account waits for a later run of this pass. The stop of an item that this run started another run of waits
