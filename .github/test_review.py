@@ -5243,6 +5243,26 @@ class SoundnessScanTest(unittest.TestCase):
             facts = rules.proofs("HEAD", files, len(files), cwd=d, main="HEAD")
         self.assertEqual([f["path"] for f in facts["files"]], ["vendor/x.hex"])
 
+    def test_a_header_that_a_c_flag_of_a_stub_reads_from_the_source_tree_counts(self):
+        """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". dune 3.23
+        compiles a C stub in _build/default/stubs, so (flags :standard -I../../../inc) makes gcc read the source tree's
+        inc/x.h, with no rule of dune in between, as (flags :standard -I ../../../inc) and (include_dirs ../inc) do. So a
+        change of inc/x.h counts for each of the three. A Markdown file of docs/, which no rule reads, does not."""
+        for flags in ("(flags :standard -I../../../inc)", "(flags :standard -I ../../../inc)", "(include_dirs ../inc)"):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory(prefix="review-test-") as d:
+                for path, text in (("stubs/dune", f"(library (name s) (foreign_stubs (language c) (names s) {flags}))\n"),
+                                   ("stubs/s.c", "#include \"x.h\"\nint s_v(void) { return V; }\n"),
+                                   ("inc/x.h", "#define V 1\n"), ("docs/README.md", "# Docs\n")):
+                    os.makedirs(os.path.dirname(os.path.join(d, path)), exist_ok=True)
+                    with open(os.path.join(d, path), "w") as f:
+                        f.write(text)
+                for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "main")):
+                    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                   check=True, capture_output=True)
+                files = [{"filename": p, "previous_filename": None} for p in ("inc/x.h", "docs/README.md")]
+                facts = rules.proofs("HEAD", files, len(files), cwd=d, main="HEAD")
+                self.assertEqual([f["path"] for f in facts["files"]], ["inc/x.h"])
+
     def test_the_dune_files_of_this_repository_parse_and_name_the_inputs_of_its_proofs_and_no_markdown_file(self):
         """proofs on this repository's own head: each of its dune files parses, so that no pull request gets the person
         verdict because the job could not read one. The files that its rules read or write count, wherever they are:
