@@ -6035,6 +6035,23 @@ class SoundnessScanTest(unittest.TestCase):
         facts = rules.proofs(head, files, len(files), cwd=d, main=head)
         self.assertEqual(([f["path"] for f in facts["files"]], facts["whole"]), (["t/dune"], True))
 
+    def test_a_response_file_in_c_flags_counts_the_headers_that_its_flags_name(self):
+        """R8, review.md: "a file that a flag of the C compiler or of the linker names, such as -I ... with each file
+        below it", and a dune file whose C field the job cannot read for certain counts (an (:include ...) in C flags).
+        gcc reads the words of a response file @<file> as flags of its own: dune 3.23 builds the stub of stubs/ with
+        (flags :standard @../../../rsp.txt), whose rsp.txt holds -I../../../inc, and its clean build fails when
+        inc/x.h does not compile. The job reads no response file, so a change of inc/x.h alone counts for nothing. It
+        counts, or stubs/dune is a file of the build that the job could not read."""
+        files = {"stubs/dune": "(library (name s) (foreign_stubs (language c) (names s)"
+                               " (flags :standard @../../../rsp.txt)))\n",
+                 "stubs/s.c": "#include \"x.h\"\nint s_v(void) { return V; }\n", "rsp.txt": "-I../../../inc\n",
+                 "inc/x.h": "#define V 1\n", "README.md": "# Model\n"}
+        d, main = self.repository(files)
+        _d, head = self.repository(dict(files, **{"inc/x.h": "#define V 2\n"}), at=d)
+        facts = rules.proofs(head, [{"filename": "inc/x.h", "previous_filename": None}], 1, cwd=d, main=main)
+        self.assertTrue([f["path"] for f in facts["files"]] == ["inc/x.h"] or facts["unparsed"] == ["stubs/dune"],
+                        facts)
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
