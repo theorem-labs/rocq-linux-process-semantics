@@ -10068,6 +10068,25 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual((rc, runs, wrote), (0, [], []), out)
         self.assertLessEqual(len(calls), 1000 // 60 - 3, calls)
 
+    def test_screen_start_a_pass_with_a_number_and_a_pass_with_none_that_read_7_together_screen_its_head_once(self):
+        """R14 and impl-v6 trickyParts: a run with a number and a run with no number are in groups of their own, and
+        when both read #7 before either starts a run, each starts the approve run of its held head. The trust job of
+        the second approve run of the head reads GitHub's runs again, as each trust job does for the limit (earlier),
+        and the first has not finished: it stops, so that the head is screened once and the second run counts toward
+        no limit, in the place of a second screen that the account pays for, or a screen job that the group
+        screen-approve-7 cancels and that still counts (a run whose screen job was cancelled is not one that its trust
+        job stopped)."""
+        approve = ("7", "approve", "mallory", HEAD, "")
+        self.waiting()
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        rc, out, runs, _wrote, _calls = self.numbered(7)
+        self.assertEqual((rc, runs), (0, [approve]), out)
+        rc, out, runs = self.started()
+        self.assertIn(approve, runs, out)
+        self.ran(90, f"approve #7 at {HEAD} of mallory", made=0, status="in_progress")
+        self.dispatched("approve", account="mallory", want=False)
+
     def approval_tried(self, tries):
         """mallory's pull request at HEAD, whose runs GitHub holds, and tries approve runs of HEAD whose post job
         failed at the approval: at REVIEW_TRIES, the pass decides the stop head-approve."""
