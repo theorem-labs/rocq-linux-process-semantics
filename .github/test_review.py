@@ -2484,6 +2484,24 @@ class LimitTest(Runner):
                 self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")),
                                  (0, "20", "eve", "limit"), out)
 
+    def test_ci_runs_of_the_owner_whose_jobs_after_the_trust_job_are_not_listed_count_on_the_author(self):
+        """Spec v68 R1, as for a trust job that has not finished (above): a CI run of bob's push whose trust job ended
+        and whose jobs after it GitHub does not list does not show on whom its trust job counted it, so it can count on
+        eve, as a run of her own whose jobs show no more does. With OUTSIDE_HOURLY_LIMIT such runs before it, the last
+        run is held at her limit, not screened."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD), *[(21 + i, "eve", str(i) * 40, FORK_ID, False, "main", f"patch-{i + 2}")
+                                           for i in range(self.LIMIT)])
+        pushes = [(90 - i, "bob", "workflow_run", None, f"review {str(i) * 40} by bob") for i in range(self.LIMIT)]
+        self.runs(*pushes)
+        for r in pushes:
+            self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
+                       {"jobs": [{"name": "trust", "status": "completed", "conclusion": "success"}]})
+        rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                      head_repository=str(FORK_ID), pulls=[])
+        self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route"), got.get("uncounted")),
+                         (0, "20", "eve", "limit", ""), out)
+
     def test_a_list_of_other_accounts_ci_runs_that_github_cuts_puts_the_author_at_her_limit(self):
         """GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count says how many
         match. Spec v61 R1: the runs that a cut list of the CI runs of other accounts leaves out can count on the
@@ -5580,6 +5598,24 @@ class SoundnessScanTest(unittest.TestCase):
                 facts = rules.proofs(head, [{"filename": path, "previous_filename": None}], 1, cwd=d, main=head)
                 self.assertEqual(facts["files"], [{"path": path, "why": "named", "by": "t/dune", "what": what,
                                                    "at_head": True}])
+
+    def test_a_string_of_a_dune_file_counts_as_the_text_that_dune_reads_from_it(self):
+        """R8: dune 3.23 reads a quoted string with no backslash before a line break, nor that line break and the
+        spaces and tabs after it, and a block string from after its "\\| and the space after it. It reads
+        "../docs/x.m\\<line break>   d" as ../docs/x.md and copies docs/x.md for the rule: docs/x.md counts by that
+        string, whose text holds no .md. It reads (glob_files "*.v\\<line break>   o") as the glob *.vo, which copies
+        no Markdown file: docs/x.md does not count by it. It reads "\\| /docs/x.md as a string that starts with /:
+        docs/x.md counts by it."""
+        rule = '(rule (target G.v) (deps {})\n (action (with-stdout-to G.v (echo ""))))\n'
+        for text, what in ((rule.format('"../docs/x.m\\\n   d"'), '"../docs/x.m\\\n   d"'),
+                           (rule.format('(glob_files "*.v\\\n   o")'), None),
+                           (rule.format('"\\| /docs/x.md\n'), '"\\| /docs/x.md')):
+            with self.subTest(text=text):
+                d, head = self.repository({"t/dune": text, "docs/x.md": "1\n"})
+                facts = rules.proofs(head, [{"filename": "docs/x.md", "previous_filename": None}], 1, cwd=d,
+                                     main=head)
+                self.assertEqual(facts["files"], [] if what is None else [
+                    {"path": "docs/x.md", "why": "named", "by": "t/dune", "what": what, "at_head": True}])
 
     def test_a_file_that_a_dune_rule_reads_through_a_link_to_its_directory_counts(self):
         """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". dune
@@ -10120,6 +10156,16 @@ class RescreenEventsTest(Scheduled):
         self.assertIn(approve, runs, out)
         self.ran(90, f"approve #7 at {HEAD} of mallory", made=0, status="in_progress")
         self.dispatched("approve", account="mallory", want=False)
+
+    def test_screen_start_an_approve_run_goes_on_beside_a_later_run_of_its_name_and_an_earlier_one_that_ended(self):
+        """R14: the trust job of an approve run of the pass stops only for an earlier run of its name that has not
+        finished (above). A later run of that name that has not finished, which stops at its own trust job, and an
+        earlier one that ended, which screened the head, leave it to go on: the head is screened."""
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        self.ran(110, f"approve #7 at {HEAD} of mallory", made=0, status="in_progress")
+        self.ran(90, f"approve #7 at {HEAD} of mallory", made=30)
+        self.assertEqual(self.dispatched("approve", account="mallory").get("route"), "screen")
 
     def approval_tried(self, tries):
         """mallory's pull request at HEAD, whose runs GitHub holds, and tries approve runs of HEAD whose post job

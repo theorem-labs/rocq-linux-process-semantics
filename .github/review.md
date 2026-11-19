@@ -151,10 +151,10 @@ many files the pull request has:
     A word after code on the same line counts.
   - Each Markdown file counts when a `dune` file anywhere holds
     `glob_files` or `glob_files_rec`, also in a comment, with a pattern
-    whose part after the last `.` is not one fixed extension other than
-    `md`. A fixed extension has only letters, digits and `_`. So `*.vo`
-    and `*MemImage_seg_*.hex` do not count, but `*.md`, `*.{v,md}`,
-    `*.[ch]` and `*` count.
+    whose part after the last `.` is `md`, `MD`, `Md` or `mD`, or is not
+    one fixed extension. A fixed extension has only letters, digits and
+    `_`. So `*.vo` and `*MemImage_seg_*.hex` do not count, but `*.md`,
+    `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count.
   - Each Markdown file counts when a `dune` file anywhere holds a word
     or a quoted string with `.md` in it that also holds `..`,
     `%{project_root}` or `%{workspace_root}`, or that starts with `/`,

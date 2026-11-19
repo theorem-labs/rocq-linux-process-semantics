@@ -1863,9 +1863,14 @@ jobs:
           # screen job can name another account. The jobs of a run show whether it counts. A run of <login>'s event
           # whose screen job names another account (screen <account>: the account whose limit its trust job counted it
           # on, as the author of a pull request on <login>'s fork branch) used that account's limit, and does not count
-          # for <login>. A CI run of another account counts only when its screen job names <login>: a run whose screen
-          # job names no account (GitHub can list a skipped job with its name not filled in) does not show that its
-          # trust job counted it on <login>. A run whose trust job stopped it screened nothing, and does not count:
+          # for <login>. A CI run of another account counts when its screen job names <login>, and also while its jobs
+          # do not show yet on whom its trust job counted it: its trust job is not listed or has not finished (queued or
+          # in progress), or no job after it is listed yet (the name of the screen job needs the trust job's outputs). A
+          # run of <login>'s own counts in that state too. So when one push starts the CI runs of more than one pull
+          # request of <login>, whose trust jobs run side by side, the trust job of each counts those before it. Such a
+          # run whose screen job names another account, or whose jobs after its trust job name no account (GitHub can
+          # list a skipped job with its name not filled in), does not show that its trust job counted it on <login>, and
+          # does not count. A run whose trust job stopped it screened nothing, and does not count:
           # every job after the trust job was skipped, and GitHub lists the run as one that succeeded (the CI run of a
           # pull request into another branch, of a head that more than one open pull request has, or a run by hand
           # whose item closed, or lost its label, in between). Nor does a run whose screen job stopped at a failed step
@@ -1986,7 +1991,8 @@ jobs:
                     | [.jobs[] | select(.name != "trust" and .name != "rescreen")] as $rest
                     | ([$rest[] | .name // "" | capture("^screen (?<a>[A-Za-z0-9-]+(\\[bot\\])?)$") | .a]
                        | first) as $named
-                    | if $ENV.OWN == "2" and $named != $ENV.LOGIN then "other"
+                    | if $ENV.OWN == "2" and $named != $ENV.LOGIN
+                         and ($named != null or ($t.conclusion != null and ($rest | length) > 0)) then "other"
                       elif $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                       elif $t.status == "completed" and ($rest | length) > 0
                            and ($rest | all(.conclusion == "skipped")) then "skip"
@@ -2464,8 +2470,17 @@ jobs:
                 # A reply text that Sami approved: no screen and no model.
                 reply) route review "" ;;
                 # The screen of a first-time contributor's pull request, and the approval of its held runs when it
-                # passes. The rescreen pass's run needs held runs at the head, and a hold of an approval that it tries
-                # again to be over an hour old.
+                # passes. The rescreen pass's run needs held runs at the head, a hold of an approval that it tries again
+                # to be over an hour old, and no earlier run of its name that has not finished. A run of the pass with a
+                # number and a run with none are in groups of their own: both can read #NUMBER before either starts a
+                # run, and each then starts an approve run of the head. Without this check, the later run screens the
+                # head a second time and counts a second screen on the author's limit (a screen that the group
+                # screen-approve-<n> cancels counts too). The check costs one more read of the API: the runs by hand of
+                # review.yml from the start of the day before (runs_in, which reads a list that GitHub cut again one
+                # day, then one hour, at a time). The later run finds the earlier one there, unfinished, and stops. The
+                # earlier run finds no such run, as it reads only the runs before its own. A conflict needs no such
+                # check: its run screens nothing and counts toward no limit, and the comment job, one run at a time in
+                # the group label-<n>, posts the comment of a head only when it is not there yet.
                 approve)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
@@ -2473,6 +2488,13 @@ jobs:
                     (( n > 0 )) || stop "GitHub holds no run of $pr_head."
                     newest approve
                     again approve
+                    # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+                    unended=$(WANT=$want runs_in workflow_dispatch ">=$(date -u -d '-1 day' +%Y-%m-%d)T00:00:00Z" \
+                      "$pages"'(.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed"
+                        and .id < ($ENV.RUN_ID | tonumber) and (.display_title // "") == $ENV.WANT) | .id)') \
+                      || fail "the runs by hand of review.yml since the start of the day before could not be read."
+                    [ -z "$unended" ] \
+                      || stop "approve run ${unended%%$'\n'*} of $pr_head, made before this run, has not finished."
                   fi
                   screened "$AUTHOR" "$limited" ;;
                 # The comment that asks the author to resolve a merge conflict, while the conflict is there. The

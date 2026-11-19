@@ -1692,7 +1692,7 @@ jobs:
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             FROM=$hour runs_in workflow_dispatch ">=$hour" "$row$pages"'(.workflow_runs[]
               | select(.event == "workflow_dispatch" and (.created_at // "") >= $ENV.FROM) | row)' > "$seen/listed" \
-              || { echo "::error::the runs of this workflow of the last hour could not be read."; exit 1; }
+              || { echo "::error::the runs by hand of review.yml of the last hour could not be read."; exit 1; }
             : > "$seen/runs"
             take "$seen/listed"
             consider "$merge" || failed=1

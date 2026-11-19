@@ -1000,15 +1000,23 @@ REGULAR = ("100644", "100755")
 # of KEYWORDS, a field or a stanza that reads files whose names the dune file does not hold, as a whole word of the text
 # split at white space and parentheses (SPLIT), after each line whose first character other than a space or a tab is ;
 # goes (COMMENT_LINE), so not include_subdirs, and a word after code on a line all the same; a glob field (GLOB_FIELD)
-# whose pattern, the word or the quoted string after it, does not end with a . and a fixed extension (EXTENSION:
-# letters, digits and _ only) other than md; and a word or a quoted string (WORD, and each word of a comment) that holds
-# .md and also one of ROOTS, or that starts with /.
+# whose pattern, the word or the string after it as dune reads it (dune_text), does not end with a . and a fixed
+# extension (EXTENSION: letters, digits and _ only), or ends with .md, .MD, .Md or .mD; and a word or a string
+# (WORD, as dune reads it, and each word of a comment) that holds .md and also one of ROOTS, or that starts with /.
+# WORD splits the text as dune 3.23 does: a comment from ; to the end of its line; a block string from "\| or "\> to
+# the end of its line, whatever it holds; a quoted string, in which a backslash and the character after it, a line
+# break too, are one escape, so a string goes on after a backslash before a line break; or an atom. dune reads a
+# block string from after its "\| or "\> and the one space after it (BLOCK), and a quoted string between its quotes
+# (STRING), with no backslash before a line break, nor that line break and the spaces and tabs after it (CONTINUED).
 KEYWORDS = ("include", ":include", "source_tree", "copy_files", "copy_files#")
 COMMENT_LINE = re.compile(r"(?m)^[ \t]*;.*$")
 SPLIT = re.compile(r"[\s()]+")
 GLOB_FIELD = re.compile(r"glob_files(?:_rec)?")
 EXTENSION = re.compile(r"[A-Za-z0-9_]+")
-WORD = re.compile(r';[^\n]*|"(?:[^"\\]|\\.)*"?|[^\s();"]+')
+WORD = re.compile(r';[^\n]*|"\\[|>][^\n]*|"(?:[^"\\]|\\[\s\S])*"?|[^\s();"]+')
+BLOCK = re.compile(r'"\\[|>] ?')
+STRING = re.compile(r'"((?:[^"\\]|\\[\s\S])*)"?')
+CONTINUED = re.compile(r"\\(?:\r?\n[ \t]*|([\s\S]))")
 ATOM = re.compile(r'[^\s();"]+')
 BLANKS = re.compile(r"\s*")
 ROOTS = ("..", "%{project_root}", "%{workspace_root}")
@@ -1074,26 +1082,38 @@ def dune_file(path):
     return base in ("dune", "dune-project") or base.startswith("dune-workspace")
 
 
+def dune_text(word):
+    """The text that dune reads from word, a word of WORD that is not a comment: of a block string, the rest of its
+    line after BLOCK; of a quoted string, the text between its quotes with each backslash before a line break, that
+    line break and the spaces and tabs after it taken out (CONTINUED), and each other escape as the file holds it; of
+    an atom, word."""
+    block = BLOCK.match(word)
+    if block:
+        return word[block.end():]
+    string = STRING.fullmatch(word)
+    return CONTINUED.sub(lambda m: m.group() if m.group(1) else "", string.group(1)) if string else word
+
+
 def trigger(text):
     """The first part of text, the text of a dune file, that makes each changed Markdown file count wherever it is, or
-    None: a word of KEYWORDS in text split at SPLIT after its lines of COMMENT_LINE go; a glob field and its pattern,
-    when the part of the pattern after its last . is not a fixed extension (EXTENSION) other than md, in any case; or a
-    word or a quoted string (WORD) that holds .md and also one of ROOTS, or that starts with /, each word of a comment
-    as a word of its own."""
+    None: a word of KEYWORDS in text split at SPLIT after its lines of COMMENT_LINE go; the text from the start of a
+    glob field to the end of the word after it, also inside a longer word, when the part of its pattern (that word as
+    dune reads it, dune_text) after its last . is not a fixed extension (EXTENSION), or is md, MD, Md or mD; or a word
+    or a string (WORD) that holds .md and also one of ROOTS, or that starts with /, as dune reads it, each word of a
+    comment as a word of its own."""
     word = next((w for w in SPLIT.split(COMMENT_LINE.sub("", text)) if w in KEYWORDS), None)
     if word:
         return word
     for m in GLOB_FIELD.finditer(text):
         w = WORD.match(text, BLANKS.match(text, m.end()).end())
-        pattern = w.group() if w and not w.group().startswith(";") else ""
-        if pattern.startswith('"'):
-            pattern = pattern[1:-1] if len(pattern) > 1 and pattern.endswith('"') else pattern[1:]
+        pattern = dune_text(w.group()) if w and not w.group().startswith(";") else ""
         extension = pattern.rpartition(".")[2] if "." in pattern else ""
         if not EXTENSION.fullmatch(extension) or extension.lower() == "md":
-            return f"{m.group()} {w.group() if w else ''}".rstrip()
+            return text[m.start():w.end() if w else m.end()]
     for w in WORD.finditer(text):
         for word in ATOM.findall(w.group()) if w.group().startswith(";") else [w.group()]:
-            if ".md" in word and (any(root in word for root in ROOTS) or word.lstrip('"').startswith("/")):
+            read = dune_text(word)
+            if ".md" in read and (any(root in read for root in ROOTS) or read.startswith("/")):
                 return word
     return None
 
@@ -1285,9 +1305,9 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
                      "`include_subdirs` does not count. A word on a comment line, whose first character other than a "
                      "space or a tab is `;`, does not count. A word after code on the same line counts.\n"
                      "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a pattern "
-                     "whose part after the last `.` is not one fixed extension other than `md`. A fixed extension has "
-                     "only letters, digits and `_`. So `*.vo` does not count, but `*.md`, `*.{v,md}`, `*.[ch]` and `*` "
-                     "count.\n"
+                     "whose part after the last `.` is `md`, `MD`, `Md` or `mD`, or is not one fixed extension. A "
+                     "fixed extension has only letters, digits and `_`. So `*.vo` does not count, but `*.md`, `*.MD`, "
+                     "`*.{v,md}`, `*.[ch]` and `*` count.\n"
                      "- A `dune` file anywhere holds a word or a quoted string with `.md` in it that also holds `..`, "
                      "`%{project_root}` or `%{workspace_root}`, or that starts with `/`, also in a comment. For "
                      "example: `%{dep:../docs/x.md}`.\n"
