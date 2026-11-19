@@ -44,6 +44,7 @@ CASES = [
     ("review.md", {".github/review.md": "x"}, "false", "true"),
     ("review.yml", {".github/workflows/review.yml": "x"}, "false", "true"),
     ("rescreen.yml", {".github/workflows/rescreen.yml": "x"}, "false", "true"),
+    ("screen-start.yml", {".github/workflows/screen-start.yml": "x"}, "false", "true"),
     ("a file under review/", {".github/review/trim.py": "x"}, "false", "true"),
     ("review-answer.md", {".github/review-answer.md": "x"}, "false", "true"),
     ("review file and prose", {".github/screen.py": "x", "README.md": "y"}, "false", "true"),

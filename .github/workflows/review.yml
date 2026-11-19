@@ -1,7 +1,7 @@
 # review.yml: Claude reviews pull requests into main and issues by the rules in .github/review.md, and the review is
 # posted as a comment there.
 #
-# Three workflows. CI (.github/workflows/ci.yml) runs on pull_request with the copy of ci.yml at the pull request's
+# Four workflows. CI (.github/workflows/ci.yml) runs on pull_request with the copy of ci.yml at the pull request's
 # merge commit, a token that can only read, no secret and no identity token. This file runs when such a CI run
 # completes (workflow_run), and on issues, issue_comment and workflow_dispatch; never on a schedule. GitHub runs each of
 # these events with main's copy of this file, so a pull request, from a fork or not, cannot change what runs here. From
@@ -16,7 +16,9 @@
 # an if: the step of the trust job, which every other job needs, also compares the ref byte for byte in the shell, and
 # stops on any other ref. The rescreen pass (.github/workflows/rescreen.yml) runs on events alone too, and starts the
 # runs of this file that the open items are due (below); it holds no identity and no secret, and writes nothing but
-# those runs.
+# those runs. Each event of a pull request from a fork starts it too, through .github/workflows/screen-start.yml, the
+# one workflow of this repository that runs on pull_request_target: it holds actions: write alone, and only starts the
+# pass.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -71,12 +73,13 @@
 #   hold comment says that it is not tried again; a run that ended at a failed sign-in counts no try. The review, the
 #   answer, the draft and the approval of an item each have their own hold comment, so that a hold of one never takes
 #   the place of the hold of another. The rescreen pass (rescreen.yml) runs at each completed CI run, each push to
-#   main and each new or reopened issue, and by hand. It lists the open pull requests and issues labelled
-#   review-held, and for each of those works whose newest hold comment is such a hold, not the screen's, and is over
-#   an hour old, it starts this workflow with the task that the marker of the hold names: the answer of the comment
-#   that it names (-f task=answer -f comment=<id>), the draft, the approval, or else -f task=rescreen, with the account
-#   the hold names (-f account=<login>). A run that GitHub holds starts no workflow_run, so a held item waits for the
-#   next of those events. Such a run takes an outsider's path: the trust job reads the author, the hold and the account
+#   main, each new or reopened issue and each event of a pull request from a fork (screen-start.yml starts it for such
+#   an event), and by hand. It lists the open pull requests and issues labelled review-held, and for each of those
+#   works whose newest hold comment is such a hold, not the screen's, and is over an hour old, it starts this workflow
+#   with the task that the marker of the hold names: the answer of the comment that it names (-f task=answer
+#   -f comment=<id>), the draft, the approval, or else -f task=rescreen, with the account the hold names
+#   (-f account=<login>). A run that GitHub holds starts no workflow_run, so a held item waits for the next of those
+#   events. Such a run takes an outsider's path: the trust job reads the author, the hold and the account
 #   again from the API, never from the inputs alone, and the item is screened, then reviewed and the review posted, as
 #   for an event; only when the author and that account both have write access is it reviewed without the screen, as a
 #   writer's item is. When that account has no write access, its screen counts toward the account's
@@ -4685,7 +4688,8 @@ jobs:
           # holds end with only that a new hold replaces this comment, since a rescreen can be held for another cause
           # than theirs.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
-          events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."$'\n\n'
+          events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."
+          events+=$'\n'"- Someone opens, reopens, changes, labels or closes a pull request from a fork."$'\n\n'
           again="The workflow screens $what again at the first of these events after $next:${events}You do not need to do anything."$'\n\n'
           again_other="If the workflow holds $what again, this comment says why."
           # The account that the screen was for (OUTSIDER): the item's author, or else the account of the latest event.

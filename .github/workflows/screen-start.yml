@@ -1,0 +1,101 @@
+# screen-start.yml: at each event of a pull request from a fork, it starts the rescreen pass
+# (.github/workflows/rescreen.yml) on main, and writes nothing else. The pass then decides by its own rules which runs
+# of review.yml the open items are due (rescreen.yml lists the reasons).
+#
+# Why pull_request_target: GitHub holds the CI run (pull_request) of a first-time contributor's pull request for a
+# person's approval, and a run that GitHub holds starts no workflow_run. For a pull request with a merge conflict,
+# GitHub starts no pull_request run at all. Without this file, such a pull request waits for an event of another item
+# (rescreen.yml). GitHub runs each pull_request_target event with the copy of this file on the default branch (main),
+# also for a pull request with a merge conflict, and whatever the approval settings say (GitHub's docs, "Events that
+# trigger workflows" and "Managing GitHub Actions settings for a repository", read 2026-11-19). It is the one workflow
+# of this repository that starts on pull_request_target (dispatch://OSSV-613/spec R4 and R14). The token of such a
+# run can write, so this file runs no file of the pull request: it checks nothing out, holds no secret and no identity
+# token, and no run: line reads a field of the event that the author writes (the title, the body, the branch name).
+# From 2026-12-02 GitHub blocks pull_request_target in public repositories by default: dispatch://INFRA-3395 sets the
+# Actions event policy that allows it for this file alone.
+#
+# What it reads and writes: its token has actions: write alone. It reads the runs of the head commit whose event is
+# pull_request (repos/<repo>/actions/runs), and it makes one write, the start of rescreen.yml on main (gh workflow run
+# rescreen.yml --ref main). GitHub makes a workflow_dispatch run for that write, though github.token makes it (GitHub's
+# docs, "GITHUB_TOKEN").
+#
+# The wait: the step waits until GitHub lists a pull_request run of the head commit, at most 2 minutes, with a read
+# every 10 seconds, so that the pass finds the CI run of the event: a run that GitHub holds gets its approval (approve,
+# rescreen.yml). A read that fails counts as no run listed. ci.yml starts a run for the types opened, synchronize and
+# reopened. The types edited, ready_for_review, labeled and closed start none, and GitHub starts none for a pull request
+# with a merge conflict. For those, the step finds only the runs of an earlier event of the same head commit. When
+# GitHub lists none, the wait ends at the 2 minutes, as R14 says. Then the step starts the pass and exits 0. When
+# GitHub refuses that start, the step fails. That is right: the work of the event then waits for the next run of the
+# pass, which the next of its events starts (rescreen.yml lists them).
+#
+# A burst: a newer event of the same pull request cancels the run of this file that waits (the concurrency group of
+# the pull request's number). So in a burst of events (an author who edits the title many times), each run that a
+# newer event cancelled while it waited starts nothing, and the newest event starts the pass. Each run of the pass
+# reads every open item again from the API, so that one start does the work of the events before it. The runs of
+# rescreen.yml queue in their own group, and none of them is cancelled.
+#
+# No loop: review.yml's jobs write their labels, comments and reviews with github.token, and an event that
+# github.token makes starts no run of this file (GitHub's docs, "Events that trigger workflows": its workflow_dispatch
+# and repository_dispatch start runs, and so does a pull request that it opens or pushes to, which review.yml never
+# does). The OSS Verify App's close and reopen of a catch-up are events of the pull request, and start this file
+# again: the pass decides them by its own rules, which give each head one catch-up. So an event starts no loop of
+# screens. Its cost: one job of up to 2 minutes for each event, on a standard runner, whose minutes GitHub does not
+# bill in a public repository.
+name: screen-start
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, closed]
+
+permissions: {}
+
+# A newer event of the pull request cancels the run that waits: the newest event starts the pass.
+concurrency:
+  group: screen-start-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # Only for a pull request from a fork: its head repository is not this repository, or GitHub gives none (a fork
+  # that is gone). A pull request from a branch of this repository comes from an account with write access: GitHub
+  # holds none of its CI runs, and each of them starts the pass when it completes. Only in the public repository, as
+  # rescreen.yml checks.
+  start:
+    if: >-
+      github.repository == 'theorem-labs/rocq-linux-process-semantics' && github.repository_id == 1425819621
+      && github.event.pull_request.head.repo.id != 1425819621
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {actions: write}
+    steps:
+      - name: Start the rescreen pass once GitHub lists the runs of the head commit
+        # Only values that GitHub sets, none that the author writes: the token, the repository, the head commit and
+        # the number. gh reads the repository from GH_REPO, as no checkout gives it one.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # The wait ends 2 minutes after it starts (R14).
+          deadline=$(( $(date +%s) + 120 ))
+          while :; do
+            # The pull_request runs of the head commit, as GitHub lists them now. A read that fails lists none.
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            listed=$(gh api --method GET "repos/$GH_REPO/actions/runs" -f head_sha="$HEAD" -f event=pull_request \
+              --jq '[.workflow_runs[] | select(.head_sha == $ENV.HEAD and .event == "pull_request")] | length') \
+              || listed=0
+            if [[ $listed =~ ^[1-9][0-9]*$ ]]; then
+              echo "GitHub lists $listed pull_request run(s) of $HEAD."
+              break
+            fi
+            now=$(date +%s)
+            if (( now >= deadline )); then
+              echo "GitHub lists no pull_request run of $HEAD after 2 minutes."
+              break
+            fi
+            sleep $(( deadline - now < 10 ? deadline - now : 10 ))
+          done
+          # The one write. When GitHub refuses it, the step fails.
+          gh workflow run rescreen.yml --ref main
+          echo "The rescreen pass starts on main for #$NUMBER."

@@ -3,16 +3,20 @@
 # else.
 #
 # It runs on events alone, never on a schedule: each completed run of CI (workflow_run), each push to main, each new
-# or reopened issue, and a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics, or
-# "Run workflow" on this workflow's page in the Actions tab). Each run takes the items that wait, oldest reason first
-# and under the limits below, and starts one workflow_dispatch run of review.yml for each item and task. The runs of
-# this file queue in one concurrency group, so that two of them never start the same item.
+# or reopened issue, each event of a pull request from a fork (.github/workflows/screen-start.yml starts it on main by
+# workflow_dispatch), and a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics,
+# or "Run workflow" on this workflow's page in the Actions tab). Each run takes the items that wait, oldest reason
+# first and under the limits below, and starts one workflow_dispatch run of review.yml for each item and task. The
+# runs of this file queue in one concurrency group, so that two of them never start the same item.
 #
 # A run that GitHub holds starts no workflow_run: GitHub holds the CI run of a first-time contributor's pull request
 # for a person's approval, and such a held run starts no run of a workflow that waits for it (on
 # theorem-labs/oss-verify, the held Tests runs 44140189670 and 43931972100 started no run of the workflow that waits
-# for Tests, read 2026-11-18). So an item that waits, a held one among them, waits for the next of these events in
-# this repository: another pull request's CI run, a push to main, a new or reopened issue, or a run by hand.
+# for Tests, read 2026-11-18). GitHub holds no run of pull_request_target (GitHub's docs, "Managing GitHub Actions
+# settings for a repository", read 2026-11-19), so screen-start.yml starts this pass at each event of a pull request
+# from a fork, once GitHub lists a CI run of its head commit, held or not, or after 2 minutes. Beyond that, an item
+# that waits, a held one among them, waits for the next of these events in this repository: another pull request's
+# CI run, a push to main, a new or reopened issue, an event of a pull request from a fork, or a run by hand.
 #
 # Why a file of its own: the OSSV controller wakes on each completed run of review.yml and reads its artifact, so a
 # pass inside review.yml would wake it for nothing at each event.
@@ -38,6 +42,7 @@ on:
     branches: [main]
   issues:
     types: [opened, reopened]
+  # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork.
   workflow_dispatch:
 
 permissions: {}

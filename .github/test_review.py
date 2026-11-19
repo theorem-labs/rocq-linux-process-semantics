@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests of .github/workflows/review.yml and .github/workflows/rescreen.yml.
+"""Tests of .github/workflows/review.yml, .github/workflows/rescreen.yml and .github/workflows/screen-start.yml.
 
 Each script is run as GitHub runs a step (bash --noprofile --norc -eo pipefail), against a stand-in gh that answers
 from files: which task and route a run gets (a CI run's workflow_run, by the pull requests into main that it names or
@@ -21,8 +21,9 @@ posts byte for byte, once. The post job's steps approve a first-time contributor
 stand-in gh, with a stand-in token from each of the App's sign-in steps, only when the screen passed. Each job's
 condition is evaluated for every task and route, to show which jobs run, and that a run by hand off main runs none,
 with a ref that is main in another case too. The rest checks what each job holds, that no job of these workflows
-holds a right on pull_request, that none runs on a schedule, and the settings that keep Claude to the checkout and to
-the pinned binaries. .github/test_screen.py tests the screen itself.
+holds a right on pull_request, that none runs on a schedule, that screen-start.yml alone runs on pull_request_target,
+with actions: write alone, and starts the rescreen pass once for each event, and the settings that keep Claude to the
+checkout and to the pinned binaries. .github/test_screen.py tests the screen itself.
 
 No network is used but 127.0.0.1. Needs python3, bash, curl, git, jq and yq (mikefarah's, as GitHub's runners have):
     python3 .github/test_review.py
@@ -49,6 +50,8 @@ WORKFLOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "workflows",
 CI_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "ci.yml")
 # The rescreen pass, which starts the runs of review.yml that the open items are due.
 RESCREEN_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "rescreen.yml")
+# The one workflow on pull_request_target: at each event of a pull request from a fork, it starts the rescreen pass.
+SCREEN_START_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "screen-start.yml")
 # main's .github/, as the checkout of the comment, hold and post jobs gives it, the rule they run from it, and the
 # fresh reader that the review job runs from main's checkout.
 GITHUB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -150,6 +153,7 @@ JOBS = WF["jobs"]
 APPS = WF["env"]["APPS"]
 CI = load(CI_WORKFLOW)
 RESCREEN = load(RESCREEN_WORKFLOW)
+SCREEN_START = load(SCREEN_START_WORKFLOW)
 
 
 def load_module(path, name):
@@ -2663,7 +2667,8 @@ class HoldTest(Holding):
     AGAIN = (r"^<!-- review-held -->\n\*\*Automated [a-z ]+ held\.\*\*\n\n"
              r"The workflow screens this (pull request|issue) again at the first of these events after "
              r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:\n\n- A CI run in this repository ends\.\n"
-             r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n\n"
+             r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n"
+             r"- Someone opens, reopens, changes, labels or closes a pull request from a fork\.\n\n"
              r"You do not need to do anything\.\n\n[^\n]* ")
     # A limit hold ends with what happens while the account stays at its limit; a cap or transient hold, whose rescreen
     # can be held for another reason, ends with only that a new hold says why. The marker follows, and nothing asks
@@ -7823,8 +7828,9 @@ class RescreenJobTest(Held):
                     self.assertFalse(evaluate(cond, dict(here, **change)), change)
 
     def test_only_the_pass_can_start_a_run_and_it_writes_no_label_or_comment(self):
-        """b13: actions: write is what starting a run needs: only the pass has it, beside read permissions alone
-        (contents, issues, pull-requests and checks), and it holds no environment, no secret and no identity token.
+        """b13: actions: write is what starting a run needs: only the pass has it, and screen-start.yml, whose one
+        write starts the pass (ScreenStartTest). The pass has it beside read permissions alone (contents, issues,
+        pull-requests and checks), and it holds no environment, no secret and no identity token.
         Its step's only writes are the start of a run of review.yml on main and the re-run of the failed jobs of a
         review run (rerun): no label, no comment and no other write of an item, and it runs no file of the repository,
         so it checks nothing out. No job of review.yml can start a run."""
@@ -10029,6 +10035,12 @@ def triggers(wf):
     return wf["on"]
 
 
+def events_of(wf):
+    """The events that start a workflow, whichever form its on: has (one name, a list of names, or a map)."""
+    on = wf["on"]
+    return {on} if isinstance(on, str) else set(on)
+
+
 def can_be_true(cond, github):
     """Whether an if can be true for this github context and some result and outputs of the jobs it needs: each
     of those takes each word the if compares with, and the results GitHub gives; cancelled() both ways."""
@@ -10046,7 +10058,14 @@ def can_be_true(cond, github):
 class TriggerTest(unittest.TestCase):
     """What starts each workflow, and what a run of a pull request's event can hold."""
 
-    def test_no_workflow_starts_on_pull_request_target(self):
+    def test_no_workflow_but_screen_start_starts_on_pull_request_target(self):
+        """b1 and b14 (R4, R14): of the files in .github/workflows, screen-start.yml alone starts on
+        pull_request_target."""
+        workflows = os.path.dirname(WORKFLOW)
+        names = sorted(n for n in os.listdir(workflows) if n.endswith((".yml", ".yaml")))
+        self.assertIn("screen-start.yml", names)
+        self.assertEqual({n for n in names if "pull_request_target" in events_of(load(os.path.join(workflows, n)))},
+                         {"screen-start.yml"})
         for name, wf in (("review.yml", WF), ("ci.yml", CI), ("rescreen.yml", RESCREEN)):
             with self.subTest(workflow=name):
                 self.assertNotIn("pull_request_target", triggers(wf))
@@ -10108,6 +10127,248 @@ class TriggerTest(unittest.TestCase):
                          for c in ("cancelled", "skipped", "stale", "action_required")]):
             with self.subTest(change=change):
                 self.assertFalse(evaluate(cond, dict(run, **change)))
+
+
+# The step of screen-start.yml, and the fields of a pull_request_target event that the author writes, which no run:
+# line and no env: value of screen-start.yml may name.
+SCREEN_START_STEP = "Start the rescreen pass once GitHub lists the runs of the head commit"
+AUTHOR_FIELDS = re.compile(r"\bgithub\.(?:event\.pull_request\.(?:title|body|head\.ref|head\.label)|head_ref)\b")
+
+
+class ScreenStartTest(Runner):
+    """b14 (R14): .github/workflows/screen-start.yml, the one workflow on pull_request_target. The file: its trigger
+    and types, the fork condition of its job, its permissions, its concurrency group, and what its step reads. Its
+    step against the stand-in gh, with a stand-in clock that only its sleeps move: a read of the runs of the head
+    commit, at most every 10 seconds, until GitHub lists one or 2 minutes pass, then one write, the start of
+    rescreen.yml on main, and exit 0."""
+
+    TYPES = ["opened", "synchronize", "reopened", "edited", "ready_for_review", "labeled", "closed"]
+    START = ["workflow", "run", "rescreen.yml", "--ref", "main"]
+    TOKEN = "screen-start-token"   # the step's github.token
+    CLOCK = 1_000_000_000          # the stand-in clock at the start of the step, in seconds
+    # The contexts that screen-start.yml's env may give its step: GitHub writes each of them, the author none.
+    CONTEXTS = {"github.token", "github.repository", "github.event.pull_request.head.sha",
+                "github.event.pull_request.number"}
+
+    def setUp(self):
+        super().setUp()
+        # Stand-ins at the front of PATH. gh writes each call (its GH_TOKEN, its GH_REPO and its arguments) to
+        # $FAKE_GH/every, answers gh workflow run itself (it fails with the text of $FAKE_GH/workflow.fail when that
+        # file exists), and gives each other call to Runner's stand-in gh. date answers only date +%s, from
+        # $FAKE_GH/clock. sleep moves that clock on by its seconds, and writes them to $FAKE_GH/every.
+        bin_dir = os.path.join(self.dir, "bin")
+        os.rename(os.path.join(bin_dir, "gh"), os.path.join(bin_dir, "gh-api"))
+        for name, script in (
+                ("gh", '{ printf "gh\\0%s\\0%s\\0" "${GH_TOKEN-}" "${GH_REPO-}"; printf "%s\\0" "$@"; printf "\\1"; } '
+                       '>> "$FAKE_GH/every"\n'
+                       'if [ "$1" = workflow ]; then\n'
+                       '  [ "${2-}" = run ] || { echo "gh: only workflow run is served here: $*" >&2; exit 9; }\n'
+                       '  [ ! -f "$FAKE_GH/workflow.fail" ] || { cat "$FAKE_GH/workflow.fail" >&2; exit 1; }\n'
+                       '  exit 0\n'
+                       'fi\n'
+                       'exec "$(dirname "$0")/gh-api" "$@"\n'),
+                ("date", '[ "$*" = +%s ] || { echo "date: only date +%s is served here: $*" >&2; exit 9; }\n'
+                         'cat "$FAKE_GH/clock"\n'),
+                ("sleep", '[[ $# -eq 1 && $1 =~ ^[0-9]+$ ]] || { echo "sleep: only whole seconds here: $*" >&2; exit 9; }\n'
+                          'echo "$(( $(cat "$FAKE_GH/clock") + $1 ))" > "$FAKE_GH/clock"\n'
+                          'printf "sleep\\0%s\\0\\1" "$1" >> "$FAKE_GH/every"\n')):
+            path = os.path.join(bin_dir, name)
+            with open(path, "w") as f:
+                f.write("#!/usr/bin/env bash\n" + script)
+            os.chmod(path, 0o755)
+        with open(os.path.join(self.api, "clock"), "w") as f:
+            f.write(f"{self.CLOCK}\n")
+
+    @staticmethod
+    def job():
+        (job,) = SCREEN_START["jobs"].values()
+        return job
+
+    @staticmethod
+    def run_of(head, event="pull_request"):
+        """A run of head as GitHub lists it in repos/<repo>/actions/runs: the CI run, held for an approval."""
+        return {"id": 31, "head_sha": head, "event": event, "path": ".github/workflows/ci.yml",
+                "status": "action_required", "conclusion": None}
+
+    def start(self):
+        """The step, against the stand-in gh and the stand-in clock, for #7 at HEAD of REPO: its exit status, its log,
+        and each call of gh and of sleep, in order, as ("gh", GH_TOKEN, GH_REPO, *arguments) or ("sleep", seconds)."""
+        (s,) = [s for s in self.job()["steps"] if s.get("name") == SCREEN_START_STEP]
+        env = filled(s["env"], {"github.token": self.TOKEN, "github.repository": REPO,
+                                "github.event.pull_request.head.sha": HEAD, "github.event.pull_request.number": 7})
+        rc, out, _ = self.run_script(s["run"], **env)
+        path = os.path.join(self.api, "every")
+        log = []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                log = [c.split("\0")[:-1] for c in f.read().split("\1")[:-1]]
+        return rc, out, log
+
+    @staticmethod
+    def reads(args):
+        """Whether a call of gh, by its arguments, only reads: gh api with the method GET, as gh sends a call with no
+        method (a POST when it has fields or an --input)."""
+        if args[:1] != ["api"]:
+            return False
+        for flag in ("--method", "-X"):
+            if flag in args:
+                return args[args.index(flag) + 1].upper() == "GET"
+        return not {"-f", "-F", "--field", "--raw-field", "--input"} & set(args)
+
+    def steps(self, log):
+        """The log as words: "read" for a read, "sleep <seconds>", "start" for the start of rescreen.yml on main, and
+        "write <arguments>" for any other call of gh."""
+        words = []
+        for entry in log:
+            if entry[0] == "sleep":
+                words.append(f"sleep {entry[1]}")
+            elif self.reads(entry[3:]):
+                words.append("read")
+            else:
+                words.append("start" if entry[3:] == self.START else "write " + " ".join(entry[3:]))
+        return words
+
+    def assertOneStart(self, log):
+        """The step's one write is the start of rescreen.yml on main, with the step's token and the repository in
+        GH_REPO, as no checkout gives gh a repository; each read is one of the pull_request runs of the head."""
+        calls = [entry[1:] for entry in log if entry[0] == "gh"]
+        self.assertEqual([c for c in calls if not self.reads(c[2:])], [[self.TOKEN, REPO, *self.START]])
+        for token, _repo, *args in calls:
+            if not self.reads(args):
+                continue
+            rest, endpoint, fields = args[1:], [], set()
+            while rest:
+                flag = rest.pop(0)
+                if flag in ("--method", "-X", "--jq", "-H", "--input"):
+                    rest.pop(0)
+                elif flag in ("-f", "-F", "--field", "--raw-field"):
+                    fields.add(rest.pop(0))
+                elif flag != "--paginate":
+                    endpoint.append(flag.split("?")[0])
+            self.assertEqual((token, endpoint), (self.TOKEN, [f"repos/{REPO}/actions/runs"]), args)
+            self.assertLessEqual({f"head_sha={HEAD}", "event=pull_request"}, fields, args)
+
+    def test_screen_start_starts_on_pull_request_target_alone_with_its_seven_types(self):
+        """R14: the one trigger is pull_request_target, with the types opened, synchronize, reopened, edited,
+        ready_for_review, labeled and closed, and no filter of branches or paths: no run by hand, no other event."""
+        self.assertEqual(list(SCREEN_START["on"]), ["pull_request_target"])
+        on = SCREEN_START["on"]["pull_request_target"]
+        self.assertEqual(list(on), ["types"])
+        self.assertEqual(sorted(on["types"]), sorted(self.TYPES))
+
+    def test_screen_start_runs_only_for_a_pull_request_from_a_fork_in_the_public_repository(self):
+        """R14: its one job runs for a pull request whose head repository is not this repository, also when GitHub
+        gives no head repository (a fork that is gone), and only in theorem-labs/rocq-linux-process-semantics: never
+        for a pull request from a branch of this repository, and never in another repository."""
+        self.assertEqual(len(SCREEN_START["jobs"]), 1)
+        cond = self.job()["if"]
+        fork = {"github.event_name": "pull_request_target",
+                "github.repository": "theorem-labs/rocq-linux-process-semantics", "github.repository_id": 1425819621,
+                "github.event.pull_request.head.repo.id": FORK_ID}
+        self.assertTrue(evaluate(cond, fork))
+        gone = {k: v for k, v in fork.items() if k != "github.event.pull_request.head.repo.id"}
+        self.assertTrue(evaluate(cond, gone))
+        for change in ({"github.event.pull_request.head.repo.id": 1425819621},
+                       {"github.repository": "someone/rocq-linux-process-semantics"},
+                       {"github.repository_id": 1425069221}):
+            with self.subTest(change=change):
+                self.assertFalse(evaluate(cond, dict(fork, **change)))
+
+    def test_screen_start_holds_actions_write_alone_and_checks_nothing_out(self):
+        """R14: no permission at the workflow's level, and actions: write alone for its job, which starting a run of
+        rescreen.yml needs. It holds no secret, no identity token and no environment, and its one step uses no
+        action: it checks nothing out, so no file of the pull request runs."""
+        self.assertEqual(SCREEN_START["permissions"], {})
+        job = self.job()
+        self.assertEqual(job["permissions"], {"actions": "write"})
+        for key in ("environment", "container", "services", "uses", "secrets"):
+            self.assertNotIn(key, job)
+        self.assertEqual([s.get("name") for s in job["steps"]], [SCREEN_START_STEP])
+        self.assertEqual([s for s in job["steps"] if "uses" in s], [])
+        self.assertNotRegex(json.dumps(SCREEN_START), r"\bsecrets\b|id-token|actions/checkout")
+
+    def test_screen_start_reads_no_field_that_the_author_writes(self):
+        """R14: no run: line names a field of the event that the author writes (the title, the body, the branch
+        name), nor any expression: the step reads the event through its env alone. Each env value gives only a
+        context that GitHub writes: the token, the repository, the head commit and the number."""
+        job = self.job()
+        for s in job["steps"]:
+            with self.subTest(step=s.get("name")):
+                self.assertNotRegex(s.get("run", ""), AUTHOR_FIELDS)
+                self.assertNotIn("${{", s.get("run", ""))
+        for env in (SCREEN_START.get("env") or {}, job.get("env") or {}, *[s.get("env") or {} for s in job["steps"]]):
+            for name, value in env.items():
+                with self.subTest(env=name):
+                    self.assertNotRegex(str(value), AUTHOR_FIELDS)
+                    self.assertLessEqual({e.strip() for e in re.findall(r"\$\{\{(.*?)\}\}", str(value))},
+                                         self.CONTEXTS)
+
+    def test_screen_start_a_newer_event_of_the_pull_request_cancels_the_run_that_waits(self):
+        """A burst of events of one pull request (an author who edits the title many times): the runs of one pull
+        request share one group of the whole workflow, by its number, and a newer one cancels the one that waits.
+        Each event still ends in a start of the pass: a run that a newer event cancelled while it waited started
+        nothing, and the newest run starts the pass, which reads every open item again. The runs of another pull
+        request, and the runs of rescreen.yml, are in other groups."""
+        group = SCREEN_START["concurrency"]["group"]
+        self.assertEqual(SCREEN_START["concurrency"], {"group": group, "cancel-in-progress": True})
+        self.assertNotIn("concurrency", self.job())
+        self.assertNotRegex(group, AUTHOR_FIELDS)
+        seven, eight = (interpolate(group, {"github.event.pull_request.number": n}) for n in (7, 8))
+        self.assertNotEqual(seven, eight)
+        self.assertNotIn(seven, (RESCREEN["concurrency"]["group"], interpolate(group, {})))
+
+    def test_screen_start_starts_the_pass_once_when_github_lists_a_run_of_the_head(self):
+        """R14: once GitHub lists a pull_request run of the head commit, at the first read or at a later one, the
+        step ends its wait and makes one write, gh workflow run rescreen.yml --ref main, and exits 0."""
+        listed = {"total_count": 1, "workflow_runs": [self.run_of(HEAD)]}
+        for case, first, then, want in (("at once", listed, None, ["read", "start"]),
+                                        ("after 10 seconds", {"total_count": 0, "workflow_runs": []}, listed,
+                                         ["read", "sleep 10", "read", "start"])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.serve(f"repos/{REPO}/actions/runs", first)
+                if then is not None:
+                    self.serve(f"repos/{REPO}/actions/runs.then", then)
+                rc, out, log = self.start()
+                self.assertEqual((rc, self.steps(log)), (0, want), out)
+                self.assertOneStart(log)
+
+    def test_screen_start_starts_the_pass_once_after_2_minutes_when_github_lists_no_run(self):
+        """R14: when GitHub lists no pull_request run of the head commit (a read that fails lists none; an event that
+        starts no CI run, such as edited, labeled or closed, or a pull request with a merge conflict), the step reads
+        again at most every 10 seconds, until 2 minutes pass. Then it makes the same one write, and exits 0."""
+        for case, data in (("a read that fails", None),
+                           ("no run", {"total_count": 0, "workflow_runs": []}),
+                           ("runs of another commit or event", {"total_count": 2, "workflow_runs": [
+                               self.run_of(OTHER_HEAD), self.run_of(HEAD, event="push")]})):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                if data is not None:
+                    self.serve(f"repos/{REPO}/actions/runs", data)
+                rc, out, log = self.start()
+                words = self.steps(log)
+                self.assertEqual((rc, words[-1:]), (0, ["start"]), out)
+                wait = words[:-1]
+                # a read first and after each sleep, each sleep of 10 seconds at most, 2 minutes in all
+                self.assertEqual(wait[0::2], ["read"] * (len(wait) // 2 + 1), wait)
+                sleeps = [int(w.split()[1]) for w in wait[1::2] if re.fullmatch(r"sleep [0-9]+", w)]
+                self.assertEqual(len(sleeps), len(wait) // 2, wait)
+                self.assertTrue(all(0 < s <= 10 for s in sleeps), sleeps)
+                self.assertEqual(sum(sleeps), 120)
+                self.assertOneStart(log)
+
+    def test_screen_start_a_start_that_github_refuses_fails_the_step(self):
+        """When GitHub refuses the start of rescreen.yml, the step fails, with no second try and no other write: the
+        work of the event waits for the next run of the pass."""
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1, "workflow_runs": [self.run_of(HEAD)]})
+        with open(os.path.join(self.api, "workflow.fail"), "w") as f:
+            f.write("HTTP 403: Resource not accessible by integration\n")
+        rc, out, log = self.start()
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(self.steps(log), ["read", "start"])
+        self.assertIn("Resource not accessible by integration", out)
 
 
 class ArtifactTest(Runner):
