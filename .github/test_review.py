@@ -5924,6 +5924,29 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
                          (0, {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": False}))
 
+    def test_a_file_of_the_lock_directory_of_dune_counts_as_a_file_of_the_build(self):
+        """R8: "any other file that a dune rule of the repository reads or writes", wherever it is in the tree; an opam
+        file counts because "its pin-depends can change the Rocq that CI builds with". dune 3.23 reads dune.lock/ at
+        the root of the workspace on each plain dune build, as the build lanes run it, with no dune file that names
+        it: a lock.dune that does not parse stops the build, and with dune.lock/lock.dune and a
+        dune.lock/<package>.pkg whose build installs a program rocq, the rules of a rocq.theory run that rocq (rocq c
+        --config). So each changed file of dune.lock/ counts, and so does a link in its place. README.md does not."""
+        main_files = {"dune-project": "(lang dune 3.23)\n(using rocq 0.13)\n",
+                      "theories/dune": "(rocq.theory (name T))\n",
+                      "theories/A.v": "Lemma a : True.\nProof. exact I. Qed.\n", "README.md": "# Model\n"}
+        lock = {"dune.lock/lock.dune": "(lang package 0.1)\n",
+                "dune.lock/rocq.1.0.pkg": "(version 1.0)\n(build (run sh -c \"cp /bin/true rocq\"))\n"}
+        d, main = self.repository(main_files)
+        _d, head = self.repository(dict(main_files, **lock, **{"README.md": "# Model, again\n"}), at=d)
+        files = [{"filename": p, "previous_filename": None} for p in [*lock, "README.md"]]
+        facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+        self.assertEqual(([f["path"] for f in facts["files"]], facts["whole"]), (sorted(lock), True))
+        _d, linked = self.repository(dict(main_files, **{"docs/lock/lock.dune": "(lang package 0.1)\n"}),
+                                     {"dune.lock": "docs/lock"}, at=d)
+        files = [{"filename": p, "previous_filename": None} for p in ("dune.lock", "docs/lock/lock.dune")]
+        facts = rules.proofs(linked, files, len(files), cwd=d, main=main)
+        self.assertEqual([f["path"] for f in facts["files"]], ["docs/lock/lock.dune", "dune.lock"])
+
 
 def filled(env, ctx, **extra):
     """A step's env as GitHub fills it in from the contexts ctx (a context that ctx does not hold is empty), with
