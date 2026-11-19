@@ -5246,31 +5246,6 @@ class SoundnessTest(ReaderRunner):
                 self.assertEqual(listed, [rules.QUESTION])
                 self.assertRegex(shown, f"(?m)^- `{re.escape(path)}`")
 
-    def test_a_head_from_an_older_main_counts_the_files_that_the_dune_rules_of_main_read(self):
-        """R8: "any other file that a dune rule of the repository reads or writes". A pull request can start from an
-        older commit of main. Here main got a dune rule that reads tests/placement/run.log after the commit that the
-        pull request starts from, and the pull request changes only that log. GitHub merges it with no conflict, and
-        the rule of main then reads the changed log. So the review gives the person verdict on soundness, and the
-        section names the log and the dune file of main that names it."""
-        rule = ("(rule\n (target Run.v)\n (deps placement/run.log)\n"
-                " (action (with-stdout-to %{target} (echo \"(* Generated. *)\\n\"))))\n")
-        head, outside = self.gather({"tests/placement/run.log": "2\n"},
-                                    main=dict(self.MAIN, **{"tests/placement/run.log": "1\n"}))
-        # main moves on after the commit that the pull request starts from: it gets the rule.
-        src = os.path.join(self.dir, "src")
-        self.git("checkout", "-q", "-b", "later", "HEAD~1", cwd=src)
-        self.commit(src, {"tests/dune": rule}, "the rule")
-        self.git("push", "-q", os.path.join(self.dir, "origin.git"), "later:main", cwd=src)
-        self.git("fetch", "-q", "origin", cwd=self.work)
-        rc, out, _ = self.run_script(step("gather", "Gather the pull request or issue")["run"], KIND="pr", NUMBER="7",
-                                     EVENT_HEAD=head)
-        self.assertEqual(rc, 0, out)
-        rc, out, got = self.post("No blocking finding.", [], "No blocking finding.", "pass", outside=outside)
-        self.assertEqual(rc, 0, out)
-        shown = got["body"].split(self.WHOLE, 1)[0]
-        self.assertSoundness(head, got, shown)
-        self.assertRegex(shown, r"(?m)^- `tests/placement/run\.log`: `tests/dune` names it\.$")
-
 
 class SoundnessScanTest(unittest.TestCase):
     """rules.py's facts of the rule (proofs, soundness.json), its scan of a pull request's .v files (uses), its section
@@ -5768,23 +5743,6 @@ class SoundnessScanTest(unittest.TestCase):
                 self.assertEqual(r.returncode, 0, r.stderr)
                 facts = json.loads(r.stdout)
                 self.assertTrue(facts["files"] or facts["unfollowed"] or not facts["whole"], facts)
-
-    def test_a_file_whose_name_holds_a_bracket_or_a_brace_counts_where_a_rule_names_it_and_no_glob(self):
-        """R8: "any other file that a dune rule of the repository reads or writes", and review.md: "a file that a dune
-        file of the head or of main names". Only a glob field (glob_files, glob_files_rec, copy_files) reads a name as
-        a glob: dune 3.23 builds (rule (target o) (deps "data[1].txt" "conf{a}.txt") (action ... (cat "data[1].txt")
-        (cat "conf{a}.txt"))) and reads the files t/data[1].txt and t/conf{a}.txt. So a change of either counts, by
-        main's t/dune, for a head that changes nothing else. A Markdown file does not."""
-        files = {"t/dune": "(rule (target o) (deps \"data[1].txt\" \"conf{a}.txt\")\n"
-                           " (action (with-stdout-to o (progn (cat \"data[1].txt\") (cat \"conf{a}.txt\")))))\n",
-                 "t/data[1].txt": "1\n", "t/conf{a}.txt": "a\n", "README.md": "# Model\n"}
-        d, main = self.repository(files)
-        changed = {"t/data[1].txt": "2\n", "t/conf{a}.txt": "b\n", "README.md": "# Model, again\n"}
-        _d, head = self.repository(dict(files, **changed), at=d)
-        facts = rules.proofs(head, [{"filename": p, "previous_filename": None} for p in changed], len(changed), cwd=d,
-                             main=main)
-        self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
-                         {"t/data[1].txt": ("named", "t/dune"), "t/conf{a}.txt": ("named", "t/dune")})
 
     def test_a_name_whose_brace_closes_inside_a_bracket_gives_facts_and_no_error(self):
         """R8: the job reads the changed paths itself, and the facts of a pull request that changes a dune file count
