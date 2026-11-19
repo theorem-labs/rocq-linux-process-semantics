@@ -63,10 +63,13 @@
 #   have reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, it is held without a screen, and screened
 #   again later with no person (below). An event's run counts on the account that started it, but a CI run of a pull
 #   request whose author and pusher both have no write access counts on the author, never on the pusher: anyone can
-#   open a pull request whose head is another account's fork branch. The trust job finds the author's own runs and the
-#   runs by hand whose names end with the author, and not the CI runs that another account's pushes start for the
-#   author's pull request (their names give the pusher): those pushes are bounded by SCREENED_HOURLY_CAP alone, as the
-#   accounts of one person are. To count them would let the pusher put the author at the limit.
+#   open a pull request whose head is another account's fork branch. Toward the author's limit, the trust job counts
+#   the author's own runs, the runs by hand whose names end with the author, and the CI runs that another account's
+#   pushes start for the author's pull request (their names give the pusher, and their screen jobs give the author).
+#   It reads the jobs of at most 2 * OUTSIDE_HOURLY_LIMIT runs, the author's own first. Past those reads, a CI run of
+#   another account does not count on the author: any account can start CI runs, so to count the runs that the trust
+#   job did not read would let any account put the author at the limit. Such runs can then be screened more than
+#   OUTSIDE_HOURLY_LIMIT times in an hour, and only SCREENED_HOURLY_CAP bounds their reviews.
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
 #   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
@@ -333,8 +336,12 @@ env:
   # not count: the rescreen pass takes its item again. A run whose screen passed and whose review could not sign in
   # counts once: the rescreen pass runs its failed jobs again, with no new screen. A CI run of the account's push whose
   # screen job names another account (the author of the pull request, the top of this file) used that account's limit
-  # and does not count for this one. Only a run's jobs show those, and the trust job reads the jobs of at most twice
-  # this number of the account's runs that finished or are CI runs: each one more of them counts.
+  # and does not count for this one. A CI run of another account's push whose screen job names this account counts for
+  # this one. Only a run's jobs show those. The trust job reads the jobs of at most twice this number of runs: first
+  # the account's own runs that finished or are CI runs, then the CI runs of other accounts. Past those reads, each run
+  # of the account's own counts, but no CI run of another account counts: any account can start CI runs, so to count
+  # them would let any account put this one at its limit. Such runs can then be screened more than this number of
+  # times in an hour, and only SCREENED_HOURLY_CAP bounds their reviews.
   # The runs that the rescreen pass starts and that screen (a rescreen, a review, an answer, a draft or an approval)
   # count toward the same limit, with its events (their names end with " of <account>"): so N, the most such runs of
   # one account that are screened in an hour, is this number less what its own events used. (The rescreen pass starts
@@ -1785,89 +1792,119 @@ jobs:
             | join(" ")'
           # end of held
           # earlier <login>: sets count to how many runs of this workflow in the last hour, before this run, the trust
-          # job did not skip or stop and either <login> started by an event (workflow_run, issues or issue_comment), or
-          # whose name, a name of the rescreen pass's (titled), ends with " of <login>": the trust job of a run that
-          # github-actions[bot] started checks that name, and a writer's run by hand names the account that the writer
-          # gives. Two lists give those runs: the runs of <login> (actor), and the runs by hand (workflow_dispatch),
-          # which only writers and the rescreen pass start. So the runs of other accounts, which a comment of anyone on
-          # any item starts, are in neither list. A run that GitHub skipped, with each of its jobs, does not count. A
-          # run that has not finished counts with no read of its jobs, but a CI run (workflow_run), whose screen job can
-          # name another account. The jobs of a run show whether it counts. A run of <login>'s event whose screen job
-          # names another account (screen <account>: the account whose limit its trust job counted it on, as the
-          # author of a pull request on <login>'s fork branch) used that account's limit, and does not count for
-          # <login>. A run whose trust job stopped it screened nothing, and does not count: every job after the trust
-          # job was skipped, and GitHub lists the run as one that succeeded (the CI run of a pull request into another
-          # branch, of a head that more than one open pull request has, or a run by hand whose item closed, or lost its
-          # label, in between). Nor does a run whose screen job stopped at a failed step whose name starts with "Sign
-          # in": it screened nothing, the rescreen pass takes its item again, and that run must not find the account at
-          # its limit because of it. A run whose screen passed and whose review job then could not sign in counts, once:
-          # its screen ran, and the rescreen pass runs its failed jobs again with no new screen. The job rescreen, which
-          # this file had before the pass moved to rescreen.yml and which each of its dispatched runs skipped, is not
-          # one of those jobs. A run whose trust job is not listed counts. The jobs of each run are read once, also when
-          # two pages or both lists give it, and of at most 2 * OUTSIDE_HOURLY_LIMIT runs in this run: each run past
-          # those counts, as it may, so that a burst of runs that screened nothing costs each later run no more reads
-          # than that. No jobs are read once count is at OUTSIDE_HOURLY_LIMIT: the account is at its limit. When GitHub
-          # does not list every run of a list (whole), the runs that it leaves out can be the account's: the account is
-          # at its limit. The run stops when GitHub could not say.
+          # job did not skip or stop and counted on <login>: each run that <login> started by an event (workflow_run,
+          # issues or issue_comment); each run whose name, a name of the rescreen pass's (titled), ends with
+          # " of <login>" (the trust job of a run that github-actions[bot] started checks that name, and a writer's run
+          # by hand names the account that the writer gives); and each CI run (workflow_run) that another account's push
+          # started and whose screen job names <login>, the author of its pull request (the top of this file). Three
+          # lists give those runs: the runs of <login> (actor); the runs by hand (workflow_dispatch), which only writers
+          # and the rescreen pass start; and the CI runs (workflow_run). So the runs of other accounts' comments and
+          # issues, which anyone can start on any item, are in none of them. A run that GitHub skipped, with each of
+          # its jobs, does not count. A run that has not finished counts with no read of its jobs, but a CI run, whose
+          # screen job can name another account. The jobs of a run show whether it counts. A run of <login>'s event
+          # whose screen job names another account (screen <account>: the account whose limit its trust job counted it
+          # on, as the author of a pull request on <login>'s fork branch) used that account's limit, and does not count
+          # for <login>. A CI run of another account counts only when its screen job names <login>: a run whose screen
+          # job names no account (GitHub can list a skipped job with its name not filled in) does not show that its
+          # trust job counted it on <login>. A run whose trust job stopped it screened nothing, and does not count:
+          # every job after the trust job was skipped, and GitHub lists the run as one that succeeded (the CI run of a
+          # pull request into another branch, of a head that more than one open pull request has, or a run by hand
+          # whose item closed, or lost its label, in between). Nor does a run whose screen job stopped at a failed step
+          # whose name starts with "Sign in": it screened nothing, the rescreen pass takes its item again, and that run
+          # must not find the account at its limit because of it. A run whose screen passed and whose review job then
+          # could not sign in counts, once: its screen ran, and the rescreen pass runs its failed jobs again with no new
+          # screen. The job rescreen, which this file had before the pass moved to rescreen.yml and which each of its
+          # dispatched runs skipped, is not one of those jobs. A run of the first two lists whose trust job is not
+          # listed counts. The jobs of each run are read once, also when two pages or two lists give it, and of at most
+          # 2 * OUTSIDE_HOURLY_LIMIT runs in this run: first the runs of the first two lists, then the CI runs of other
+          # accounts, each list newest first. Past those reads, each run of the first two lists counts, as it may: the
+          # count fails closed, so that a burst of runs that screened nothing costs each later run no more reads than
+          # that. Past them, no CI run of another account counts: the count fails open, because any account can start
+          # CI runs, and to count the runs that this run did not read would let any account put <login> at its limit.
+          # Such runs can then be screened more than OUTSIDE_HOURLY_LIMIT times in an hour, and only SCREENED_HOURLY_CAP
+          # bounds their reviews. No jobs are read once count is at OUTSIDE_HOURLY_LIMIT: the account is at its limit.
+          # The CI runs are not listed then, nor when no read is left. When GitHub does not list every run of one of the
+          # first two lists (whole), the runs that it leaves out can be the account's: the account is at its limit. When
+          # it does not list every CI run, the runs that it lists are read, and the runs that it leaves out do not
+          # count, as the runs past the reads do not. The run stops when GitHub could not say.
           earlier() {
-            local from list out rows runs="" id state own entry verdict reads=0
-            local -a unread=()
+            local from round list out rows runs id state own entry verdict reads=0
+            local -a lists unread
             local -A once=()
             count=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-            # Each run of the list on one line: "<id> <state> <own>", state count for a run that counts with no read
-            # of its jobs, else read, and own 1 for a run of <login>'s event, 0 for a run by hand.
-            for list in "actor=$1" event=workflow_dispatch; do
-              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-              out=$(LOGIN=$1 TITLED=$titled gh api --method GET --paginate \
-                "repos/$REPO/actions/workflows/review.yml/runs" -f "$list" -f created=">=$from" -F per_page=100 \
-                --jq "$pages"'(.workflow_runs[] | (.display_title // "") as $title
-                  | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
-                           and ((.actor.login == $ENV.LOGIN
-                                 and (.event == "workflow_run" or .event == "issues" or .event == "issue_comment"))
-                                or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
-                                    and ($title | endswith(" of " + $ENV.LOGIN)))))
-                  | "\(.id) \(if .status != "completed" and .event != "workflow_run" then "count" else "read" end) \(
-                    if .event == "workflow_dispatch" then 0 else 1 end)")') \
-                || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
-              if ! rows=$(whole <<< "$out"); then
-                echo "::notice::GitHub lists at most 1,000 runs of this workflow with $list since $from, and more of" \
-                  "them match. The runs that it does not list can be runs of $1, so $1 is held at the limit."
-                count=$OUTSIDE_HOURLY_LIMIT
-                return 0
+            # Two rounds: the runs of <login>'s events and the runs by hand that name it, then the CI runs of other
+            # accounts.
+            for round in own other; do
+              if [ "$round" = own ]; then
+                lists=("actor=$1" event=workflow_dispatch)
+              else
+                (( count < OUTSIDE_HOURLY_LIMIT && reads < 2 * OUTSIDE_HOURLY_LIMIT )) || return 0
+                lists=(event=workflow_run)
               fi
-              runs+=$rows$'\n'
-            done
-            while read -r id state own; do
-              [ -n "$id" ] || continue
-              [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
-              [ -z "${once[$id]:-}" ] || continue
-              once[$id]=1
-              if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $own"); fi
-            done <<< "$runs"
-            for entry in "${unread[@]}"; do
-              read -r id own <<< "$entry"
-              (( count < OUTSIDE_HOURLY_LIMIT )) || break
-              if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
-                count=$((count + 1))
-                continue
-              fi
-              reads=$((reads + 1))
-              # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-              verdict=$(LOGIN=$1 OWN=$own gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
-                -F per_page=100 --jq '([.jobs[] | select(.name == "trust")] | first) as $t
-                  | [.jobs[] | select(.name != "trust" and .name != "rescreen")] as $rest
-                  | ([$rest[] | .name // "" | capture("^screen (?<a>[A-Za-z0-9-]+(\\[bot\\])?)$") | .a]
-                     | first) as $named
-                  | if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
-                    elif $t.status == "completed" and ($rest | length) > 0
-                         and ($rest | all(.conclusion == "skipped")) then "skip"
-                    elif $ENV.OWN == "1" and $named != null and $named != $ENV.LOGIN then "other"
-                    elif any($rest[] | select(.name | test("^screen( |$)")) | .steps[]?;
-                             (.name | startswith("Sign in")) and .conclusion == "failure") then "signin"
-                    else "count" end') \
-                || { echo "::error::the jobs of run $id could not be read. Re-run this run."; exit 1; }
-              if [[ $verdict == *count* ]]; then count=$((count + 1)); fi
+              runs="" unread=()
+              # Each run of a list on one line: "<id> <state> <own>", state count for a run that counts with no read
+              # of its jobs, else read, and own 1 for a run of <login>'s event, 0 for a run by hand, 2 for a CI run of
+              # another account.
+              for list in "${lists[@]}"; do
+                # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+                out=$(LOGIN=$1 LIST=$list TITLED=$titled gh api --method GET --paginate \
+                  "repos/$REPO/actions/workflows/review.yml/runs" -f "$list" -f created=">=$from" -F per_page=100 \
+                  --jq "$pages"'(.workflow_runs[] | (.display_title // "") as $title
+                    | select(.id < ($ENV.RUN_ID | tonumber) and .conclusion != "skipped"
+                             and (if $ENV.LIST == "event=workflow_run"
+                                  then .event == "workflow_run" and .actor.login != $ENV.LOGIN
+                                  else (.actor.login == $ENV.LOGIN
+                                        and (.event == "workflow_run" or .event == "issues"
+                                             or .event == "issue_comment"))
+                                       or (.event == "workflow_dispatch" and ($title | test($ENV.TITLED))
+                                           and ($title | endswith(" of " + $ENV.LOGIN))) end))
+                    | "\(.id) \(if .status != "completed" and .event != "workflow_run" then "count" else "read" end) \(
+                      if .event == "workflow_dispatch" then 0 elif .actor.login == $ENV.LOGIN then 1 else 2 end)")') \
+                  || { echo "::error::the runs of this workflow could not be read. Re-run this run."; exit 1; }
+                if [ "$round" = other ]; then
+                  rows=$(awk '$1 != "="' <<< "$out")
+                elif ! rows=$(whole <<< "$out"); then
+                  echo "::notice::GitHub lists at most 1,000 runs of this workflow with $list since $from, and more" \
+                    "of them match. The runs that it does not list can be runs of $1, so $1 is held at the limit."
+                  count=$OUTSIDE_HOURLY_LIMIT
+                  return 0
+                fi
+                runs+=$rows$'\n'
+              done
+              while read -r id state own; do
+                [ -n "$id" ] || continue
+                [[ $id =~ ^[0-9]+$ ]] || { echo "::error::a run id is not a number. Re-run this run."; exit 1; }
+                [ -z "${once[$id]:-}" ] || continue
+                once[$id]=1
+                if [ "$state" = count ]; then count=$((count + 1)); else unread+=("$id $own"); fi
+              done <<< "$runs"
+              for entry in "${unread[@]}"; do
+                read -r id own <<< "$entry"
+                (( count < OUTSIDE_HOURLY_LIMIT )) || return 0
+                if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
+                  [ "$own" != 2 ] || return 0
+                  count=$((count + 1))
+                  continue
+                fi
+                reads=$((reads + 1))
+                # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+                verdict=$(LOGIN=$1 OWN=$own gh api --method GET --paginate "repos/$REPO/actions/runs/$id/jobs" \
+                  -F per_page=100 --jq '([.jobs[] | select(.name == "trust")] | first) as $t
+                    | [.jobs[] | select(.name != "trust" and .name != "rescreen")] as $rest
+                    | ([$rest[] | .name // "" | capture("^screen (?<a>[A-Za-z0-9-]+(\\[bot\\])?)$") | .a]
+                       | first) as $named
+                    | if $ENV.OWN == "2" and $named != $ENV.LOGIN then "other"
+                      elif $t == null then "count" elif $t.conclusion == "skipped" then "skip"
+                      elif $t.status == "completed" and ($rest | length) > 0
+                           and ($rest | all(.conclusion == "skipped")) then "skip"
+                      elif $ENV.OWN == "1" and $named != null and $named != $ENV.LOGIN then "other"
+                      elif any($rest[] | select(.name | test("^screen( |$)")) | .steps[]?;
+                               (.name | startswith("Sign in")) and .conclusion == "failure") then "signin"
+                      else "count" end') \
+                  || { echo "::error::the jobs of run $id could not be read. Re-run this run."; exit 1; }
+                if [[ $verdict == *count* ]]; then count=$((count + 1)); fi
+              done
             done
           }
           fail() { echo "::error::$1 Re-run this run."; exit 1; }

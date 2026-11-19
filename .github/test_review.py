@@ -2128,10 +2128,11 @@ class LimitTest(Runner):
                                  [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs])
 
     def test_the_runs_of_other_accounts_never_cut_the_list_of_an_account(self):
-        """Each comment of anyone on any item starts a run of this file. The trust job lists only the runs of the
-        account (actor=<login>) and the runs by hand (event=workflow_dispatch), which only writers and the rescreen job
-        start: 1,000 newer runs of eve's comments, which cut the list of every run, leave mallory judged by her own
-        runs and the rescreen job's runs of her."""
+        """Each comment of anyone on any item starts a run of this file. The trust job never reads the list of every
+        run: it lists the runs of the account (actor=<login>), the runs by hand (event=workflow_dispatch), which only
+        writers and the rescreen job start, and the CI runs of other accounts (event=workflow_run), whose list GitHub
+        may cut without effect. 1,000 newer runs of eve's comments, which cut the list of every run, leave mallory
+        judged by her own runs and the rescreen job's runs of her."""
         eve = [{"id": 5000 - i, "actor": {"login": "eve"}, "event": "issue_comment", "status": "completed",
                 "conclusion": "skipped", "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
         endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
@@ -2295,6 +2296,90 @@ class LimitTest(Runner):
         rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
                                       head_repository=str(FORK_ID), pulls=[])
         self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")), (0, "20", "eve", "limit"), out)
+
+    def test_the_authors_own_runs_take_the_reads_first_and_other_accounts_ci_runs_past_them_do_not_count(self):
+        """Ruling 1 and decision 3: the 2 * OUTSIDE_HOURLY_LIMIT reads of jobs of a trust job go to the author's own
+        runs first, then to the CI runs of other accounts, newest first. Past those reads, a CI run of another account
+        does not count: any account can start CI runs, and a count of the runs that the trust job did not read would
+        let any account put the author at her limit. Bob's OUTSIDE_HOURLY_LIMIT pushes to the head of eve's #20 (screen
+        eve) are newer than eve's own runs, which could not sign in and count for nothing. With
+        2 * OUTSIDE_HOURLY_LIMIT of eve's runs, no read is left for bob's runs, and eve is screened. With one read left,
+        one of bob's runs counts, and eve is screened. With OUTSIDE_HOURLY_LIMIT reads left, bob's runs put eve at her
+        limit."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+        budget = 2 * self.LIMIT
+        pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(self.LIMIT)]
+        screened = [attempt_job("screen", name="screen eve"), attempt_job("review", name="review (screened)")]
+        signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen eve")]
+        for own, want, read in ((budget, "screen", 0), (budget - 1, "screen", 1),
+                                (budget - self.LIMIT, "limit", self.LIMIT)):
+            with self.subTest(own=own):
+                mine = [(50 - i, "eve", "issues", "success") for i in range(own)]
+                self.runs(*pushes, *mine, jobs={**{r[0]: screened for r in pushes}, **{r[0]: signed_out for r in mine}})
+                self.forget()
+                rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                              head_repository=str(FORK_ID), pulls=[])
+                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
+                self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
+                                 [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in mine + pushes[:read]])
+
+    def test_a_ci_run_of_another_account_counts_on_the_author_as_a_run_of_her_own_does(self):
+        """Ruling 1: a CI run of bob's push counts on eve when its screen job names eve, whether its screen ran or
+        the run was held at her limit (a held run of her own counts too). It does not count on eve when its trust job
+        stopped it, when its screen could not sign in, or when its screen job names another account or no account
+        (GitHub can list a skipped job with its name not filled in): such a run does not show that its trust job
+        counted it on eve."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+        trust = {"name": "trust", "status": "completed", "conclusion": "success"}
+        pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(self.LIMIT)]
+
+        def skipped(*names):
+            return [{"name": n, "status": "completed", "conclusion": "skipped"} for n in names]
+        for case, jobs, want in (
+                ("screened for eve", [attempt_job("screen", name="screen eve"),
+                                      attempt_job("review", name="review (screened)")], "limit"),
+                ("held at eve's limit", skipped("gather", "screen eve", "review") + [attempt_job("hold")], "limit"),
+                ("stopped by its trust job", skipped("gather", "screen", "review", "post", "comment", "hold"),
+                 "screen"),
+                ("its screen could not sign in", [attempt_job("screen", "Sign in to Google Cloud", name="screen eve")],
+                 "screen"),
+                ("screened for mallory", [attempt_job("screen", name="screen mallory"),
+                                          attempt_job("review", name="review (screened)")], "screen"),
+                ("its screen job names no account", skipped("gather", JOBS["screen"]["name"], "review")
+                 + [attempt_job("hold")], "screen")):
+            with self.subTest(case=case):
+                self.runs(*pushes, jobs={r[0]: jobs for r in pushes})
+                for r in pushes:
+                    self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": [trust, *jobs]})
+                rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                              head_repository=str(FORK_ID), pulls=[])
+                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
+
+    def test_a_list_of_other_accounts_ci_runs_that_github_cuts_is_read_as_far_as_it_goes(self):
+        """GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count says how many
+        match. A cut list of the author's own runs puts her at her limit (above). A cut list of the CI runs of other
+        accounts does not: any account can start CI runs. The trust job reads the runs that such a list gives:
+        OUTSIDE_HOURLY_LIMIT - 1 of bob's pushes to the head of eve's #20 (screen eve) leave her under her limit, and
+        OUTSIDE_HOURLY_LIMIT put her at it."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+        screened = [attempt_job("screen", name="screen eve"), attempt_job("review", name="review (screened)")]
+        endpoint = f"repos/{REPO}/actions/workflows/review.yml/runs"
+        path = os.path.join(self.api, (endpoint + ".event=workflow_run").replace("/", "_") + ".json")
+        for n, want in ((self.LIMIT - 1, "screen"), (self.LIMIT, "limit")):
+            with self.subTest(pushes=n):
+                pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(n)]
+                self.runs(*pushes, jobs={r[0]: screened for r in pushes}, of="event=workflow_run")
+                with open(path) as f:
+                    listed = json.load(f)
+                with open(path, "w") as f:
+                    json.dump(dict(listed, total_count=1000 + n), f)
+                self.serve(endpoint, {"workflow_runs": []})
+                rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                              head_repository=str(FORK_ID), pulls=[])
+                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
 
     def test_runs_that_the_trust_job_stopped_are_read_within_the_budget(self):
         """Decision 1 and decision 3: a run of mallory's event that the trust job stopped (a CI run of a pull request
