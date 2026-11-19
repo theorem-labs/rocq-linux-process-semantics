@@ -9887,6 +9887,31 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual(self.started()[::2], (0, runs))
         self.assertEqual(self.dispatched("approve", account="mallory")["route"], "screen")
 
+    def test_screen_start_a_burst_of_a_first_time_contributors_pushes_costs_a_few_calls_each(self):
+        """R14: a burst of events costs a few API calls each and cannot use up the workflow token's 1,000 requests an
+        hour, which every workflow run of the repository shares (GitHub's docs, "Rate limits for the REST API": 1,000
+        requests an hour for each repository). GitHub holds the CI run of each push of a first-time contributor, so
+        each push of mallory's, one a minute, starts screen-start.yml (a read, and gh workflow run's 2 calls) and a run
+        of the pass with the number of #7, whose new head has a held run. From her fourth push in an hour on, the
+        approve runs of her earlier heads put mallory at OUTSIDE_HOURLY_LIMIT, so the pass starts no run for her:
+        such a run makes at most 1,000 / 60 - 3 = 13 calls of the API, beside 4 other open items that are due
+        nothing."""
+        self.item(kind="pr")
+        self.held_runs(made=1)
+        for i, earlier in enumerate(("e0" * 20, "e1" * 20, "e2" * 20)):
+            self.ran(10 + i, f"approve #7 at {earlier} of mallory", made=45 - 15 * i,
+                     jobs=[attempt_job("gather"), self.screened()])
+        self.waiting()
+        label = {"id": 4, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                 "body": rules.label_comment("decide", markers=[rules.import_marker(OTHER_HEAD, None)])}
+        self.item(9, kind="pr", author="eve", head=OTHER_HEAD, comments=[review_of(OTHER_HEAD), label])
+        self.ci(ended=600, head=OTHER_HEAD, run=71)
+        self.item(10, author="alice")
+        self.item(11, author="eve", comments=[self.REPLIED])
+        rc, out, runs, wrote, calls = self.numbered(7)
+        self.assertEqual((rc, runs, wrote), (0, [], []), out)
+        self.assertLessEqual(len(calls), 1000 // 60 - 3, calls)
+
     def approval_tried(self, tries):
         """mallory's pull request at HEAD, whose runs GitHub holds, and tries approve runs of HEAD whose post job
         failed at the approval: at REVIEW_TRIES, the pass decides the stop head-approve."""
