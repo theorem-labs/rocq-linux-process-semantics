@@ -2461,6 +2461,29 @@ class LimitTest(Runner):
                                               head_repository=str(FORK_ID), pulls=[])
                 self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", want), out)
 
+    def test_ci_runs_of_the_owner_whose_trust_job_has_not_finished_count_on_the_author(self):
+        """Spec v68 R1: the limit of an account counts every CI run that could count on it, and so no padding of runs
+        moves an account past its limit. bob owns the head repository of eve's pull requests #20 to #23, so each CI run
+        of his push could count on her. One push of bob's to their 4 branches ends 4 CI runs together, and the trust
+        jobs of their review runs run side by side. While the trust job of an earlier run is queued or in progress,
+        GitHub lists no screen job of it (its name needs the trust job's outputs), and the run can still count on eve,
+        as a run of her own in that state does (test_held_runs_and_runs_not_listed_yet_count). With
+        OUTSIDE_HOURLY_LIMIT such runs before it, the last run is held at her limit, not screened."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD), *[(21 + i, "eve", str(i) * 40, FORK_ID, False, "main", f"patch-{i + 2}")
+                                           for i in range(self.LIMIT)])
+        pushes = [(90 - i, "bob", "workflow_run", None, f"review {str(i) * 40} by bob") for i in range(self.LIMIT)]
+        for status in ("queued", "in_progress"):
+            with self.subTest(trust=status):
+                self.runs(*pushes)
+                for r in pushes:
+                    self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs",
+                               {"jobs": [{"name": "trust", "status": status, "conclusion": None}]})
+                rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                              head_repository=str(FORK_ID), pulls=[])
+                self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")),
+                                 (0, "20", "eve", "limit"), out)
+
     def test_a_list_of_other_accounts_ci_runs_that_github_cuts_puts_the_author_at_her_limit(self):
         """GitHub gives at most 1,000 runs for a list with created, the newest first, and total_count says how many
         match. Spec v61 R1: the runs that a cut list of the CI runs of other accounts leaves out can count on the
