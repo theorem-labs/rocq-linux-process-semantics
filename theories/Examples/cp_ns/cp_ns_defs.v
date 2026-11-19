@@ -7,26 +7,36 @@
     no trace events, so the only observables are the exit code and the
     final file system.  This file fixes:
 
-    - the outcome set [cp_outcomes fs0 cwd src dst] over the syscall
+    - the outcome set [cp_outcomes fs0 cwd ur src dst] over the syscall
       resolutions (open-in fails -> code 3, image unchanged; open-out
       fails -> code 4, image unchanged; with both descriptors, the copy:
       code 5 for a folder source, code 0 with the destination's inode
       holding the source inode's bytes, or the image after the
-      destination's open for a device on either side), stated over what
-      each operand's open hands out ([FileSimWalk.open_arm]) and used
-      identically by the source and target derivations;
+      destination's open for a device on either side; code 5 for a
+      source of [2^63 - 1024] bytes or more, cut there; code 6 for
+      /dev/urandom into a regular file, cut at the same offset), stated
+      over what each operand's open hands out ([FileSimWalk.open_arm])
+      and the declared random stream [ur], and used identically by the
+      source and target derivations;
     - image probes ([*_init_pc_val], buffer writability);
     - the descriptor table at entry and what the destination's open
       hands the copy ([cp_dst_ok]);
     - the inode facts the copy-loop invariant needs.
 
     Bytes are [byte = bv 8], machine values [word = bv 64]; file offsets
-    are [word]s and fd offsets ADVANCE BY WRAPPING bv ADDITION (Specs.v).
-    On a source file of 2^64 bytes or more the copy loop's file offset
-    wraps and the read never returns 0, and /dev/urandom never returns 0
-    either, so BOTH binaries copy forever there; [cp_copy] has no outcome
-    for those, and the per-binary derivations end them in a silent loop
-    ([FileSimLoop.tfl_loop]).
+    are [word]s.  [rw_verify_area]'s position test bounds every regular
+    file transfer: the copy loop reads and writes 1024 bytes at offsets
+    that are multiples of 1024, so the read or write at [cp_cut] =
+    [2^63 - 1024] is -EINVAL (fs/read_write.c:467-469, Linux v6.18.46).
+    A regular-file source of that many bytes or more is copied up to
+    [cp_cut] and both binaries exit 5 (their read-error path); a copy
+    from /dev/urandom into a regular file stops at the write at
+    [cp_cut] and both exit 6 (their write-error path).  /dev/urandom
+    never returns 0, and a device destination's position never moves
+    ([write_null] and [random_write_iter] leave it at 0), so a copy
+    from /dev/urandom into a device is the one copy that never ends:
+    [cp_copy] has no outcome for it, and the per-binary
+    derivations end it in a silent loop ([FileSimLoop.tfl_loop]).
 
     Ported in part from theorem-labs/linux-process-semantics
     r22/namespace-core at 6ff3d045 (issue #1011). *)
@@ -151,26 +161,57 @@ Proof. intros vt. apply wseg_ok_lift. vm_compute. reflexivity. Qed.
     writes nothing; a file destination takes the bytes at its inode, a
     device every write whole: /dev/null answers the count, /dev/urandom
     takes every byte of a readable buffer of at most 1024 bytes,
-    [ReadWrite.random_write]), code 0, when a word offset reaches its end.
-    A source and a destination that are one inode read the truncated,
-    empty file.  /dev/urandom as the source never reads 0 bytes, and a
-    file a word offset cannot reach the end of is read round forever: no
-    outcome there (the per-binary derivations end those in a silent loop,
+    [ReadWrite.random_write]), code 0, when it is shorter than [cp_cut].
+    One of [cp_cut] bytes or more is copied up to [cp_cut], where the
+    read is -EINVAL: code 5.  A source and a destination that are one inode read the
+    truncated, empty file.  /dev/urandom as the source never reads 0
+    bytes: into a regular file it is copied up to [cp_cut], where the
+    write is -EINVAL (code 6), the file then holding the stream's first
+    [cp_cut] bytes; into a device it is copied forever, and there is no
+    outcome (the per-binary derivations end it in a silent loop,
     [FileSimLoop.tfl_loop]). *)
+(** THE CUT: [2^63 - 1024], the first multiple of 1024 at which a
+    1024-byte read or write fails [rw_verify_area]'s position test
+    ([ReadWrite.rw_pos_einvalb]).  It is a [nat] that must never be
+    computed: as a unary numeral it does not fit in memory, and [lia]
+    evaluates a closed [nat] it meets.  So it is sealed behind an opaque
+    proof, and the proofs reason about it through [cp_cut_Z] alone. *)
+Lemma cp_cut_sig : { n : nat | Z.of_nat n = (2 ^ 63 - 1024)%Z }.
+Proof. exists (Z.to_nat (2 ^ 63 - 1024)). apply Z2Nat.id. lia. Qed.
+
+Definition cp_cut : nat := proj1_sig cp_cut_sig.
+
+Lemma cp_cut_Z : Z.of_nat cp_cut = (2 ^ 63 - 1024)%Z.
+Proof. exact (proj2_sig cp_cut_sig). Qed.
+
 Definition cp_copied (fe_d : FdEntry) (fs1 : Fs) (D : list byte) : Fs :=
   match fe_d, D with
   | FdFileW j _, _ :: _ => Fs.fs_set_ino_data fs1 j D
   | _, _ => fs1
   end.
 
-Definition cp_copy (fs1 : Fs) (fe_s fe_d : FdEntry) : (word * Fs) -> Prop :=
+(** What the copy of a regular file's bytes [D] into [fe_d] ends in:
+    the whole file and exit 0 when it is shorter than [cp_cut], else its
+    first [cp_cut] bytes and the read-error exit 5. *)
+Definition cp_file_outcome (fe_d : FdEntry) (fs1 : Fs) (D : list byte)
+    : (word * Fs) -> Prop :=
+  fun o =>
+    if (Z.of_nat (length D) <? 2 ^ 63 - 1024)%Z
+    then o = (Z_to_bv 64 0, cp_copied fe_d fs1 D)
+    else o = (Z_to_bv 64 5, cp_copied fe_d fs1 (firstn cp_cut D)).
+
+Definition cp_copy (fs1 : Fs) (ur : InputStream) (fe_s fe_d : FdEntry)
+    : (word * Fs) -> Prop :=
   fun o =>
     match fe_s with
     | FdDir _ => o = (Z_to_bv 64 5, fs1)
     | FdDevNull _ _ => o = (Z_to_bv 64 0, fs1)
-    | FdFile i _ =>
-        (Z.of_nat (length (Fs.fs_ino_data fs1 i)) < 2^64)%Z
-        /\ o = (Z_to_bv 64 0, cp_copied fe_d fs1 (Fs.fs_ino_data fs1 i))
+    | FdFile i _ => cp_file_outcome fe_d fs1 (Fs.fs_ino_data fs1 i) o
+    | FdUrandom _ _ =>
+        match fe_d with
+        | FdFileW _ _ => o = (Z_to_bv 64 6, cp_copied fe_d fs1 (fst (stream_take ur cp_cut)))
+        | _ => False
+        end
     | _ => False
     end.
 
@@ -219,7 +260,8 @@ Qed.
     image unchanged is always one (an open answered before the walk, an
     errno at the walk's end, or a refusal beside a descriptor); with a
     source descriptor so is code 4; with both, the copy's. *)
-Definition cp_outcomes (fs0 : Fs) (cwd : path) (src dst : path) : (word * Fs) -> Prop :=
+Definition cp_outcomes (fs0 : Fs) (cwd : path) (ur : InputStream) (src dst : path)
+    : (word * Fs) -> Prop :=
   fun o =>
     o = (Z_to_bv 64 3, fs0)
     \/ (op_walked src = true /\
@@ -228,7 +270,7 @@ Definition cp_outcomes (fs0 : Fs) (cwd : path) (src dst : path) : (word * Fs) ->
             o = (Z_to_bv 64 4, fs0)
             \/ (op_walked dst = true /\
                 match open_arm false fs0 cwd dst with
-                | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) fe_s fe_d o
+                | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) ur fe_s fe_d o
                 | inr _ => False
                 end)
         | inr _ => False
@@ -303,7 +345,7 @@ Qed.
 
 (** One write step of the copy into the file destination [j]. *)
 Lemma cp_fs_at_step : forall j o fs1 D k,
-  (k < length D)%nat -> (Z.of_nat (length D) < 2^64)%Z ->
+  (k < length D)%nat -> (Z.of_nat k < 2^64)%Z ->
   Fs.fs_set_ino_data (cp_fs_at (FdFileW j o) fs1 D k) j
     (file_write (firstn k D) (nat_to_word k)
                 (file_read D (nat_to_word k) (Z_to_bv 64 1024)))
@@ -415,86 +457,153 @@ Qed.
 (* The endless copies: what the copy loop's read anchors keep                *)
 (* ######################################################################### *)
 
-(** The destination descriptor of an endless copy: a regular file whose
-    offset is at or before its end (the copy only appends, so no write of
-    the loop opens a hole) and whose inode is not the source's [si], or a
-    device opened for writing. *)
-Definition cp_edst (fdout : word) (m : Model) (si : option Fs.ino) : Prop :=
-  (exists j off, fd_lookup (m_fds m) fdout = Some (FdFileW j off) /\
-     (bv_unsigned off <= Z.of_nat (length (Fs.fs_ino_data (m_fs m) j)))%Z /\
-     si <> Some j)
-  \/ (exists rd, fd_lookup (m_fds m) fdout = Some (FdDevNull rd true))
+(** The destination descriptor of an endless copy: a device opened for
+    writing.  A regular file is not one: its write at [cp_cut] is
+    -EINVAL, which ends the copy ([source_uloop], [target_uloop]). *)
+Definition cp_edst (fdout : word) (m : Model) : Prop :=
+  (exists rd, fd_lookup (m_fds m) fdout = Some (FdDevNull rd true))
   \/ (exists rd, fd_lookup (m_fds m) fdout = Some (FdUrandom rd true)).
 
-(** The source descriptor of an endless copy: a regular file of 2^64
-    bytes or more, at any offset ([si = Some i]), or /dev/urandom opened
-    for reading with an endless declared stream ([si = None]). *)
-Definition cp_esrc (fdin : word) (m : Model) (si : option Fs.ino) : Prop :=
-  match si with
-  | Some i => exists off, fd_lookup (m_fds m) fdin = Some (FdFile i off) /\
-                (2^64 <= Z.of_nat (length (Fs.fs_ino_data (m_fs m) i)))%Z
-  | None => fd_lookup (m_fds m) fdin = Some (FdUrandom true false) /\
-            stream_infinite (m_urandom m)
-  end.
+(** The source descriptor of an endless copy: /dev/urandom opened for
+    reading with an endless declared stream.  A regular file is not one:
+    its read at [cp_cut] is -EINVAL, which ends the copy. *)
+Definition cp_esrc (fdin : word) (m : Model) : Prop :=
+  fd_lookup (m_fds m) fdin = Some (FdUrandom true false) /\
+  stream_infinite (m_urandom m).
 
 Definition cp_emodel (fdin fdout : word) (m : Model) : Prop :=
-  m_halted m = None /\ m_vm_lazy m = [] /\
-  exists si, cp_esrc fdin m si /\ cp_edst fdout m si.
+  m_halted m = None /\ m_vm_lazy m = [] /\ cp_esrc fdin m /\ cp_edst fdout m.
 
-(** What the destination's open hands out is such a destination. *)
-Lemma cp_edst_open : forall fdout m fe si,
+(** What the destination's open hands out, when it is a device, is such a
+    destination. *)
+Lemma cp_edst_open : forall fdout m fe,
   fd_lookup (m_fds m) fdout = Some fe ->
-  cp_dst_ok fe (m_fs m) ->
-  (forall j, Fs.fs_ino_data (m_fs m) j = [] -> si <> Some j) ->
-  cp_edst fdout m si.
+  fe = FdDevNull false true \/ fe = FdUrandom false true ->
+  cp_edst fdout m.
 Proof.
-  intros fdout m fe si Hfd Hok Hsi. unfold cp_edst.
-  destruct Hok as [(j & -> & Hj) | [-> | ->]].
-  - left. exists j, (Z_to_bv 64 0). split; [exact Hfd|]. split.
-    + change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. lia.
-    + exact (Hsi j Hj).
-  - right. left. exists false. exact Hfd.
-  - right. right. exists false. exact Hfd.
+  intros fdout m fe Hfd [-> | ->]; unfold cp_edst.
+  - left. exists false. exact Hfd.
+  - right. exists false. exact Hfd.
 Qed.
 
 (** A read moves only the source descriptor. *)
-Lemma cp_edst_read : forall fdin fdout m e si,
-  fdin <> fdout -> cp_edst fdout m si ->
-  cp_edst fdout (with_fds (fd_insert (m_fds m) fdin e) m) si.
+Lemma cp_edst_read : forall fdin fdout m e,
+  fdin <> fdout -> cp_edst fdout m ->
+  cp_edst fdout (with_fds (fd_insert (m_fds m) fdin e) m).
 Proof.
-  intros fdin fdout m e si Hne H. unfold cp_edst in *. model_simp.
+  intros fdin fdout m e Hne H. unfold cp_edst in *. model_simp.
   rewrite fd_lookup_insert_neq by congruence. exact H.
 Qed.
 
-(** A write through the destination file [j] leaves the source. *)
-Lemma cp_esrc_write : forall fdin fdout m e j d si,
-  fdin <> fdout -> si <> Some j -> cp_esrc fdin m si ->
-  cp_esrc fdin (with_fds (fd_insert (m_fds m) fdout e)
-                  (with_fs (Fs.fs_set_ino_data (m_fs m) j d) m)) si.
+(* ######################################################################### *)
+(* The cut: where [rw_verify_area]'s position test ends a copy             *)
+(* ######################################################################### *)
+
+(** The loop's offsets are multiples of 1024 until the last, short read,
+    and [cp_cut] is one: so an offset under [cp_cut] that is a multiple
+    of 1024 leaves room for a whole 1024-byte transfer before it. *)
+Lemma cp_room : forall k q,
+  Z.of_nat k = (1024 * q)%Z -> (Z.of_nat k < Z.of_nat cp_cut)%Z ->
+  (Z.of_nat k + 1024 <= Z.of_nat cp_cut)%Z.
+Proof. intros k q Hq Hk. rewrite cp_cut_Z in *. lia. Qed.
+
+(** The position test of a transfer of at most 1024 bytes at an offset
+    under [cp_cut] passes: the transfer ends at or before [LLONG_MAX]. *)
+Lemma cp_pos_ok : forall k (n : Z),
+  (Z.of_nat k < Z.of_nat cp_cut)%Z -> (n <= 1024)%Z ->
+  rw_pos_einvalb (nat_to_word k) n = false.
 Proof.
-  intros fdin fdout m e j d si Hne Hsi H.
-  destruct si as [i|]; cbn [cp_esrc] in H |- *; model_simp.
-  - destruct H as (off & Hf & Hb). exists off.
-    rewrite fd_lookup_insert_neq by congruence. split; [exact Hf|].
-    rewrite Fs.fs_ino_data_set_neq; [exact Hb|].
-    apply Z.eqb_neq. intro E. apply Hsi. rewrite E. reflexivity.
-  - rewrite fd_lookup_insert_neq by congruence. exact H.
+  intros k n Hk Hn. unfold rw_pos_einvalb. apply Z.ltb_ge.
+  pose proof cp_cut_Z as Hc.
+  rewrite u_ntw by lia. lia.
 Qed.
 
-(** The write's step of the destination file [j]: the offset advances by
-    the bytes written and stays at or before the end. *)
-Lemma cp_edst_write : forall fdout m j off bs si,
-  (Z.of_nat (length bs) < 2^64)%Z ->
-  (bv_unsigned off <= Z.of_nat (length (Fs.fs_ino_data (m_fs m) j)))%Z ->
-  si <> Some j ->
-  cp_edst fdout
-    (with_fds (fd_insert (m_fds m) fdout (FdFileW j (off + len_word bs)))
-       (with_fs (Fs.fs_set_ino_data (m_fs m) j
-                   (file_write (Fs.fs_ino_data (m_fs m) j) off bs)) m)) si.
+(** ...and at [cp_cut] itself a 1024-byte transfer fails it: the read of
+    a regular file, and the write of a whole /dev/urandom chunk. *)
+Lemma cp_pos_at_cut : forall (n : Z),
+  (1024 <= n)%Z -> rw_pos_einvalb (nat_to_word cp_cut) n = true.
 Proof.
-  intros fdout m j off bs si Hbs Hoff Hsi. unfold cp_edst. left.
-  exists j, (off + len_word bs). model_simp.
-  split; [apply fd_lookup_insert_eq|]. split; [|exact Hsi].
-  rewrite Fs.fs_ino_data_set_eq.
-  apply file_write_off_bound; [exact Hbs | exact Hoff].
+  intros n Hn. unfold rw_pos_einvalb. apply Z.ltb_lt.
+  pose proof cp_cut_Z as Hc.
+  rewrite u_ntw by lia. lia.
+Qed.
+
+(** [blez a0] is TAKEN on an errno return: the write-error branch both
+    binaries take on the -EINVAL at [cp_cut]. *)
+Lemma c_lts_0_errno : forall e, (1 <= e)%Z -> (e <= 4095)%Z ->
+  c_lts (Z_to_bv 64 0) (errno_ret e) = false.
+Proof.
+  intros e H1 H2. unfold c_lts, bv_lts.
+  change (bv_signed (Z_to_bv 64 0)) with 0%Z.
+  rewrite errno_ret_signed by lia.
+  apply Z.ltb_ge. lia.
+Qed.
+
+(** After [k] bytes of [D], [k] at least one, the destination is the
+    first [k] bytes copied ([cp_copied] of them): the cut's image. *)
+Lemma cp_fs_at_copied : forall fe_d fs1 D k,
+  (1 <= k)%nat -> (k <= length D)%nat ->
+  cp_fs_at fe_d fs1 D k = cp_copied fe_d fs1 (firstn k D).
+Proof.
+  intros fe_d fs1 D k H1 Hk. unfold cp_fs_at, cp_copied.
+  destruct fe_d; try reflexivity.
+  destruct k as [|k']; [lia|].
+  destruct D as [|b D']; [cbn in Hk; lia|].
+  reflexivity.
+Qed.
+
+(** THE URANDOM COPY INTO A FILE: after [k] bytes the destination's inode
+    [j] holds the stream's first [k] bytes, the image the second open
+    left while nothing is written yet. *)
+Definition cp_ufs_at (fs1 : Fs) (j : Fs.ino) (ur : InputStream) (k : nat) : Fs :=
+  match k with
+  | O => fs1
+  | S _ => Fs.fs_set_ino_data fs1 j (fst (stream_take ur k))
+  end.
+
+Lemma cp_ufs_at_data : forall fs1 j ur k,
+  Fs.fs_ino_data fs1 j = [] ->
+  Fs.fs_ino_data (cp_ufs_at fs1 j ur k) j = fst (stream_take ur k).
+Proof.
+  intros fs1 j ur k Hj. destruct k as [|k'].
+  - cbn [cp_ufs_at]. rewrite Hj. reflexivity.
+  - cbn [cp_ufs_at]. apply Fs.fs_ino_data_set_eq.
+Qed.
+
+(** One chunk of the stream written at offset [k], the end of the
+    stream's first [k] bytes. *)
+Lemma cp_ufs_at_step : forall fs1 j ur k chunk,
+  (Z.of_nat k < 2^64)%Z ->
+  chunk = fst (stream_take (snd (stream_take ur k)) 1024) ->
+  stream_infinite ur ->
+  Fs.fs_set_ino_data (cp_ufs_at fs1 j ur k) j
+    (file_write (fst (stream_take ur k)) (nat_to_word k) chunk)
+  = cp_ufs_at fs1 j ur (k + 1024).
+Proof.
+  intros fs1 j ur k chunk Hk -> Hinf.
+  rewrite file_write_append
+    by (rewrite wtn_ntw by exact Hk;
+        rewrite (stream_take_infinite_length _ _ Hinf); reflexivity).
+  assert (Hadd : fst (stream_take ur k) ++ fst (stream_take (snd (stream_take ur k)) 1024)
+                 = fst (stream_take ur (k + 1024))).
+  { rewrite stream_take_add. reflexivity. }
+  rewrite Hadd.
+  destruct (k + 1024)%nat as [|n] eqn:Hn; [lia|].
+  destruct k as [|k'].
+  - cbn [cp_ufs_at]. reflexivity.
+  - cbn [cp_ufs_at]. rewrite fs_set_ino_data_twice. reflexivity.
+Qed.
+
+(** After [n] bytes, [n] at least one, the image is [cp_copied] of the
+    stream's first [n] bytes: at [cp_cut], [cp_copy]'s code-6 image. *)
+Lemma cp_ufs_at_copied : forall fs1 j o ur n,
+  stream_infinite ur -> (1 <= n)%nat ->
+  cp_ufs_at fs1 j ur n = cp_copied (FdFileW j o) fs1 (fst (stream_take ur n)).
+Proof.
+  intros fs1 j o ur n Hinf Hn.
+  pose proof (stream_take_infinite_length n ur Hinf) as Hlen.
+  destruct n as [|c]; [lia|].
+  unfold cp_ufs_at, cp_copied.
+  destruct (fst (stream_take ur (S c))) as [|b bs]; [cbn in Hlen; lia|].
+  reflexivity.
 Qed.

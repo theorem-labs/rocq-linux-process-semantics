@@ -486,7 +486,7 @@ Proof.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota;
     try apply pure_ok; try apply unmodeled_intro.
   destruct e; cbv iota; try apply unmodeled_intro;
-    unfold access_exists_spec; apply alt_r; apply pure_ok.
+    unfold access_exists_spec; apply pure_ok.
 Qed.
 
 Lemma faccessat_witness_ok : forall dirfd pathp mode i m,

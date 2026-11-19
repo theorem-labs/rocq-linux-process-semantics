@@ -162,8 +162,8 @@ Record Ofd := mkOfd {
     a path walk, a capability check and [getpid] each read a private
     reference AND a shared object in the SAME step.  A pure projection can
     decide none of /proc/self, a mount root, a uid mapping or a capability
-    set, because [Fs.Fs] ([Fs.mkFs]) is a name tree, an inode table and a
-    table of folder link counts, with no mount and no owner.
+    set, because [Fs.Fs] is a name tree, an inode table and a table of
+    folder link counts, with no mount and no owner.
 
     [pconfig] is deliberately NOT parametric in the namespace state.  A
     parameter for one field would reach every definition and every theorem

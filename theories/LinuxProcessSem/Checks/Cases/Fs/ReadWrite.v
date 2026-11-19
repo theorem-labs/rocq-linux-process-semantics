@@ -38,6 +38,10 @@ Proof.
   { (* the named range is refused: -EFAULT, no events *)
     apply check_ret_only_ok_iff in Hspec. destruct Hspec as (_ & _ & Hev).
     exact Hev. }
+  destruct (rw_pos_einvalb off (bv_unsigned count)); cbv iota in Hspec.
+  { (* [rw_verify_area]'s position test: -EINVAL, no events *)
+    apply check_ret_only_ok_iff in Hspec. destruct Hspec as (_ & _ & Hev).
+    exact Hev. }
   lazymatch type of Hspec with (if ?b then _ else _) = _ => destruct b end;
     cbv iota in Hspec.
   - (* -EFAULT: no writes, no events, whatever the file it extends *)
@@ -347,6 +351,8 @@ Proof.
   - (* file *)
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
       [now destruct (Hro _ _ _ Hspec)|].
+    destruct (rw_pos_einvalb off (bv_unsigned count)); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
     cbv zeta in Hspec. set (data := fs_ino_data (m_fs m) p) in Hspec.
     destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
       as [|b bsr] eqn:Hbs; cbv iota in Hspec.
@@ -374,6 +380,8 @@ Proof.
       rewrite Hbs in Hl. exact Hl.
   - (* the same file opened O_RDWR: the file bullet above *)
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
+      [now destruct (Hro _ _ _ Hspec)|].
+    destruct (rw_pos_einvalb off (bv_unsigned count)); cbv iota in Hspec;
       [now destruct (Hro _ _ _ Hspec)|].
     cbv zeta in Hspec. set (data := fs_ino_data (m_fs m) p) in Hspec.
     destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
@@ -486,31 +494,50 @@ Proof.
 Qed.
 
 (** ...and the rejecting direction: the specific lie no kernel in scope
-    can tell — the FULL count acknowledged where the count is one past
-    the clamp and the file could have served every byte of it.  The
-    delivered prefix is the model's own (so the ONLY wrong thing about
-    the effect is the return exceeding the clamp), and the verdict is
-    [CheckReject]: rejected, not merely unwitnessed. *)
-Lemma read_ret_over_clamp_rejected : forall i m fd p data buf count off w,
+    can tell — the FULL count acknowledged, with the full payload, where
+    the count is one past the clamp and the file holds every byte of it
+    past the offset.  End of file is ruled out ([Heof]), and the
+    destination is writable for the whole count ([Hwall]), so the clamp
+    is the only thing that makes the model's delivery shorter than the
+    count: a checker without the clamp would deliver exactly this effect
+    and accept it.  [Hwall] is what makes that so, not what the proof
+    below uses.  The verdict is [CheckReject]: rejected, not merely
+    unwitnessed. *)
+Lemma read_ret_over_clamp_rejected : forall i m fd p data buf count off w w',
   fd_lookup (m_fds m) fd = Some (FdFile p off) ->
   fs_ino_data (m_fs m) p = data ->
   bv_unsigned count = (MAX_RW_COUNT + 1)%Z ->
-  (* the range passes [access_ok]: the clamp is only reached past it *)
+  (* the range passes [access_ok], and the position test after it: the
+     clamp is only reached past both *)
   access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
+  (* no end of file before the count: the file holds every byte named *)
+  (bv_unsigned off + bv_unsigned count <= Z.of_nat (length data))%Z ->
   read_bytes_map (in_wmem i) buf
     (len_word (file_read data off (Z_to_bv 64 (rw_count_clamp count))))
     = Some w ->
-  file_read data off (Z_to_bv 64 (rw_count_clamp count)) <> [] ->
+  (* the destination is writable for the whole count, so no unwritable
+     byte past the clamp can be what refuses the full payload *)
+  read_bytes_map (in_wmem i) buf (len_word (file_read data off count)) = Some w' ->
   check_read i fd buf count
-    (mkEffect count
-       [(buf, file_read data off (Z_to_bv 64 (rw_count_clamp count)))] []) m
+    (mkEffect count [(buf, file_read data off count)] []) m
   = CheckReject.
 Proof.
-  intros i m fd p data buf count off w Hfd Hfs Hc Hok Hw Hne.
+  intros i m fd p data buf count off w w' Hfd Hfs Hc Hok Hpos Heof Hw Hwall.
   unfold check_read. rewrite Hfd, Hok. cbv beta iota zeta.
+  rewrite Hpos. cbv beta iota zeta.
   rewrite Hfs.
   destruct (file_read data off (Z_to_bv 64 (rw_count_clamp count)))
-    as [|b bsr] eqn:Hbs; [congruence|].
+    as [|b bsr] eqn:Hbs.
+  { (* the clamped delivery is not empty: the file holds the clamp's
+       bytes past [off] *)
+    exfalso. rewrite file_read_unguarded in Hbs.
+    apply (f_equal (@length byte)) in Hbs.
+    rewrite length_firstn, length_skipn in Hbs. cbn [length] in Hbs.
+    unfold word_to_nat in Hbs. rewrite rw_count_clamp_word in Hbs.
+    unfold rw_count_clamp in Hbs. rewrite Hc in Hbs.
+    pose proof (bv_unsigned_in_range 64 off) as Hoff.
+    unfold MAX_RW_COUNT in *. lia. }
   rewrite <- Hbs in *. rewrite Hw. cbv beta iota.
   rewrite Hbs. cbv beta iota.
   (* the return is the raw count; the admissible one is the clamped
@@ -524,8 +551,7 @@ Proof.
       [ lia
       | unfold bv_modulus; change (Z.of_N 64) with 64%Z;
         unfold MAX_RW_COUNT in Hlen; lia ]. }
-  rewrite bv_eqb_refl. rewrite (proj2 (listN_eqb_eq _ _) eq_refl).
-  rewrite Hne'. cbn [andb]. reflexivity.
+  rewrite Hne', !Bool.andb_false_r. reflexivity.
 Qed.
 
 (** For a raw count within [IOV_MAX] the 32-bit truncation is the
@@ -764,9 +790,8 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
     The file is present and the fd is open, so nothing else on any of
     the three arms can be what declines -- and the guard runs ahead of
-    each arm's [access_ok] and of the append arm's [rw_verify_area]
-    too, so the three really do meet here rather than at three
-    different tests. *)
+    each arm's [access_ok] and [rw_verify_area] too, so the three
+    really do meet here rather than at three different tests. *)
 Example write_count_bound_declines_on_every_file_kind :
   let over := Z_to_bv 64 (rw_bytes_max + 1) in
   let at_bound := Z_to_bv 64 rw_bytes_max in
@@ -1088,21 +1113,17 @@ Example append_zero_write_leaves_the_offset_alone :
   end.
 Proof. vm_compute. split_conj; check_eq. Qed.
 
-(** [rw_verify_area]'s position test on a SCALAR write to an APPEND fd,
-    which is the one place that arm is not the write-only arm with the
-    destination moved.
+(** [rw_verify_area]'s position test on a SCALAR write to an APPEND fd.
 
     [vfs_write] hands [rw_verify_area] (fs/read_write.c) the fd's real
     [&f_pos] and it runs BEFORE the iterator, so
     [(loff_t)(pos + count) < 0] is decided on the position an [lseek]
     left behind — [generic_write_checks] (mm/filemap.c) overrides
-    [ki_pos] only once the write is under way.  The append arm keeps the
-    test for a reason the write-only arm does not have: it drops
-    [modeled_file_gap], and that guard is the whole of why the
-    write-only arm's omission of the test is unreachable.  Without
-    either guard the
+    [ki_pos] only once the write is under way.  So the test is about the
+    fd's position and not about where the bytes go: without it the
     model would have appended the byte and answered 1 where Linux
-    answers -EINVAL.
+    answers -EINVAL.  The write-only and read-write arms make the same
+    test ([write_at_llong_max_is_einval]).
 
     A REAL RUN REACHES IT: [lseek(fd, LLONG_MAX, SEEK_SET)] succeeds on
     tmpfs and ramfs, whose [s_maxbytes] is [MAX_LFS_FILESIZE], the file
@@ -2113,10 +2134,9 @@ Proof. repeat split; check_eq. Qed.
     nonempty readv of a regular file at offset [LLONG_MAX] is -EINVAL —
     [(loff_t)(pos + count) < 0] — where an offset merely past end-of-file
     is 0.  Reachable, since [lseek(fd, LLONG_MAX, SEEK_SET)] succeeds on
-    tmpfs.  The scalar [read] reaches the same test on the kernel and
-    still answers 0 in the model: the last two conjuncts pin THAT known
-    divergence from Linux, so that closing it is a visible flip here
-    rather than a silent one. *)
+    tmpfs.  The scalar [read] makes the same test ([vfs_read],
+    fs/read_write.c:563-565): the last two conjuncts pin its -EINVAL and
+    refuse the end-of-file 0 the model used to answer there. *)
 Example readv_at_llong_max_is_einval_not_eof :
   let m := readv_abcde_model (Z_to_bv 64 (2 ^ 63 - 1)) in
   check_syscall (mkInput 65 [3; 8192; 1; 0; 0; 0] mem_readv_iov wmem_readv_one)
@@ -2128,12 +2148,276 @@ Example readv_at_llong_max_is_einval_not_eof :
           (mkEffect 0 [] [])) m
      = CheckReject
   /\ check_syscall (mkInput 63 [3; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
-       (mkEffect 0 [] []) m
-     = CheckOk (with_fds (fd_insert (m_fds m) 3
-                  (FdFile 1 (Z_to_bv 64 (2 ^ 63 - 1)))) m) []
-  /\ check_syscall (mkInput 63 [3; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
        (mkEffect (errno_ret EINVAL) [] []) m
+     = CheckOk m []
+  /\ check_syscall (mkInput 63 [3; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
+       (mkEffect 0 [] []) m
      = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** [rw_verify_area]'s position test on the SCALAR [read] and [write] of
+    a regular file, on each positional kind: [FdFile] and [FdFileRW] for
+    [read], [FdFileW] and [FdFileRW] for [write].  [vfs_read] and
+    [vfs_write] call it after [access_ok] and before the [MAX_RW_COUNT]
+    clamp (fs/read_write.c:560-567 and :674-681, Linux v6.18.46), and it
+    answers -EINVAL when [pos] is negative (:462-464) or [pos + count]
+    passes [LLONG_MAX] (:467-469), for every file the model holds: none
+    has [FOP_UNSIGNED_OFFSET].
+
+    WHAT EACH ANSWER USED TO BE, which is what the refused conjuncts
+    name.  A one-byte read at [LLONG_MAX] answered 0, as at end-of-file.
+    A one-byte write there met [modeled_file_gap] first and declined,
+    and a write on a file already within [Uaccess.rw_bytes_max] of the
+    offset was judged as a delivering write.  Reaching the offset needs
+    [lseek(fd, LLONG_MAX, SEEK_SET)] to succeed, which it does on tmpfs
+    ([s_maxbytes] is [MAX_LFS_FILESIZE]). *)
+Definition rw_pos_model (e : FdEntry) : Model :=
+  mkModel [(3, e)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (demo_fs_raw [([102], SFile [104; 105])]) None None None.
+
+Definition rw_pos_llong_max : word := Z_to_bv 64 (2 ^ 63 - 1).
+
+Definition rw_pos_rmem : word -> option byte :=
+  fun a => if bv_eqb a 4096 then Some 122 else None.
+
+(** The model a read that delivers nothing leaves: the descriptor
+    written back at its offset.  A zero-length write leaves the same,
+    with the file's bytes written back unchanged ([Fs.file_write] of no
+    bytes is the identity). *)
+Definition rw_pos_after_read (e : FdEntry) : Model :=
+  let m := rw_pos_model e in with_fds (fd_insert (m_fds m) 3 e) m.
+
+Definition rw_pos_after_write0 (e : FdEntry) : Model :=
+  let m := rw_pos_model e in
+  with_fds (fd_insert (m_fds m) 3 e)
+    (with_fs (fs_set_ino_data (m_fs m) 1 (fs_ino_data (m_fs m) 1)) m).
+
+Example read_at_llong_max_is_einval :
+  let rd e r := check_syscall (mkInput 63 [3; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
+                  r (rw_pos_model e) in
+  rd (FdFile 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+    = CheckOk (rw_pos_model (FdFile 1 rw_pos_llong_max)) []
+  /\ rd (FdFile 1 rw_pos_llong_max) (mkEffect 0 [] []) = CheckReject
+  /\ rd (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 rw_pos_llong_max)) []
+  /\ rd (FdFileRW 1 rw_pos_llong_max) (mkEffect 0 [] []) = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+Example write_at_llong_max_is_einval :
+  let wr e r := check_syscall (mkInput 64 [3; 4096; 1; 0; 0; 0] rw_pos_rmem (fun _ => None))
+                  r (rw_pos_model e) in
+  wr (FdFileW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+    = CheckOk (rw_pos_model (FdFileW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileW 1 rw_pos_llong_max) (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
+       = CheckReject
+  /\ wr (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileRW 1 rw_pos_llong_max) (with_copyins [(4096, 1%nat)] (mkEffect 1 [] []))
+       = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** ...AND [access_ok] COMES FIRST on these arms as on the append one
+    ([append_write_access_ok_precedes_the_position_test]): a range that
+    leaves the user address space is -EFAULT at a position that would
+    otherwise be -EINVAL (fs/read_write.c:560-565 and :674-679).  [buf]
+    is [2 ^ 47], the first address whose one-byte range is past
+    [State.TASK_SIZE]. *)
+Example scalar_access_ok_precedes_the_position_test :
+  let top := Z_to_bv 64 (2 ^ 47) in
+  let call n e r := check_syscall (mkInput n [3; top; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
+                      r (rw_pos_model e) in
+  call 63 (FdFile 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] [])
+    = CheckOk (rw_pos_model (FdFile 1 rw_pos_llong_max)) []
+  /\ call 63 (FdFile 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ call 63 (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 rw_pos_llong_max)) []
+  /\ call 63 (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ call 64 (FdFileW 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] [])
+       = CheckOk (rw_pos_model (FdFileW 1 rw_pos_llong_max)) []
+  /\ call 64 (FdFileW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ call 64 (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 rw_pos_llong_max)) []
+  /\ call 64 (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] []) = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** THE BOUNDARY, from below.  The test is [pos + count > LLONG_MAX],
+    so a call whose end is exactly [LLONG_MAX] passes it, and so does a
+    zero count AT [LLONG_MAX]: [pos + 0] is not negative (:467).  Each
+    such call gets the answer it gets anywhere past end-of-file, and the
+    -EINVAL is refused:
+    - [read] of one byte at [LLONG_MAX - 1], and of zero bytes at
+      [LLONG_MAX]: 0, the descriptor unmoved;
+    - [write] of zero bytes at [LLONG_MAX]: 0, the file unchanged.  A
+      zero-length write opens no hole, so [modeled_file_gap] admits it;
+    - [write] of one byte at [LLONG_MAX - 1]: past the position test it
+      meets [modeled_file_gap], which declines a hole of almost [2^63]
+      bytes.  That decline is the model's own bound and not a kernel
+      answer; what this conjunct pins is that the -EINVAL is not it. *)
+Example scalar_position_test_boundary :
+  let below := Z_to_bv 64 (2 ^ 63 - 2) in
+  let rd e n r := check_syscall (mkInput 63 [3; 4096; n; 0; 0; 0] (fun _ => None) wmem_readv_one)
+                    r (rw_pos_model e) in
+  let wr e n r := check_syscall (mkInput 64 [3; 4096; n; 0; 0; 0] rw_pos_rmem (fun _ => None))
+                    r (rw_pos_model e) in
+  rd (FdFile 1 below) 1 (mkEffect 0 [] []) = CheckOk (rw_pos_after_read (FdFile 1 below)) []
+  /\ rd (FdFile 1 below) 1 (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ rd (FdFileRW 1 below) 1 (mkEffect 0 [] [])
+       = CheckOk (rw_pos_after_read (FdFileRW 1 below)) []
+  /\ rd (FdFile 1 rw_pos_llong_max) 0 (mkEffect 0 [] [])
+       = CheckOk (rw_pos_after_read (FdFile 1 rw_pos_llong_max)) []
+  /\ rd (FdFile 1 rw_pos_llong_max) 0 (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ wr (FdFileW 1 rw_pos_llong_max) 0 (mkEffect 0 [] [])
+       = CheckOk (rw_pos_after_write0 (FdFileW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileW 1 rw_pos_llong_max) 0 (mkEffect (errno_ret EINVAL) [] []) = CheckReject
+  /\ wr (FdFileRW 1 rw_pos_llong_max) 0 (mkEffect 0 [] [])
+       = CheckOk (rw_pos_after_write0 (FdFileRW 1 rw_pos_llong_max)) []
+  /\ rd (FdFileRW 1 rw_pos_llong_max) 0 (mkEffect 0 [] [])
+       = CheckOk (rw_pos_after_read (FdFileRW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileW 1 below) 1 (mkEffect (errno_ret EINVAL) [] []) = CheckUnmodeled
+  /\ wr (FdFileRW 1 below) 1 (mkEffect (errno_ret EINVAL) [] []) = CheckUnmodeled.
+Proof. split_conj; check_eq. Qed.
+
+(** ...AND THE ONE-BYTE WRITE AT [LLONG_MAX - 1] WHERE THE MODEL HAS NO
+    HOLE TO DECLINE.  Its end is exactly [LLONG_MAX], so [rw_verify_area]
+    (fs/read_write.c:467-469, Linux v6.18.46) passes it.  On a file that
+    already holds [LLONG_MAX - 1] bytes it opens no hole, so the model
+    delivers the byte, as [vfs_write] does: it returns 1, reads one
+    source byte, writes it at [LLONG_MAX - 1] and leaves the descriptor
+    at [LLONG_MAX].  This is the only answer: the -EINVAL and a decline
+    are both refused.  The file's length is abstract. *)
+Lemma write_file_one_byte_at_llong_max_minus_1_delivers :
+  forall i fd buf m p data x o,
+  fd_lookup (m_fds m) fd = Some (FdFileW p (Z_to_bv 64 (2 ^ 63 - 2))) ->
+  fs_ino_data (m_fs m) p = data ->
+  Z.of_nat (length data) = (2 ^ 63 - 2)%Z ->
+  access_okb buf 1 = true ->
+  in_mem i buf = Some x ->
+  write_spec fd buf (Z_to_bv 64 1) i m o <->
+  o = Ok (with_copyins [(buf, 1%nat)] (mkEffect (Z_to_bv 64 1) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 (2 ^ 63 - 1))))
+            (with_fs (fs_set_ino_data (m_fs m) p
+                        (file_write data (Z_to_bv 64 (2 ^ 63 - 2)) [x])) m))
+         [].
+Proof.
+  intros i fd buf m p data x o Hfd Hfs Hlen Hok Hx.
+  assert (Hok' : access_okb buf (bv_unsigned (Z_to_bv 64 1)) = true) by exact Hok.
+  assert (Hg : modeled_rw_range buf (Z_to_bv 64 1) = true).
+  { unfold modeled_rw_range. rewrite Hok'. apply Bool.orb_true_r. }
+  assert (Hpos : rw_pos_einvalb (Z_to_bv 64 (2 ^ 63 - 2))
+                   (bv_unsigned (Z_to_bv 64 1)) = false) by reflexivity.
+  assert (Hw0 : w_is0 (Z_to_bv 64 1) = false) by reflexivity.
+  assert (Hsrc : write_source (in_mem i) buf (Z_to_bv 64 1) = [x]).
+  { unfold write_source. change (rw_count_clamp (Z_to_bv 64 1)) with 1%Z.
+    rewrite readable_bytes_eq. change (word_to_nat (Z_to_bv 64 1)) with 1%nat.
+    cbn [readable_bytes_aux]. rewrite Hx. reflexivity. }
+  assert (Hgap : modeled_file_gap data (Z_to_bv 64 (2 ^ 63 - 2)) [x] = true).
+  { unfold modeled_file_gap, modeled_zero_fill. rewrite Hlen. reflexivity. }
+  assert (Hoff : (Z_to_bv 64 (2 ^ 63 - 2) + len_word [x])%bv
+                 = Z_to_bv 64 (2 ^ 63 - 1)) by (apply bv_eq; reflexivity).
+  assert (Hchk : forall eff, check_write i fd buf (Z_to_bv 64 1) eff m
+    = check_ret_only_copyins [(buf, 1%nat)] eff (Z_to_bv 64 1)
+        (with_fds (fd_insert (m_fds m) fd (FdFileW p (Z_to_bv 64 (2 ^ 63 - 1))))
+           (with_fs (fs_set_ino_data (m_fs m) p
+                       (file_write data (Z_to_bv 64 (2 ^ 63 - 2)) [x])) m))
+        []).
+  { intro eff. unfold check_write. rewrite Hfd. cbv beta iota.
+    rewrite Hg, Hok', Hpos. cbn [negb]. cbv beta iota zeta.
+    rewrite Hsrc, Hw0. cbn [negb andb length Nat.eqb]. cbv beta iota zeta.
+    rewrite Hfs, Hgap, Hoff. cbn [negb]. cbv beta iota.
+    reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_write_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_write_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso.
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  - intros ->. apply check_write_sound_ok. rewrite Hchk.
+    apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** A NEGATIVE POSITION.  [rw_verify_area] answers -EINVAL for
+    [pos < 0] at ANY count, a zero one included (fs/read_write.c:462-464),
+    and [rw_pos_einvalb] does too: an [off] of [2^63] or more makes the
+    sum pass [2^63 - 1] whatever the count.  No [lseek] reaches this
+    ([lseek_dest] answers only offsets under [2^63]).  It is pinned
+    because the model's states include such a descriptor, and the
+    answer there must still be Linux's. *)
+Example scalar_negative_position_is_einval :
+  let neg := Z_to_bv 64 (2 ^ 63) in
+  let rd e r := check_syscall (mkInput 63 [3; 4096; 0; 0; 0; 0] (fun _ => None) wmem_readv_one)
+                  r (rw_pos_model e) in
+  let wr e r := check_syscall (mkInput 64 [3; 4096; 0; 0; 0; 0] rw_pos_rmem (fun _ => None))
+                  r (rw_pos_model e) in
+  rd (FdFile 1 neg) (mkEffect (errno_ret EINVAL) [] []) = CheckOk (rw_pos_model (FdFile 1 neg)) []
+  /\ rd (FdFile 1 neg) (mkEffect 0 [] []) = CheckReject
+  /\ rd (FdFileRW 1 neg) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 neg)) []
+  /\ wr (FdFileW 1 neg) (mkEffect (errno_ret EINVAL) [] []) = CheckOk (rw_pos_model (FdFileW 1 neg)) []
+  /\ wr (FdFileW 1 neg) (mkEffect 0 [] []) = CheckReject
+  /\ wr (FdFileRW 1 neg) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 neg)) []
+  /\ wr (FdFileA 1 neg) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileA 1 neg)) [].
+Proof. split_conj; check_eq. Qed.
+
+(** ...AND A NEGATIVE POSITION WHOSE 64-BIT SUM WRAPS: [pos = -1] and
+    [count = 1] make [(loff_t)(pos + count)] 0, so only the [pos < 0]
+    branch (fs/read_write.c:462-464) answers -EINVAL.  A predicate that
+    transcribed the sum test (:467-469) alone would answer this read 0
+    and decline this write. *)
+Example scalar_negative_position_wrapping_sum_is_einval :
+  let m1 := Z_to_bv 64 (2 ^ 64 - 1) in
+  let rd e r := check_syscall (mkInput 63 [3; 4096; 1; 0; 0; 0] (fun _ => None) wmem_readv_one)
+                  r (rw_pos_model e) in
+  let wr e r := check_syscall (mkInput 64 [3; 4096; 1; 0; 0; 0] rw_pos_rmem (fun _ => None))
+                  r (rw_pos_model e) in
+  rd (FdFile 1 m1) (mkEffect (errno_ret EINVAL) [] []) = CheckOk (rw_pos_model (FdFile 1 m1)) []
+  /\ rd (FdFile 1 m1) (mkEffect 0 [] []) = CheckReject
+  /\ rd (FdFileRW 1 m1) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 m1)) []
+  /\ wr (FdFileW 1 m1) (mkEffect (errno_ret EINVAL) [] []) = CheckOk (rw_pos_model (FdFileW 1 m1)) []
+  /\ wr (FdFileRW 1 m1) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 m1)) [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE TEST READS THE COUNT THE CALL NAMED: [vfs_read] and [vfs_write]
+    call [rw_verify_area] before the [MAX_RW_COUNT] clamp
+    (fs/read_write.c:563-567, :677-681).  At [2^63 - 2^31] a count of
+    [2^32] passes [LLONG_MAX], where the clamped count [0x7ffff000]
+    would not: an arm that tested the clamped count would answer this
+    read 0 and decline this write. *)
+Example scalar_position_test_reads_the_unclamped_count :
+  let off := Z_to_bv 64 (2 ^ 63 - 2 ^ 31) in
+  let big := Z_to_bv 64 (2 ^ 32) in
+  let rd e r := check_syscall (mkInput 63 [3; 4096; big; 0; 0; 0] (fun _ => None) wmem_readv_one)
+                  r (rw_pos_model e) in
+  let wr e r := check_syscall (mkInput 64 [3; 4096; big; 0; 0; 0] rw_pos_rmem (fun _ => None))
+                  r (rw_pos_model e) in
+  rd (FdFile 1 off) (mkEffect (errno_ret EINVAL) [] []) = CheckOk (rw_pos_model (FdFile 1 off)) []
+  /\ rd (FdFile 1 off) (mkEffect 0 [] []) = CheckReject
+  /\ rd (FdFileRW 1 off) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 off)) []
+  /\ wr (FdFileW 1 off) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileW 1 off)) []
+  /\ wr (FdFileRW 1 off) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 off)) [].
+Proof. split_conj; check_eq. Qed.
+
+(** ...AND IT PRECEDES THE FAULTING SOURCE: [rw_verify_area] runs before
+    [write_iter] (fs/read_write.c:677-679), so an unreadable source at
+    [LLONG_MAX] is -EINVAL with the file not extended, where an arm that
+    made the test after the faulting-source path would decline. *)
+Example scalar_position_test_precedes_the_faulting_source :
+  let wr e r := check_syscall (mkInput 64 [3; 4096; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
+                  r (rw_pos_model e) in
+  wr (FdFileW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+    = CheckOk (rw_pos_model (FdFileW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileW 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] []) = CheckReject
+  /\ wr (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EINVAL) [] [])
+       = CheckOk (rw_pos_model (FdFileRW 1 rw_pos_llong_max)) []
+  /\ wr (FdFileRW 1 rw_pos_llong_max) (mkEffect (errno_ret EFAULT) [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
 (** A PARTIALLY WRITABLE DESTINATION ON A PIPE IS DECLINED.  Five bytes
@@ -2673,15 +2957,20 @@ Proof.
        destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv iota in H;
          [now destruct (Hro _ _ _ H)|].
        cbv zeta in H.
-       destruct (negb (w_is0 count)
-                 && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
+       (* the file-size limit answers -EFBIG with an empty ledger, and
+          otherwise the ledger is the prefix of the cut count *)
+       destruct (append_efbigb (fs_ino_data (m_fs m) p) count); cbv iota in H;
+         [now destruct (Hro _ _ _ H)|].
+       set (cnt := append_count (fs_ino_data (m_fs m) p) count) in H. clearbody cnt.
+       destruct (negb (w_is0 cnt)
+                 && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0);
          cbv iota in H; [now destruct (Hro _ _ _ H)|].
-       destruct (w_is0 count); cbv iota in H; [now destruct (Hro _ _ _ H)|].
+       destruct (w_is0 cnt); cbv iota in H; [now destruct (Hro _ _ _ H)|].
        apply check_ret_only_copyins_ok_iff in H.
        destruct H as (-> & _ & _).
        cbn in Hc. injection Hc as Ha Hn. subst n.
        eapply Z.le_trans; [apply write_source_length_le|].
-       apply (proj2 (rw_count_clamp_range count)). }
+       apply (proj2 (rw_count_clamp_range cnt)). }
   (* /dev/urandom is read-only, so its pwrite is the bare -EBADF the
      [try] above already dismissed; and /dev/null, whose every answer is
      a bare return: the ledger is empty on every one of its arms *)
@@ -4383,3 +4672,781 @@ Example pread64_stream_end_is_espipe :
        (mkEffect 2 [(4096, [97; 98])] []) (rdpin_sp_model [97; 98])
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
+
+(* ===================================================================== *)
+(* The file-size limit of an append ([ReadWrite.append_room])            *)
+(* ===================================================================== *)
+
+(** THE SIZE LIMIT OF AN APPEND WRITE: -EFBIG on a file that already
+    holds [Fs.MAX_LFS_FILESIZE] bytes.  [generic_write_checks_count]
+    (fs/read_write.c:1736-1756, Linux v6.18.46) moves an append write's
+    position to [i_size] (:1747-1748), and [generic_write_check_limits]
+    answers -EFBIG when that position is at or past [s_maxbytes]
+    (:1726-1727), which on tmpfs is [MAX_LFS_FILESIZE]
+    ([shmem_fill_super], mm/shmem.c:5118).  No file system with a smaller
+    limit can hold such a file, so the answer is the same on every one.
+    This pins the only answer for every outcome [o]: the append of the
+    bytes the model used to make is refused with it, and so is a decline.
+    The file's length is abstract, so no [2^63]-element list is built;
+    the call is any one that passes the tests before the limit. *)
+Lemma append_write_at_the_cap_is_efbig : forall i fd buf count m p off o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  (Fs.MAX_LFS_FILESIZE <= Z.of_nat (length (fs_ino_data (m_fs m) p)))%Z ->
+  w_is0 count = false ->
+  modeled_rw_range buf count = true ->
+  access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
+  write_spec fd buf count i m o <-> o = Ok (mkEffect (errno_ret EFBIG) [] []) m [].
+Proof.
+  intros i fd buf count m p off o Hfd Hcap Hc Hg Hok Hpos.
+  assert (Hfb : append_efbigb (fs_ino_data (m_fs m) p) count = true).
+  { unfold append_efbigb, append_room. rewrite Hc. cbn [negb andb].
+    apply Z.leb_le. lia. }
+  assert (Hchk : forall eff, check_write i fd buf count eff m
+                             = check_ret_only eff (errno_ret EFBIG) m []).
+  { intro eff. unfold check_write. rewrite Hfd. cbv beta iota.
+    rewrite Hg, Hok, Hpos. cbn [negb]. cbv beta iota zeta.
+    rewrite Hfb. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_write_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_write_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso. exact (check_ret_only_no_unmodeled _ _ _ _ H).
+  - intros ->. apply check_write_sound_ok. rewrite Hchk.
+    apply check_ret_only_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** AND A WRITE THAT WOULD CROSS THE LIMIT IS CUT TO END AT IT.
+    [generic_write_check_limits] shortens the count to
+    [s_maxbytes - pos] (fs/read_write.c:1729, Linux v6.18.46), and
+    [generic_write_checks] truncates the source to it (:1775), before
+    any byte is copied; so the write lands the readable prefix [bs] of
+    THAT range and returns its length.  Here the file has [append_room
+    data] bytes left below the limit, the call names more, and the cut
+    range has a readable byte: the only answer is the cut write, so the
+    full write the model used to make is refused.  [write_source] also
+    applies [vfs_write]'s [MAX_RW_COUNT] clamp (fs/read_write.c:680-681),
+    which Linux applies before the limit.  On a file system whose
+    [s_maxbytes] is smaller than [Fs.MAX_LFS_FILESIZE] Linux cuts
+    earlier, and the model still admits this write
+    ([ReadWrite.append_room]). *)
+Lemma append_write_across_the_cap_is_cut_to_end_at_it :
+  forall i fd buf count m p off data bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  (0 < append_room data < bv_unsigned count)%Z ->
+  modeled_rw_range buf count = true ->
+  access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
+  write_source (in_mem i) buf (Z_to_bv 64 (append_room data)) = bs ->
+  bs <> [] ->
+  write_spec fd buf count i m o <->
+  o = Ok (with_copyins [(buf, length bs)] (mkEffect (len_word bs) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+            (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+         [].
+Proof.
+  intros i fd buf count m p off data bs o Hfd Hfs Hroom Hg Hok Hpos Hbs Hne.
+  assert (Hmax : Fs.MAX_LFS_FILESIZE = 9223372036854775807%Z) by reflexivity.
+  assert (Hrm : (append_room data <= 9223372036854775807)%Z).
+  { unfold append_room. rewrite Hmax. lia. }
+  assert (Hc : w_is0 count = false) by (apply w_is0_pos; lia).
+  assert (Hfb : append_efbigb data count = false).
+  { unfold append_efbigb. rewrite Hc. cbn [negb andb]. apply Z.leb_gt. lia. }
+  assert (Hcut : append_count data count = Z_to_bv 64 (append_room data)).
+  { unfold append_count. rewrite Hc. cbn [orb].
+    rewrite (proj2 (Z.leb_gt _ _)) by lia. reflexivity. }
+  assert (Hc' : w_is0 (Z_to_bv 64 (append_room data)) = false).
+  { apply w_is0_pos. rewrite Z_to_bv_unsigned, bv_wrap_small; [lia|].
+    unfold bv_modulus. change (Z.of_N 64) with 64%Z. lia. }
+  assert (Hbl : Nat.eqb (length bs) 0 = false).
+  { destruct bs; [contradiction|reflexivity]. }
+  assert (Hchk : forall eff, check_write i fd buf count eff m
+    = check_ret_only_copyins [(buf, length bs)] eff (len_word bs)
+        (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+           (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+        []).
+  { intro eff. unfold check_write. rewrite Hfd. cbv beta iota.
+    rewrite Hg, Hok, Hpos. cbn [negb]. cbv beta iota zeta.
+    rewrite Hfs, Hfb. cbv beta iota.
+    rewrite Hcut, Hbs, Hc', Hbl. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_write_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_write_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso.
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  - intros ->. apply check_write_sound_ok. rewrite Hchk.
+    apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** THE APPEND POSITION AFTER THE CUT.  When the room below the limit is
+    readable throughout and within the clamp, the cut write lands exactly
+    the room: the file then holds [Fs.MAX_LFS_FILESIZE] bytes, and the
+    descriptor's position is [Fs.MAX_LFS_FILESIZE], the new end of file.
+    Linux puts the write at [i_size] (fs/read_write.c:1747-1748, Linux
+    v6.18.46), advances [ki_pos] by what it copied and copies that back
+    to [f_pos] ([new_sync_write], fs/read_write.c:595-596).  So a next
+    nonzero append through THIS descriptor is -EINVAL, not -EFBIG:
+    [rw_verify_area] (fs/read_write.c:467-469, Linux v6.18.46) tests that
+    position, now [LLONG_MAX], before the size limit is reached.  An
+    append through a descriptor whose position passes that test is the
+    -EFBIG pinned above. *)
+Lemma append_write_across_the_cap_ends_at_the_cap :
+  forall i fd buf count m p off data bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  (0 < append_room data < bv_unsigned count)%Z ->
+  modeled_rw_range buf count = true ->
+  access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
+  write_source (in_mem i) buf (Z_to_bv 64 (append_room data)) = bs ->
+  Z.of_nat (length bs) = append_room data ->
+  write_spec fd buf count i m o ->
+  exists eff,
+    o = Ok eff
+          (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+             (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+          []
+    /\ Z.of_nat (length (file_write data (len_word data) bs)) = Fs.MAX_LFS_FILESIZE
+    /\ bv_unsigned (append_new_pos data bs off) = Fs.MAX_LFS_FILESIZE.
+Proof.
+  intros i fd buf count m p off data bs o Hfd Hfs Hroom Hg Hok Hpos Hbs Hfull Hw.
+  assert (Hne : bs <> []).
+  { intro E. rewrite E in Hfull. cbn [length] in Hfull. lia. }
+  apply (proj1 (append_write_across_the_cap_is_cut_to_end_at_it
+                  i fd buf count m p off data bs o Hfd Hfs Hroom Hg Hok Hpos Hbs Hne))
+    in Hw.
+  subst o. eexists. split; [reflexivity|].
+  assert (Hmax : Fs.MAX_LFS_FILESIZE = 9223372036854775807%Z) by reflexivity.
+  assert (Hlen : (Z.of_nat (length data) + Z.of_nat (length bs)
+                  = Fs.MAX_LFS_FILESIZE)%Z).
+  { unfold append_room in Hfull. lia. }
+  assert (Hdw : word_to_nat (len_word data) = length data).
+  { unfold word_to_nat. rewrite len_word_unsigned by (unfold two_pow_64; lia).
+    apply Nat2Z.id. }
+  destruct bs as [|b bs']; [contradiction|].
+  split.
+  - unfold file_write, file_extend. cbv zeta.
+    rewrite Hdw, Nat.sub_diag. cbn [repeat]. rewrite app_nil_r, firstn_all.
+    rewrite skipn_all2 by lia. rewrite app_nil_r.
+    rewrite length_app, Nat2Z.inj_add. exact Hlen.
+  - cbn [append_new_pos].
+    rewrite bv_add_unsigned, !len_word_unsigned by (unfold two_pow_64; lia).
+    rewrite bv_wrap_small; [exact Hlen|].
+    unfold bv_modulus. change (Z.of_N 64) with 64%Z. lia.
+Qed.
+
+(** A WRITE ONE BYTE PAST THE ROOM LANDS EXACTLY THE ROOM.  This isolates
+    the size limit from the other two things that can make a write short:
+    the whole named range is readable, so no source fault cuts it, and the
+    count is within [MAX_RW_COUNT], so [vfs_write]'s clamp
+    (fs/read_write.c:680-681, Linux v6.18.46) does not either.  Only
+    [generic_write_check_limits] (fs/read_write.c:1729, Linux v6.18.46)
+    is left to cut the count to the room, so the write lands the first
+    [append_room data] bytes of the source, exactly that many. *)
+Lemma append_write_one_past_the_room_lands_the_room :
+  forall i fd buf count m p off data w o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  (0 < append_room data)%Z ->
+  bv_unsigned count = (append_room data + 1)%Z ->
+  (bv_unsigned count <= MAX_RW_COUNT)%Z ->
+  modeled_rw_range buf count = true ->
+  access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
+  read_bytes_map (in_mem i) buf count = Some w ->
+  Z.of_nat (length (firstn (Z.to_nat (append_room data)) w)) = append_room data
+  /\ (write_spec fd buf count i m o <->
+      o = Ok (with_copyins [(buf, length (firstn (Z.to_nat (append_room data)) w))]
+                (mkEffect (len_word (firstn (Z.to_nat (append_room data)) w)) [] []))
+             (with_fds (fd_insert (m_fds m) fd
+                  (FdFileA p (append_new_pos data
+                                (firstn (Z.to_nat (append_room data)) w) off)))
+                (with_fs (fs_set_ino_data (m_fs m) p
+                   (file_write data (len_word data)
+                      (firstn (Z.to_nat (append_room data)) w))) m))
+             []).
+Proof.
+  intros i fd buf count m p off data w o Hfd Hfs Hr0 Hc Hcl Hg Hok Hpos Hw.
+  pose proof (read_bytes_map_length _ _ _ _ Hw) as Hlw.
+  assert (Hlb : Z.of_nat (length (firstn (Z.to_nat (append_room data)) w))
+                = append_room data).
+  { rewrite length_firstn. lia. }
+  assert (Hr64 : bv_unsigned (Z_to_bv 64 (append_room data)) = append_room data).
+  { rewrite Z_to_bv_unsigned, bv_wrap_small; [reflexivity|].
+    unfold bv_modulus. change (Z.of_N 64) with 64%Z.
+    unfold MAX_RW_COUNT in Hcl. lia. }
+  assert (Hsrc : write_source (in_mem i) buf (Z_to_bv 64 (append_room data))
+                 = firstn (Z.to_nat (append_room data)) w).
+  { unfold write_source.
+    rewrite (rw_count_clamp_small (Z_to_bv 64 (append_room data)))
+      by (rewrite Hr64; lia).
+    rewrite Z_to_bv_bv_unsigned, readable_bytes_eq.
+    rewrite read_bytes_map_eq in Hw.
+    replace (word_to_nat (Z_to_bv 64 (append_room data)))
+      with (Z.to_nat (append_room data))
+      by (unfold word_to_nat; now rewrite Hr64).
+    apply (readable_bytes_aux_prefix _ (word_to_nat count) _ _ _ Hw).
+    unfold word_to_nat. lia. }
+  split; [exact Hlb|].
+  apply (append_write_across_the_cap_is_cut_to_end_at_it
+           i fd buf count m p off data _ o Hfd Hfs ltac:(lia) Hg Hok Hpos Hsrc).
+  intro E. rewrite E in Hlb. cbn [length] in Hlb. lia.
+Qed.
+
+(** -EFBIG ON A VECTORED APPEND TOO.  [vfs_writev] reaches the same
+    [generic_write_check_limits] through the file's [write_iter], after
+    the import, the zero-aggregate return and the position test
+    (fs/read_write.c:1051, Linux v6.18.46), and before any byte is copied
+    (:1726-1727).  So once those have passed, a file of
+    [Fs.MAX_LFS_FILESIZE] bytes or more admits only -EFBIG, with the
+    import's copy-in ledger; an append of the gathered bytes, and a
+    decline, are both refused.  The file's length is abstract. *)
+Lemma append_writev_at_the_cap_is_efbig :
+  forall i fd iov iovcnt m p off iovs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  (Fs.MAX_LFS_FILESIZE <= Z.of_nat (length (fs_ino_data (m_fs m) p)))%Z ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  writev_spec fd iov iovcnt i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+            (mkEffect (errno_ret EFBIG) [] [])) m [].
+Proof.
+  intros i fd iov iovcnt m p off iovs o Hfd Hcap Hiv Htot Hpos.
+  assert (Hfb : (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z = true).
+  { unfold append_room. apply Z.leb_le. lia. }
+  assert (Hchk : forall eff, check_writev i fd iov iovcnt eff m
+    = check_ret_only_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        eff (errno_ret EFBIG) m []).
+  { intro eff. unfold check_writev. rewrite Hfd. cbv beta iota zeta.
+    rewrite Hiv. cbv beta iota zeta. rewrite Htot, Hpos, Hfb. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_writev_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_writev_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso.
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  - intros ->. apply check_writev_sound_ok. rewrite Hchk.
+    apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** A VECTORED APPEND WITH ROOM LANDS THE CUT PREFIX, whether or not it
+    crosses the limit; the crossing itself is the next lemma.
+    [generic_write_check_limits] cuts the count to the room
+    (fs/read_write.c:1729, Linux v6.18.46), and [generic_write_checks]
+    truncates the iterator to it (:1775) before a byte is copied, so the
+    write copies the readable prefix of the first [room] bytes of the
+    gather and touches no source byte past them.  The model's
+    [writev_cut] of the gathered prefix is that list: the gathered prefix
+    is readable up to its first fault, so its first [room] bytes are the
+    readable prefix of the first [room] bytes.  The return, the copy-in
+    ledger and the file all read the cut list, so a later segment past
+    the room changes none of them.  The file's length is abstract. *)
+Lemma append_writev_with_room_lands_the_cut_prefix :
+  forall i fd iov iovcnt m p off data iovs bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  (0 < append_room data)%Z ->
+  writev_cut (append_room data) (writev_gathered (in_mem i) iovs) = bs ->
+  bs <> [] ->
+  addr_is_error_b (len_word bs) = false ->
+  writev_spec fd iov iovcnt i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                        ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+            (mkEffect (len_word bs) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+            (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+         [].
+Proof.
+  intros i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv Htot Hpos Hroom Hbs Hne
+    Herr.
+  assert (Hfb : (append_room data <=? 0)%Z = false) by (apply Z.leb_gt; lia).
+  assert (Hbl : Nat.eqb (length bs) 0 = false).
+  { destruct bs; [contradiction|reflexivity]. }
+  assert (Hchk : forall eff, check_writev i fd iov iovcnt eff m
+    = check_ret_only_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+         ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+        eff (len_word bs)
+        (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+           (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+        []).
+  { intro eff. unfold check_writev. rewrite Hfd. cbv beta iota zeta.
+    rewrite Hiv. cbv beta iota zeta. rewrite Hfs.
+    rewrite Htot, Hpos, Hfb, Hbs, Hbl, Herr. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_writev_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_writev_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso.
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  - intros ->. apply check_writev_sound_ok. rewrite Hchk.
+    apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** AND A VECTORED APPEND THAT CROSSES THE LIMIT LANDS EXACTLY THE ROOM.
+    Here the request and the readable prefix both exceed the room, so
+    [generic_write_check_limits] cuts the count to the room
+    (fs/read_write.c:1729, Linux v6.18.46), and the iterator truncated to
+    it (:1775) is readable throughout: the write lands the first [room]
+    bytes, exactly that many, with a copy-in ledger over them.  The
+    file's length is abstract. *)
+Lemma append_writev_across_the_cap_lands_the_cut_prefix :
+  forall i fd iov iovcnt m p off data iovs bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  (0 < append_room data)%Z ->
+  (append_room data < iovs_total (cap_iovecs iovs))%Z ->
+  (append_room data < Z.of_nat (length (writev_gathered (in_mem i) iovs)))%Z ->
+  writev_cut (append_room data) (writev_gathered (in_mem i) iovs) = bs ->
+  addr_is_error_b (len_word bs) = false ->
+  Z.of_nat (length bs) = append_room data
+  /\ (writev_spec fd iov iovcnt i m o <->
+      o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                            ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+                (mkEffect (len_word bs) [] []))
+             (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+                (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+             []).
+Proof.
+  intros i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv Hpos Hroom Hreq Hpre Hbs
+    Herr.
+  assert (Hlen : Z.of_nat (length bs) = append_room data).
+  { rewrite <- Hbs. unfold writev_cut.
+    destruct (append_room data <? Z.of_nat (length (writev_gathered (in_mem i) iovs)))%Z
+      eqn:E; [|apply Z.ltb_ge in E; lia].
+    rewrite length_firstn. lia. }
+  split; [exact Hlen|].
+  apply (append_writev_with_room_lands_the_cut_prefix
+           i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv).
+  - apply Z.eqb_neq. lia.
+  - exact Hpos.
+  - exact Hroom.
+  - exact Hbs.
+  - intro E. rewrite E in Hlen. cbn [length] in Hlen. lia.
+  - exact Herr.
+Qed.
+
+(** THE CROSSING WITH A LATER UNREADABLE SEGMENT.  One byte of room, a
+    first segment of two readable bytes, and a second segment whose byte
+    is unreadable.  Linux truncates the iterator to the one byte of room
+    (fs/read_write.c:1729 and :1775, Linux v6.18.46) and copies only the
+    first byte; it never reaches the second segment, so the write returns
+    1 and reads one byte.  The model answers the same: the gathered
+    prefix is the two readable bytes, the cut keeps the first, and the
+    ledger covers that one byte. *)
+Lemma append_writev_one_byte_of_room_skips_a_later_unreadable_segment :
+  forall i fd iov iovcnt m p off data a c x0 x1 o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt)
+    = ImpOk [(a, Z_to_bv 64 2); (c, Z_to_bv 64 1)] ->
+  rw_pos_einvalb off 3%Z = false ->
+  append_room data = 1%Z ->
+  in_mem i a = Some x0 ->
+  in_mem i (a + 1)%bv = Some x1 ->
+  in_mem i c = None ->
+  writev_spec fd iov iovcnt i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                        ++ [(a, 1%nat)])
+            (mkEffect (Z_to_bv 64 1) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data [x0] off)))
+            (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) [x0])) m))
+         [].
+Proof.
+  intros i fd iov iovcnt m p off data a c x0 x1 o Hfd Hfs Hiv Hpos Hroom Ha0 Ha1 Hc0.
+  assert (Hcap : cap_iovecs [(a, Z_to_bv 64 2); (c, Z_to_bv 64 1)]
+                 = [(a, Z_to_bv 64 2); (c, Z_to_bv 64 1)]) by reflexivity.
+  assert (Hrb1 : readable_bytes (in_mem i) a (Z_to_bv 64 2) = [x0; x1]).
+  { rewrite readable_bytes_eq. change (word_to_nat (Z_to_bv 64 2)) with 2%nat.
+    cbn [readable_bytes_aux]. rewrite Ha0, Ha1. reflexivity. }
+  assert (Hrb2 : readable_bytes (in_mem i) c (Z_to_bv 64 1) = []).
+  { rewrite readable_bytes_eq. change (word_to_nat (Z_to_bv 64 1)) with 1%nat.
+    cbn [readable_bytes_aux]. rewrite Hc0. reflexivity. }
+  assert (Hg : writev_gathered (in_mem i) [(a, Z_to_bv 64 2); (c, Z_to_bv 64 1)]
+               = [x0; x1]).
+  { unfold writev_gathered. rewrite Hcap. cbn [gather_prefix].
+    rewrite Hrb1, Hrb2. reflexivity. }
+  rewrite (append_writev_with_room_lands_the_cut_prefix
+             i fd iov iovcnt m p off data _ [x0] o Hfd Hfs Hiv).
+  - rewrite Hcap. reflexivity.
+  - rewrite Hcap. reflexivity.
+  - rewrite Hcap. exact Hpos.
+  - lia.
+  - rewrite Hg, Hroom. reflexivity.
+  - discriminate.
+  - reflexivity.
+Qed.
+
+(** THE CUT IS THE GATHER OF THE TRUNCATED SOURCE, at every
+    readability.  Linux cuts the count to the room (fs/read_write.c:1729,
+    Linux v6.18.46) and truncates the iterator to it (:1775) before it
+    copies a byte, so it copies from the first [room] bytes of the source
+    only.  The model gathers the readable prefix of the whole capped
+    vector and keeps its first [room] bytes ([writev_cut]).  The two are
+    the same list whatever is readable or not, before the room or after
+    it: the first [r] bytes of the gathered prefix are the gathered
+    prefix of the vector truncated to [r] bytes ([cap_iovecs_aux], the
+    truncation the aggregate clamp uses).  The gather on the right reads
+    no byte past the first [r] bytes of the source.  The first three
+    lemmas are steps. *)
+Lemma readable_bytes_aux_firstn : forall mp n k a,
+  (k <= n)%nat ->
+  readable_bytes_aux mp a k = firstn k (readable_bytes_aux mp a n).
+Proof.
+  intros mp n; induction n as [|n IH]; intros k a Hk.
+  - destruct k; [reflexivity|lia].
+  - destruct k as [|k]; [reflexivity|].
+    cbn [readable_bytes_aux]. destruct (mp a); [|reflexivity].
+    cbn [firstn]. f_equal. apply IH. lia.
+Qed.
+
+Lemma gather_prefix_cap_aux_zero : forall mp iovs,
+  gather_prefix mp (cap_iovecs_aux iovs 0) = [].
+Proof.
+  intros mp iovs. induction iovs as [|[base len] rest IH]; [reflexivity|].
+  cbn [cap_iovecs_aux gather_prefix]. cbv beta zeta.
+  replace (Z.min 0 (bv_unsigned len)) with 0%Z
+    by (pose proof (bv_unsigned_in_range 64 len); lia).
+  replace (0 - 0)%Z with 0%Z by lia.
+  assert (H0 : readable_bytes mp base (Z_to_bv 64 0) = []).
+  { rewrite readable_bytes_eq. reflexivity. }
+  rewrite H0.
+  destruct (Z.of_nat (length (@nil byte)) =? bv_unsigned (Z_to_bv 64 0))%Z;
+    [exact IH|reflexivity].
+Qed.
+
+Lemma gather_prefix_length_le : forall mp iovs,
+  (Z.of_nat (length (gather_prefix mp iovs)) <= iovs_total iovs)%Z.
+Proof.
+  intros mp iovs. induction iovs as [|[base len] rest IH];
+    cbn [gather_prefix iovs_total]; [cbn; lia|].
+  pose proof (readable_bytes_length_le mp base len).
+  pose proof (iovs_total_nonneg rest).
+  destruct (Z.of_nat (length (readable_bytes mp base len)) =? bv_unsigned len)%Z;
+    [rewrite length_app, Nat2Z.inj_add|]; lia.
+Qed.
+
+Lemma gather_prefix_firstn_cap_aux : forall mp iovs r,
+  (0 <= r)%Z ->
+  firstn (Z.to_nat r) (gather_prefix mp iovs)
+  = gather_prefix mp (cap_iovecs_aux iovs r).
+Proof.
+  intros mp iovs; induction iovs as [|[base len] rest IH]; intros r Hr.
+  - cbn [gather_prefix cap_iovecs_aux]. apply firstn_nil.
+  - cbn [cap_iovecs_aux gather_prefix]. cbv beta zeta.
+    pose proof (bv_unsigned_in_range 64 len) as Hl. unfold bv_modulus in Hl.
+    assert (Hn : bv_unsigned (Z_to_bv 64 (Z.min r (bv_unsigned len)))
+                 = Z.min r (bv_unsigned len)).
+    { rewrite Z_to_bv_unsigned, bv_wrap_small; [reflexivity|].
+      unfold bv_modulus. lia. }
+    rewrite Hn, !readable_bytes_eq.
+    assert (Hw : word_to_nat (Z_to_bv 64 (Z.min r (bv_unsigned len)))
+                 = Z.to_nat (Z.min r (bv_unsigned len))).
+    { unfold word_to_nat. rewrite Hn. reflexivity. }
+    rewrite Hw.
+    pose proof (readable_bytes_aux_length_le mp (word_to_nat len) base) as Hbl.
+    unfold word_to_nat in *.
+    destruct (Z.le_gt_cases (bv_unsigned len) r) as [Hle|Hgt].
+    + (* the whole segment lies inside the cut *)
+      rewrite (Z.min_r r (bv_unsigned len) Hle).
+      destruct (Z.of_nat (length (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))
+                =? bv_unsigned len)%Z eqn:E.
+      * apply Z.eqb_eq in E. rewrite firstn_app.
+        rewrite (firstn_all2 (n := Z.to_nat r)) by lia.
+        f_equal.
+        replace (Z.to_nat r - length (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))%nat
+          with (Z.to_nat (r - bv_unsigned len)) by lia.
+        apply IH. lia.
+      * apply firstn_all2. lia.
+    + (* the cut falls inside this segment *)
+      rewrite (Z.min_l r (bv_unsigned len)) by lia.
+      replace (r - r)%Z with 0%Z by lia.
+      rewrite gather_prefix_cap_aux_zero, app_nil_r.
+      rewrite (readable_bytes_aux_firstn mp (Z.to_nat (bv_unsigned len)) (Z.to_nat r) base)
+        by lia.
+      assert (Hlhs :
+        firstn (Z.to_nat r)
+          (if (Z.of_nat (length (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))
+               =? bv_unsigned len)%Z
+           then readable_bytes_aux mp base (Z.to_nat (bv_unsigned len)) ++ gather_prefix mp rest
+           else readable_bytes_aux mp base (Z.to_nat (bv_unsigned len)))
+        = firstn (Z.to_nat r) (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len)))).
+      { destruct (Z.of_nat (length (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))
+                  =? bv_unsigned len)%Z eqn:E; [|reflexivity].
+        apply Z.eqb_eq in E. rewrite firstn_app.
+        replace (Z.to_nat r - length (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))%nat
+          with 0%nat by lia.
+        cbn [firstn]. apply app_nil_r. }
+      rewrite Hlhs.
+      destruct (Z.of_nat (length (firstn (Z.to_nat r)
+                  (readable_bytes_aux mp base (Z.to_nat (bv_unsigned len))))) =? r)%Z;
+        reflexivity.
+Qed.
+
+Lemma writev_cut_is_the_truncated_gather : forall mp iovs r,
+  (0 <= r)%Z ->
+  writev_cut r (gather_prefix mp iovs) = gather_prefix mp (cap_iovecs_aux iovs r).
+Proof.
+  intros mp iovs r Hr. rewrite <- (gather_prefix_firstn_cap_aux mp iovs r Hr).
+  unfold writev_cut.
+  destruct (r <? Z.of_nat (length (gather_prefix mp iovs)))%Z eqn:E; [reflexivity|].
+  apply Z.ltb_ge in E. symmetry. apply firstn_all2. lia.
+Qed.
+
+(** A VECTORED APPEND LANDS THE READABLE ROOM, WHATEVER FOLLOWS IT.
+    [bs] is the source truncated to the room, every byte readable: the
+    vector truncated to the room reads whole ([gather_iovecs]).  So [bs]
+    is the first [room] bytes of the source when the capped request is
+    longer than the room, and the whole capped request when it is not:
+    its length is the smaller of the two.  Nothing is assumed about any
+    byte after [bs]: readable, unreadable, or a mix, in the same segment
+    or a later one.  The return is the length of [bs], the copy-in
+    ledger covers [bs], and the file gains [bs] at its end.  This
+    is [writev_cut_is_the_truncated_gather] at the syscall: Linux copies
+    from the iterator truncated to the room (fs/read_write.c:1729 and
+    :1775, Linux v6.18.46).  The file's length is abstract. *)
+Lemma append_writev_lands_the_readable_room_whatever_follows :
+  forall i fd iov iovcnt m p off data iovs bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  (0 < append_room data)%Z ->
+  gather_iovecs (in_mem i) (cap_iovecs_aux (cap_iovecs iovs) (append_room data)) = Some bs ->
+  writev_spec fd iov iovcnt i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                        ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+            (mkEffect (len_word bs) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+            (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+         [].
+Proof.
+  intros i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv Htot Hpos Hroom Hg.
+  assert (Hlen : Z.of_nat (length bs)
+                 = Z.min (iovs_total (cap_iovecs iovs)) (append_room data)).
+  { rewrite (gather_iovecs_length _ _ _ Hg). apply iovs_total_cap_aux. lia. }
+  pose proof (iovs_total_cap iovs) as Hcap.
+  pose proof (iovs_total_nonneg iovs) as Hnn.
+  pose proof (iovs_total_nonneg (cap_iovecs iovs)) as Hnn'.
+  apply Z.eqb_neq in Htot as Htot'.
+  apply (append_writev_with_room_lands_the_cut_prefix
+           i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv Htot Hpos Hroom).
+  - unfold writev_gathered. rewrite writev_cut_is_the_truncated_gather by lia.
+    apply gather_prefix_full, Hg.
+  - intro E. rewrite E in Hlen. cbn [length] in Hlen. lia.
+  - unfold addr_is_error_b. change two_pow_64 with 18446744073709551616%Z.
+    rewrite len_word_unsigned.
+    + apply Z.ltb_ge. unfold MAX_RW_COUNT in Hcap. lia.
+    + change two_pow_64 with 18446744073709551616%Z. unfold MAX_RW_COUNT in Hcap. lia.
+Qed.
+
+(** THE MUTANT THE LEMMA ABOVE CATCHES: the append arm with the cut
+    removed.  [writev_append_arm room] is [writev_spec]'s append arm with
+    the room as a parameter.  Given the room it IS that arm, and it
+    passes the lemma ([append_writev_arm_with_the_cut_passes_the_lemma]);
+    given none, it lands the whole gathered prefix.  Under the lemma's premises with one readable
+    byte past the room, the mutant lands more than the room, so the
+    lemma's equivalence is false for it
+    ([append_writev_without_the_cut_fails_the_lemma]): the lemma fails
+    without the cut, which is what the single test it replaces did not. *)
+Definition writev_append_arm (room : option Z) (fd iov iovcnt : word) (p : ino) (off : word)
+    : Sys SyscallEffect :=
+  fun i m o =>
+    let data := fs_ino_data (m_fs m) p in
+    writev_file_arm (in_mem i) iov iovcnt off room (Some write_fault_keep)
+      (fun bs => Some (fun k =>
+         bind (set_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)))
+           (fun _ => bind (set_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off))))
+              (fun _ => k))))
+      i m o.
+
+Lemma append_writev_arm_with_the_cut_passes_the_lemma :
+  forall i fd iov iovcnt m p off data iovs bs o,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  (0 < append_room data)%Z ->
+  gather_iovecs (in_mem i) (cap_iovecs_aux (cap_iovecs iovs) (append_room data)) = Some bs ->
+  writev_append_arm (Some (append_room data)) fd iov iovcnt p off i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                        ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+            (mkEffect (len_word bs) [] []))
+         (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+            (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+         [].
+Proof.
+  intros i fd iov iovcnt m p off data iovs bs o Hfd Hfs Hiv Htot Hpos Hroom Hg.
+  assert (Hin : forall (k : SyscallInput -> Sys SyscallEffect),
+             bind input k i m o <-> k i i m o).
+  { intros k. unfold bind, input. destruct o as [x m2 evs|]; split.
+    - intros (x0 & m1 & evs1 & evs2 & H1 & H2 & H3).
+      injection H1 as -> -> ->. cbn in H3. subst evs. exact H2.
+    - intros H. exists i, m, [], evs. split; [reflexivity|].
+      split; [exact H|reflexivity].
+    - intros [H | (x0 & m1 & evs1 & H1 & H2)]; [discriminate|].
+      injection H1 as -> -> ->. exact H2.
+    - intros H. right. exists i, m, []. split; [reflexivity|exact H]. }
+  (* with the room, the parameterised arm IS [writev_spec]'s append arm *)
+  assert (Hspec : writev_spec fd iov iovcnt i m o
+                  <-> writev_append_arm (Some (append_room (fs_ino_data (m_fs m) p)))
+                        fd iov iovcnt p off i m o).
+  { unfold writev_spec. rewrite Hin, bind_get_model, Hfd. reflexivity. }
+  subst data. rewrite <- Hspec.
+  exact (append_writev_lands_the_readable_room_whatever_follows
+           i fd iov iovcnt m p off _ iovs bs o Hfd eq_refl Hiv Htot Hpos Hroom Hg).
+Qed.
+
+Lemma append_writev_without_the_cut_fails_the_lemma :
+  forall i fd iov iovcnt m p off data iovs bs,
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  fs_ino_data (m_fs m) p = data ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb off (iovs_total (cap_iovecs iovs)) = false ->
+  (0 < append_room data)%Z ->
+  gather_iovecs (in_mem i) (cap_iovecs_aux (cap_iovecs iovs) (append_room data)) = Some bs ->
+  (append_room data < Z.of_nat (length (writev_gathered (in_mem i) iovs)))%Z ->
+  ~ (forall o, writev_append_arm None fd iov iovcnt p off i m o <->
+       o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt)
+                             ++ iov_prefix_accesses (cap_iovecs iovs) (length bs))
+                 (mkEffect (len_word bs) [] []))
+              (with_fds (fd_insert (m_fds m) fd (FdFileA p (append_new_pos data bs off)))
+                 (with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m))
+              []).
+Proof.
+  intros i fd iov iovcnt m p off data iovs bs Hfd Hfs Hiv Htot Hpos Hroom Hg Hpast Hiff.
+  assert (Hlen : Z.of_nat (length bs)
+                 = Z.min (iovs_total (cap_iovecs iovs)) (append_room data)).
+  { rewrite (gather_iovecs_length _ _ _ Hg). apply iovs_total_cap_aux. lia. }
+  assert (HG : (Z.of_nat (length (writev_gathered (in_mem i) iovs)) <= MAX_RW_COUNT)%Z).
+  { pose proof (gather_prefix_length_le (in_mem i) (cap_iovecs iovs)) as H.
+    rewrite iovs_total_cap in H. unfold writev_gathered. lia. }
+  assert (Hne : Nat.eqb (length (writev_gathered (in_mem i) iovs)) 0 = false)
+    by (apply Nat.eqb_neq; lia).
+  assert (Herr : addr_is_error_b (len_word (writev_gathered (in_mem i) iovs)) = false).
+  { unfold addr_is_error_b. change two_pow_64 with 18446744073709551616%Z.
+    rewrite len_word_unsigned.
+    - apply Z.ltb_ge. unfold MAX_RW_COUNT in HG. lia.
+    - change two_pow_64 with 18446744073709551616%Z. unfold MAX_RW_COUNT in HG. lia. }
+  (* the mutant lands the whole gathered prefix *)
+  assert (Hm : exists eff m' evs,
+             writev_append_arm None fd iov iovcnt p off i m (Ok eff m' evs)
+             /\ eff_ret eff = len_word (writev_gathered (in_mem i) iovs)).
+  { unfold writev_append_arm, writev_file_arm. rewrite Hiv. cbv beta iota zeta.
+    rewrite Htot, Hpos, Hne, Herr. cbv beta iota.
+    do 3 eexists. split.
+    - apply record_copyins_ok.
+      eapply bind_ok; [apply modify_ok|].
+      eapply bind_ok; [apply modify_ok|].
+      unfold writev_ledger. apply record_copyins_ok. apply pure_ok.
+    - reflexivity. }
+  destruct Hm as (eff & m' & evs & Hm & Hret).
+  apply Hiff in Hm. injection Hm as Heff _ _. subst eff. cbn in Hret.
+  apply (f_equal bv_unsigned) in Hret.
+  pose proof (iovs_total_cap iovs) as Hcap.
+  rewrite !len_word_unsigned in Hret;
+    change two_pow_64 with 18446744073709551616%Z; unfold MAX_RW_COUNT in *; try lia.
+Qed.
+
+(** -EFBIG ON A POSITIONAL APPEND.  [pwrite64] on an O_APPEND descriptor
+    lands at [i_size] whatever position it names (fs/read_write.c:1748,
+    Linux v6.18.46), so it meets the same limit after [vfs_write]'s
+    [access_ok] and [rw_verify_area] on the named position (:674-679).
+    On a file of [Fs.MAX_LFS_FILESIZE] bytes or more only -EFBIG is
+    admitted. *)
+Lemma append_pwrite64_at_the_cap_is_efbig : forall i fd buf count pos m p off o,
+  ppos_einvalb pos = false ->
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  (Fs.MAX_LFS_FILESIZE <= Z.of_nat (length (fs_ino_data (m_fs m) p)))%Z ->
+  w_is0 count = false ->
+  access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb pos (bv_unsigned count) = false ->
+  pwrite64_spec fd buf count pos i m o <-> o = Ok (mkEffect (errno_ret EFBIG) [] []) m [].
+Proof.
+  intros i fd buf count pos m p off o Hpp Hfd Hcap Hc Hok Hpos.
+  assert (Hfb : append_efbigb (fs_ino_data (m_fs m) p) count = true).
+  { unfold append_efbigb, append_room. rewrite Hc. cbn [negb andb].
+    apply Z.leb_le. lia. }
+  assert (Hchk : forall eff, check_pwrite64 i fd buf count pos eff m
+                             = check_ret_only eff (errno_ret EFBIG) m []).
+  { intro eff. unfold check_pwrite64. rewrite Hpp. cbv beta iota.
+    rewrite Hfd. cbv beta iota.
+    rewrite Hok, Hpos. cbn [negb]. cbv beta iota zeta.
+    rewrite Hfb. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_pwrite64_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_pwrite64_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso. exact (check_ret_only_no_unmodeled _ _ _ _ H).
+  - intros ->. apply check_pwrite64_sound_ok. rewrite Hchk.
+    apply check_ret_only_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.
+
+(** -EFBIG ON A [pwritev2] APPEND, without [RWF_NOAPPEND] (a flag word
+    of 0): the bytes go to [i_size] (fs/read_write.c:1748, Linux
+    v6.18.46), so the limit applies after the import, the zero-aggregate
+    return and the position test on the named position (:1051), as for
+    [writev].  With [RWF_NOAPPEND] the write lands at the named position
+    and meets no limit before [LLONG_MAX]. *)
+Lemma append_pwritev2_at_the_cap_is_efbig :
+  forall i fd iov iovcnt pos_l pos_h flags m p off iovs o,
+  bv_unsigned flags = 0%Z ->
+  Z.eqb (bv_signed pos_l) (-1)%Z = false ->
+  ppos_einvalb pos_l = false ->
+  fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  (Fs.MAX_LFS_FILESIZE <= Z.of_nat (length (fs_ino_data (m_fs m) p)))%Z ->
+  import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
+  Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
+  rw_pos_einvalb pos_l (iovs_total (cap_iovecs iovs)) = false ->
+  pwritev2_spec fd iov iovcnt pos_l pos_h flags i m o <->
+  o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+            (mkEffect (errno_ret EFBIG) [] [])) m [].
+Proof.
+  intros i fd iov iovcnt pos_l pos_h flags m p off iovs o Hfl Hm1 Hpp Hfd Hcap Hiv
+    Htot Hpos.
+  assert (Hfb : (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z = true).
+  { unfold append_room. apply Z.leb_le. lia. }
+  assert (Hchk : forall eff, check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m
+    = check_ret_only_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        eff (errno_ret EFBIG) m []).
+  { intro eff. unfold check_pwritev2. cbv zeta. rewrite Hfl.
+    cbn [Z.eqb orb negb]. cbv beta iota.
+    rewrite Hm1, Hpp. cbv beta iota.
+    rewrite Hfd. cbv beta iota.
+    unfold check_pwritev2_file. cbv zeta.
+    rewrite (Z.eqb_refl 0). cbn [andb]. cbv beta iota.
+    rewrite Hiv. cbv beta iota zeta. rewrite Htot, Hpos, Hfb. reflexivity. }
+  split.
+  - intro H. destruct o as [eff m' evs|].
+    + apply check_pwritev2_complete_ok in H. rewrite Hchk in H.
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      reflexivity.
+    + apply check_pwritev2_complete_unmodeled with (eff := mkEffect 0 [] []) in H.
+      rewrite Hchk in H. exfalso.
+      exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ H).
+  - intros ->. apply check_pwritev2_sound_ok. rewrite Hchk.
+    apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
+Qed.

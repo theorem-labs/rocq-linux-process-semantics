@@ -888,9 +888,52 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
+- The launch leaves `RLIMIT_FSIZE` at `RLIM_INFINITY`, its initial value
+  (`INIT_RLIMITS`, `include/asm-generic/resource.h:14`, Linux v6.18.46),
+  and a run cannot lower it: the model answers `prlimit64` for
+  `RLIMIT_CORE` only and does not model `setrlimit`. A finite limit makes
+  `generic_write_check_limits` (`fs/read_write.c:1713-1721`, Linux
+  v6.18.46) send `SIGXFSZ` and answer `-EFBIG` at it, or cut the count to
+  it, and the model does neither. The other two limits there are facts,
+  not assumptions. Every descriptor has `O_LARGEFILE`: a 64-bit kernel
+  sets it on every open (`force_o_largefile`, `include/linux/fcntl.h:25`,
+  Linux v6.18.46), and `F_SETFL` cannot clear it (`SETFL_MASK`,
+  `fs/fcntl.c:37`, Linux v6.18.46), so the 2^31 - 1 limit of
+  `generic_write_check_limits` (`fs/read_write.c:1723-1724`, Linux
+  v6.18.46) never applies. And no smaller `s_maxbytes` occurs: the
+  regular files of a run are on tmpfs or ramfs ("The configuration of
+  record"), and both set it to `MAX_LFS_FILESIZE`, `shmem_fill_super`
+  (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
+  (`fs/ramfs/inode.c:267`, Linux v6.18.46).
 - The launch image has the standard root (`Fs.standard_root_present`,
   which `Run.valid_input` requires): `/`, `/dev` and `/tmp` are folders,
   and `/dev/null` and `/dev/urandom` are the two devices.
+- No regular file of the launch image holds more than 2^63 - 1 bytes
+  (`Fs.files_cappedb`, the last clause of `Run.valid_image`). Linux
+  guarantees it for every file. The clause narrows the statement in one
+  case only: it reads every row of the inode table, also a row that
+  `Fs.itab_find` never returns (a later row for an inode number that an
+  earlier row already has). So it refuses an image whose hidden row is
+  longer than the limit, although no lookup reaches that row. A hidden row
+  is not a file in Linux. A file's size is a
+  signed 64-bit `loff_t`, and so is a file system's size limit, the
+  `s_maxbytes` (`include/linux/fs.h:1451`, Linux v6.18.46) of its
+  superblock. No file system sets that limit above `MAX_LFS_FILESIZE`
+  (`include/linux/fs.h:1277-1279`, Linux v6.18.46), which is `LLONG_MAX`
+  on 64-bit. `alloc_super` (`fs/super.c:372`, Linux v6.18.46) starts the
+  limit at `MAX_NON_LFS`, and `vfs_get_tree` (`fs/super.c:1796-1803`,
+  Linux v6.18.46) warns when a file system leaves it negative; its comment
+  states the rule. A file grows only up to the limit: a write stops at it
+  (`generic_write_check_limits`, `fs/read_write.c:1709-1732`, Linux
+  v6.18.46), and so do a truncate (`inode_newsize_ok`, `fs/attr.c:254`,
+  Linux v6.18.46) and an `fallocate` (`vfs_fallocate`, `fs/open.c:335`,
+  Linux v6.18.46). The regular files of a launch image are on tmpfs or
+  ramfs ("The configuration of record"), and rootfs and devtmpfs are each
+  one of the two (`rootfs_init_fs_context`, `init/do_mounts.c:499-505`,
+  and `devtmpfs_init_fs_context`, `drivers/base/devtmpfs.c:91-98`, Linux
+  v6.18.46). Both set the limit to `MAX_LFS_FILESIZE`: `shmem_fill_super`
+  (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
+  (`fs/ramfs/inode.c:267`, Linux v6.18.46).
 - The image describes `/dev` completely at launch, and no device node is
   made during the run. A name under `/dev` that the image does not hold
   is therefore `-ENOENT`. In Linux v6.18.46 devtmpfs makes a node when a
@@ -979,6 +1022,24 @@ not apply.
   (`:978-979`). It mounts nothing else. A run with any other file system
   mounted on a folder of the tree outside `/proc` and `/sys`, such as an
   mqueue mount at `/dev/mqueue`, makes this assumption false.
+- Every mount point of the launch tree is a top-level folder, a child of
+  `/`. The model holds no mount table, and a mount point answers `rmdir`
+  with `-EBUSY` where the same folder unmounted is removed or answers
+  `-ENOTEMPTY`: `do_rmdir` looks the last name up in its parent without
+  following the mount (`fs/namei.c:4600-4607`), and `vfs_rmdir` tests
+  `is_local_mountpoint` before it calls `->rmdir`
+  (`fs/namei.c:4543-4546`, `:4552`). So `unlinkat` with `AT_REMOVEDIR`
+  declines a top-level folder (`Fs.Namei.rmdir_spec`). Below the top
+  level the premise leaves no mount point, and the bind-mount premise
+  above leaves no file or link one, so no other `unlinkat` answers that
+  `-EBUSY` (`vfs_unlink`, `fs/namei.c:4669`). `rmdir("/")` is still the
+  `-EBUSY` `do_rmdir` gives `LAST_ROOT` (`fs/namei.c:4590-4592`). The
+  launch of the agreement checks meets it: each mount the previous
+  premise lists is on a top-level folder, `/proc`, `/sys`, `/dev`,
+  `/work`, `/tmp`, or a seed root, which `write_seed` mounts only for a
+  seed folder whose name has one component (`testing/vm/tracer.c:1306`,
+  `:1318`). A run with a mount lower in the tree, such as `/dev/pts`,
+  makes this assumption false.
 - A write to `/dev/urandom` changes nothing the model holds. Linux mixes
   the bytes into the input pool and credits no entropy
   (`write_pool_user`, `drivers/char/random.c:1420-1446`). The bytes a

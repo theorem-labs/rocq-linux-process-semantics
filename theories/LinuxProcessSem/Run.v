@@ -1823,9 +1823,13 @@ Record InjectedArm := mkInjectedArm {
     and carries no list; see [brk_refusal_b].  [nanosleep]'s -EINTR,
     [setsid]'s -EPERM and [write]'s -ENOMEM on a pipe's fresh page are
     injected by a bare [alt] rather than through a named list, so their
-    lists are written here.  [faccessat2] draws from
-    [faccessat]'s list because both answer through
-    [Fs.Open.access_exists_spec].  [socket] draws from three lists
+    lists are written here.  [faccessat] and [faccessat2] take their
+    refusals from the walk ([Fs.Namei.walk_refusals]) and from
+    [getname_flags] ([Fs.Namei.getname_refusals]) rather than from a
+    list of their own, and [Fs.Open.faccessat_errnos] names the two
+    errnos those give an F_OK probe; [faccessat2] draws from it too
+    because both run the one body ([Fs.Open.faccessat_body_spec]).
+    [socket] draws from three lists
     ([Net.Socket.socket_errnos], [socket_alloc_errnos] and
     [socket_dgram_errnos]); the row names the widest,
     [socket_dgram_errnos AF_INET6], which is [socket_errnos] plus
@@ -4775,9 +4779,12 @@ Definition localtime_path : Fs.path :=
     O_DIRECTORY|O_NOFOLLOW ([do_open], :3958-3959), which the arms
     answer through the walk ([Sys.Fs.Open.openat_read_spec]'s [ELink]
     row, [Sys.Fs.Open.openat_dir_spec]); a link at /etc is followed
-    either way.  Spelled out, /etc is absent or a
-    folder, and the walk of /etc/localtime reaches no inode.  A regular
-    file at /etc is OUTSIDE it, where [link_path_walk] answers -ENOTDIR
+    either way.  Spelled out, the walk of /etc/localtime, following
+    every link on the way, reaches no inode: /etc is absent, a folder,
+    or a link that leads to a folder or to nothing, and in the folder
+    the walk reaches, if it reaches one, localtime is absent or a link
+    that leads to nothing.  A regular file at /etc is OUTSIDE it,
+    where [link_path_walk] answers -ENOTDIR
     and the clause is false ([Fs.RNotDir]); so is an image that ships a
     file or a folder at /etc/localtime ([Fs.RFound]).  It is an
     assumption about the environment every run is launched in, and it
@@ -4881,7 +4888,37 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
     - the standard-root premise, behind the switch above;
     - the image holds no /etc/localtime ([localtime_absent]);
     - the working directory lies OUTSIDE /proc AND /sys: it is neither,
-      nor below either ([outside_proc_sysb]).
+      nor below either ([outside_proc_sysb]);
+    - every file of the image holds at most [Fs.MAX_LFS_FILESIZE] =
+      2^63 - 1 bytes ([Fs.files_cappedb]).  Linux guarantees it for
+      every file.  The clause narrows the statement in one case only: it
+      reads every row of the inode table, also a row that [Fs.itab_find]
+      never returns (a later row for an inode number that an earlier row
+      already has).  So it refuses an image whose hidden row is longer
+      than the limit, although no lookup reaches that row.  A hidden row
+      is not a file in Linux.  A file's size is a signed 64-bit
+      [loff_t], and so is a file system's size limit, the [s_maxbytes]
+      (include/linux/fs.h:1451, Linux v6.18.46) of its superblock.  No
+      file system sets that limit above [MAX_LFS_FILESIZE]
+      (include/linux/fs.h:1277-1279, Linux v6.18.46), which is
+      [LLONG_MAX] on 64-bit.  [alloc_super] (fs/super.c:372, Linux
+      v6.18.46) starts the limit at [MAX_NON_LFS], and [vfs_get_tree]
+      (fs/super.c:1796-1803, Linux v6.18.46) warns when a file system
+      leaves it negative; its comment states the rule.  The regular files
+      of a launch image are on tmpfs or ramfs (SCOPE.md, "The
+      configuration of record"), and rootfs and devtmpfs are each one of
+      the two ([rootfs_init_fs_context], init/do_mounts.c:499-505, and
+      [devtmpfs_init_fs_context], drivers/base/devtmpfs.c:91-98, Linux
+      v6.18.46).  Both set the limit to [MAX_LFS_FILESIZE]:
+      [shmem_fill_super] (mm/shmem.c:5118, Linux v6.18.46) and
+      [ramfs_fill_super] (fs/ramfs/inode.c:267, Linux v6.18.46).  Without the clause an
+      image could hold a file whose length word wraps at 2^64, the word
+      [fstat]'s [st_size] and [lseek]'s SEEK_END base read.  It is the
+      last clause, after the working-directory clause: a proof that names
+      the first seven clauses by position is unchanged, and one that took
+      the working-directory clause as the last component now gets that
+      clause and this one as a pair.  A proof that wants it uses
+      [valid_image_files_capped].
 
     THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER, "/" and /dev
     included: a process really can be started there, and the walk
@@ -4890,7 +4927,7 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
     directory outside /proc and /sys that lookup is the only way a walk
     enters either; a working directory INSIDE one would start its
     relative walks there, where no lookup at "/" declines them, which is
-    why the last clause keeps it out.  A name under /dev the image does
+    why the working-directory clause keeps it out.  A name under /dev the image does
     not hold is an ordinary absence, because the image describes /dev
     completely at launch.
 
@@ -4912,7 +4949,87 @@ Definition valid_image (inp : ProcInput) : Prop :=
   /\ (length (in_cwd inp) + 1 <= path_max)%nat
   /\ standard_root_premise (in_fs inp)
   /\ localtime_absent (in_fs inp)
-  /\ outside_proc_sysb (in_cwd inp) = true.
+  /\ outside_proc_sysb (in_cwd inp) = true
+  /\ Fs.files_cappedb (in_fs inp) = true.
+
+(** The size clause, read back by name, and what it gives: every inode
+    number's bytes within [Fs.MAX_LFS_FILESIZE]. *)
+Lemma valid_image_files_capped : forall inp,
+  valid_image inp -> Fs.files_cappedb (in_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_image_file_within_the_limit : forall inp i,
+  valid_image inp ->
+  (Z.of_nat (length (Fs.fs_ino_data (in_fs inp) i)) <= Fs.MAX_LFS_FILESIZE)%Z.
+Proof.
+  intros inp i Hv. exact (Fs.files_cappedb_capped _ (valid_image_files_capped _ Hv) i).
+Qed.
+
+(** REFUTED: an image holding a file of 2^63 bytes or more.  However the
+    rest of the image looks, one such row of its inode table makes it no
+    launch, so no statement over [valid_input] speaks of it.  The length
+    is abstract, so no 2^63-element list is built. *)
+Lemma valid_image_refuses_a_file_of_2_63_bytes : forall inp i n,
+  In (i, n) (Fs.fs_inodes (in_fs inp)) ->
+  (2 ^ 63 <= Z.of_nat (length (Fs.ino_data n)))%Z ->
+  ~ valid_image inp.
+Proof.
+  intros inp i n Hin Hbig Hv.
+  pose proof (valid_image_files_capped _ Hv) as Hc.
+  unfold Fs.files_cappedb in Hc. rewrite forallb_forall in Hc.
+  specialize (Hc (i, n) Hin). cbn [snd] in Hc. apply Z.leb_le in Hc.
+  unfold Fs.MAX_LFS_FILESIZE in Hc. lia.
+Qed.
+
+(** WHAT THE SIZE CLAUSE GIVES A READ: from an offset at or below the
+    length of a file of a valid image, a read ends at or below 2^63 - 1,
+    and the offset the [FdFile] arm of [read_spec] stores,
+    [off + len_word bs], is that exact sum, with no 64-bit wrap.  So a
+    loop that reads such a file from offset 0 never sees its offset
+    wrap: the offset grows by what each read delivers and cannot wrap
+    back below the file's length.  (A read whose position plus count passes
+    [LLONG_MAX] is -EINVAL before it reads, [ReadWrite.rw_pos_einvalb],
+    so near the end of a file of 2^63 - 1 bytes a loop meets -EINVAL,
+    not end-of-file.)  Linux reads the same way: [shmem_file_read_iter]
+    (mm/shmem.c, v6.18.46) copies nothing at or past [i_size].  The
+    statement is about the STARTING image, [in_fs inp]; that a run keeps
+    every file within the limit is argued at [Fs.files_cappedb], not
+    proved. *)
+Lemma valid_image_read_ends_within_the_cap : forall inp i off count,
+  valid_image inp ->
+  (bv_unsigned off <= Z.of_nat (length (Fs.fs_ino_data (in_fs inp) i)))%Z ->
+  bv_unsigned (off + len_word (Fs.file_read (Fs.fs_ino_data (in_fs inp) i) off count))
+  = (bv_unsigned off
+     + Z.of_nat (length (Fs.file_read (Fs.fs_ino_data (in_fs inp) i) off count)))%Z
+  /\ (bv_unsigned off
+      + Z.of_nat (length (Fs.file_read (Fs.fs_ino_data (in_fs inp) i) off count))
+      <= 2 ^ 63 - 1)%Z.
+Proof.
+  intros inp i off count Hv Hoff.
+  pose proof (valid_image_file_within_the_limit _ i Hv) as Hc.
+  set (data := Fs.fs_ino_data (in_fs inp) i) in *. clearbody data.
+  (* the two bounds as numerals, so that [lia] compares them *)
+  assert (Hmax : Fs.MAX_LFS_FILESIZE = 9223372036854775807%Z) by reflexivity.
+  assert (Hm : bv_modulus 64 = 18446744073709551616%Z) by reflexivity.
+  change (2 ^ 63 - 1)%Z with 9223372036854775807%Z.
+  rewrite Hmax in Hc.
+  pose proof (bv_unsigned_in_range 64 off) as Hr.
+  (* what a read delivers is a slice of the file from [off] on *)
+  assert (Hlen : (Z.of_nat (length (Fs.file_read data off count))
+                  <= Z.of_nat (length data) - bv_unsigned off)%Z).
+  { pose proof (bv_unsigned_in_range 64 count) as Hrc.
+    rewrite Fs.file_read_unguarded, length_firstn, length_skipn.
+    unfold word_to_nat. rewrite Nat2Z.inj_min, Nat2Z.inj_sub by lia.
+    rewrite !Z2Nat.id by lia. lia. }
+  split; [|lia].
+  unfold len_word. rewrite bv_add_unsigned, Z_to_bv_unsigned.
+  rewrite (bv_wrap_small 64 (Z.of_nat (length (Fs.file_read data off count)))) by lia.
+  apply bv_wrap_small. lia.
+Qed.
 
 (** THE THEOREM THE PRESERVATION KIT IS FOR, NAMED RATHER THAN PROMISED.
 
@@ -4941,9 +5058,10 @@ Definition sstep_preserves_wf : Prop :=
     valid input rather than arguing it: [Fs.wf_fsb] decides
     well-formedness, [Fs.canonical_key] the working directory, a lookup
     the directory clause, [Fs.standard_root_presentb] the premise,
-    [localtime_absentb] the /etc/localtime clause and
-    [outside_proc_sysb] the last.  A fixture that is NOT valid fails
-    here loudly. *)
+    [localtime_absentb] the /etc/localtime clause, [outside_proc_sysb]
+    the working-directory clause and [Fs.files_cappedb] the size clause
+    (a closed boolean, so [vm_compute] reads back only [true]).  A
+    fixture that is NOT valid fails here loudly. *)
 Ltac valid_image_vm :=
   first [ apply Fs.wf_fsb_iff; vm_compute; reflexivity
         | apply Fs.standard_root_presentb_iff; vm_compute; reflexivity

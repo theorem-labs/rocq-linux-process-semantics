@@ -1754,9 +1754,15 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
         ret_only (Z_to_bv 64 0)
   end.
 
-(** faccessat's injectable failures on the arm that can succeed:
+(** The refusals an F_OK probe can take beside its answer, as
+    [Run.injected_table] names them for [faccessat] and [faccessat2]:
     environment conditions the model does not track, both of them
-    reachable on an F_OK probe of a path that really exists.
+    reachable on an F_OK probe of a path that really exists.  Every one
+    is the walk's, and the spec takes them from the walk
+    ([Fs.Namei.walk_refusals] around [faccessat_body_spec], which hands
+    out [Fs.Namei.walk_errnos] of the walk's last kind) and from
+    [getname_flags] ([Fs.Namei.getname_refusals]); no arm draws from
+    this list itself ([access_exists_spec]).
 
     - ENOMEM, from the allocations the walk makes once [getname_flags]
       has copied the name: the dentry a lookup allocates on a cache
@@ -1767,11 +1773,17 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       ahead of [user_path_at]), fail before the copy is done and stand
       outside the ledger ([Fs.Namei.getname_refusals]).
     - EACCES, from the path walk's own search-permission check, and from
-      that alone.  [may_lookup] takes [inode_permission(..., MAY_EXEC)]
-      on the directory the walk starts from — the working directory here
-      — in the FIRST iteration of [link_path_walk], before the last
-      component is even typed (fs/namei.c).  So it precedes every answer
-      below, the "." and ".." ones included.
+      that alone.  [link_path_walk] calls [may_lookup], which takes
+      [inode_permission(..., MAY_EXEC)] on the folder the walk stands
+      on, at the top of its loop, once per component and before the
+      component is even typed (fs/namei.c:2466-2468, Linux v6.18.46):
+      the first time on the folder the walk starts from, the working
+      directory for a relative pathname and "/" for an absolute one.
+      So it precedes every answer below, the "." and ".." ones
+      included, and it needs a component: a pathname that is nothing
+      but separators ("/", "//") returns from [link_path_walk] before
+      the loop (:2451-2458), so its walk checks nothing, and F_OK of it
+      admits no -EACCES ([Fs.LastRoot] in [Fs.Namei.walk_errnos]).
       NOT from an LSM: the configuration of record builds none
       (SCOPE.md), so [security_inode_permission] is the stub of
       include/linux/security.h that answers 0.
@@ -1878,16 +1890,25 @@ Definition modeled_access_mode (mode : word) : bool :=
 (** F_OK — the empty mode, and the only one this model can answer. *)
 Definition access_mode_f_ok (mode : word) : bool := Z.eqb (access_mode mode) 0.
 
-(** The one outcome an F_OK probe of a path that RESOLVES to anything but
-    a device admits: 0, or one of the untracked environment failures
-    above.  Both take a bare
-    return and every one of the five ledgers empty — faccessat writes
-    nothing, zeroes nothing, unmaps nothing and copies out nothing, and
-    the pathname copy-in is the wrapper's — and neither touches
-    the model, which is what makes this syscall a pure observation. *)
-Definition access_exists_spec : Sys SyscallEffect :=
-  alt (e <- errno_from faccessat_errnos ;; err_ret e)  (* untracked env failure *)
-      (ret_only (Z_to_bv 64 0)).
+(** The answer an F_OK probe of a path that RESOLVES to anything but a
+    device gets: 0, as a bare return with every one of the five ledgers
+    empty — faccessat writes nothing, zeroes nothing, unmaps nothing and
+    copies out nothing, and the pathname copy-in is the wrapper's — and
+    the model untouched, which is what makes this syscall a pure
+    observation.
+
+    ITS REFUSALS ARE THE WALK'S, not a list of its own.  The final
+    [inode_permission(..., MAY_ACCESS)] of [do_faccessat] (fs/open.c:509,
+    Linux v6.18.46) cannot refuse a zero mask on tmpfs or ramfs (WHAT A
+    ZERO MASK EXCLUDES, at [faccessat_errnos]), so beside the 0 stand
+    only [Fs.Namei.walk_refusals]' members, which the specs wrap around
+    [faccessat_body_spec]: [Fs.Namei.walk_errnos] of the walk's last
+    kind.  That is what keeps -EACCES to the pathnames whose walk runs
+    [may_lookup]: F_OK of "/" or "//" ([Fs.LastRoot]) admits 0 and the
+    walk's -ENOMEM, the over-admission [Fs.Namei.walk_errnos] records
+    for a walk that allocates nothing, and no -EACCES; "/.", "a" and
+    ".." admit -EACCES as well. *)
+Definition access_exists_spec : Sys SyscallEffect := ret_only (Z_to_bv 64 0).
 
 (** [faccessat dirfd path mode] (riscv64 nr 48, [SYSCALL_DEFINE3]),
     which is [do_faccessat(dfd, filename, mode, 0)] — the flags word is
@@ -1923,7 +1944,8 @@ Definition access_exists_spec : Sys SyscallEffect :=
     [want &= MAY_READ | MAY_WRITE | MAY_EXEC] and then finds every
     [(e_perm & 0) == 0] (fs/namei.c, fs/posix_acl.c).  So which cred is
     installed changes no answer F_OK gives, and the only trace the
-    override leaves is the -ENOMEM already in [faccessat_errnos].
+    override leaves is an -ENOMEM with no copy-in, which
+    [Fs.Namei.getname_refusals] already admits.
     THIS STOPS BEING TRUE the moment a nonzero mode is modeled: at that
     point fsuid is load-bearing and has to be carried in [State] first.
 
@@ -2011,17 +2033,18 @@ Definition access_exists_spec : Sys SyscallEffect :=
     R22 and what closed it.
 
     THE PATHNAME FETCH'S OWN ARMS — the empty pathname, an unreadable
-    pointer and an over-long one — admit no [faccessat_errnos]
-    alternative, since the -EACCES there needs the walk, and none of
-    them reaches it.  Every answer, theirs included, takes the -ENOMEM
-    [getname_flags] raises when an allocation fails before its copy is
-    done (fs/namei.c:146-148 and 189-193, Linux v6.18.46;
+    pointer and an over-long one — admit no refusal of the walk, since
+    none of them reaches it.  Every answer, theirs included, takes the
+    -ENOMEM [getname_flags] raises when an allocation fails before its
+    copy is done (fs/namei.c:146-148 and 189-193, Linux v6.18.46;
     [Fs.Namei.getname_refusals]), which is also the errno, and the
     copy-in, [access_override_creds]'s [prepare_creds] answers ahead of
     [user_path_at] when the override runs (fs/open.c:486-490).  Every
-    answer past the fetch takes the walk's own -EACCES and -ENOMEM
-    beside it ([Fs.Namei.walk_refusals], in [faccessat_spec] and
-    [faccessat2_spec]). *)
+    answer past the fetch takes the walk's own refusals beside it
+    ([Fs.Namei.walk_refusals], in [faccessat_spec] and
+    [faccessat2_spec]): -ENOMEM on every walk, and -EACCES on a walk
+    with a component, which is every one but that of a pathname made of
+    separators alone. *)
 Definition faccessat_body_spec (md : Fs.WalkMode) (dirfd pathp : word)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
   match read_cstr (in_mem i) pathp with

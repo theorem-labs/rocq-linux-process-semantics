@@ -2025,6 +2025,8 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
   | Some (FdFile p off) =>
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
+      else if rw_pos_einvalb off (bv_unsigned count)
+      then check_ret_only eff (errno_ret EINVAL) m []   (* [rw_verify_area], on [f_pos] *)
       else
       let data := fs_ino_data (m_fs m) p in
           let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
@@ -2054,6 +2056,8 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
   | Some (FdFileRW p off) =>   (* the [FdFile] arm above, on the O_RDWR kind *)
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
+      else if rw_pos_einvalb off (bv_unsigned count)
+      then check_ret_only eff (errno_ret EINVAL) m []   (* [rw_verify_area], on [f_pos] *)
       else
       let data := fs_ino_data (m_fs m) p in
           let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
@@ -2244,6 +2248,8 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       else
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []   (* [vfs_write]'s [access_ok] *)
+      else if rw_pos_einvalb off (bv_unsigned count)
+      then check_ret_only eff (errno_ret EINVAL) m []   (* [rw_verify_area], on [f_pos] *)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
@@ -2266,6 +2272,8 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       else
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []   (* [vfs_write]'s [access_ok] *)
+      else if rw_pos_einvalb off (bv_unsigned count)
+      then check_ret_only eff (errno_ret EINVAL) m []   (* [rw_verify_area], on [f_pos] *)
       else
       let bs := write_source (in_mem i) buf count in
       if negb (w_is0 count) && Nat.eqb (length bs) 0
@@ -2284,9 +2292,9 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
               else check_ret_only_copyins [(buf, length bs)] eff (len_word bs) m' [] in
         if w_is0 count then check_access_ok_zero buf count eff m k else k
   | Some (FdFileA p off) =>
-      (* the arm above with the destination moved to end-of-file, the
-         [modeled_file_gap] guard dropped, and [rw_verify_area]'s test
-         kept on the fd's real position; see [ReadWrite.write_spec].  The
+      (* the arm above with the destination moved to end-of-file and the
+         [modeled_file_gap] guard dropped; [rw_verify_area]'s test reads
+         the fd's real position here too; see [ReadWrite.write_spec].  The
          count gate is the arm above's, [modeled_rw_range], and it does
          not subsume the [access_ok] below it -- that argument is in
          [ReadWrite.write_spec]'s [FdFileA] arm *)
@@ -2296,21 +2304,26 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       else if rw_pos_einvalb off (bv_unsigned count)
       then check_ret_only eff (errno_ret EINVAL) m []
       else
-      let bs := write_source (in_mem i) buf count in
-      if negb (w_is0 count) && Nat.eqb (length bs) 0
+      let data := fs_ino_data (m_fs m) p in
+      if append_efbigb data count
+      then check_ret_only eff (errno_ret EFBIG) m []
+        (* the file-size limit: [ReadWrite.append_room] *)
+      else
+      let cnt := append_count data count in
+      let bs := write_source (in_mem i) buf cnt in
+      if negb (w_is0 cnt) && Nat.eqb (length bs) 0
       then check_ret_only eff (errno_ret EFAULT) m []
       else
         let k :=
-          let data := fs_ino_data (m_fs m) p in
               let m' :=
                 with_fds (fd_insert (m_fds m) fd
                             (FdFileA p (append_new_pos data bs off)))
                   (with_fs (fs_set_ino_data (m_fs m) p
                               (file_write data (len_word data) bs)) m) in
-              if w_is0 count
+              if w_is0 cnt
               then check_ret_only eff (len_word bs) m' []
               else check_ret_only_copyins [(buf, length bs)] eff (len_word bs) m' [] in
-        if w_is0 count then check_access_ok_zero buf count eff m k else k
+        if w_is0 cnt then check_access_ok_zero buf cnt eff m k else k
   | Some (FdUrandom _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
       else
@@ -2505,6 +2518,12 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
       apply pure_ok. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { (* [rw_verify_area]'s position test: -EINVAL *)
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. srw Hpos. apply pure_ok. }
     cbv zeta in H.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
       as [|b bsr] eqn:Hbs.
@@ -2515,7 +2534,7 @@ Proof.
       apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hbs. srw Hw.
+      srw Hfd. srw Hpos. srw Hbs. srw Hw.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
         as [bs0|] eqn:Hw; cbv beta iota zeta in H.
@@ -2526,7 +2545,7 @@ Proof.
         apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd. srw Hbs. srw Hw. srw Hw1. apply pure_ok. }
+        srw Hfd. srw Hpos. srw Hbs. srw Hw. srw Hw1. apply pure_ok. }
       destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
         destruct zs as [|? ?]; destruct us as [|? ?];
         destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
@@ -2539,7 +2558,7 @@ Proof.
       apply bv_eqb_eq in HC; subst ret.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hbs. srw Hw.
+      srw Hfd. srw Hpos. srw Hbs. srw Hw.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
   - (* write-only file fd: -EBADF *)
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -2558,6 +2577,12 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
       apply pure_ok. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { (* [rw_verify_area]'s position test: -EINVAL *)
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. srw Hpos. apply pure_ok. }
     cbv zeta in H.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
       as [|b bsr] eqn:Hbs.
@@ -2568,7 +2593,7 @@ Proof.
       apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hbs. srw Hw.
+      srw Hfd. srw Hpos. srw Hbs. srw Hw.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
         as [bs0|] eqn:Hw; cbv beta iota zeta in H.
@@ -2579,7 +2604,7 @@ Proof.
         apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-        srw Hfd. srw Hbs. srw Hw. srw Hw1. apply pure_ok. }
+        srw Hfd. srw Hpos. srw Hbs. srw Hw. srw Hw1. apply pure_ok. }
       destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
         destruct zs as [|? ?]; destruct us as [|? ?];
         destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
@@ -2592,7 +2617,7 @@ Proof.
       apply bv_eqb_eq in HC; subst ret.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hbs. srw Hw.
+      srw Hfd. srw Hpos. srw Hbs. srw Hw.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
   - (* directory fd: -EFAULT past TASK_SIZE, -EISDIR under it *)
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn;
@@ -2904,32 +2929,7 @@ Proof.
            now apply check_ret_only_no_unmodeled in H.
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
     { now apply check_ret_only_no_unmodeled in H. }
-    cbv zeta in H.
-      destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
-        as [|b bsr] eqn:Hbs.
-      * destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
-          as [bs0|] eqn:Hw; cbv beta iota zeta in H.
-        -- now apply check_ret_only_no_unmodeled in H.
-        -- rewrite read_bytes_map_nil in Hw; discriminate.
-      * destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
-          as [bs0|] eqn:Hw; cbv beta iota zeta in H.
-        -- destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
-             destruct zs as [|? ?]; destruct us as [|? ?];
-          destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
-           destruct (bv_eqb a buf && listN_eqb bs' (b :: bsr)
-                     && bv_eqb ret (len_word (b :: bsr))); discriminate.
-        -- destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
-           ++ (* partially writable destination: fail closed *)
-              eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-              eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-              srw Hfd. srw Hbs. srw Hw. srw Hw1. apply unmodeled_intro.
-           ++ (* nothing writable at all: -EFAULT, never [CheckUnmodeled] *)
-              now apply check_ret_only_no_unmodeled in H.
-  - now apply check_ret_only_no_unmodeled in H.
-  - (* append fd: -EBADF, never [CheckUnmodeled] *)
-    now apply check_ret_only_no_unmodeled in H.
-  - (* the same file opened O_RDWR: the file bullet above *)
-    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
     { now apply check_ret_only_no_unmodeled in H. }
     cbv zeta in H.
       destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
@@ -2949,7 +2949,36 @@ Proof.
            ++ (* partially writable destination: fail closed *)
               eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
               eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-              srw Hfd. srw Hbs. srw Hw. srw Hw1. apply unmodeled_intro.
+              srw Hfd. srw Hpos. srw Hbs. srw Hw. srw Hw1. apply unmodeled_intro.
+           ++ (* nothing writable at all: -EFAULT, never [CheckUnmodeled] *)
+              now apply check_ret_only_no_unmodeled in H.
+  - now apply check_ret_only_no_unmodeled in H.
+  - (* append fd: -EBADF, never [CheckUnmodeled] *)
+    now apply check_ret_only_no_unmodeled in H.
+  - (* the same file opened O_RDWR: the file bullet above *)
+    destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
+    { now apply check_ret_only_no_unmodeled in H. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { now apply check_ret_only_no_unmodeled in H. }
+    cbv zeta in H.
+      destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
+        as [|b bsr] eqn:Hbs.
+      * destruct (read_bytes_map (in_wmem i) buf (len_word ([] : list byte)))
+          as [bs0|] eqn:Hw; cbv beta iota zeta in H.
+        -- now apply check_ret_only_no_unmodeled in H.
+        -- rewrite read_bytes_map_nil in Hw; discriminate.
+      * destruct (read_bytes_map (in_wmem i) buf (len_word (b :: bsr)))
+          as [bs0|] eqn:Hw; cbv beta iota zeta in H.
+        -- destruct eff as [ret ws zs us cs copyins]; destruct ws as [|[a bs'] [|]];
+             destruct zs as [|? ?]; destruct us as [|? ?];
+          destruct cs as [|? ?]; destruct copyins as [|? ?]; try discriminate.
+           destruct (bv_eqb a buf && listN_eqb bs' (b :: bsr)
+                     && bv_eqb ret (len_word (b :: bsr))); discriminate.
+        -- destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
+           ++ (* partially writable destination: fail closed *)
+              eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+              eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+              srw Hfd. srw Hpos. srw Hbs. srw Hw. srw Hw1. apply unmodeled_intro.
            ++ (* nothing writable at all: -EFAULT, never [CheckUnmodeled] *)
               now apply check_ret_only_no_unmodeled in H.
   - (* directory fd: both arms answer *)
@@ -3151,6 +3180,9 @@ Proof.
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { (* the range is refused: -EFAULT *)
       cbn; rewrite bv_eqb_refl; reflexivity. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok.
+    { (* the position test: -EINVAL *)
+      cbn; rewrite bv_eqb_refl; reflexivity. }
     cbv zeta. unfold delivered_writes in *.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
       as [|b bsr] eqn:Hbs; hall Hbs; inv_ok.
@@ -3172,6 +3204,9 @@ Proof.
   - (* the same file opened O_RDWR: the file bullet above *)
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { (* the range is refused: -EFAULT *)
+      cbn; rewrite bv_eqb_refl; reflexivity. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok.
+    { (* the position test: -EINVAL *)
       cbn; rewrite bv_eqb_refl; reflexivity. }
     cbv zeta. unfold delivered_writes in *.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
@@ -3325,6 +3360,8 @@ Proof.
       as [wn|] eqn:Hwn; hall Hwn; inv_ok; try discriminate; reflexivity.
   - destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok;
+      try discriminate.
     cbv zeta.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
       as [|b bsr] eqn:Hbs; hall Hbs; inv_ok.
@@ -3339,6 +3376,8 @@ Proof.
         hall Hw1; inv_ok; try discriminate; reflexivity.
   - (* the same file opened O_RDWR: the file bullet above *)
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
+      try discriminate.
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok;
       try discriminate.
     cbv zeta.
     destruct (file_read (fs_ino_data (m_fs m) p) off (Z_to_bv 64 (rw_count_clamp count)))
@@ -3591,6 +3630,12 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
       apply pure_ok. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { (* [rw_verify_area]'s position test: -EINVAL *)
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. srw Hpos. apply pure_ok. }
     cbv zeta in H.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -3601,12 +3646,12 @@ Proof.
         [discriminate|].
       apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply input_ok|]. cbv beta.
-      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hg.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hpos. srw Hg.
       unfold write_fault_extend. cbv zeta. srw Hz.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg.
+      srw Hfd. srw Hpos. srw Hg.
       destruct (w_is0 count).
       2: { destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) off
                              (write_source (in_mem i) buf count))) eqn:Hk;
@@ -3630,7 +3675,7 @@ Proof.
         | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
           apply pure_ok ].
   - (* append fd: the same, minus the zero-fill guard and plus
-       [rw_verify_area]'s -EINVAL *)
+       [rw_verify_area]'s -EINVAL and the file-size limit *)
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; [discriminate|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
     { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -3643,24 +3688,29 @@ Proof.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. srw Hpos. apply pure_ok. }
     cbv zeta in H.
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
-    + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb.
+    { (* the file-size limit: -EFBIG *)
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hpos. srw Hg. apply pure_ok.
-    + eapply bind_ok0; [apply input_ok|]. cbv beta.
-      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hpos. srw Hg.
-      destruct (w_is0 count).
+      srw Hfd. srw Hpos. srw Hfb. apply pure_ok. }
+    eapply bind_ok0; [apply input_ok|]. cbv beta.
+    eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. srw Hpos. srw Hfb.
+    set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+    destruct (negb (w_is0 cnt)
+              && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0)
+      eqn:Hg; cbv beta iota in H |- *.
+    + apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      apply pure_ok.
+    + destruct (w_is0 cnt).
       2: { apply check_ret_only_copyins_ok_iff in H.
            destruct H as (-> & -> & ->).
            cbv beta iota zeta.
            eapply bind_ok0; [apply modify_ok|].
            eapply bind_ok0; [apply modify_ok|].
            apply record_copyins_ok. apply pure_ok. }
-      ok_zero_cases H buf count;
+      ok_zero_cases H buf cnt;
         [ apply check_ret_only_ok_iff in H;
           destruct H as (-> & -> & ->);
           cbv beta iota zeta;
@@ -3677,6 +3727,12 @@ Proof.
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
       apply pure_ok. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { (* [rw_verify_area]'s position test: -EINVAL *)
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      eapply bind_ok0; [apply input_ok|]. cbv beta.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. srw Hpos. apply pure_ok. }
     cbv zeta in H.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -3687,12 +3743,12 @@ Proof.
         [discriminate|].
       apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
       eapply bind_ok0; [apply input_ok|]. cbv beta.
-      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hg.
+      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hpos. srw Hg.
       unfold write_fault_extend. cbv zeta. srw Hz.
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg.
+      srw Hfd. srw Hpos. srw Hg.
       destruct (w_is0 count).
       2: { destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) off
                              (write_source (in_mem i) buf count))) eqn:Hk;
@@ -3907,6 +3963,8 @@ Proof.
       srw Hfd. apply unmodeled_intro. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
     { now apply check_ret_only_no_unmodeled in H. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { now apply check_ret_only_no_unmodeled in H. }
     cbv zeta in H.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -3915,13 +3973,13 @@ Proof.
       unfold check_write_fault_extend in H. cbv zeta in H.
       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg. unfold write_fault_extend. cbv zeta.
+      srw Hfd. srw Hpos. srw Hg. unfold write_fault_extend. cbv zeta.
       destruct (negb (modeled_zero_fill (bv_unsigned off) (fs_ino_data (m_fs m) p))) eqn:Hz;
         [ apply unmodeled_intro
         | now apply check_ret_only_copyins_no_unmodeled in H ].
     + eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg.
+      srw Hfd. srw Hpos. srw Hg.
       destruct (w_is0 count);
         [ ok_zero_cases H buf count;
           [ | now apply check_ret_only_no_unmodeled in H ]
@@ -3944,15 +4002,18 @@ Proof.
     destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
     { now apply check_ret_only_no_unmodeled in H. }
     cbv zeta in H.
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg.
+    destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb.
+    { now apply check_ret_only_no_unmodeled in H. }
+    eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+    eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+    srw Hfd. srw Hpos. srw Hfb.
+    set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+    destruct (negb (w_is0 cnt)
+              && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0)
+      eqn:Hg; cbv beta iota in H |- *.
     + now apply check_ret_only_no_unmodeled in H.
-    + eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hpos. srw Hg.
-      destruct (w_is0 count);
-        [ ok_zero_cases H buf count;
+    + destruct (w_is0 cnt);
+        [ ok_zero_cases H buf cnt;
           [ | now apply check_ret_only_no_unmodeled in H ]
         | ].
       all: first
@@ -3966,6 +4027,8 @@ Proof.
       srw Hfd. apply unmodeled_intro. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
     { now apply check_ret_only_no_unmodeled in H. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos.
+    { now apply check_ret_only_no_unmodeled in H. }
     cbv zeta in H.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -3974,13 +4037,13 @@ Proof.
       unfold check_write_fault_extend in H. cbv zeta in H.
       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg. unfold write_fault_extend. cbv zeta.
+      srw Hfd. srw Hpos. srw Hg. unfold write_fault_extend. cbv zeta.
       destruct (negb (modeled_zero_fill (bv_unsigned off) (fs_ino_data (m_fs m) p))) eqn:Hz;
         [ apply unmodeled_intro
         | now apply check_ret_only_copyins_no_unmodeled in H ].
     + eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
-      srw Hfd. srw Hg.
+      srw Hfd. srw Hpos. srw Hg.
       destruct (w_is0 count);
         [ ok_zero_cases H buf count;
           [ | now apply check_ret_only_no_unmodeled in H ]
@@ -4107,6 +4170,8 @@ Proof.
   - destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok.
+    { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
     cbv zeta.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -4127,18 +4192,22 @@ Proof.
            hall Hk; inv_ok.
       all: unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
         rewrite ?bv_eqb_refl, ?Nat.eqb_refl; reflexivity.
-  - (* append fd: the arm above with no zero-fill guard to replay *)
+  - (* append fd: the arm above with no zero-fill guard to replay, and
+       the file-size limit *)
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
     destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
-    cbv zeta.
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
+    cbv zeta in *.
+    destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb; hall Hfb; inv_ok.
+    { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+    set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+    destruct (negb (w_is0 cnt)
+              && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0)
       eqn:Hg; hall Hg; inv_ok.
     + cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
-    + destruct (w_is0 count); [ok_zero_split buf count|].
+    + destruct (w_is0 cnt); [ok_zero_split buf cnt|].
       2: { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
       all: inv_ok.
       all: unfold check_ret_only_copyins, check_ret_only, clear_copyins; cbn;
@@ -4146,6 +4215,8 @@ Proof.
   - (* the same file opened O_RDWR: the write-only bullet above *)
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak; inv_ok.
+    { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
     cbv zeta.
     destruct (negb (w_is0 count)
@@ -4276,6 +4347,8 @@ Proof.
       [reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
       inv_ok; try discriminate.
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos;
+      inv_ok; try discriminate.
     cbv zeta.
     destruct (negb (w_is0 count)
               && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
@@ -4298,16 +4371,21 @@ Proof.
       inv_ok; try discriminate.
     destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos;
       inv_ok; try discriminate.
-    cbv zeta.
-    destruct (negb (w_is0 count)
-              && Nat.eqb (length (write_source (in_mem i) buf count)) 0)
+    cbv zeta in *.
+    destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb; hall Hfb;
+      inv_ok; try discriminate.
+    set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+    destruct (negb (w_is0 cnt)
+              && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0)
       eqn:Hg; hall Hg; inv_ok; try discriminate.
-    destruct (w_is0 count); [ok_zero_split buf count|].
+    destruct (w_is0 cnt); [ok_zero_split buf cnt|].
     all: cbv beta iota zeta in *; inv_ok; try discriminate; try reflexivity.
   - (* the same file opened O_RDWR: the write-only bullet above *)
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok;
       [reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
+      inv_ok; try discriminate.
+    destruct (rw_pos_einvalb off (bv_unsigned count)) eqn:Hpos; hall Hpos;
       inv_ok; try discriminate.
     cbv zeta.
     destruct (negb (w_is0 count)
@@ -4476,12 +4554,17 @@ Definition check_pwrite64 (i : SyscallInput) (fd buf count pos : word)
       then check_ret_only eff (errno_ret EINVAL) m []
       else
       let data := fs_ino_data (m_fs m) p in
-      let bs := write_source (in_mem i) buf count in
-      if negb (w_is0 count) && Nat.eqb (length bs) 0
+      if append_efbigb data count
+      then check_ret_only eff (errno_ret EFBIG) m []
+        (* the file-size limit: [ReadWrite.append_room] *)
+      else
+      let cnt := append_count data count in
+      let bs := write_source (in_mem i) buf cnt in
+      if negb (w_is0 cnt) && Nat.eqb (length bs) 0
       then check_ret_only eff (errno_ret EFAULT) m []
       else
       let m' := with_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) m in
-      if w_is0 count
+      if w_is0 cnt
       then check_ret_only eff (len_word bs) m' []
       else check_ret_only_copyins [(buf, length bs)] eff (len_word bs) m' []
   | Some (FdUrandom _ wr) =>
@@ -4954,17 +5037,23 @@ Proof.
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. apply pure_ok. }
   cbv zeta in H.
-  destruct (negb (w_is0 count)
-            && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg.
-  { (* the faulting source: -EFAULT, the file left alone *)
+  destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb.
+  { (* the file-size limit: -EFBIG *)
     apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     eapply bind_ok0; [apply input_ok|]. cbv beta.
     eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-    srw Hfd. srw Hg. apply pure_ok. }
+    srw Hfd. srw Hfb. apply pure_ok. }
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
-  srw Hfd. srw Hg.
-  destruct (w_is0 count).
+  srw Hfd. srw Hfb.
+  set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+  destruct (negb (w_is0 cnt)
+            && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0) eqn:Hg;
+    cbv beta iota in H |- *.
+  { (* the faulting source: -EFAULT, the file left alone *)
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    apply pure_ok. }
+  destruct (w_is0 cnt).
   - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     cbv beta iota zeta.
     eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
@@ -5082,10 +5171,13 @@ Proof.
        destruct (rw_pos_einvalb pos (bv_unsigned count)); cbv beta iota in H;
          [now apply check_ret_only_no_unmodeled in H|].
        cbv zeta in H.
-       destruct (negb (w_is0 count)
-                 && Nat.eqb (length (write_source (in_mem i) buf count)) 0);
+       destruct (append_efbigb (fs_ino_data (m_fs m) p) count); cbv beta iota in H;
+         [now apply check_ret_only_no_unmodeled in H|].
+       set (cnt := append_count (fs_ino_data (m_fs m) p) count) in H. clearbody cnt.
+       destruct (negb (w_is0 cnt)
+                 && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0);
          cbv beta iota in H; [now apply check_ret_only_no_unmodeled in H|].
-       destruct (w_is0 count); cbv beta iota in H;
+       destruct (w_is0 cnt); cbv beta iota in H;
          [now apply check_ret_only_no_unmodeled in H
          |now apply check_ret_only_copyins_no_unmodeled in H]. }
   (* the write-only arm and the O_RDWR one are one script, run twice *)
@@ -5183,11 +5275,14 @@ Proof.
   destruct (rw_pos_einvalb pos (bv_unsigned count)) eqn:Hrv; hall Hrv; inv_ok.
   { cbn; rewrite bv_eqb_refl; reflexivity. }
   cbv zeta in *.
-  destruct (negb (w_is0 count)
-            && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg;
+  destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb; hall Hfb; inv_ok.
+  { cbn; rewrite bv_eqb_refl; reflexivity. }
+  set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+  destruct (negb (w_is0 cnt)
+            && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0) eqn:Hg;
     hall Hg; inv_ok.
   { cbn; rewrite bv_eqb_refl; reflexivity. }
-  destruct (w_is0 count); inv_ok.
+  destruct (w_is0 cnt); inv_ok.
   - cbn; rewrite bv_eqb_refl; reflexivity.
   - apply check_ret_only_copyins_ok_iff. repeat split; reflexivity.
   }
@@ -5270,10 +5365,13 @@ Proof.
   destruct (rw_pos_einvalb pos (bv_unsigned count)) eqn:Hrv; hall Hrv; inv_ok;
     try discriminate.
   cbv zeta in *.
-  destruct (negb (w_is0 count)
-            && Nat.eqb (length (write_source (in_mem i) buf count)) 0) eqn:Hg;
+  destruct (append_efbigb (fs_ino_data (m_fs m) p) count) eqn:Hfb; hall Hfb; inv_ok;
+    try discriminate.
+  set (cnt := append_count (fs_ino_data (m_fs m) p) count) in *. clearbody cnt.
+  destruct (negb (w_is0 cnt)
+            && Nat.eqb (length (write_source (in_mem i) buf cnt)) 0) eqn:Hg;
     hall Hg; inv_ok; try discriminate.
-  destruct (w_is0 count); inv_ok; discriminate.
+  destruct (w_is0 cnt); inv_ok; discriminate.
   }
   1: {
   destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
@@ -5505,8 +5603,10 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
       end
   | Some (FdFileA p off) =>
       (* [rw_pos_einvalb] still reads [off], the fd's real position; only
-         the destination moves.  See [ReadWrite.writev_spec]'s
-         [FdFileA] arm *)
+         the destination moves, and the file-size limit
+         ([ReadWrite.append_room]) cuts the gathered prefix or answers
+         -EFBIG.  See [ReadWrite.writev_spec]'s [FdFileA] arm *)
+      let data := fs_ino_data (m_fs m) p in
       match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
       | ImpFault => check_ret_only_copyins
           (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -5516,7 +5616,7 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
           eff (errno_ret EINVAL) m []
       | ImpOk iovs0 =>
           let total := iovs_total (cap_iovecs iovs0) in
-          let bs := writev_gathered (in_mem i) iovs0 in
+          let bs := writev_cut (append_room data) (writev_gathered (in_mem i) iovs0) in
           if Z.eqb total 0
           then check_ret_only_copyins
             (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -5525,12 +5625,15 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
           then check_ret_only_copyins
             (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
             eff (errno_ret EINVAL) m []
+          else if (append_room data <=? 0)%Z
+          then check_ret_only_copyins
+            (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+            eff (errno_ret EFBIG) m []
           else if Nat.eqb (length bs) 0
           then check_ret_only_copyins
             (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
             eff (errno_ret EFAULT) m []
           else
-            let data := fs_ino_data (m_fs m) p in
                 if addr_is_error_b (len_word bs) then CheckUnmodeled
                 else check_ret_only_copyins
                   (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt) ++
@@ -5835,19 +5938,23 @@ Proof.
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos.
     { wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos.
       apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-    destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
-    { wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+    destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb.
+    { (* the file-size limit: -EFBIG *)
+      wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hfb.
       apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht.
+    { wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hfb. srw Ht.
+      apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))))
       eqn:Hae; [discriminate|].
-    wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht.
+    wv_errno H. wv_open Hfd. srw Hiv. srw Htot. srw Hpos. srw Hfb. srw Ht.
     srw Hae.
     eapply record_copyins_ok with
       (eff := with_copyins
         (iov_prefix_accesses (cap_iovecs iovs)
-           (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+           (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))))
         (mkEffect
-          (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))) [] [])).
+          (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) [] [])).
     eapply bind_ok0; [apply modify_ok|].
     eapply bind_ok0; [apply modify_ok|].
     apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
@@ -6028,11 +6135,13 @@ Proof.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
-    destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht.
+    destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
-    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae.
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht.
+    { now apply check_ret_only_copyins_no_unmodeled in H. }
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae.
     2:{ now apply check_ret_only_copyins_no_unmodeled in H. }
-    wv_open_unmodeled Hfd. srw Hiv. srw Htot. srw Hpos. srw Ht. srw Hae.
+    wv_open_unmodeled Hfd. srw Hiv. srw Htot. srw Hpos. srw Hfb. srw Ht. srw Hae.
     apply record_copyins_unmodeled.
     unfold writev_buf_gap. apply unmodeled_intro.
   - (* the same file opened O_RDWR: the write-only bullet above *)
@@ -6164,11 +6273,13 @@ Proof.
     { wv_errno_complete. }
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos; hall Hpos; inv_ok.
     { wv_errno_complete. }
-    destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0)
+    destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; hall Hfb; inv_ok.
+    { wv_errno_complete. }
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0)
       eqn:Ht; hall Ht; inv_ok.
     { wv_errno_complete. }
     cbv zeta.
-    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae;
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae;
       hall Hae; inv_ok.
     unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins].
     rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl).
@@ -6330,9 +6441,11 @@ Proof.
       try discriminate.
     destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs))) eqn:Hpos; hall Hpos; inv_ok;
       try discriminate.
-    destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
+    destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; hall Hfb; inv_ok;
+      try discriminate.
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht;
       hall Ht; inv_ok; try discriminate.
-    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae;
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae;
       hall Hae; inv_ok; try discriminate.
     reflexivity.
   - (* the same file opened O_RDWR: the write-only bullet above *)
@@ -6397,14 +6510,16 @@ Qed.
 
 (** [ReadWrite.pwritev2_file] as an acceptor: [check_writev]'s file
     shape at [pos_l], the destination the end of the file only for an
-    O_APPEND descriptor written without [RWF_NOAPPEND].  The bytes go to
-    the inode and no offset moves. *)
+    O_APPEND descriptor written without [RWF_NOAPPEND], which alone
+    meets the file-size limit ([ReadWrite.append_room]).  The bytes go
+    to the inode and no offset moves. *)
 Definition check_pwritev2_file (i : SyscallInput) (m : Model) (p : ino)
     (append : bool) (iov iovcnt pos_l : word) (fl : Z) (eff : SyscallEffect)
     : check_result :=
   let data := fs_ino_data (m_fs m) p in
   let app := (append && Z.eqb fl 0)%bool in
   let dst := if app then len_word data else pos_l in
+  let room := if app then Some (append_room data) else None in
   match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
   | ImpFault => check_ret_only_copyins
       (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -6414,7 +6529,10 @@ Definition check_pwritev2_file (i : SyscallInput) (m : Model) (p : ino)
       eff (errno_ret EINVAL) m []
   | ImpOk iovs0 =>
       let total := iovs_total (cap_iovecs iovs0) in
-      let bs := writev_gathered (in_mem i) iovs0 in
+      let bs := match room with
+                | None => writev_gathered (in_mem i) iovs0
+                | Some r => writev_cut r (writev_gathered (in_mem i) iovs0)
+                end in
       if Z.eqb total 0
       then check_ret_only_copyins
         (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -6423,6 +6541,10 @@ Definition check_pwritev2_file (i : SyscallInput) (m : Model) (p : ino)
       then check_ret_only_copyins
         (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
         eff (errno_ret EINVAL) m []
+      else if match room with None => false | Some r => (r <=? 0)%Z end
+      then check_ret_only_copyins
+        (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        eff (errno_ret EFBIG) m []
       else if Nat.eqb (length bs) 0
       then
         (if app
@@ -6462,35 +6584,46 @@ Proof.
   destruct (rw_pos_einvalb pos_l (iovs_total (cap_iovecs iovs))) eqn:Hrv;
     cbv beta iota in H |- *.
   { wv_errno H. apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-  destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
-    cbv beta iota in H |- *.
-  { (* the faulting source: the file kept when the write goes to the end,
-       extended to [pos_l] otherwise *)
-    destruct (append && Z.eqb fl 0)%bool eqn:Hap; cbv beta iota in H |- *.
-    { wv_errno H. unfold write_fault_keep. cbv beta.
+  destruct (append && Z.eqb fl 0)%bool eqn:Hap; cbv beta iota in H |- *.
+  - (* an append: the file-size limit, then the end of the file *)
+    destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; cbv beta iota in H |- *.
+    { (* the file-size limit: -EFBIG *)
+      wv_errno H. apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht; cbv beta iota in H |- *.
+    { (* the faulting source: the file kept *)
+      wv_errno H. unfold write_fault_keep. cbv beta.
       apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
-    unfold check_write_fault_extend in H. cbv zeta in H.
-    destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
-      cbv beta iota in H; [discriminate|].
-    wv_errno H. unfold write_fault_extend. cbv zeta. srw Hz.
-    apply record_copyins_ok_empty; [reflexivity|].
-    eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
-  destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p)
-                    (if (append && Z.eqb fl 0)%bool
-                     then len_word (fs_ino_data (m_fs m) p) else pos_l)
-                    (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
-    cbv beta iota in H |- *; [discriminate|].
-  destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
-    eqn:Hae; cbv beta iota in H |- *; [discriminate|].
-  wv_errno H.
-  eapply record_copyins_ok with
-    (eff := with_copyins
-      (iov_prefix_accesses (cap_iovecs iovs)
-         (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
-      (mkEffect
-        (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))) [] [])).
-  eapply bind_ok0; [apply modify_ok|].
-  apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) (len_word (fs_ino_data (m_fs m) p)) (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hk;
+      cbv beta iota in H |- *; [discriminate|].
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae;
+      cbv beta iota in H |- *; [discriminate|].
+    wv_errno H.
+    eapply record_copyins_ok with
+      (eff := with_copyins
+        (iov_prefix_accesses (cap_iovecs iovs) (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))))
+        (mkEffect (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) [] [])).
+    eapply bind_ok0; [apply modify_ok|].
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
+  - (* not an append: the bytes at [pos_l] *)
+    destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht; cbv beta iota in H |- *.
+    { (* the faulting source: the file extended to [pos_l] *)
+      unfold check_write_fault_extend in H. cbv zeta in H.
+      destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
+        cbv beta iota in H; [discriminate|].
+      wv_errno H. unfold write_fault_extend. cbv zeta. srw Hz.
+      apply record_copyins_ok_empty; [reflexivity|].
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) pos_l (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
+      cbv beta iota in H |- *; [discriminate|].
+    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae;
+      cbv beta iota in H |- *; [discriminate|].
+    wv_errno H.
+    eapply record_copyins_ok with
+      (eff := with_copyins
+        (iov_prefix_accesses (cap_iovecs iovs) (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+        (mkEffect (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))) [] [])).
+    eapply bind_ok0; [apply modify_ok|].
+    apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
 Qed.
 
 Lemma check_pwritev2_file_sound_unmodeled :
@@ -6512,26 +6645,30 @@ Proof.
   destruct (rw_pos_einvalb pos_l (iovs_total (cap_iovecs iovs))) eqn:Hrv;
     cbv beta iota in H |- *.
   { now apply check_ret_only_copyins_no_unmodeled in H. }
-  destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
-    cbv beta iota in H |- *.
-  { destruct (append && Z.eqb fl 0)%bool eqn:Hap; cbv beta iota in H |- *.
+  destruct (append && Z.eqb fl 0)%bool eqn:Hap; cbv beta iota in H |- *.
+  - destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; cbv beta iota in H |- *.
     { now apply check_ret_only_copyins_no_unmodeled in H. }
-    unfold check_write_fault_extend in H. unfold write_fault_extend.
-    cbv zeta in H |- *.
-    destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht; cbv beta iota in H |- *.
+    { now apply check_ret_only_copyins_no_unmodeled in H. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) (len_word (fs_ino_data (m_fs m) p)) (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hk;
       cbv beta iota in H |- *.
     { unfold writev_buf_gap. apply unmodeled_intro. }
-    now apply check_ret_only_copyins_no_unmodeled in H. }
-  destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p)
-                    (if (append && Z.eqb fl 0)%bool
-                     then len_word (fs_ino_data (m_fs m) p) else pos_l)
-                    (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
-    cbv beta iota in H |- *.
-  { unfold writev_buf_gap. apply unmodeled_intro. }
-  destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
-    eqn:Hae; cbv beta iota in H |- *.
-  { unfold writev_buf_gap. apply unmodeled_intro. }
-  now apply check_ret_only_copyins_no_unmodeled in H.
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae; cbv beta iota in H |- *.
+    { unfold writev_buf_gap. apply unmodeled_intro. }
+    now apply check_ret_only_copyins_no_unmodeled in H.
+  - destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht; cbv beta iota in H |- *.
+    { unfold check_write_fault_extend in H. unfold write_fault_extend.
+      cbv zeta in H |- *.
+      destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
+        cbv beta iota in H |- *.
+      { unfold writev_buf_gap. apply unmodeled_intro. }
+      now apply check_ret_only_copyins_no_unmodeled in H. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) pos_l (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
+      cbv beta iota in H |- *.
+    { unfold writev_buf_gap. apply unmodeled_intro. }
+    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae; cbv beta iota in H |- *.
+    { unfold writev_buf_gap. apply unmodeled_intro. }
+    now apply check_ret_only_copyins_no_unmodeled in H.
 Qed.
 
 Lemma check_pwritev2_file_complete_ok :
@@ -6554,26 +6691,29 @@ Proof.
   destruct (rw_pos_einvalb pos_l (iovs_total (cap_iovecs iovs))) eqn:Hrv;
     hall Hrv; inv_ok.
   { wv_errno_complete. }
-  destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0)
-    eqn:Ht; hall Ht; inv_ok.
-  { destruct (append && Z.eqb fl 0)%bool eqn:Hap; hall Hap; inv_ok.
+  destruct (append && Z.eqb fl 0)%bool eqn:Hap; hall Hap; inv_ok.
+  - destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; hall Hfb; inv_ok.
     { wv_errno_complete. }
-    unfold write_fault_extend in *; cbv beta iota zeta in *.
-    destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
-      hall Hz; inv_ok.
-    sys_unfold; inv_ok.
-    unfold check_write_fault_extend. cbv zeta. rewrite Hz.
-    wv_errno_complete. }
-  destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p)
-                    (if (append && Z.eqb fl 0)%bool
-                     then len_word (fs_ino_data (m_fs m) p) else pos_l)
-                    (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
-    hall Hk; inv_ok.
-  destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
-    eqn:Hae; hall Hae; inv_ok.
-  unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins].
-  rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl).
-  cbn. now rewrite ?bv_eqb_refl.
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht; hall Ht; inv_ok.
+    { wv_errno_complete. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) (len_word (fs_ino_data (m_fs m) p)) (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hk;
+      hall Hk; inv_ok.
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae; hall Hae; inv_ok.
+    unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins].
+    rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl).
+    cbn. now rewrite ?bv_eqb_refl.
+  - destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht; hall Ht; inv_ok.
+    { unfold write_fault_extend in *; cbv beta iota zeta in *.
+      destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
+        hall Hz; inv_ok.
+      sys_unfold; inv_ok.
+      unfold check_write_fault_extend. cbv zeta. rewrite Hz.
+      wv_errno_complete. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) pos_l (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk; hall Hk; inv_ok.
+    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae; hall Hae; inv_ok.
+    unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins].
+    rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl).
+    cbn. now rewrite ?bv_eqb_refl.
 Qed.
 
 Lemma check_pwritev2_file_complete_unmodeled :
@@ -6592,22 +6732,26 @@ Proof.
     try discriminate.
   destruct (rw_pos_einvalb pos_l (iovs_total (cap_iovecs iovs))) eqn:Hrv;
     hall Hrv; inv_ok; try discriminate.
-  destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
-    hall Ht; inv_ok.
-  { destruct (append && Z.eqb fl 0)%bool eqn:Hap; hall Hap; inv_ok; try discriminate.
-    unfold write_fault_extend in *; cbv beta iota zeta in *.
-    unfold check_write_fault_extend. cbv zeta.
-    destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
-      hall Hz; inv_ok; try discriminate; [reflexivity|];
-      sys_unfold; inv_ok. }
-  destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p)
-                    (if (append && Z.eqb fl 0)%bool
-                     then len_word (fs_ino_data (m_fs m) p) else pos_l)
-                    (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
-    hall Hk; inv_ok; try discriminate; [reflexivity|].
-  destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs))))
-    eqn:Hae; hall Hae; inv_ok; try discriminate.
-  reflexivity.
+  destruct (append && Z.eqb fl 0)%bool eqn:Hap; hall Hap; inv_ok.
+  - destruct (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z eqn:Hfb; hall Hfb; inv_ok;
+      try discriminate.
+    destruct (Nat.eqb (length (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs)))) 0) eqn:Ht; hall Ht; inv_ok; try discriminate.
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) (len_word (fs_ino_data (m_fs m) p)) (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hk;
+      hall Hk; inv_ok; try discriminate; [reflexivity|].
+    destruct (addr_is_error_b (len_word (writev_cut (append_room (fs_ino_data (m_fs m) p)) (gather_prefix (in_mem i) (cap_iovecs iovs))))) eqn:Hae; hall Hae; inv_ok;
+      try discriminate.
+    reflexivity.
+  - destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht; hall Ht; inv_ok.
+    { unfold write_fault_extend in *; cbv beta iota zeta in *.
+      unfold check_write_fault_extend. cbv zeta.
+      destruct (negb (modeled_zero_fill (bv_unsigned pos_l) (fs_ino_data (m_fs m) p))) eqn:Hz;
+        hall Hz; inv_ok; try discriminate; [reflexivity|];
+        sys_unfold; inv_ok. }
+    destruct (negb (modeled_file_gap (fs_ino_data (m_fs m) p) pos_l (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hk;
+      hall Hk; inv_ok; try discriminate; [reflexivity|].
+    destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae; hall Hae; inv_ok;
+      try discriminate.
+    reflexivity.
 Qed.
 
 (** The pwritev2 (287) acceptor, in [ReadWrite.pwritev2_spec]'s order:

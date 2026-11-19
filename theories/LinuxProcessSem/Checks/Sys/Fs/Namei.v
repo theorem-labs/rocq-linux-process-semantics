@@ -123,7 +123,8 @@ Local Definition check_rmdir (r : Fs.Resolved) (lk : Fs.LastKind)
           | EFile _ | EDev _ | ELink _ =>
               check_unlink_type_result unlink_before_type_errnos ENOTDIR eff m
           | EDir =>
-              if path_eqb k (m_cwd m) then CheckUnmodeled
+              if top_level_key k then CheckUnmodeled
+              else if path_eqb k (m_cwd m) then CheckUnmodeled
               else if key_strictly_under k (m_cwd m) then CheckUnmodeled
               else if fd_names_dir (m_fds m) k then CheckUnmodeled
               else if negb (fs_dir_empty (m_fs m) k)
@@ -591,6 +592,7 @@ Proof.
       |
       |now apply check_unlink_type_result_sound
       |now apply check_unlink_type_result_sound].
+    destruct (top_level_key k); cbv iota in H |- *; [discriminate|].
     destruct (path_eqb k (m_cwd m)); cbv iota in H |- *; [discriminate|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota in H |- *;
       [discriminate|].
@@ -618,6 +620,8 @@ Proof.
       |
       |exfalso; eapply check_unlink_type_result_no_unmodeled; exact H
       |exfalso; eapply check_unlink_type_result_no_unmodeled; exact H].
+    destruct (top_level_key k); cbv iota in H |- *;
+      [apply unmodeled_intro|].
     destruct (path_eqb k (m_cwd m)); cbv iota in H |- *;
       [apply unmodeled_intro|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota in H |- *;
@@ -646,6 +650,7 @@ Proof.
       |
       |eapply check_unlink_type_result_ok_copyins_nil; exact H
       |eapply check_unlink_type_result_ok_copyins_nil; exact H].
+    destruct (top_level_key k); cbv iota in H; [discriminate|].
     destruct (path_eqb k (m_cwd m)); cbv iota in H; [discriminate|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota in H; [discriminate|].
     destruct (fd_names_dir (m_fds m) k); cbv iota in H; [discriminate|].
@@ -672,6 +677,8 @@ Proof.
       |
       |eapply check_unlink_type_result_complete; exact H
       |eapply check_unlink_type_result_complete; exact H].
+    destruct (top_level_key k); cbv iota in H |- *;
+      [unfold unmodeled in H; inv_ok|].
     destruct (path_eqb k (m_cwd m)); cbv iota in H |- *;
       [unfold unmodeled in H; inv_ok|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota in H |- *;
@@ -701,6 +708,7 @@ Proof.
       |
       |exfalso; eapply check_unlink_type_result_complete_unmodeled; exact H
       |exfalso; eapply check_unlink_type_result_complete_unmodeled; exact H].
+    destruct (top_level_key k); cbv iota in H |- *; [reflexivity|].
     destruct (path_eqb k (m_cwd m)); cbv iota in H |- *; [reflexivity|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota in H |- *;
       [reflexivity|].

@@ -842,14 +842,18 @@ Proof. vm_compute; split_conj; check_eq. Qed.
     (fs/namei.c:4724-4726, Linux v6.18.46) and [do_rmdir] (4595-4597)
     call before the lookup, -ENOMEM from the lookup's [d_alloc]
     (1701-1703), [may_delete]'s -EOVERFLOW (3267-3270), -EACCES
-    (3274-3276) and -EPERM (3277-3283), and the -EBUSY of a mount point
-    on the victim ([vfs_unlink] 4669-4670, [vfs_rmdir] 4543-4546).  Each
-    leaves the model as it was.  -EINVAL is [unlinkat]'s answer to a flag
-    word it does not know (4777-4778), decided before [getname]; with
-    the flag word 0 or AT_REMOVEDIR, [do_unlinkat] (4705-4773),
-    [do_rmdir] (4570-4622), [may_delete] (3255-3296), [vfs_unlink]
-    (4654-4696) and [vfs_rmdir] (4529-4568) do not give it for a name
-    "a", so it is refused on both removals. *)
+    (3274-3276) and -EPERM (3277-3283).  Each leaves the model as it
+    was.  -EBUSY is refused on both: its sources are a mount point at the
+    victim ([vfs_unlink] 4669-4670, [vfs_rmdir] 4543-4546), and under
+    SCOPE.md's launch premises a file is never one (the tree holds no
+    bind mount) and a folder below the top level is never one (every
+    mount point is a child of "/"), so it is no answer of a launch the
+    statements cover ([Fs.Namei.unlinkat_errnos]).  -EINVAL is
+    [unlinkat]'s answer to a flag word it does not know (4777-4778),
+    decided before [getname]; with the flag word 0 or AT_REMOVEDIR,
+    [do_unlinkat] (4705-4773), [do_rmdir] (4570-4622), [may_delete]
+    (3255-3296), [vfs_unlink] (4654-4696) and [vfs_rmdir] (4529-4568) do
+    not give it for a name "a", so it is refused on both removals. *)
 Example unlinkat_removal_admits_the_untracked_refusals :
   let unl e := check_syscall
         (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] mem_name_a (fun _ => None))
@@ -862,12 +866,12 @@ Example unlinkat_removal_admits_the_untracked_refusals :
   /\ unl EACCES = CheckOk ns_file_a []
   /\ unl EPERM = CheckOk ns_file_a []
   /\ unl EROFS = CheckOk ns_file_a []
-  /\ unl EBUSY = CheckOk ns_file_a []
+  /\ unl EBUSY = CheckReject
   /\ unl EOVERFLOW = CheckOk ns_file_a []
   /\ unl EINVAL = CheckReject
   /\ rmd EROFS = CheckOk ns_empty_dir_a []
   /\ rmd EPERM = CheckOk ns_empty_dir_a []
-  /\ rmd EBUSY = CheckOk ns_empty_dir_a []
+  /\ rmd EBUSY = CheckReject
   /\ rmd EINVAL = CheckReject.
 Proof. vm_compute; split_conj; check_eq. Qed.
 
@@ -984,6 +988,40 @@ Example rmdir_ignores_a_trailing_separator :
   = CheckOk (with_fs (Fs.fs_rmdir (m_fs ns_empty_dir_a) (wk [97]))
                ns_empty_dir_a) [].
 Proof. check_eq. Qed.
+
+(** A TOP-LEVEL FOLDER DECLINES.  SCOPE.md's launch premise lets every
+    child of "/" be a mount point, as /tmp is in the agreement checks'
+    launch (testing/vm/tracer.c:936), and on a mount point [vfs_rmdir]
+    answers -EBUSY before it asks [->rmdir] ([is_local_mountpoint],
+    fs/namei.c:4543-4546, then 4552, Linux v6.18.46), while the same
+    folder unmounted is removed.  The image does not say which, so
+    rmdir of the empty /tmp is [CheckUnmodeled] beside 0, -EBUSY and
+    -ENOTEMPTY alike, "/tmp/" too.  One level lower no folder is a mount
+    point: the empty /tmp/d is removed and its -EBUSY refused, and "/"
+    keeps [do_rmdir]'s LAST_ROOT -EBUSY (4590-4592). *)
+Definition tmp_sub_key : Fs.path := Fs.child_key Fs.tmp_dir [Z_to_bv 8 100].
+Definition ns_tmp_sub : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (Fs.fs_set (demo_fs []) tmp_sub_key EDir) IEof).
+
+Example rmdir_of_a_top_level_folder_declines :
+  let rmd (p : list Z) (n : nat) (e : word) (m : Model) := check_syscall
+        (mkInput 35 [AT_FDCWD; 8192; Z_to_bv 64 AT_REMOVEDIR; 0; 0; 0] (name_mem p)
+           (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect e [] [])) m in
+  rmd [47; 116; 109; 112]%Z 5%nat 0 ns_empty = CheckUnmodeled
+  /\ rmd [47; 116; 109; 112]%Z 5%nat (errno_ret EBUSY) ns_empty = CheckUnmodeled
+  /\ rmd [47; 116; 109; 112]%Z 5%nat (errno_ret ENOTEMPTY) ns_empty = CheckUnmodeled
+  /\ rmd [47; 116; 109; 112; 47]%Z 6%nat 0 ns_empty = CheckUnmodeled
+  (* one level lower: removed, and no -EBUSY *)
+  /\ rmd [47; 116; 109; 112; 47; 100]%Z 7%nat 0 ns_tmp_sub
+     = CheckOk (with_fs (Fs.fs_rmdir (m_fs ns_tmp_sub) tmp_sub_key) ns_tmp_sub) []
+  /\ rmd [47; 116; 109; 112; 47; 100]%Z 7%nat (errno_ret EBUSY) ns_tmp_sub = CheckReject
+  /\ rmd [97]%Z 2%nat 0 ns_empty_dir_a
+     = CheckOk (with_fs (Fs.fs_rmdir (m_fs ns_empty_dir_a) (wk [97])) ns_empty_dir_a) []
+  (* "/" is the LAST_ROOT answer, unchanged *)
+  /\ rmd [47]%Z 2%nat (errno_ret EBUSY) ns_empty = CheckOk ns_empty [].
+Proof. vm_compute; split_conj; check_eq. Qed.
 
 (** THE DECLINES, on the image that reaches each.  Linux SUCCEEDS at
     these and leaves an S_DEAD directory behind, which this model has no

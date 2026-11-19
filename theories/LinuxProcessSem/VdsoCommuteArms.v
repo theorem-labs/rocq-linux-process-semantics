@@ -340,14 +340,15 @@ Proof.
 Qed.
 
 (** The vectored twin of [write_file_tail].  Same two transformer
-    arguments, one more decline ([writev_buf_gap]) and the import in
-    front. *)
-Lemma vc_writev_file_arm : forall mp iov iovcnt off fault place,
+    arguments, one more decline ([writev_buf_gap]), the import in front,
+    and an append's file-size limit ([room]): an -EFBIG, and the gather
+    over the cut range. *)
+Lemma vc_writev_file_arm : forall mp iov iovcnt off room fault place,
   (forall u, fault = Some u -> vdso_commutes_tr u) ->
   (forall bs u, place bs = Some u -> vdso_commutes_tr u) ->
-  vdso_commutes (writev_file_arm mp iov iovcnt off fault place).
+  vdso_commutes (writev_file_arm mp iov iovcnt off room fault place).
 Proof.
-  intros mp iov iovcnt off fault place Hf Hp. unfold writev_file_arm.
+  intros mp iov iovcnt off room fault place Hf Hp. unfold writev_file_arm.
   apply vc_record_copyins.
   destruct (import_iovecs mp iov (iovcnt32 iovcnt)) as [iovs0 | |];
     [| apply vc_err_ret | apply vc_err_ret].
@@ -355,12 +356,18 @@ Proof.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs0)) 0); [apply vc_ret_only|].
   destruct (rw_pos_einvalb off (iovs_total (cap_iovecs iovs0)));
     [apply vc_err_ret|].
-  destruct (Nat.eqb (length (writev_gathered mp iovs0)) 0).
+  destruct (match room with None => false | Some r => (r <=? 0)%Z end);
+    [apply vc_err_ret|].
+  set (bs := match room with
+             | None => writev_gathered mp iovs0
+             | Some r => writev_cut r (writev_gathered mp iovs0)
+             end).
+  destruct (Nat.eqb (length bs) 0).
   - destruct fault as [u|] eqn:E.
     + exact (Hf u eq_refl _ (vc_err_ret EFAULT)).
     + unfold writev_buf_gap; vdso_walk.
-  - destruct (place (writev_gathered mp iovs0)) as [u|] eqn:E.
-    + destruct (addr_is_error_b (len_word (writev_gathered mp iovs0)));
+  - destruct (place bs) as [u|] eqn:E.
+    + destruct (addr_is_error_b (len_word bs));
         [unfold writev_buf_gap; vdso_walk|].
       apply (Hp _ u E). unfold writev_ledger. vdso_walk.
     + unfold writev_buf_gap; vdso_walk.
@@ -403,7 +410,7 @@ Ltac rw_step :=
   match goal with
   | |- vdso_commutes (write_file_tail _ _ _ _ _) =>
       apply vc_write_file_tail; intros; cbn beta zeta in *
-  | |- vdso_commutes (writev_file_arm _ _ _ _ _ _) =>
+  | |- vdso_commutes (writev_file_arm _ _ _ _ _ _ _) =>
       apply vc_writev_file_arm; intros; cbn beta zeta in *
   | H : write_fault_extend _ _ _ = Some ?u |- vdso_commutes_tr ?u =>
       exact (vc_tr_write_fault_extend _ _ _ _ H)

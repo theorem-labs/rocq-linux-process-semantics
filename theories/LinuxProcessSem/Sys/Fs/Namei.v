@@ -136,6 +136,16 @@ Definition key_strictly_under (k c : Fs.path) : bool :=
   if path_eqb k Fs.root then negb (path_eqb c Fs.root)
   else dir_prefixb k c.
 
+(** Is [k] a TOP-LEVEL key, a child of the root?  [rmdir] asks it of the
+    folder it would remove, and declines one: SCOPE.md's launch premise
+    allows a mount point at every top-level folder and at nothing lower,
+    and the image does not say which top-level folder is one.  The root
+    is its own parent ([Fs.path_parent_root]) and is not a child of
+    itself, so it is left out by name; no [rmdir] row reaches it anyway,
+    since "/" is [Fs.LastRoot]. *)
+Definition top_level_key (k : Fs.path) : bool :=
+  negb (path_eqb k Fs.root) && path_eqb (Fs.path_parent k) Fs.root.
+
 (** unlinkat's injectable failures: environment conditions the model does
     not track, all of them documented for unlink(2) and all reachable on
     a directory entry this model cannot tell apart from an ordinary one
@@ -144,14 +154,32 @@ Definition key_strictly_under (k c : Fs.path) : bool :=
     [may_delete]'s [inode_permission]), a sticky, append-only or
     immutable entry (EPERM, from the two clauses just after it), a
     read-only mount (EROFS, from [mnt_want_write], which runs before the
-    lookup), and a mount point over the entry (EBUSY, from
-    [vfs_unlink]'s [is_local_mountpoint] — the one member that needs
-    more than an ordinary entry, since the victim has to be a bind-mount
-    target in the caller's namespace), and an unmapped victim uid or gid
-    (EOVERFLOW, from [may_delete], Linux v6.18.46 fs/namei.c:3267-3270)
-    (Linux fs/namei.c, [may_delete] / [vfs_unlink]).
-    ENOENT is NOT injectable: entry existence IS tracked. *)
-Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EBUSY; EOVERFLOW].
+    lookup), and an unmapped victim uid or gid (EOVERFLOW, from
+    [may_delete], Linux v6.18.46 fs/namei.c:3267-3270) (Linux
+    fs/namei.c, [may_delete] / [vfs_unlink]).
+    ENOENT is NOT injectable: entry existence IS tracked.
+
+    -EBUSY IS NOT ADMITTED, because no launch the statements cover gives
+    it on a row that answers.  Each source of it on a removal that
+    reaches the victim is a mount point or a file system the
+    configuration of record does not build: [vfs_unlink]'s
+    [is_local_mountpoint] of the victim (fs/namei.c:4669), [vfs_rmdir]'s
+    (4543-4546), [may_delete]'s [IS_ROOT] victim (3287-3288), a file
+    system's root, which only a mount shows at a name; [vfs_rmdir]'s
+    [S_KERNEL_FILE], which only cachefiles sets
+    (fs/cachefiles/namei.c:22-23, and CONFIG_CACHEFILES is not set in
+    arch/riscv/configs/defconfig); and [may_delete]'s
+    [DCACHE_NFSFS_RENAMED] (3293-3294), NFS's, which
+    testing/vm/kernel.fragment leaves out.
+    SCOPE.md's launch premises leave a mount point at a top-level folder
+    only: the tree holds no bind mount, so a file or a link is never
+    one, and every mount point is a child of "/", which [rmdir_spec]
+    declines.  So no unlink and no rmdir below the top level answers
+    it.  [do_rmdir]'s -EBUSY for a name that is nothing but separators
+    ([rmdir_nonnorm_errno]'s [Fs.LastRoot], 4590-4592) is a different
+    answer, the arm's own and certain, and stays.  This stops being
+    true when either premise is dropped. *)
+Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EOVERFLOW].
 
 (** mkdirat's injectable failures, the same environment conditions one
     rung down: the allocations [filename_create] and the filesystem's
@@ -459,9 +487,10 @@ Definition unlink_rmdir (flags : word) : bool :=
     type answer in [unlinkat_file_spec] and [rmdir_spec], and never
     replace it.
 
-    Every member is also in [unlinkat_errnos], which additionally has
-    the -EBUSY of a mount point, raised only after [may_delete] has
-    passed. *)
+    The members are [unlinkat_errnos]' five, in the order Linux reaches
+    them: the -EBUSY of a mount point, which [vfs_unlink] and
+    [vfs_rmdir] raise only after [may_delete] has passed, is in neither
+    list ([unlinkat_errnos]). *)
 Definition unlink_before_type_errnos : list Z :=
   [EROFS; ENOMEM; EOVERFLOW; EACCES; EPERM].
 
@@ -722,13 +751,27 @@ Definition unlinkat_file_spec (r : Fs.Resolved) (lk : Fs.LastKind)
     the image rather than of the victim alone.  [fs_dir_empty] is the
     test.  [vfs_rmdir] reaches [->rmdir] only after [may_delete] and its
     -EBUSY for a mount point (fs/namei.c:4532-4552), so every member of
-    [unlinkat_errnos] stands beside it.
+    [unlinkat_errnos] stands beside it; that -EBUSY is not one of them,
+    because below the top level no folder is a mount point
+    ([unlinkat_errnos]).
 
-    THE THREE DECLINES, and each is a state the model has no term for or
-    a decline kept for safety rather than an errno it is unsure of.
-    Linux SUCCEEDS at the first and the third and leaves something
-    behind:
+    THE FOUR DECLINES, and each is a state the model has no term for, an
+    answer it cannot tell from another, or a decline kept for safety
+    rather than an errno it is unsure of.  Linux SUCCEEDS at the second
+    and the fourth and leaves something behind:
 
+    - a TOP-LEVEL folder, a child of "/" ([top_level_key]).  SCOPE.md's
+      launch premise lets every one be a mount point, as /work, /tmp,
+      /dev and a seed root are in the agreement checks' launch, and the
+      image does not say which.  On a mount point [vfs_rmdir] answers
+      -EBUSY before [->rmdir] ([is_local_mountpoint], 4543-4546, ahead
+      of 4552), since [do_rmdir] looks the last name up in its parent
+      without following the mount (4600-4607); on the same folder
+      unmounted it removes it or answers -ENOTEMPTY.  A list beside the
+      answer would not do: -EBUSY is FORCED on a mount point, and the
+      forced-only reading of the injected errnos ([Run.injected_table])
+      would remove it beside the success.  "/" itself is
+      [Fs.LastRoot]'s -EBUSY above, unchanged.
     - the working directory itself.  [vfs_rmdir] marks it S_DEAD
       (4557) and the process keeps standing in a directory that is in
       no namespace.  A name looked up in it is -ENOENT ([__lookup_slow]
@@ -785,7 +828,8 @@ Definition rmdir_spec (r : Fs.Resolved) (lk : Fs.LastKind) (m : Model)
               alt (er <- errno_from unlink_before_type_errnos ;; err_ret er)
                   (err_ret ENOTDIR)             (* may_delete's -ENOTDIR *)
           | EDir =>
-              if path_eqb k (m_cwd m) then unmodeled
+              if top_level_key k then unmodeled  (* maybe a mount point *)
+              else if path_eqb k (m_cwd m) then unmodeled
               else if key_strictly_under k (m_cwd m) then unmodeled
               else if fd_names_dir (m_fds m) k then unmodeled
               else if negb (fs_dir_empty (m_fs m) k) then

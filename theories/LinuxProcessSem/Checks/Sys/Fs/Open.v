@@ -2351,19 +2351,18 @@ Qed.
 (* ============================================================ faccessat (48)
 
    The acceptor for the arm of [Fs.Open.faccessat_spec] that can succeed:
-   either 0 or an injectable errno, with NO state change either way — the
-   two alternatives write the same model, which is what makes this
-   syscall a pure observation — and FIVE EMPTY LEDGERS, since faccessat
-   writes, zeroes, unmaps and copies out nothing, and the pathname
-   copy-in is cleared by the wrapper before the body sees the effect.
-   So only a forged ledger reaches the other half of the claim. *)
+   0, with NO state change — which is what makes this syscall a pure
+   observation — and FIVE EMPTY LEDGERS, since faccessat writes, zeroes,
+   unmaps and copies out nothing, and the pathname copy-in is cleared by
+   the wrapper before the body sees the effect.  The refusals beside it
+   are the walk's, which [check_walk_refusals] accepts around the body,
+   so an errno is no answer of this acceptor.  Only a forged ledger or a
+   return other than 0 reaches the other half of the claim. *)
 Definition check_access_exists (eff : SyscallEffect) (m : Model)
     : check_result :=
   match eff with
   | mkEffectU ret [] [] [] [] [] =>
-      if errno_ret_in faccessat_errnos ret || bv_eqb ret (Z_to_bv 64 0)
-      then CheckOk m []
-      else CheckReject
+      if bv_eqb ret (Z_to_bv 64 0) then CheckOk m [] else CheckReject
   | _ => CheckReject
   end.
 
@@ -2420,16 +2419,6 @@ Ltac fa_open_u :=
   eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
   eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota.
 
-(** 0 is not an injectable errno, so [access_exists_spec]'s two
-    alternatives never both have to be justified by the same return —
-    though either would do, since both leave the model alone. *)
-Lemma errno_ret_in_faccessat_zero :
-  errno_ret_in faccessat_errnos (Z_to_bv 64 0) = false.
-Proof.
-  apply errno_ret_in_fd; [reflexivity|].
-  rewrite Z_to_bv_small by (unfold bv_modulus; cbn; lia). lia.
-Qed.
-
 Local Lemma check_access_exists_sound_ok : forall i eff m m' evs,
   check_access_exists eff m = CheckOk m' evs ->
   access_exists_spec i m (Ok eff m' evs).
@@ -2439,15 +2428,9 @@ Proof.
     [destruct zs as [|z zs']|]; destruct us as [|? ?];
     destruct cs as [|? ?]; destruct cis as [|? ?]; try discriminate.
   unfold access_exists_spec.
-  destruct (errno_ret_in faccessat_errnos ret) eqn:He; cbn in H.
-  - inversion H; clear H; subst.
-    apply errno_ret_in_true in He. destruct He as (e & HIn & ->).
-    apply alt_l. eapply bind_ok0.
-    { apply (choose_ok _ e). exact HIn. }
-    apply pure_ok.
-  - destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:Heq; [|discriminate].
-    inversion H; clear H; subst. apply bv_eqb_eq in Heq; subst ret.
-    apply alt_r. apply pure_ok.
+  destruct (bv_eqb ret (Z_to_bv 64 0)) eqn:Heq; cbn in H; [|discriminate].
+  inversion H; clear H; subst. apply bv_eqb_eq in Heq; subst ret.
+  apply pure_ok.
 Qed.
 
 Local Lemma check_access_exists_no_unmodeled : forall eff m,
@@ -2456,7 +2439,6 @@ Proof.
   intros eff m H. unfold check_access_exists in H.
   destruct eff as [ret ws zs us cs cis]; destruct ws; [destruct zs|];
     destruct us; destruct cs; destruct cis; try discriminate.
-  destruct (errno_ret_in faccessat_errnos ret); cbn in H; [discriminate|].
   destruct (bv_eqb ret (Z_to_bv 64 0)); discriminate.
 Qed.
 
@@ -2466,16 +2448,7 @@ Local Lemma check_access_exists_complete_ok : forall i eff m m' evs,
 Proof.
   intros i eff m m' evs H. unfold access_exists_spec in H. sys_unfold.
   inv_ok.
-  - (* the injectable failure *)
-    unfold check_access_exists.
-    match goal with
-    | |- context [errno_ret_in ?es (errno_ret ?e)] =>
-        rewrite (errno_ret_in_intro es e) by assumption
-    end.
-    reflexivity.
-  - (* the plain 0 *)
-    unfold check_access_exists.
-    rewrite errno_ret_in_faccessat_zero, bv_eqb_refl. reflexivity.
+  unfold check_access_exists. rewrite bv_eqb_refl. reflexivity.
 Qed.
 
 Local Lemma check_access_exists_ok_copyins_nil : forall eff m m' evs,

@@ -91,10 +91,14 @@ Open Scope sys_scope.
     misattribute — so fsync on a descriptor opened O_RDONLY succeeds
     exactly as on one opened for writing, and [FdFile] and [FdFileW]
     agree.  (The one fd that defeats the shorthand is an O_PATH one,
-    which is -EINVAL rather than 0 — [do_dentry_open] gives it
-    [empty_fops], so it fails the [.fsync] test above rather than any
-    mode test.  [Open.openat_spec] models three flag words and O_PATH is not
-    among them, so no such fd exists here.)  This is
+    which is -EBADF rather than 0, and by a mode test made before any
+    [.fsync] test: [do_dentry_open] gives it [FMODE_PATH] (fs/open.c:917),
+    and [do_fsync]'s [CLASS(fd, f)(fd)] (fs/sync.c:207) is [fdget]
+    (include/linux/file.h:83), which is [__fget_light(fd, FMODE_PATH)]
+    (fs/file.c:1179-1182) and answers [EMPTY_FD] for a file with that
+    mode (:1169-1170, :1173-1175), so [do_fsync] answers -EBADF
+    (fs/sync.c:209-210), all Linux v6.18.46.  [Open.openat_spec] models
+    no O_PATH flag word, so no such fd exists here.)  This is
     the arm where copying [ReadWrite.write_spec]'s -EBADF-on-a-read-only-fd would
     be a confident wrong answer.
 

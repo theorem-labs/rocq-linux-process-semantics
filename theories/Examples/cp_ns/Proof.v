@@ -10,8 +10,9 @@
     [openat(argv[2], O_WRONLY|O_CREAT|O_TRUNC)]; copy through a 1024-byte
     buffer; close both.  File I/O emits no trace events, so the only
     observables are the exit code and the final image.  The shared
-    outcome set is [cp_outcomes fs0 cwd src dst] (see cp_ns_defs), stated
-    over the walk of each operand from the working folder.
+    outcome set is [cp_outcomes fs0 cwd ur src dst] (see cp_ns_defs),
+    stated over the walk of each operand from the working folder and the
+    declared random stream.
 
     Case split (only on the INPUT):
     - [argc < 3]  -> exit 2, no file I/O  (CatSim: [cat_omni_strong_equiv_te]);
@@ -19,11 +20,13 @@
       ([source_ge3], [target_ge3]), on what each open answers
       ([FileSimWalk.open_arm]): an errno of the first open -> 3; of the
       second -> 4; with both descriptors, a folder source -> 5, a
-      /dev/null source -> 0, a regular file whose bytes a word offset
-      reaches the end of -> 0 with those bytes copied by inode into a
+      /dev/null source -> 0, a regular file shorter than [cp_cut] =
+      2^63 - 1024 bytes -> 0 with those bytes copied by inode into a
       regular file destination (a device destination takes every write
-      whole); a regular file of 2^64 bytes or more, or /dev/urandom, as
-      the source -> the copy never ends, a silent loop on both sides
+      whole); one of [cp_cut] bytes or more -> 5, copied up to [cp_cut],
+      where the read is -EINVAL; /dev/urandom into a regular file -> 6, copied up to
+      [cp_cut], where the write is -EINVAL; /dev/urandom into a device ->
+      the copy never ends, a silent loop on both sides
       ([FileSimLoop.tfl_loop]), which has no outcome.  Two derivations
       with the same outcome set give the equivalence
       ([FileSimLoop.floop_omni_strong_equiv]).

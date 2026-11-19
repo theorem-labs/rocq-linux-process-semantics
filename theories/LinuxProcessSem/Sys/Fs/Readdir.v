@@ -101,11 +101,18 @@ Definition getdents64_no_room (count : word) : bool :=
       the next with [find_positive_dentry], that is [d_next_sibling]
       (fs/libfs.c:450-472, :503-523), and [d_alloc] puts each new dentry
       at the head of the list (fs/dcache.c:1778), so the newest dentry
-      comes first.  The offset [simple_offset_add] gave a name is
-      reported as its [d_off] and only tells a later call where to
-      resume ([offset_dir_lookup], fs/libfs.c:476-493).  On ramfs
-      [dcache_readdir] walks the same dentry list and counts positions
-      (Linux fs/libfs.c, v6.18.46).  [Fs.fs_tree] is sorted by key and
+      comes first.  A record's [d_off] is the continuation cookie, the
+      position a later call resumes from, and not the offset
+      [simple_offset_add] gave the record's own name:
+      [offset_iterate_dir] hands each entry's offset to the actor
+      (fs/libfs.c:514-515, Linux v6.18.46), [filldir64] writes it into the PREVIOUS
+      record's [d_off] (fs/readdir.c:373-378), and [getdents64] writes
+      the position it stopped at into the last record (:415-420), which
+      after the folder's last entry is [DIR_OFFSET_EOD] (fs/libfs.c:529);
+      [offset_dir_lookup] reads a cookie only to find where to resume
+      (fs/libfs.c:476-493).  On ramfs [dcache_readdir] walks the same
+      dentry list and counts positions (Linux fs/libfs.c, v6.18.46).
+      [Fs.fs_tree] is sorted by key and
       records neither the dentry order nor any offset, so a listing
       would have to choose an order and cookies, and keep the choice for
       every later call on the folder.

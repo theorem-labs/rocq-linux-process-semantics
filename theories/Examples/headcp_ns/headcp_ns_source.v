@@ -1032,6 +1032,9 @@ Proof.
     + rewrite Hdata. apply file_gap_in_range.
       rewrite u_Z2bv by lia. unfold rw_bytes_max. cbn [length]. lia.
     + exact Haok.
+    + (* [rw_verify_area]: offset 0 plus at most 128 bytes *)
+      unfold rw_pos_einvalb. rewrite HNc.
+      change (bv_unsigned (Z_to_bv 64 0)) with 0%Z. apply Z.ltb_ge. lia.
     + exact Hh.
     + exact Hlazy.
     + eapply tfo_equiv; [ apply Hafter | ].
@@ -1245,6 +1248,7 @@ Proof.
         -- rewrite u_Z2bv by lia. unfold rw_bytes_max. lia.
         -- rewrite u_Z2bv by lia. lia.
         -- exact Haok.
+        -- (* [rw_verify_area]: offset 0 plus 128 bytes *) reflexivity.
         -- exact Hm2h.
         -- exact Hm2l.
         -- fnorm_pc.

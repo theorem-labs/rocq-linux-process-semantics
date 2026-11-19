@@ -1290,6 +1290,40 @@ Example faccessat_of_a_device_declines :
   /\ fa2 [102%Z] 2%nat 0%Z (errno_ret EPERM) ns_open_f = CheckReject.
 Proof. vm_compute; split_conj; check_eq. Qed.
 
+(** F_OK OF "/" ADMITS NO -EACCES.  A pathname of separators alone
+    returns from [link_path_walk] before its loop (fs/namei.c:2451-2458,
+    Linux v6.18.46), so [may_lookup] (:2466-2468) never runs, and the
+    final [inode_permission(..., MAY_ACCESS)] of [do_faccessat]
+    (fs/open.c:509) cannot refuse a zero mask on tmpfs or ramfs.  So "/"
+    and "//" answer 0 and refuse -EACCES, through [faccessat] and
+    through [faccessat2] under flags 0, AT_EACCESS and
+    AT_SYMLINK_NOFOLLOW; the walk's -ENOMEM is still admitted, the
+    over-admission [Fs.Namei.walk_errnos] records for a walk that
+    allocates nothing.  A pathname with a component still admits
+    -EACCES: "/." searches "/", and "a" the working directory. *)
+Example faccessat_of_the_root_admits_no_eacces :
+  let fa (p : list Z) (n : nat) (e : word) (m : Model) := check_syscall
+        (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0] (open_path_mem p) (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect e [] [])) m in
+  let fa2 (p : list Z) (n : nat) (fl : Z) (e : word) (m : Model) := check_syscall
+        (mkInput 439 [AT_FDCWD; 8192; 0; Z_to_bv 64 fl; 0; 0] (open_path_mem p)
+           (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect e [] [])) m in
+  fa [47%Z] 2%nat 0 ns_open_empty = CheckOk ns_open_empty []
+  /\ fa [47%Z] 2%nat (errno_ret EACCES) ns_open_empty = CheckReject
+  /\ fa [47%Z; 47%Z] 3%nat (errno_ret EACCES) ns_open_empty = CheckReject
+  /\ fa2 [47%Z] 2%nat 0%Z (errno_ret EACCES) ns_open_empty = CheckReject
+  /\ fa2 [47%Z] 2%nat AT_EACCESS (errno_ret EACCES) ns_open_empty = CheckReject
+  /\ fa2 [47%Z] 2%nat AT_SYMLINK_NOFOLLOW (errno_ret EACCES) ns_open_empty
+     = CheckReject
+  /\ fa [47%Z] 2%nat (errno_ret ENOMEM) ns_open_empty = CheckOk ns_open_empty []
+  (* a component: may_lookup runs, and -EACCES stands beside the 0 *)
+  /\ fa [47%Z; 46%Z] 3%nat (errno_ret EACCES) ns_open_empty = CheckOk ns_open_empty []
+  /\ fa [97%Z] 2%nat (errno_ret EACCES) ns_open_dir_a = CheckOk ns_open_dir_a []
+  /\ fa2 [97%Z] 2%nat AT_EACCESS (errno_ret EACCES) ns_open_dir_a
+     = CheckOk ns_open_dir_a [].
+Proof. vm_compute; split_conj; check_eq. Qed.
+
 (** A bad MODE beats an unreadable path: [do_faccessat]'s first
     statement runs before [getname]. *)
 Example faccessat_bad_mode_beats_an_unreadable_path :
@@ -2760,6 +2794,76 @@ Example openat_tmp_create_read_unlink :
   end.
 Proof. vm_compute. split_conj; check_eq. Qed.
 
+(** THE OPEN AFTER THE UNLINK IS -ENOENT (issue #2111), on an image
+    whose /tmp is EMPTY: create "/tmp/x", close the descriptor, unlink
+    the name, then open the same name O_RDONLY.  This is the shape a
+    program makes when it removes a temporary file and later looks for
+    it again.  Linux answers the last open -ENOENT: the walk finds /tmp
+    and no "x" in it, and without O_CREAT [lookup_fast_for_open] or
+    [lookup_open] hands back a negative dentry, which [step_into]
+    receives from [open_last_lookups] (fs/namei.c:3922, Linux
+    v6.18.46); its [handle_mounts] calls [traverse_mounts], which
+    answers -ENOENT for a negative dentry (:1537-1538).  That is
+    [Open.openat_read_spec]'s [Fs.RMissing] row.  The /tmp arm that the
+    walk replaced declined this open.
+
+    EACH CALL STARTS FROM THE MODEL THE CALL BEFORE IT LEFT, and each
+    line names that model: "opened" after the create, "held" after the
+    close, and the launch model again after the unlink.  So the last
+    group is about the run's own state and not about a second image.
+
+    THE ANSWER FOLLOWS THE UNLINK, and the middle group is what shows
+    it.  After the close and before the unlink, the same call gets a
+    descriptor on the file, and -ENOENT is refused there.  After the
+    unlink, -ENOENT is accepted and the model does not move.
+    Descriptor 3 is refused there: it is the lowest free number, the
+    answer a model that still held the name would accept, and no kernel
+    gives it.  The last two lines are the word that musl's open()
+    issues, with [Uapi.O_LARGEFILE] set.
+
+    NOT PINNED HERE: the walk's own -ENOMEM and -EACCES.  They stay
+    admitted beside the -ENOENT, as beside every walk with a last name
+    ([Namei.walk_errnos]). *)
+Example openat_tmp_reopen_after_unlink_is_enoent :
+  let m0 := init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof) in
+  (* "/tmp/x", NUL at 8192 + 6, and the key the walk gives it *)
+  let x_mem := open_path_mem [47; 116; 109; 112; 47; 120]%Z in
+  let x_key := Fs.child_key Fs.tmp_dir [Z_to_bv 8 120] in
+  let open fl mode eff m := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; mode; 0; 0]
+           x_mem (fun _ => None))
+        (with_copyins [(8192, 7%nat)] eff) m in
+  (* the launch model with the empty file at the key, and no descriptor on it *)
+  let held := with_fs (Fs.fs_create_file (m_fs m0) x_key []) m0 in
+  (* ...and with descriptor 3 write-only on it *)
+  let opened := with_fds (fd_insert (m_fds m0) 3 (FdFileW 1 (Z_to_bv 64 0))) held in
+  (* open("/tmp/x", O_WRONLY|O_CREAT|O_TRUNC, 0600) = 3 *)
+  open wr_create_flags 384 (mkEffect 3 [] []) m0 = CheckOk opened []
+  (* close(3) = 0 *)
+  /\ check_syscall
+       (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) opened
+     = CheckOk held []
+  (* WHILE THE NAME IS HELD the read word opens it... *)
+  /\ open 0%Z 0 (mkEffect 3 [] []) held
+     = CheckOk (with_fds (fd_insert (m_fds held) 3 (FdFile 1 (Z_to_bv 64 0)))
+                  held) []
+  (* ...and -ENOENT is refused *)
+  /\ open 0%Z 0 (mkEffect (errno_ret ENOENT) [] []) held = CheckReject
+  (* unlink("/tmp/x") = 0: the run is at the launch model again *)
+  /\ check_syscall
+       (mkInput 35 [AT_FDCWD; 8192; 0; 0; 0; 0] x_mem (fun _ => None))
+       (with_copyins [(8192, 7%nat)] (mkEffect 0 [] [])) held
+     = CheckOk m0 []
+  (* open("/tmp/x", O_RDONLY) = -ENOENT, and the model does not move *)
+  /\ open 0%Z 0 (mkEffect (errno_ret ENOENT) [] []) m0 = CheckOk m0 []
+  (* a descriptor for the removed name is refused *)
+  /\ open 0%Z 0 (mkEffect 3 [] []) m0 = CheckReject
+  (* the same two answers under O_LARGEFILE *)
+  /\ open O_LARGEFILE 0 (mkEffect (errno_ret ENOENT) [] []) m0 = CheckOk m0 []
+  /\ open O_LARGEFILE 0 (mkEffect 3 [] []) m0 = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
 (** A read of a name the IMAGE holds rather than the run created: the
     program names the whole path, and the walk reaches the file under
     /tmp. *)
@@ -3433,6 +3537,9 @@ Lemma r1_read_chunk : forall mem wmem fd buf count a3 a4 a5 m i off c,
   fd_lookup (m_fds m) fd = Some (FdFile i off) ->
   Fs.fs_ino_data (m_fs m) i = c ->
   access_okb buf (bv_unsigned count) = true ->
+  (* and [rw_verify_area]'s position test passes: [off + count] stays at
+     or below [LLONG_MAX] *)
+  rw_pos_einvalb off (bv_unsigned count) = false ->
   let bs := firstn (word_to_nat (Z_to_bv 64 (rw_count_clamp count)))
               (skipn (word_to_nat off) c) in
   read_bytes_map wmem buf (len_word bs) <> None ->
@@ -3441,14 +3548,14 @@ Lemma r1_read_chunk : forall mem wmem fd buf count a3 a4 a5 m i off c,
     (mkEffect (len_word bs) [(buf, bs)] []) m
   = CheckOk (with_fds (fd_insert (m_fds m) fd (FdFile i (off + len_word bs))) m) [].
 Proof.
-  intros mem wmem fd buf count a3 a4 a5 m i off c Hfd Hlk Hfs Hacc bs Hmap Hne.
+  intros mem wmem fd buf count a3 a4 a5 m i off c Hfd Hlk Hfs Hacc Hpos bs Hmap Hne.
   change (check_syscall (mkInput 63 [fd; buf; count; a3; a4; a5] mem wmem)
             (mkEffect (len_word bs) [(buf, bs)] []) m)
     with (check_read (mkInput 63 [fd; buf; count; a3; a4; a5] mem wmem) (fd32 fd)
             buf count (mkEffect (len_word bs) [(buf, bs)] []) m).
   rewrite (fd32_lt31 fd Hfd).
   unfold check_read. rewrite Hlk, Hacc. cbn [negb]. cbv beta iota.
-  cbv beta iota zeta. rewrite Hfs. rewrite file_read_unguarded. fold bs.
+  rewrite Hpos. cbv beta iota zeta. rewrite Hfs. rewrite file_read_unguarded. fold bs.
   cbn [in_wmem]. clearbody bs.
   destruct (read_bytes_map wmem buf (len_word bs)); [|exfalso; now apply Hmap].
   destruct bs as [|b0 bs0]; [exfalso; now apply Hne|].
@@ -3463,19 +3570,20 @@ Lemma r1_read_end : forall mem wmem fd buf count a3 a4 a5 m i off c,
   fd_lookup (m_fds m) fd = Some (FdFile i off) ->
   Fs.fs_ino_data (m_fs m) i = c ->
   access_okb buf (bv_unsigned count) = true ->
+  rw_pos_einvalb off (bv_unsigned count) = false ->
   (Z.of_nat (length c) <= bv_unsigned off)%Z ->
   check_syscall (mkInput 63 [fd; buf; count; a3; a4; a5] mem wmem)
     (mkEffect (Z_to_bv 64 0) [] []) m
   = CheckOk (with_fds (fd_insert (m_fds m) fd (FdFile i (off + Z_to_bv 64 0))) m) [].
 Proof.
-  intros mem wmem fd buf count a3 a4 a5 m i off c Hfd Hlk Hfs Hacc Hend.
+  intros mem wmem fd buf count a3 a4 a5 m i off c Hfd Hlk Hfs Hacc Hpos Hend.
   change (check_syscall (mkInput 63 [fd; buf; count; a3; a4; a5] mem wmem)
             (mkEffect (Z_to_bv 64 0) [] []) m)
     with (check_read (mkInput 63 [fd; buf; count; a3; a4; a5] mem wmem) (fd32 fd)
             buf count (mkEffect (Z_to_bv 64 0) [] []) m).
   rewrite (fd32_lt31 fd Hfd).
   unfold check_read. rewrite Hlk, Hacc. cbn [negb]. cbv beta iota.
-  cbv beta iota zeta. rewrite Hfs. rewrite file_read_unguarded.
+  rewrite Hpos. cbv beta iota zeta. rewrite Hfs. rewrite file_read_unguarded.
   rewrite (skipn_all2 c) by (unfold word_to_nat; lia).
   rewrite firstn_nil. cbn [in_wmem len_word length].
   replace (read_bytes_map wmem buf (Z_to_bv 64 (Z.of_nat 0))) with (Some (@nil byte))

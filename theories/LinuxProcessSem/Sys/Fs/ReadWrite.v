@@ -138,6 +138,62 @@ Proof.
   unfold rw_bytes_max. lia.
 Qed.
 
+(** THE SIZE LIMIT OF AN APPEND WRITE.  A write to a regular file on tmpfs
+    reaches [shmem_file_write_iter] (mm/shmem.c:3490-3510, Linux
+    v6.18.46), which calls [generic_write_checks] (:3497) before it copies
+    a byte.  That is [generic_write_checks_count] (fs/read_write.c:
+    1736-1756): a zero count returns 0 at once (:1744-1745); an append
+    write's position becomes [i_size] (:1747-1748); then
+    [generic_write_check_limits] (:1709-1732) answers -EFBIG when the
+    position is at or past the file system's [s_maxbytes] (:1726-1727),
+    and otherwise cuts the count so that the write ends there (:1729),
+    after which [generic_write_checks] truncates the source to that count
+    (:1775).  All of it runs after [vfs_write]'s [access_ok],
+    [rw_verify_area] and [MAX_RW_COUNT] clamp (:674-681).  Its other two
+    arms do not apply: RLIMIT_FSIZE (:1715-1721) is infinite by the
+    harness premise [Open.ftruncate_spec] states, and the [O_LARGEFILE]
+    arm (:1723-1724) never fires, because every open on a 64-bit kernel
+    sets [O_LARGEFILE] (include/linux/fcntl.h:24-25, applied in
+    fs/open.c:1466-1467).
+
+    ONLY AN APPEND WRITE REACHES THE LIMIT.  A write at its own position
+    has passed [rw_verify_area]'s [(loff_t)(pos + count) < 0] test, so it
+    ends at or below [LLONG_MAX], which is [Fs.MAX_LFS_FILESIZE]: with a
+    count of 1 or more its position is below the limit and nothing is
+    cut.  An append write is different because [rw_verify_area] reads the
+    descriptor's position (or the position [pwrite64] and [pwritev2]
+    name) and [generic_write_checks_count] then replaces it with
+    [i_size].
+
+    [s_maxbytes] IS TAKEN TO BE [Fs.MAX_LFS_FILESIZE], which that
+    constant explains.  The -EFBIG is right on every file system, since a
+    file reaches that size only where the limit is that large; the cut
+    is right where the limit is [Fs.MAX_LFS_FILESIZE], as on tmpfs.  A
+    file system with a smaller [s_maxbytes] refuses or cuts earlier, and
+    the model still admits those writes.
+
+    [append_room] is what is left below the limit; [append_efbigb] is
+    the -EFBIG test, false at a zero count; [append_count] is the count
+    after the cut, the count itself whenever nothing is cut. *)
+Definition append_room (data : list byte) : Z :=
+  (Fs.MAX_LFS_FILESIZE - Z.of_nat (length data))%Z.
+
+Definition append_efbigb (data : list byte) (count : word) : bool :=
+  negb (w_is0 count) && (append_room data <=? 0)%Z.
+
+Definition append_count (data : list byte) (count : word) : word :=
+  if w_is0 count || (bv_unsigned count <=? append_room data)%Z then count
+  else Z_to_bv 64 (append_room data).
+
+(** The vectored cut: the first [room] bytes of the gathered prefix
+    [bs].  It equals [firstn (Z.to_nat room) bs] for [room >= 0], but it
+    takes [Z.to_nat] only of a room below [length bs].  The room is
+    usually near 2^63, and [Z.to_nat] of that is a unary [nat] that no
+    evaluation can build: [vm_compute] of a checker call runs out of
+    memory on it. *)
+Definition writev_cut (room : Z) (bs : list byte) : list byte :=
+  if (room <? Z.of_nat (length bs))%Z then firstn (Z.to_nat room) bs else bs.
+
 (** [read fd buf count].
 
     The DESTINATION prefix [buf, buf+n) must be writable-mapped
@@ -199,10 +255,9 @@ Qed.
     ([vfs_read], fs/read_write.c at v6.18.46, tests [FMODE_READ] before
     [access_ok], and [access_ok] before the fd's content is consulted —
     the order every [access_okb] premise in theories/Common rests on).  A regular file
-    also faces [rw_verify_area]'s position test there, which this arm
-    does NOT model — [rw_pos_einvalb] is applied by [readv_imported]
-    only.  This is a known gap: past [LLONG_MAX] the scalar arm answers
-    0 where Linux answers -EINVAL.
+    then faces [rw_verify_area]'s position test, after [access_ok] and
+    before the [MAX_RW_COUNT] clamp ([rw_pos_einvalb];
+    fs/read_write.c:563-567, Linux v6.18.46).
 
     Nonexistent fd, or an fd not open for reading (stdout/stderr, a
     write-only file): -EBADF (checked before the buffer and before the
@@ -241,9 +296,9 @@ Qed.
     answers -EFAULT.  Below that gate they ask [access_ok] on every
     path that answers.
 
-    The fd's OFFSET carries no bound: a read at or past end-of-file
-    delivers nothing whatever the offset, and [Fs.file_read] answers
-    that directly.
+    The fd's OFFSET carries no bound of the model's own: past the
+    position test, a read at or past end-of-file delivers nothing
+    whatever the offset, and [Fs.file_read] answers that directly.
 
     On a DIRECTORY fd there is no transfer to bound and so no count
     guard at all, but there is still an [access_ok] one:
@@ -261,9 +316,16 @@ Qed.
     [s_maxbytes] is [MAX_LFS_FILESIZE = LLONG_MAX] (mm/shmem.c
     [shmem_fill_super], include/linux/fs.h), and a nonempty read at that
     offset is this [-EINVAL], where an offset merely past end-of-file is
-    0.  The scalar [read] reaches the same test with its UNCLAMPED count
-    ([vfs_read] calls [rw_verify_area] before the [MAX_RW_COUNT]
-    clamp); only the vectored arm applies this predicate. *)
+    0.  The scalar [read] and [write] reach the same test with their
+    UNCLAMPED count ([vfs_read] and [vfs_write] call [rw_verify_area]
+    before the [MAX_RW_COUNT] clamp, fs/read_write.c:563-567 and
+    :677-681), so every file arm, scalar or vectored, applies this
+    predicate.
+
+    A NEGATIVE position is -EINVAL too (:462-464), and this predicate
+    answers it: an [off] at or above [2^63] makes the sum pass
+    [2^63 - 1] at any count.  An [lseek] cannot produce such an
+    [f_pos] ([lseek_dest] answers only offsets under [2^63]). *)
 Definition rw_pos_einvalb (off : word) (count : Z) : bool :=
   (2 ^ 63 - 1 <? bv_unsigned off + count)%Z.
 
@@ -909,14 +971,21 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
       end
   | Some (FdFile fi off) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok] (fs/read_write.c:560-561, Linux
+           v6.18.46), exactly as on the channel arm *)
+      else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
+        (* THEN [rw_verify_area]'s position test (fs/read_write.c:563-565,
+           the test at :462-469), on [f_pos] and the count the call
+           named, before the [MAX_RW_COUNT] clamp (:566-567): -EINVAL
+           when [pos + count] passes [LLONG_MAX] ([rw_pos_einvalb]).
+           This replaces a read that answered there as at end-of-file,
+           with 0 and nothing delivered.  That was false: no file the
+           model holds has [FOP_UNSIGNED_OFFSET] in its [fop_flags] (the
+           flag is on /dev/mem, /proc/PID/mem and a few drivers), so
+           [rw_verify_area] answers -EINVAL (:467-469), and an [lseek]
+           to [LLONG_MAX] reaches it.  Below the test, a read at or past
+           end-of-file still delivers nothing, and [Fs.file_read]
+           answers that without walking [off]. *)
       else
       let data := fs_ino_data (m_fs m) fi in
           (* deterministic: bytes come from the file at [off], truncated
@@ -954,14 +1023,9 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
          What the shared [f_pos] then means for the NEXT write is
          [write_spec]'s [FdFileRW] arm; here it is only advanced. *)
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok], then [rw_verify_area]'s position
+           test, exactly as on the [FdFile] arm above *)
+      else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
       else
       let data := fs_ino_data (m_fs m) fi in
           (* deterministic, as on the [FdFile] arm above *)
@@ -1211,23 +1275,23 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
 
     [write] on a regular file has three descriptor kinds in this model --
     O_WRONLY, O_RDWR and O_APPEND -- and Linux runs ONE [vfs_write] for
-    all three.  The differences between them are exactly four, and every
+    all three.  The differences between them are exactly three, and every
     one of them is a kernel fact rather than a modelling convenience:
 
-    - the LEADING KERNEL TESTS.  The append arm models [vfs_write]'s
-      [access_ok] and [rw_verify_area]; the other two model [access_ok]
-      and not [rw_verify_area], and rely on [modeled_file_gap] declining
-      first for that one, which is a known divergence from Linux.
-      That is a difference between the ARMS, not between the kernels, so
-      it has to stay visible at each arm rather than move in here.
     - the GAP GUARD, which the append arm does not need and does not have
       ([append_opens_no_gap]).
     - the DESTINATION: [off] for the two positional kinds,
       [len_word data] for the append one.
     - the ENTRY WRITTEN BACK, which carries the kind.
 
-    Everything else is common, and the three helpers below are that
-    "everything else", named once so a fourth kind cannot arrive as a
+    Everything else is common.  That includes [vfs_write]'s two LEADING
+    KERNEL TESTS, [access_ok] and then [rw_verify_area]'s position test
+    on [f_pos] (fs/read_write.c:674-679, Linux v6.18.46), which all three
+    arms make in that order, inside the count gate.  They are spelled at
+    each arm and not in [write_range_gate]: the gate decides whether the
+    model judges the call at all, and the tests are the kernel's answer
+    on a call the gate has admitted.  The three helpers below are the
+    rest of that "everything else", named once so a fourth kind cannot arrive as a
     copy that drifts.  A change to one arm's count gate that missed the
     copy beside it would answer the same
     [write] on the same count two ways, by nothing but the fd.  Reading
@@ -1894,27 +1958,28 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
-      (* ONE LEADING KERNEL TEST, [vfs_write]'s [access_ok], and not the
-         second.  This note used to say the arm models neither
-         [vfs_write]'s [access_ok] nor [rw_verify_area]; the [access_ok]
-         half of that is withdrawn.  Without it a write whose named range
-         [access_ok] refuses was judged by its readable prefix — a short
-         or full write where Linux answers -EFAULT, and at a buffer
-         straddling 2^64 a write of bytes the walk reached by wrapping
-         ([State.copy_bytes_map]'s note has the wrap).
+      (* [vfs_write]'S TWO LEADING TESTS, in its order, inside the count
+         gate as on the append arm below (which says why the gate comes
+         first): [access_ok] -EFAULT on the range the call named
+         (fs/read_write.c:674-675, Linux v6.18.46), then
+         [rw_verify_area]'s position test -EINVAL on [f_pos] and the
+         unclamped count (:677-679, the test at :462-469), both before
+         the [MAX_RW_COUNT] clamp (:680-681).
 
-         TAKING [access_ok] WITHOUT [rw_verify_area] CANNOT INVERT THEIR
-         ORDER.  [vfs_write] (fs/read_write.c) runs [access_ok] FIRST and
-         [rw_verify_area] second; the inversion the append arm's note
-         warns of — -EINVAL where Linux answers -EFAULT — needs the later
-         test without the earlier one, and this arm has the earlier one
-         without the later.  [rw_verify_area] is still not modeled here,
-         and the arm rests on [modeled_file_gap] below declining first for
-         it: a known divergence from Linux where that test would fire.
-         The append arm below models both, for the reason it gives
-         there. *)
+         Without [access_ok] a write whose named range it refuses was
+         judged by its readable prefix: a short or full write where
+         Linux answers -EFAULT, and at a buffer straddling 2^64 a write
+         of bytes the walk reached by wrapping
+         ([State.copy_bytes_map]'s note has the wrap).  The position
+         test replaces an arm that did not make it, and rested on
+         [modeled_file_gap] below declining first.  That was false for a
+         file already within [Uaccess.rw_bytes_max] of [2^63], where the
+         write was judged and Linux answers -EINVAL; it is now the
+         kernel's answer at every offset.  [modeled_file_gap] still
+         declines a hole too large to build. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
          write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off)
@@ -1947,12 +2012,13 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          arm advances, which is the whole content of the kind.  Linux
          v6.18.46.
 
-         IT INHERITS THE O_WRONLY ARM'S KERNEL TESTS TOO: [access_ok]
-         and not [rw_verify_area], resting on [modeled_file_gap]
-         declining first for the second, with the same known
-         divergence. *)
+         IT HAS THE O_WRONLY ARM'S TWO LEADING KERNEL TESTS TOO:
+         [access_ok] -EFAULT, then [rw_verify_area]'s position test
+         -EINVAL on [f_pos] (fs/read_write.c:674-679, Linux v6.18.46),
+         inside the count gate. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
          write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off) (fun bs =>
@@ -1984,23 +2050,17 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [true] at every call).  It is the one thing an append write
          cannot ask the model to build.
 
-         DROPPING THAT GUARD IS WHY [rw_pos_einvalb] IS HERE, and the
-         leading kernel tests below are the one place this arm is not
-         the [FdFileW] arm above with the position moved.
+         THE LEADING KERNEL TESTS ARE THE [FdFileW] ARM'S, on the
+         descriptor's REAL position even here.
          [rw_verify_area] (fs/read_write.c) is handed [&file->f_pos] by
          [vfs_write] and runs BEFORE the iterator, so its
          [(loff_t)(pos + count) < 0] test reads the fd's REAL position
          even on an append fd — [generic_write_checks] (mm/filemap.c)
-         overrides [ki_pos] only once the write is under way.  The
-         [FdFileW] and [FdFileRW] arms do not model that test, and
-         rest on the argument that [modeled_file_gap] declines
-         first, so no run reaches it.  THIS arm has no
-         [modeled_file_gap], so nothing would decline first: an
+         overrides [ki_pos] only once the write is under way.  So here
+         the test is NOT about where the bytes go: an
          [lseek(fd, LLONG_MAX, SEEK_SET)] followed by a one-byte write
-         would be answered as an append where Linux answers -EINVAL,
-         which is a wrong modeled answer rather than a gap.  The
-         [writev] arm below keeps the same test for the same reason and
-         says so at greater length.
+         is -EINVAL, not an append.  The [writev] arm below keeps the
+         same test for the same reason and says so at greater length.
 
          AND THE [access_ok] THAT PRECEDES IT, which is not optional once
          the position test is modeled.  [vfs_write] runs
@@ -2024,21 +2084,29 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [access_ok] would answer that call as a delivering append — a
          wrong modeled answer rather than a gap.
 
-         This is where the append arm stops matching the [FdFileW] one
-         in a second place: that arm models [access_ok] and not
-         [rw_verify_area], resting on [modeled_file_gap] for the second,
-         which is a known divergence.  Modelling [rw_verify_area] here
-         without [access_ok] would have been the worst of the three, so
-         the arm takes both.  Linux v6.18.46. *)
+         The [FdFileW] and [FdFileRW] arms take the same two tests in the
+         same place.  Linux v6.18.46.
+
+         THEN THE SIZE LIMIT ([append_efbigb], [append_count]): -EFBIG
+         when the file already holds [Fs.MAX_LFS_FILESIZE] bytes, and a
+         write that would cross that size cut to end at it.  This
+         replaces an append that landed every byte it was given however
+         long the file already was, which was false because
+         [generic_write_check_limits] answers -EFBIG at [s_maxbytes] and
+         cuts a write that crosses it (fs/read_write.c:1726-1729, Linux
+         v6.18.46); [append_room] says why [Fs.MAX_LFS_FILESIZE] is the
+         limit taken. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
          else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
-         write_file_tail (in_mem i) buf count (Some write_fault_keep)
+         let data := fs_ino_data (m_fs m) p in
+         if append_efbigb data count then err_ret EFBIG
+         else
+         write_file_tail (in_mem i) buf (append_count data count) (Some write_fault_keep)
            (* a faulting source leaves an APPEND write's file alone:
               see [write_fault_keep] *)
            (fun bs =>
-           let data := fs_ino_data (m_fs m) p in
                Some (fun k =>
                  set_fs (fs_set_ino_data (m_fs m) p
                            (file_write data (len_word data) bs)) ;;   (* at end-of-file *)
@@ -2323,9 +2391,7 @@ Definition ppos_einvalb (pos : word) : bool := (bv_signed pos <? 0)%Z.
       position test (fs/read_write.c:467-469) through [rw_pos_einvalb],
       applied to the UNCLAMPED count as [vfs_read] applies it — the
       [MAX_RW_COUNT] clamp is two statements later (:566-567).
-      [read_spec] does NOT model this test
-      (reaching it there needs an [lseek] to an offset just under
-      [2^63]); here it is unavoidable and cheap, because [pos] IS an
+      [read_spec] makes the same test on [f_pos]; here [pos] IS an
       argument;
     - a directory: -EISDIR (fs/libfs.c [generic_read_dir]), after both
       range verdicts;
@@ -2476,11 +2542,8 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       [FMODE_WRITE] test (fs/read_write.c:670-671).  A directory reaches
       that test rather than -EISDIR, and reaches it holding
       [FMODE_PWRITE], since [do_dentry_open] set the bit for it too;
-    - a range [access_ok] refuses: -EFAULT (fs/read_write.c:674-675).
-      [write_spec] does NOT make this test — it judges a write by its
-      readable prefix, a known divergence — and this arm does, because the argument for leaving it out there
-      (an unreadable buffer is already the -EFAULT) does not survive a
-      count whose range merely ENDS past [State.TASK_SIZE];
+    - a range [access_ok] refuses: -EFAULT (fs/read_write.c:674-675),
+      as [write_spec]'s file arms make it;
     - [pos + count] past [LLONG_MAX]: -EINVAL, [rw_verify_area]
       (fs/read_write.c:467-469), on the unclamped count;
     - a regular file opened for writing, AT ANY COUNT: the readable
@@ -2608,17 +2671,24 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
          NAMED [pos] (fs/read_write.c:674-681).  No offset moves:
          [ksys_pwrite64] passes [&pos].  A source with nothing readable
          is -EFAULT with the file left alone ([write_fault_keep]'s
-         reason), and no hole is opened ([append_opens_no_gap]). *)
+         reason), and no hole is opened ([append_opens_no_gap]).  The
+         size limit comes between the position test and the copy, as on
+         [write_spec]'s [FdFileA] arm ([append_room]): -EFBIG when the
+         file already holds [Fs.MAX_LFS_FILESIZE] bytes, and the count
+         cut so that the write ends there. *)
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
       else
       if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
       else
       let data := fs_ino_data (m_fs m) p in
-      let bs := write_source (in_mem i) buf count in
-      if negb (w_is0 count) && Nat.eqb (length bs) 0 then err_ret EFAULT
+      if append_efbigb data count then err_ret EFBIG
+      else
+      let cnt := append_count data count in
+      let bs := write_source (in_mem i) buf cnt in
+      if negb (w_is0 cnt) && Nat.eqb (length bs) 0 then err_ret EFAULT
       else
       set_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) ;;
-      if w_is0 count
+      if w_is0 cnt
       then ret_only (len_word bs)
       else record_copyins [(buf, length bs)] (ret_only (len_word bs))
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
@@ -2819,9 +2889,25 @@ Definition writev_ledger (iovs : list (word * word)) (bs : list byte)
     guards and before its update.  It is unreachable under the aggregate
     cap in any case — the note on this spec's header says why it is kept —
     and every decline around it is the same [writev_buf_gap], so the
-    position is not observable. *)
+    position is not observable.
+
+    THE FILE-SIZE LIMIT, for an append ([room = Some r], [r] the bytes
+    left below [Fs.MAX_LFS_FILESIZE]; [append_room] has the kernel
+    argument).  [vfs_writev] (fs/read_write.c:1051, Linux v6.18.46) calls
+    [rw_verify_area] (:451-478) and then the file's [write_iter], where
+    [generic_write_checks] moves an append's position to [i_size] and
+    answers -EFBIG when no room is left (:1726-1727), or cuts the count
+    to the room (:1729) and truncates the source to it (:1775), before a
+    byte is copied.  So the -EFBIG comes after the position test and
+    before the -EFAULT of an unreadable source, and the gather and the
+    ledger run over the cut range: [writev_cut r] of the gathered prefix
+    is the readable prefix of the first [r] bytes.  This replaces a
+    helper with no limit, under which an append writev landed every
+    gathered byte however long the file was, which was false for the same
+    kernel lines.  The write-only and read-write arms pass [None], under
+    which every step is the one it was. *)
 Definition writev_file_arm (mp : word -> option byte)
-    (iov iovcnt off : word)
+    (iov iovcnt off : word) (room : option Z)
     (fault : option (Sys SyscallEffect -> Sys SyscallEffect))
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
@@ -2831,9 +2917,14 @@ Definition writev_file_arm (mp : word -> option byte)
    | ImpInval => err_ret EINVAL
    | ImpOk iovs0 =>
        let total := iovs_total (cap_iovecs iovs0) in
-       let bs := writev_gathered mp iovs0 in
+       let bs := match room with
+                 | None => writev_gathered mp iovs0
+                 | Some r => writev_cut r (writev_gathered mp iovs0)
+                 end in                           (* the gather over the cut range *)
        if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, offset unchanged *)
        else if rw_pos_einvalb off total then err_ret EINVAL  (* [rw_verify_area], before the write *)
+       else if match room with None => false | Some r => (r <=? 0)%Z end
+       then err_ret EFBIG                         (* no room below the file-size limit *)
        else if Nat.eqb (length bs) 0
        then match fault with
             | None => writev_buf_gap
@@ -2910,7 +3001,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                 (ret_only (len_word ds))          (* the (possibly short) delivered length *)
         end)
   | Some (FdFileW p off) =>
-      writev_file_arm (in_mem i) iov iovcnt off
+      writev_file_arm (in_mem i) iov iovcnt off None
         (write_fault_extend (m_fs m) p off) (fun bs =>
         let data := fs_ino_data (m_fs m) p in
             if negb (modeled_file_gap data off bs) then None
@@ -2930,7 +3021,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          the gathered bytes, and the advance — so the only thing this arm
          may state for itself is the entry.  The [FdFileA] arm below is
          the one that differs, and it differs in the destination. *)
-      writev_file_arm (in_mem i) iov iovcnt off
+      writev_file_arm (in_mem i) iov iovcnt off None
         (write_fault_extend (m_fs m) p off) (fun bs =>
         let data := fs_ino_data (m_fs m) p in
             if negb (modeled_file_gap data off bs) then None
@@ -2956,10 +3047,16 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          to [len_word data], not to [off] -- and with it the
          [modeled_file_gap] guard, which an append write cannot fail
          ([append_opens_no_gap]) and so does not carry.  Linux v6.18.46
-         throughout. *)
-      writev_file_arm (in_mem i) iov iovcnt off
+         throughout.
+
+         AND THE FILE-SIZE LIMIT, which [writev_file_arm] applies when
+         handed the room ([append_room]): -EFBIG when the file already
+         holds [Fs.MAX_LFS_FILESIZE] bytes, and a writev that would cross
+         that size cut to end at it, after the position test and before
+         the copy. *)
+      let data := fs_ino_data (m_fs m) p in
+      writev_file_arm (in_mem i) iov iovcnt off (Some (append_room data))
         (Some write_fault_keep) (fun bs =>
-        let data := fs_ino_data (m_fs m) p in
             Some (fun k =>
               set_fs (fs_set_ino_data (m_fs m) p
                         (file_write data (len_word data) bs)) ;;
@@ -3157,13 +3254,16 @@ Definition pwritev2_urandom (mp : word -> option byte) (iov iovcnt pos : word)
     THE EFFECT is [pwrite64_spec]'s file arm with the source gathered as
     [writev]'s is: the bytes to the file's inode, and no offset moves,
     since [do_pwritev] passes [&pos], its own stack slot (:1153), to
-    [vfs_writev], which hands it to [do_iter_readv_writev] (:1057). *)
+    [vfs_writev], which hands it to [do_iter_readv_writev] (:1057).  An
+    append also meets the file-size limit, after the position test and
+    before the copy ([append_room], through [writev_file_arm]). *)
 Definition pwritev2_file (mp : word -> option byte) (fs : Fs) (p : ino)
     (append : bool) (iov iovcnt pos_l : word) (fl : Z) : Sys SyscallEffect :=
   let data := fs_ino_data fs p in
   let app := (append && Z.eqb fl 0)%bool in
   let dst := if app then len_word data else pos_l in
   writev_file_arm mp iov iovcnt pos_l
+    (if app then Some (append_room data) else None)
     (if app then Some write_fault_keep else write_fault_extend fs p pos_l)
     (fun bs =>
        if negb (modeled_file_gap data dst bs) then None

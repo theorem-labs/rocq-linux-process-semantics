@@ -76,7 +76,8 @@ Local Definition rmdir_witness (r : Fs.Resolved) (lk : Fs.LastKind)
           match e with
           | EFile _ | EDev _ | ELink _ => ret_outcome (errno_ret ENOTDIR) m
           | EDir =>
-              if path_eqb k (m_cwd m) then Unmodeled
+              if top_level_key k then Unmodeled
+              else if path_eqb k (m_cwd m) then Unmodeled
               else if key_strictly_under k (m_cwd m) then Unmodeled
               else if fd_names_dir (m_fds m) k then Unmodeled
               else if negb (fs_dir_empty (m_fs m) k)
@@ -179,6 +180,7 @@ Proof.
     try apply pure_ok; try apply unmodeled_intro.
   - destruct (rmdir_nonnorm_errno lk); cbv iota; [apply pure_ok|].
     destruct e as [ino| |dk|body]; cbv iota; try (apply alt_r; apply pure_ok).
+    destruct (top_level_key k); cbv iota; [apply unmodeled_intro|].
     destruct (path_eqb k (m_cwd m)); cbv iota; [apply unmodeled_intro|].
     destruct (key_strictly_under k (m_cwd m)); cbv iota; [apply unmodeled_intro|].
     destruct (fd_names_dir (m_fds m) k); cbv iota; [apply unmodeled_intro|].

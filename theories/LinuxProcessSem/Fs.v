@@ -46,6 +46,19 @@
     no [.fsync].  [at_outside] declines only the NAMES "proc" and "sys"
     at the root, so the premise is what keeps such a mount out.
 
+    EVERY MOUNT POINT IS A TOP-LEVEL FOLDER, a child of the root, and
+    that is a third premise about the environment, which SCOPE.md states
+    with the launch of the agreement checks that meets it.  The image
+    holds no mount table, and the one answer a mount point changes among
+    the modeled calls is [rmdir]'s: [vfs_rmdir] answers -EBUSY for a
+    folder something is mounted on before it asks [->rmdir]
+    ([is_local_mountpoint], fs/namei.c:4543-4546, :4552, Linux
+    v6.18.46), where the same folder unmounted is removed or is
+    -ENOTEMPTY.  So [Sys.Fs.Namei.rmdir_spec] declines a top-level
+    folder, and under the premise no folder below the top level is a
+    mount point; with no bind mount in the tree (SCOPE.md) no file or
+    link is one either, so no other removal is -EBUSY for a mount.
+
     CANONICAL FORM: because the final image appears inside a trace event
     (compared with [=]), the representation must not depend on the order
     in which names were made.  We keep the name tree strictly sorted by
@@ -591,6 +604,85 @@ Definition fs_inode (fs : Fs) (i : ino) : Inode :=
 
 (** A regular file's bytes. *)
 Definition fs_ino_data (fs : Fs) (i : ino) : list byte := ino_data (fs_inode fs i).
+
+(** THE LONGEST FILE LINUX HOLDS.  A file's size [i_size] is a [loff_t],
+    and on a 64-bit kernel [MAX_LFS_FILESIZE] is [(loff_t)LLONG_MAX] =
+    2^63 - 1 (include/linux/fs.h:1279, Linux v6.18.46).  It is the bound
+    every 64-bit file system shares, not one file system's
+    [s_maxbytes]: [vfs_get_tree] (fs/super.c:1796-1803) says file
+    systems should never set [s_maxbytes] above it, and tmpfs sets
+    exactly it ([shmem_fill_super], mm/shmem.c:5118).  The model does
+    not record which file system holds a file, so it takes every file's
+    limit to be this one, and an append write stops here
+    ([ReadWrite.append_room]).  A file system with a smaller
+    [s_maxbytes] stops a write earlier, and the model does not follow
+    it there. *)
+Definition MAX_LFS_FILESIZE : Z := 2 ^ 63 - 1.
+
+(** A row [itab_find] answers is a row of the table. *)
+Lemma itab_find_in : forall t i n, itab_find t i = Some n -> In (i, n) t.
+Proof.
+  intros t i n. induction t as [|[j m] r IH]; cbn [itab_find]; [discriminate|].
+  destruct (Z.eqb i j) eqn:Hij.
+  - apply Z.eqb_eq in Hij. subst j. intros Hf. injection Hf as <-. left. reflexivity.
+  - intros Hf. right. exact (IH Hf).
+Qed.
+
+(** EVERY FILE OF AN IMAGE WITHIN [MAX_LFS_FILESIZE]: decided row by row
+    over the inode table ([files_cappedb]), and stated over every inode
+    number ([files_capped]), a number with no row being an empty file
+    ([fs_inode]).  No 64-bit Linux holds a longer file (the constant's
+    note above), so [Run.valid_image] asks it of the image a run starts
+    from.  Without it an image could hold a file whose size no [loff_t]
+    holds: a file's length word ([len_word]) wraps at 2^64, and it is
+    what [fstat]'s [st_size] and [lseek]'s SEEK_END base read.  No read
+    goes past 2^63 - 1 at any file size: the position test
+    ([ReadWrite.rw_pos_einvalb]) answers -EINVAL first.
+
+    It is a clause on the STARTING image, not on the states a run
+    reaches.  A run grows a file by a write or by [ftruncate], and each
+    stops at the limit: a write at a position ends at or below
+    [LLONG_MAX] ([ReadWrite.rw_pos_einvalb]), an append stops at the
+    limit ([ReadWrite.append_room]), and [ftruncate] refuses a negative
+    length.  That is argued here, not proved: [State.model_fs_wf] does
+    not carry the bound.  [wf_fs] asks nothing of the inode table, and
+    this clause does not change that: [wf_fs] is a conjunct of
+    [State.model_fs_wf], whose preservation kit takes every write's
+    bytes as they come, so it would then need a premise.
+    [files_cappedb_capped] is a one-way bridge: the boolean reads every
+    row, also one [itab_find] never reaches. *)
+Definition files_cappedb (fs : Fs) : bool :=
+  forallb (fun r => (Z.of_nat (length (ino_data (snd r))) <=? MAX_LFS_FILESIZE)%Z)
+    (fs_inodes fs).
+
+Definition files_capped (fs : Fs) : Prop :=
+  forall i, (Z.of_nat (length (fs_ino_data fs i)) <= MAX_LFS_FILESIZE)%Z.
+
+Lemma files_cappedb_capped : forall fs, files_cappedb fs = true -> files_capped fs.
+Proof.
+  intros fs H i. unfold files_cappedb in H. rewrite forallb_forall in H.
+  unfold fs_ino_data, fs_inode.
+  destruct (itab_find (fs_inodes fs) i) as [n|] eqn:Hf.
+  - specialize (H (i, n) (itab_find_in _ _ _ Hf)). cbn [snd] in H.
+    apply Z.leb_le in H. exact H.
+  - cbn [empty_inode ino_data length Z.of_nat]. unfold MAX_LFS_FILESIZE. lia.
+Qed.
+
+(** The clause in both directions and at every length: an inode table
+    with one file is within it exactly when that file holds at most
+    2^63 - 1 bytes.  A file of exactly that many bytes is one tmpfs holds
+    ([shmem_fill_super] sets [s_maxbytes] to [MAX_LFS_FILESIZE],
+    mm/shmem.c:5118, Linux v6.18.46), so the clause admits it; one byte
+    more is a file no 64-bit Linux holds.  The bound is written as a
+    number, so a change to the constant's value fails this lemma. *)
+Lemma files_cappedb_one_file_iff_within_the_cap : forall t i data o d,
+  files_cappedb (mkFs t [(i, mkInode data o)] d) = true
+  <-> (Z.of_nat (length data) <= 2 ^ 63 - 1)%Z.
+Proof.
+  intros t i data o d. unfold files_cappedb, MAX_LFS_FILESIZE.
+  cbn [fs_inodes forallb snd ino_data]. rewrite andb_true_r, Z.leb_le.
+  reflexivity.
+Qed.
 
 Definition fs_put_inode (fs : Fs) (i : ino) (n : Inode) : Fs :=
   fs_with_inodes fs (itab_put (fs_inodes fs) i n).

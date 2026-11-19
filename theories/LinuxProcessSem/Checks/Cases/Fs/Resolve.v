@@ -1149,18 +1149,19 @@ Proof. split; unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_
 Example valid_image_refuses_a_proc_cwd :
   ~ valid_image (proc_sys_input proc_cwd).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & Hout).
+  intros (_ & _ & _ & _ & _ & _ & _ & Hout & _).
   vm_compute in Hout. discriminate.
 Qed.
 
 Example valid_image_refuses_a_sys_kernel_cwd :
   ~ valid_image (proc_sys_input sys_kernel_cwd).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & Hout).
+  intros (_ & _ & _ & _ & _ & _ & _ & Hout & _).
   vm_compute in Hout. discriminate.
 Qed.
 
-(** ...and the last clause is the only one they fail: each is a
+(** ...and the working-directory clause is the only one they fail
+    (it was the last clause until the size clause followed it): each is a
     canonical key the image holds as a directory, short enough for
     [getcwd].  The clause is decided COMPONENT BY COMPONENT: /sys itself
     fails it, and "/procs", "/system" and "/work/proc" pass. *)

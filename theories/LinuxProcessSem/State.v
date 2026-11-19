@@ -573,6 +573,7 @@ Definition ENOTDIR : Z := 20%Z.
 Definition EISDIR : Z := 21%Z.
 Definition EINVAL : Z := 22%Z.
 Definition ENOTTY : Z := 25%Z.
+Definition EFBIG  : Z := 27%Z.   (* include/uapi/asm-generic/errno-base.h:31 *)
 Definition ESPIPE : Z := 29%Z.
 Definition EPIPE  : Z := 32%Z.
 Definition ERANGE : Z := 34%Z.

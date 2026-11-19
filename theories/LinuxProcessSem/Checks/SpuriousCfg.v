@@ -743,11 +743,13 @@ Proof.
   apply alt_r. eapply bind_ok0; [apply modify_ok |]. apply pure_ok.
 Qed.
 
-(** [faccessat2]: -ENOMEM and -EACCES come from
-    [Fs.Open.access_exists_spec], which admits 0 beside them, and from
-    the walk's own refusals ([Fs.Namei.walk_refusals]), which stand only
-    beside a body that does not decline.  Such a body always has an
-    answer that is neither: [faccessat_body_answer]. *)
+(** [faccessat2]: -ENOMEM and -EACCES come from the walk's own refusals
+    ([Fs.Namei.walk_refusals]), which stand only beside a body that does
+    not decline, and -ENOMEM from [getname_flags]' own
+    ([Fs.Namei.getname_refusals]), which stands only beside a call that
+    does not.  Such a body always has an answer that is neither:
+    [faccessat_body_answer], where a found entry answers 0
+    ([Fs.Open.access_exists_spec]). *)
 Local Ltac fixed_answer :=
   do 3 eexists; split; [apply pure_ok | split; [reflexivity | vm_compute; reflexivity]].
 
@@ -774,7 +776,7 @@ Proof.
     try (exfalso; apply Hnu; apply unmodeled_intro);
     exists (mkEffect (Z_to_bv 64 0) [] []), m, [];
     (split;
-     [unfold access_exists_spec; apply alt_r; apply pure_ok
+     [unfold access_exists_spec; apply pure_ok
      |split; [reflexivity | vm_compute; reflexivity]]).
 Qed.
 

@@ -13,9 +13,11 @@
     - [target_wexit_lt3] : argc < 3 -> to_wexit [] 2 (CatSim glue);
     - [target_ge3]       : argc >= 3 -> to_floop [cp_outcomes], the same
       outcome set [cp_ns_source.source_ge3] derives: the copy of a
-      regular file a word offset reaches the end of runs to its end
-      ([target_loop]); a file of 2^64 bytes or more and /dev/urandom are
-      copied forever, a silent loop ([tgt_endless_anchored]).
+      regular file runs to its end, or to [cp_ns_defs.cp_cut] where its
+      read is -EINVAL ([target_loop]); /dev/urandom into a regular file
+      runs to [cp_cut], where its write is -EINVAL ([target_uloop]);
+      /dev/urandom into a device is copied forever, a silent loop
+      ([tgt_endless_anchored]).
 
     Conventions as in cp_ns_source.v.  The loop body is factored into
     three [msteps] chain lemmas ([tgt_head_to_read],
@@ -363,8 +365,99 @@ Proof.
   + model_simp. exact Hfs.
 Qed.
 
+(** Shared exit tail: from 0x1001268 with a1 = code. *)
+Lemma target_err_exit : forall regs mem model code fsv,
+  reg_get regs 11 = code -> reg_get regs 1 = (0x10011b0 : word) ->
+  (bv_unsigned code < 256)%Z ->
+  m_fs model = fsv ->
+  to_fout rsegs (mkst regs (0x1001268 : word) mem trom) model
+    (fun o => o = (code, fsv)).
+Proof.
+  intros regs mem model code fsv H11 H1 Hc Hfs.
+  (* 0x1001268 .. 0x10011b4 — 4 instructions in ONE reflective block:
+     [mv a0,a1], the [ret] into _start's tail (the [ra] pin) and the
+     exit(93) load.  The executor stops at the [ecall]. *)
+  sym_pc_Z.
+  sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781928) mem trom)
+    5%nat (@nil bool) (@nil expr)
+    [((1 : reg), ELit 0x10011b0); ((11 : reg), EVar 32)] [code]
+    (@nil word) R HR Hms.
+  { rewrite getr_nz by reg_neq_tac; rewrite H1; bveq. }
+  { rewrite getr_nz by reg_neq_tac; exact H11. }
+  eapply tfo_msteps.
+  { eapply msteps_trans; [ exact Hms | ].
+    sym_pc_lit.
+    step_intro;
+      [ reflexivity | exact (step_ecall _ _ _ _ _ _ (TFv TF_10011b4) eq_refl)
+      | apply mst_refl ]. }
+  apply tfo_exit_rec.
+  - t_out HR.
+  - t_out HR.
+  - exact Hc.
+  - exact Hfs.
+Qed.
+
+(** From the read errno continuation (0x1001220): exit 5.  The folder
+    read answers -EISDIR, and the read at [cp_ns_defs.cp_cut] -EINVAL. *)
+Lemma tgt_read_err_tail : forall regs e mem model fsv,
+  (1 <= e)%Z -> (e <= 4095)%Z ->
+  reg_get regs 10 = errno_ret e ->
+  reg_get regs 1 = (0x10011b0 : word) ->
+  m_fs model = fsv ->
+  to_fout rsegs (mkst regs (0x1001220 : word) mem trom) model
+    (fun o => o = (Z_to_bv 64 5, fsv)).
+Proof.
+  intros regs e mem model fsv He1 He2 H10 H1 Hfs.
+  (* the taken [bltz] on the errno return and the error tail's
+     [li a1,5] — one reflective block, exact fuel so it lands on the
+     shared exit tail at 0x1001268. *)
+  sym_pc_Z.
+  sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781856) mem trom)
+    3%nat [true] (@nil expr) [((10 : reg), EVar 32)] [errno_ret e]
+    (@nil word) R HR Hms.
+  { apply c_lts_errno; lia. }
+  { rewrite getr_nz by reg_neq_tac; exact H10. }
+  eapply tfo_msteps; [ exact Hms | ].
+  sym_pc_lit.
+  apply target_err_exit.
+  - t_out HR.
+  - t_out HR.
+  - rewrite u_Z2bv by lia; lia.
+  - exact Hfs.
+Qed.
+
+(** From the write errno continuation (0x1001240): the taken [blez] and
+    the error tail's [li a1,6], then the shared tail — exit 6.  The write
+    at [cp_ns_defs.cp_cut] answers -EINVAL. *)
+Lemma tgt_write_err_tail : forall regs e mem model fsv,
+  (1 <= e)%Z -> (e <= 4095)%Z ->
+  reg_get regs 10 = errno_ret e ->
+  reg_get regs 1 = (0x10011b0 : word) ->
+  m_fs model = fsv ->
+  to_fout rsegs (mkst regs (0x1001240 : word) mem trom) model
+    (fun o => o = (Z_to_bv 64 6, fsv)).
+Proof.
+  intros regs e mem model fsv He1 He2 H10 H1 Hfs.
+  (* the taken [blez] on the errno return and the error tail's
+     [li a1,6] — one reflective block, exact fuel so it lands on the
+     shared exit tail at 0x1001268. *)
+  sym_pc_Z.
+  sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781888) mem trom)
+    3%nat [true] (@nil expr) [((10 : reg), EVar 32)] [errno_ret e]
+    (@nil word) R HR Hms.
+  { apply negb_true_iff; apply c_lts_0_errno; lia. }
+  { rewrite getr_nz by reg_neq_tac; exact H10. }
+  eapply tfo_msteps; [ exact Hms | ].
+  sym_pc_lit.
+  apply target_err_exit.
+  - t_out HR.
+  - t_out HR.
+  - rewrite u_Z2bv by lia; lia.
+  - exact Hfs.
+Qed.
+
 (* ================================================================= *)
-(* The copy loop, a source a word offset reaches the end of.          *)
+(* The copy loop over a regular file, to its end or to [cp_cut].      *)
 (* ================================================================= *)
 
 (** Loop-head register pins. *)
@@ -388,15 +481,15 @@ Lemma target_loop : forall fs1 i D fdin fdout fe_d,
   Fs.fs_ino_data fs1 i = D ->
   fdin <> fdout ->
   (bv_unsigned fdin < 2 ^ 31)%Z -> (bv_unsigned fdout < 2 ^ 31)%Z ->
-  (Z.of_nat (length D) < 2^64)%Z ->
   cp_dst_ok fe_d fs1 ->
   forall rem k regs mem model,
-  (length D - k < rem)%nat -> (k <= length D)%nat ->
+  (cp_cut - k < rem)%nat -> (k <= length D)%nat -> (k <= cp_cut)%nat ->
+  ((exists q, Z.of_nat k = (1024 * q)%Z) \/ k = length D) ->
   tLH fdin fdout regs -> tMI fs1 i D fdin fdout fe_d k model ->
   to_fout rsegs (mkst regs (0x100120c : word) mem trom) model
-    (fun o => o = (Z_to_bv 64 0, cp_copied fe_d fs1 D)).
+    (cp_file_outcome fe_d fs1 D).
 Proof.
-  intros fs1 i D fdin fdout fe_d HD Hneq Hfin31 Hfout31 HDlen Hdst.
+  intros fs1 i D fdin fdout fe_d HD Hneq Hfin31 Hfout31 Hdst.
   (* a file destination is not the source's inode once that holds bytes:
      the destination's open left it empty *)
   assert (Hij : forall j o, fe_d = FdFileW j o -> D <> [] -> i <> j).
@@ -404,19 +497,51 @@ Proof.
     destruct Hdst as [(j' & Hj' & Hd) | [Hj' | Hj']]; rewrite He in Hj';
       try discriminate Hj'.
     injection Hj' as <- _. apply HDne. rewrite <- HD. exact Hd. }
-  induction rem as [|rem IH]; intros k regs mem model Hrem Hk HLH HMI.
+  induction rem as [|rem IH]; intros k regs mem model Hrem Hk Hkc Hdiv HLH HMI.
   { lia. }
   destruct HLH as (H1 & H13 & H14 & H15).
   destruct HMI as (Hh & Hlazy & Hfdin & Hfdout & Hfs).
+  pose proof cp_cut_Z as Hcut.
   assert (HkZ : (Z.of_nat k < 2^64)%Z) by lia.
-  set (chunk := file_read D (nat_to_word k) (Z_to_bv 64 1024)).
-  assert (Hclen : length chunk = Nat.min 1024 (length D - k)%nat)
-    by (unfold chunk; apply cp_chunk_len; exact HkZ).
-  assert (Hc1024 : (length chunk <= 1024)%nat) by lia.
   (* ---- read call ---- *)
   destruct (tgt_head_to_read regs mem fdin fdout H1 H13 H14 H15)
     as (regsR & R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15 & HmsR).
   eapply tfo_msteps; [exact HmsR|].
+  assert (Haok1 : access_okb tbuf (bv_unsigned (Z_to_bv 64 1024)) = true).
+  { (* the buffer is a link-time constant far under [State.TASK_SIZE] *)
+    apply access_okb_intro. rewrite u_tbuf.
+    rewrite u_Z2bv by lia. unfold TASK_SIZE. lia. }
+  destruct (Nat.eq_dec k cp_cut) as [Hkcut | Hkcut].
+  { (* ============ the read at [cp_cut]: -EINVAL, exit 5 ============ *)
+    eapply tfo_read_einval_rec with (p := i) (off := nat_to_word k)
+      (buf := tbuf) (cnt := Z_to_bv 64 1024) (fdv := fdin).
+    { exact R17. } { exact R10. } { exact R11. } { exact R12. }
+    { exact Hfdin. }
+    { fd32_ok. }
+    { exact Haok1. }
+    { rewrite Hkcut, u_Z2bv by lia. apply cp_pos_at_cut. lia. }
+    { exact Hh. }
+    { exact Hlazy. }
+    tfnorm_pc.
+    apply (tfo_equiv rsegs _ _ (fun o => o = (Z_to_bv 64 5, m_fs model))).
+    2:{ intro o. unfold cp_file_outcome.
+        replace (Z.of_nat (length D) <? 2 ^ 63 - 1024)%Z with false
+          by (symmetry; apply Z.ltb_ge; lia).
+        rewrite Hfs, <- Hkcut, (cp_fs_at_copied fe_d fs1 D k) by lia.
+        split; intro Ho; exact Ho. }
+    apply (tgt_read_err_tail (regupd regsR 10 (errno_ret EINVAL)) EINVAL mem model
+             (m_fs model)).
+    - unfold EINVAL; lia.
+    - unfold EINVAL; lia.
+    - regupd_resolve; reflexivity.
+    - regupd_resolve; exact R1.
+    - reflexivity. }
+  (* below the cut the read passes the position test *)
+  assert (Hkc' : (Z.of_nat k < Z.of_nat cp_cut)%Z) by lia.
+  set (chunk := file_read D (nat_to_word k) (Z_to_bv 64 1024)).
+  assert (Hclen : length chunk = Nat.min 1024 (length D - k)%nat)
+    by (unfold chunk; apply cp_chunk_len; exact HkZ).
+  assert (Hc1024 : (length chunk <= 1024)%nat) by lia.
   eapply tfo_read_rec with (p := i) (off := nat_to_word k) (data := D)
     (buf := tbuf) (cnt := Z_to_bv 64 1024) (fdv := fdin).
   { exact R17. } { exact R10. } { exact R11. } { exact R12. }
@@ -426,9 +551,8 @@ Proof.
   { exact (target_buf_wseg vt). }
   { rewrite u_Z2bv by lia. unfold rw_bytes_max. lia. }
   { rewrite u_Z2bv by lia. lia. }
-  { (* the buffer is a link-time constant far under [State.TASK_SIZE] *)
-    apply access_okb_intro. rewrite u_tbuf.
-    rewrite u_Z2bv by lia. unfold TASK_SIZE. lia. }
+  { exact Haok1. }
+  { rewrite u_Z2bv by lia. apply cp_pos_ok; lia. }
   { exact Hh. }
   { exact Hlazy. }
   fold chunk.
@@ -439,6 +563,11 @@ Proof.
     rewrite Hchn. cbn [write_to_mem].
     replace (len_word (@nil byte)) with (Z_to_bv 64 0) by reflexivity.
     tfnorm_pc.
+    apply (tfo_equiv rsegs _ _ (fun o => o = (Z_to_bv 64 0, cp_copied fe_d fs1 D))).
+    2:{ intro o. unfold cp_file_outcome.
+        replace (Z.of_nat (length D) <? 2 ^ 63 - 1024)%Z with true
+          by (symmetry; apply Z.ltb_lt; lia).
+        split; intro Ho; exact Ho. }
     apply (tgt_eof_tail _ _ _ fdin fdout (FdFile i (nat_to_word k + Z_to_bv 64 0))
              (cp_dst_at fe_d k)).
     + regupd_resolve; exact R1.
@@ -455,6 +584,10 @@ Proof.
     + model_simp. rewrite Hfs, Heq. apply cp_fs_at_final.
   - (* ================= one more chunk: write it back ================= *)
     assert (HkltD : (k < length D)%nat) by lia.
+    destruct Hdiv as [(q & Hq) | HkD]; [|lia].
+    (* a whole chunk fits before [cp_cut] *)
+    assert (Hroom : (Z.of_nat k + 1024 <= Z.of_nat cp_cut)%Z)
+      by exact (cp_room k q Hq Hkc').
     assert (Hc1 : (1 <= length chunk)%nat) by lia.
     assert (HuLen : bv_unsigned (len_word chunk) = Z.of_nat (length chunk))
       by (apply u_len_word; lia).
@@ -480,7 +613,7 @@ Proof.
       tMI fs1 i D fdin fdout fe_d (k + length chunk) model' ->
       to_fout rsegs (mkst (regupd regsW 10 (len_word chunk)) (v_addi (0x100123c : word) 4)
                           (write_to_mem mem tbuf chunk) trom)
-        model' (fun o => o = (Z_to_bv 64 0, cp_copied fe_d fs1 D))).
+        model' (cp_file_outcome fe_d fs1 D)).
     { intros model' HMI'.
       destruct (tgt_write_to_head (regupd regsW 10 (len_word chunk))
           (write_to_mem mem tbuf chunk) fdin fdout (len_word chunk)
@@ -497,6 +630,10 @@ Proof.
       apply (IH (k + length chunk)%nat).
       { lia. }
       { lia. }
+      { lia. }
+      { destruct (Nat.le_gt_cases 1024 (length D - k)) as [Hf | Hs].
+        - left. exists (q + 1)%Z. rewrite Nat2Z.inj_add, Hq. lia.
+        - right. lia. }
       { unfold tLH. auto. }
       { exact HMI'. } }
     destruct Hdst as [(j & -> & Hjd) | [-> | ->]].
@@ -515,6 +652,7 @@ Proof.
       { apply file_gap_in_range.
         rewrite u_ntw by lia. rewrite length_firstn. unfold rw_bytes_max. lia. }
       { exact Haok. }
+      { rewrite HuLen. apply cp_pos_ok; lia. }
       { model_simp. exact Hh. }
       { exact Hlazy. }
       apply Hnext.
@@ -581,6 +719,175 @@ Proof.
 Qed.
 
 (* ================================================================= *)
+(* /dev/urandom into a regular file, to [cp_cut]                       *)
+(* ================================================================= *)
+
+(** [cp_ns_source.sMU]'s twin. *)
+Definition tMU (fs1 : Fs.Fs) (j : Fs.ino) (ur : InputStream) (fdin fdout : word)
+    (k : nat) (model : Model) : Prop :=
+  m_halted model = None /\
+  m_vm_lazy model = [] /\
+  fd_lookup (m_fds model) fdin = Some (FdUrandom true false) /\
+  fd_lookup (m_fds model) fdout = Some (FdFileW j (nat_to_word k)) /\
+  m_fs model = cp_ufs_at fs1 j ur k /\
+  m_urandom model = snd (stream_take ur k).
+
+(** [cp_ns_source.source_uloop]'s twin. *)
+Lemma target_uloop : forall fs1 j ur fdin fdout,
+  Fs.fs_ino_data fs1 j = [] ->
+  stream_infinite ur ->
+  fdin <> fdout ->
+  (bv_unsigned fdin < 2 ^ 31)%Z -> (bv_unsigned fdout < 2 ^ 31)%Z ->
+  forall rem k regs mem model,
+  (cp_cut - k < rem)%nat -> (k <= cp_cut)%nat ->
+  (exists q, Z.of_nat k = (1024 * q)%Z) ->
+  tLH fdin fdout regs -> tMU fs1 j ur fdin fdout k model ->
+  to_fout rsegs (mkst regs (0x100120c : word) mem trom) model
+    (fun o => o = (Z_to_bv 64 6, cp_copied (FdFileW j (Z_to_bv 64 0)) fs1
+                                   (fst (stream_take ur cp_cut)))).
+Proof.
+  intros fs1 j ur fdin fdout Hj Hinf Hneq Hfin31 Hfout31.
+  induction rem as [|rem IH]; intros k regs mem model Hrem Hkc (q & Hq) HLH HMU.
+  { lia. }
+  destruct HLH as (H1 & H13 & H14 & H15).
+  destruct HMU as (Hh & Hlazy & Hfdin & Hfdout & Hfs & Hur).
+  pose proof cp_cut_Z as Hcut.
+  assert (HkZ : (Z.of_nat k < 2^64)%Z) by lia.
+  assert (Hinfk : stream_infinite (m_urandom model))
+    by (rewrite Hur; exact (stream_infinite_rest k ur Hinf)).
+  destruct (tgt_head_to_read regs mem fdin fdout H1 H13 H14 H15)
+    as (regsR & R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15 & HmsR).
+  eapply tfo_msteps; [exact HmsR|].
+  eapply tfo_read_urandom_rec with (wr := false) (fdv := fdin) (buf := tbuf)
+    (cnt := Z_to_bv 64 1024).
+  { exact R17. } { exact R10. } { exact R11. } { exact R12. }
+  { exact Hfdin. }
+  { fd32_ok. }
+  { exact (target_buf_wseg vt). }
+  { rewrite u_Z2bv by lia. unfold page_size. lia. }
+  { apply access_okb_intro. rewrite u_tbuf. rewrite u_Z2bv by lia.
+    unfold TASK_SIZE. lia. }
+  { exact Hinfk. }
+  { exact Hh. }
+  { exact Hlazy. }
+  change (bv_unsigned (Z_to_bv 64 1024)) with 1024%Z.
+  set (chunk := fst (stream_take_z (m_urandom model) 1024)).
+  assert (Hcn : Z.of_nat (length chunk) = 1024%Z)
+    by (apply stream_take_z_infinite_length; [exact Hinfk | lia]).
+  assert (Hlw : len_word chunk = Z_to_bv 64 1024)
+    by (unfold len_word; rewrite Hcn; reflexivity).
+  assert (HuLen : bv_unsigned (len_word chunk) = 1024%Z)
+    by (rewrite Hlw; apply u_Z2bv; lia).
+  assert (Hchunk : chunk = fst (stream_take (snd (stream_take ur k)) 1024))
+    by (unfold chunk; rewrite stream_take_z_eq, Hur; reflexivity).
+  assert (Haok : access_okb tbuf (bv_unsigned (len_word chunk)) = true).
+  { apply access_okb_intro. rewrite u_tbuf, HuLen. unfold TASK_SIZE. lia. }
+  rewrite <- Hlw.
+  destruct (tgt_read_to_write (regupd regsR 10 (len_word chunk))
+      (write_to_mem mem tbuf chunk) fdin fdout (len_word chunk)
+      ltac:(regupd_resolve; reflexivity)
+      ltac:(lia) ltac:(lia)
+      ltac:(regupd_resolve; exact R1)
+      ltac:(regupd_resolve; exact R13)
+      ltac:(regupd_resolve; exact R14)
+      ltac:(regupd_resolve; exact R15))
+    as (regsW & W17 & W10 & W11 & W12 & W1 & W13 & W14 & W15 & HmsW).
+  eapply tfo_msteps.
+  { norm_pc. exact HmsW. }
+  set (m1 := with_urandom (snd (stream_take_z (m_urandom model) 1024)) model).
+  assert (Hm1fds : m_fds m1 = m_fds model) by reflexivity.
+  assert (Hm1fs : m_fs m1 = m_fs model) by reflexivity.
+  destruct (Nat.eq_dec k cp_cut) as [Hkcut | Hkcut].
+  - (* ============ the write at [cp_cut]: -EINVAL, exit 6 ============ *)
+    eapply tfo_write_einval_rec with (p := j) (off := nat_to_word k)
+      (buf := tbuf) (cnt := len_word chunk) (fdv := fdout).
+    { exact W17. } { exact W10. } { exact W11. } { exact W12. }
+    { rewrite Hm1fds. exact Hfdout. }
+    { fd32_ok. }
+    { rewrite HuLen. unfold rw_bytes_max. lia. }
+    { exact Haok. }
+    { rewrite HuLen, Hkcut. apply cp_pos_at_cut. lia. }
+    { exact Hh. }
+    { exact Hlazy. }
+    match goal with
+    | |- context [mkst _ ?p _ _] => replace p with (0x1001240 : word) by bveq
+    end.
+    apply (tgt_write_err_tail (regupd regsW 10 (errno_ret EINVAL)) EINVAL
+             (write_to_mem mem tbuf chunk) m1).
+    + unfold EINVAL; lia.
+    + unfold EINVAL; lia.
+    + regupd_resolve; reflexivity.
+    + regupd_resolve; exact W1.
+    + rewrite Hm1fs, Hfs, <- Hkcut. apply cp_ufs_at_copied; [exact Hinf | lia].
+  - (* ============ below the cut: the chunk lands at [k] ============ *)
+    assert (Hkc' : (Z.of_nat k < Z.of_nat cp_cut)%Z) by lia.
+    assert (Hroom : (Z.of_nat k + 1024 <= Z.of_nat cp_cut)%Z)
+      by exact (cp_room k q Hq Hkc').
+    assert (Hrd : rdn rsegs (write_to_mem mem tbuf chunk) tbuf
+                    (word_to_nat (len_word chunk)) = Some chunk).
+    { rewrite wtn_len_word by lia.
+      apply rdn_write_to_mem. rewrite u_tbuf. lia. }
+    assert (Hdata : Fs.fs_ino_data (m_fs m1) j = fst (stream_take ur k))
+      by (rewrite Hm1fs, Hfs; apply cp_ufs_at_data; exact Hj).
+    assert (Hdlen : length (fst (stream_take ur k)) = k)
+      by exact (stream_take_infinite_length k ur Hinf).
+    eapply tfo_write_rec with (p := j) (off := nat_to_word k)
+      (data := fst (stream_take ur k)) (bs := chunk) (buf := tbuf)
+      (cnt := len_word chunk) (fdv := fdout).
+    { exact W17. } { exact W10. } { exact W11. } { exact W12. }
+    { rewrite Hm1fds. exact Hfdout. }
+    { fd32_ok. }
+    { exact Hrd. }
+    { rewrite HuLen. unfold rw_bytes_max. lia. }
+    { exact Hdata. }
+    { apply file_gap_in_range. rewrite u_ntw by lia. rewrite Hdlen.
+      unfold rw_bytes_max. lia. }
+    { exact Haok. }
+    { rewrite HuLen. apply cp_pos_ok; lia. }
+    { exact Hh. }
+    { exact Hlazy. }
+    destruct (tgt_write_to_head (regupd regsW 10 (len_word chunk))
+        (write_to_mem mem tbuf chunk) fdin fdout (len_word chunk)
+        ltac:(regupd_resolve; reflexivity)
+        ltac:(regupd_resolve; exact W12)
+        ltac:(lia) ltac:(lia)
+        ltac:(regupd_resolve; exact W1)
+        ltac:(regupd_resolve; exact W13)
+        ltac:(regupd_resolve; exact W14)
+        ltac:(regupd_resolve; exact W15))
+      as (regsH & G1 & G13 & G14 & G15 & HmsH).
+    eapply tfo_msteps.
+    { norm_pc. exact HmsH. }
+    apply (IH (k + 1024)%nat).
+    { lia. }
+    { lia. }
+    { exists (q + 1)%Z. rewrite Nat2Z.inj_add, Hq. lia. }
+    { unfold tLH. auto. }
+    refine (conj _ (conj _ (conj _ (conj _ (conj _ _))))).
+    { model_simp. exact Hh. }
+    { exact Hlazy. }
+    { model_simp.
+      rewrite fd_lookup_insert_neq by congruence.
+      exact Hfdin. }
+    { model_simp.
+      rewrite fd_lookup_insert_eq.
+      rewrite len_word_ntw.
+      replace (length chunk) with 1024%nat by lia.
+      rewrite ntw_add. reflexivity. }
+    { model_simp. rewrite Hm1fs, Hfs.
+      apply cp_ufs_at_step; [exact HkZ | exact Hchunk | exact Hinf]. }
+    { transitivity (snd (stream_take_z (m_urandom model) 1024)); [reflexivity|].
+      rewrite stream_take_z_eq, Hur.
+      change (Z.to_nat 1024) with 1024%nat.
+      (* over a variable count: the kernel check of the same equation at
+         the numeral [1024] does not finish *)
+      assert (E : forall n, snd (stream_take ur (k + n))
+                            = snd (stream_take (snd (stream_take ur k)) n))
+        by (intro n; rewrite (stream_take_add k n ur); reflexivity).
+      rewrite E. reflexivity. }
+Qed.
+
+(* ================================================================= *)
 (* The endless copies: a silent loop over the read anchors            *)
 (* ================================================================= *)
 
@@ -635,10 +942,10 @@ Proof.
   split; [exact HM | reflexivity].
 Qed.
 
-(** The write of an endless copy, from its ecall: whatever the
+(** The write of an endless copy, from its ecall: whichever device the
     destination is, the one resolution is silent and the loop goes on to
     the next read anchor. *)
-Lemma tgt_endless_write : forall regsW mem model fdin fdout chunk si,
+Lemma tgt_endless_write : forall regsW mem model fdin fdout chunk,
   fdin <> fdout -> fd32 fdin = fdin -> fd32 fdout = fdout ->
   bv_unsigned (getr regsW 17) = 64%Z ->
   reg_get regsW 10 = fdout -> reg_get regsW 11 = tbuf ->
@@ -648,13 +955,13 @@ Lemma tgt_endless_write : forall regsW mem model fdin fdout chunk si,
   reg_get regsW 15 = tbuf ->
   (1 <= length chunk <= 1024)%nat ->
   m_halted model = None -> m_vm_lazy model = [] ->
-  cp_esrc fdin model si -> cp_edst fdout model si ->
+  cp_esrc fdin model -> cp_edst fdout model ->
   fpath rsegs tAnchor
     (mkCfg {| ms_regs := regsW; ms_fregs := fp_regs; ms_pc_val := (0x100123c : word);
               ms_svc_pending := Some (getr regsW 17); ms_resv := None; ms_fcsr := fp_csr;
               ms_mem := write_to_mem mem tbuf chunk; ms_rom := trom |} model).
 Proof.
-  intros regsW mem model fdin fdout chunk si Hne Hfin32 Hfout32 W17 W10 W11 W12 W1 W13
+  intros regsW mem model fdin fdout chunk Hne Hfin32 Hfout32 W17 W10 W11 W12 W1 W13
     W14 W15 Hlen Hh Hlazy Hsrc Hdst.
   assert (HuLen : bv_unsigned (len_word chunk) = Z.of_nat (length chunk))
     by (apply u_len_word; lia).
@@ -693,33 +1000,7 @@ Proof.
     by (unfold wrec; rewrite record_gpr, arg_reg_1; exact W11).
   assert (HgW2 : ms_gpr wrec 2 = len_word chunk)
     by (unfold wrec; rewrite record_gpr, arg_reg_2; exact W12).
-  destruct Hdst as [(j & off & Hfd & Hoff & Hsi) | [(rd & Hfd) | (rd & Hfd)]].
-  - (* a regular file [j], not the source: it takes the chunk *)
-    destruct (write_file_spec rsegs wrec model (getr regsW 17) j off
-                (Fs.fs_ino_data (m_fs model) j) chunk W17
-                ltac:(rewrite HgW0; exact Hfd)
-                ltac:(rewrite HgW0; exact Hfout32)
-                ltac:(rewrite HgW1, HgW2;
-                      rewrite read_bytes_map_read_byte;
-                      rewrite (ms_read_bytes_rdn rsegs wrec) by reflexivity;
-                      unfold wrec; cbn [ms_mem]; exact Hrd)
-                ltac:(rewrite HgW1, HgW2; exact Haok)
-                ltac:(rewrite HgW2, HuLen; unfold rw_bytes_max; lia)
-                eq_refl
-                ltac:(apply file_gap_in_range; unfold rw_bytes_max; lia)
-                ltac:(apply w_is0_pos; rewrite HgW2, HuLen; lia))
-      as [Huniq Hnu].
-    rewrite ?HgW0, ?HgW1, ?HgW2 in Huniq.
-    apply (fpath_sys_det rsegs tAnchor wrec model (getr regsW 17) _ _ eq_refl Hh Hlazy
-             Huniq Hnu).
-    + model_simp. exact Hh.
-    + exact Hlazy.
-    + unfold wrec. rewrite adv_eff_ret_copyins.
-      apply Hnext.
-      split; [model_simp; exact Hh|]. split; [exact Hlazy|].
-      exists si. split.
-      * apply cp_esrc_write; [exact Hne | exact Hsi | exact Hsrc].
-      * apply cp_edst_write; [lia | exact Hoff | exact Hsi].
+  destruct Hdst as [(rd & Hfd) | (rd & Hfd)].
   - (* /dev/null: the count *)
     destruct (write_null_spec_rec rsegs regsW (0x100123c : word)
                 (write_to_mem mem tbuf chunk) trom model
@@ -733,8 +1014,8 @@ Proof.
     + unfold wrec. rewrite adv_eff_ret.
       apply Hnext.
       split; [exact Hh|]. split; [exact Hlazy|].
-      exists si. split; [exact Hsrc|].
-      right. left. exists rd. exact Hfd.
+      split; [exact Hsrc|].
+      left. exists rd. exact Hfd.
   - (* /dev/urandom: the whole count of a readable buffer *)
     destruct (write_urandom_spec_rec rsegs regsW (0x100123c : word)
                 (write_to_mem mem tbuf chunk) model
@@ -748,8 +1029,8 @@ Proof.
     + unfold wrec. rewrite adv_eff_ret_copyins.
       apply Hnext.
       split; [exact Hh|]. split; [exact Hlazy|].
-      exists si. split; [exact Hsrc|].
-      right. right. exists rd. exact Hfd.
+      split; [exact Hsrc|].
+      right. exists rd. exact Hfd.
 Qed.
 
 (** EVERY READ ANCHOR IS SILENT ONTO A PATH TO THE NEXT ONE
@@ -760,7 +1041,7 @@ Proof.
   destruct Ha as (fdin & fdout & regs & mem & model & Hne & Hfin32 & Hfout32 & Hpins
                   & HM & ->).
   destruct Hpins as (R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15).
-  destruct HM as (Hh & Hlazy & si & Hsrc & Hdst).
+  destruct HM as (Hh & Hlazy & Hsrc & Hdst).
   exists (trdrec regs mem), model, (getr regs 17).
   split; [reflexivity|]. split; [reflexivity|].
   split; [exact Hh|]. split; [exact Hlazy|].
@@ -774,7 +1055,7 @@ Proof.
   assert (Hafter : forall chunk model',
     (1 <= length chunk <= 1024)%nat ->
     m_halted model' = None -> m_vm_lazy model' = [] ->
-    cp_esrc fdin model' si -> cp_edst fdout model' si ->
+    cp_esrc fdin model' -> cp_edst fdout model' ->
     fpath rsegs tAnchor
       (mkCfg (mkst (regupd regs 10 (len_word chunk)) (0x1001220 : word)
                    (write_to_mem mem tbuf chunk) trom) model')).
@@ -788,78 +1069,39 @@ Proof.
       | regupd_resolve; exact R1 | regupd_resolve; exact R13
       | regupd_resolve; exact R14 | regupd_resolve; exact R15 | ].
     eapply fpath_msteps; [exact HmsW | exact Hh' | exact Hl' |].
-    exact (tgt_endless_write regsW mem model' fdin fdout chunk si Hne Hfin32 Hfout32
+    exact (tgt_endless_write regsW mem model' fdin fdout chunk Hne Hfin32 Hfout32
              W17 W10 W11 W12 W1 W13 W14 W15 Hlen Hh' Hl' Hsrc' Hdst'). }
-  destruct si as [i|].
-  - (* a regular file of 2^64 bytes or more: every word offset is inside it *)
-    destruct Hsrc as (off & Hfin & Hbig).
-    destruct (wseg_ok_wdef rsegs tbuf (Z_to_bv 64 1024) (trdrec regs mem)
-                (target_buf_wseg vt)) as [w Hw].
-    destruct (read_file_spec rsegs (trdrec regs mem) model (getr regs 17) i off
-                (Fs.fs_ino_data (m_fs model) i) w R17
-                ltac:(rewrite Hg0; exact Hfin)
-                ltac:(rewrite Hg0; exact Hfin32)
-                eq_refl
-                ltac:(rewrite Hg1, Hg2; exact Hw)
-                ltac:(rewrite Hg2; rewrite u_Z2bv by lia; unfold rw_bytes_max; lia)
-                ltac:(rewrite Hg2; rewrite u_Z2bv by lia; lia)
-                ltac:(rewrite Hg1, Hg2; apply access_okb_intro;
-                      rewrite u_tbuf; rewrite u_Z2bv by lia; unfold TASK_SIZE; lia))
-      as [Huniq Hnu].
-    split; [exact Hnu|].
-    intros eff m' evs Hs.
-    destruct (Huniq eff m' evs Hs) as (-> & -> & ->).
-    rewrite Hg0, Hg1, Hg2.
-    set (chunk := file_read (Fs.fs_ino_data (m_fs model) i) off (Z_to_bv 64 1024)).
-    assert (Hc : (1 <= length chunk <= 1024)%nat).
-    { unfold chunk. rewrite length_file_read, wtn_1024.
-      pose proof (u64_range off) as Hr.
-      assert (Hoff : Z.of_nat (word_to_nat off) = bv_unsigned off)
-        by (unfold word_to_nat; rewrite Z2Nat.id; lia).
-      lia. }
-    assert (Hcne : chunk <> []) by (intro He; rewrite He in Hc; cbn in Hc; lia).
-    rewrite (delivered_writes_ne tbuf chunk Hcne).
-    unfold trdrec. rewrite adv_apply_write.
-    match goal with
-    | |- context [mkst _ ?p _ _] => replace p with (0x1001220 : word) by bveq
-    end.
-    split; [reflexivity|]. split; [exact Hh|]. split; [exact Hlazy|].
-    apply (Hafter chunk); [exact Hc | exact Hh | exact Hlazy | |].
-    + cbn [cp_esrc]. exists (off + len_word chunk). split.
-      * model_simp. apply fd_lookup_insert_eq.
-      * exact Hbig.
-    + apply cp_edst_read; [exact Hne | exact Hdst].
-  - (* /dev/urandom: the whole count, from the declared endless stream *)
-    destruct Hsrc as (Hfin & Hinf).
-    destruct (read_urandom_spec_rec rsegs regs (0x100121c : word) mem trom model fdin false
-                tbuf (Z_to_bv 64 1024) R17 R10 R11 R12 Hfin Hfin32 (target_buf_wseg vt)
-                ltac:(rewrite u_Z2bv by lia; unfold page_size; lia)
-                ltac:(apply access_okb_intro; rewrite u_tbuf; rewrite u_Z2bv by lia;
-                      unfold TASK_SIZE; lia)
-                Hinf)
-      as [Huniq Hnu].
-    split; [exact Hnu|].
-    intros eff m' evs Hs.
-    destruct (Huniq eff m' evs Hs) as (-> & -> & ->).
-    change (bv_unsigned (Z_to_bv 64 1024)) with 1024%Z.
-    set (chunk := fst (stream_take_z (m_urandom model) 1024)).
-    assert (Hcn : Z.of_nat (length chunk) = 1024%Z)
-      by (apply stream_take_z_infinite_length; [exact Hinf | lia]).
-    assert (Hc : (1 <= length chunk <= 1024)%nat) by lia.
-    assert (Hlw : len_word chunk = Z_to_bv 64 1024)
-      by (unfold len_word; rewrite Hcn; reflexivity).
-    assert (Hcne : chunk <> []) by (intro He; rewrite He in Hcn; cbn in Hcn; lia).
-    rewrite (delivered_writes_ne tbuf chunk Hcne).
-    unfold trdrec. rewrite adv_apply_write.
-    match goal with
-    | |- context [mkst _ ?p _ _] => replace p with (0x1001220 : word) by bveq
-    end.
-    split; [reflexivity|]. split; [exact Hh|]. split; [exact Hlazy|].
-    rewrite <- Hlw.
-    apply (Hafter chunk); [exact Hc | exact Hh | exact Hlazy | |].
-    + cbn [cp_esrc]. split; [exact Hfin|].
-      exact (stream_take_z_infinite_rest (m_urandom model) 1024 Hinf).
-    + exact Hdst.
+  (* /dev/urandom: the whole count, from the declared endless stream *)
+  destruct Hsrc as (Hfin & Hinf).
+  destruct (read_urandom_spec_rec rsegs regs (0x100121c : word) mem trom model fdin false
+              tbuf (Z_to_bv 64 1024) R17 R10 R11 R12 Hfin Hfin32 (target_buf_wseg vt)
+              ltac:(rewrite u_Z2bv by lia; unfold page_size; lia)
+              ltac:(apply access_okb_intro; rewrite u_tbuf; rewrite u_Z2bv by lia;
+                    unfold TASK_SIZE; lia)
+              Hinf)
+    as [Huniq Hnu].
+  split; [exact Hnu|].
+  intros eff m' evs Hs.
+  destruct (Huniq eff m' evs Hs) as (-> & -> & ->).
+  change (bv_unsigned (Z_to_bv 64 1024)) with 1024%Z.
+  set (chunk := fst (stream_take_z (m_urandom model) 1024)).
+  assert (Hcn : Z.of_nat (length chunk) = 1024%Z)
+    by (apply stream_take_z_infinite_length; [exact Hinf | lia]).
+  assert (Hc : (1 <= length chunk <= 1024)%nat) by lia.
+  assert (Hlw : len_word chunk = Z_to_bv 64 1024)
+    by (unfold len_word; rewrite Hcn; reflexivity).
+  assert (Hcne : chunk <> []) by (intro He; rewrite He in Hcn; cbn in Hcn; lia).
+  rewrite (delivered_writes_ne tbuf chunk Hcne).
+  unfold trdrec. rewrite adv_apply_write.
+  match goal with
+  | |- context [mkst _ ?p _ _] => replace p with (0x1001220 : word) by bveq
+  end.
+  split; [reflexivity|]. split; [exact Hh|]. split; [exact Hlazy|].
+  rewrite <- Hlw.
+  apply (Hafter chunk); [exact Hc | exact Hh | exact Hlazy | |].
+  + cbn [cp_esrc]. split; [exact Hfin|].
+    exact (stream_take_z_infinite_rest (m_urandom model) 1024 Hinf).
+  + exact Hdst.
 Qed.
 
 (* ================================================================= *)
@@ -1066,38 +1308,6 @@ Proof.
   all: t_out HR.
 Qed.
 
-(** Shared exit tail: from 0x1001268 with a1 = code. *)
-Lemma target_err_exit : forall regs mem model code fsv,
-  reg_get regs 11 = code -> reg_get regs 1 = (0x10011b0 : word) ->
-  (bv_unsigned code < 256)%Z ->
-  m_fs model = fsv ->
-  to_fout rsegs (mkst regs (0x1001268 : word) mem trom) model
-    (fun o => o = (code, fsv)).
-Proof.
-  intros regs mem model code fsv H11 H1 Hc Hfs.
-  (* 0x1001268 .. 0x10011b4 — 4 instructions in ONE reflective block:
-     [mv a0,a1], the [ret] into _start's tail (the [ra] pin) and the
-     exit(93) load.  The executor stops at the [ecall]. *)
-  sym_pc_Z.
-  sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781928) mem trom)
-    5%nat (@nil bool) (@nil expr)
-    [((1 : reg), ELit 0x10011b0); ((11 : reg), EVar 32)] [code]
-    (@nil word) R HR Hms.
-  { rewrite getr_nz by reg_neq_tac; rewrite H1; bveq. }
-  { rewrite getr_nz by reg_neq_tac; exact H11. }
-  eapply tfo_msteps.
-  { eapply msteps_trans; [ exact Hms | ].
-    sym_pc_lit.
-    step_intro;
-      [ reflexivity | exact (step_ecall _ _ _ _ _ _ (TFv TF_10011b4) eq_refl)
-      | apply mst_refl ]. }
-  apply tfo_exit_rec.
-  - t_out HR.
-  - t_out HR.
-  - exact Hc.
-  - exact Hfs.
-Qed.
-
 (** From the open1 errno continuation (0x10011dc): li a1,3, then the
     shared tail — exit 3. *)
 Lemma tgt_open1_err_tail : forall regs e mem model fsv,
@@ -1143,35 +1353,6 @@ Proof.
   sym_pc_Z.
   sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781820) mem trom)
     2%nat [true] (@nil expr) [((10 : reg), EVar 32)] [errno_ret e]
-    (@nil word) R HR Hms.
-  { apply c_lts_errno; lia. }
-  { rewrite getr_nz by reg_neq_tac; exact H10. }
-  eapply tfo_msteps; [ exact Hms | ].
-  sym_pc_lit.
-  apply target_err_exit.
-  - t_out HR.
-  - t_out HR.
-  - rewrite u_Z2bv by lia; lia.
-  - exact Hfs.
-Qed.
-
-(** From the read errno continuation (0x1001220): exit 5 (the folder
-    read, which answers -EISDIR). *)
-Lemma tgt_read_err_tail : forall regs e mem model fsv,
-  (1 <= e)%Z -> (e <= 4095)%Z ->
-  reg_get regs 10 = errno_ret e ->
-  reg_get regs 1 = (0x10011b0 : word) ->
-  m_fs model = fsv ->
-  to_fout rsegs (mkst regs (0x1001220 : word) mem trom) model
-    (fun o => o = (Z_to_bv 64 5, fsv)).
-Proof.
-  intros regs e mem model fsv He1 He2 H10 H1 Hfs.
-  (* the taken [bltz] on the errno return and the error tail's
-     [li a1,5] — one reflective block, exact fuel so it lands on the
-     shared exit tail at 0x1001268. *)
-  sym_pc_Z.
-  sym_block_ex (target_segs ++ vt) (mkst regs (Z_to_bv 64 16781856) mem trom)
-    3%nat [true] (@nil expr) [((10 : reg), EVar 32)] [errno_ret e]
     (@nil word) R HR Hms.
   { apply c_lts_errno; lia. }
   { rewrite getr_nz by reg_neq_tac; exact H10. }
@@ -1276,7 +1457,7 @@ Lemma target_ge3 : forall m0,
   (op_walked src = true -> open_answered true fs0 (in_cwd inp) src) ->
   (op_walked dst = true -> open_answered false fs0 (in_cwd inp) dst) ->
   to_floop rsegs (init_machine_state rsegs 0x1001190 target_phdrs asp amb arnd inp) m0
-    (cp_outcomes fs0 (in_cwd inp) src dst).
+    (cp_outcomes fs0 (in_cwd inp) (in_urandom inp) src dst).
 Proof.
   intros m0 Hfds Hfs Hcwd Hur Hh Hlazy Hinf Hans1 Hans2.
   pose proof asp_lo_num as Hlo. pose proof asp_hi_num as Hhi.
@@ -1294,7 +1475,7 @@ Proof.
                          o = (Z_to_bv 64 4, fs0)
                          \/ (op_walked dst = true /\
                              match open_arm false fs0 (in_cwd inp) dst with
-                             | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) fe_s fe_d o
+                             | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) (in_urandom inp) fe_s fe_d o
                              | inr _ => False
                              end)
                      | inr _ => False
@@ -1326,7 +1507,7 @@ Proof.
              (fun o => o = (Z_to_bv 64 4, fs0)
                        \/ (op_walked dst = true /\
                            match open_arm false fs0 (in_cwd inp) dst with
-                           | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) fe_s fe_d o
+                           | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) (in_urandom inp) fe_s fe_d o
                            | inr _ => False
                            end))).
     2:{ intro o. rewrite Harm1. split; intro Ho; exact Ho. }
@@ -1353,7 +1534,7 @@ Proof.
     apply (tfl_open_operand_rec rsegs regs2 (0x10011f8 : word) fmem m1 dst false
              (fun o => o = (Z_to_bv 64 4, fs0))
              (fun o => match open_arm false fs0 (in_cwd inp) dst with
-                       | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) fe_s fe_d o
+                       | inl (fe_d, ofs) => cp_copy (cp_fs1 fs0 ofs) (in_urandom inp) fe_s fe_d o
                        | inr _ => False
                        end)).
     + exact J17.
@@ -1378,7 +1559,7 @@ Proof.
     + (* both descriptors: the copy *)
       intros fe_d ofs2 Harm2.
       rewrite Hm1fs, Hm1cwd in Harm2.
-      apply (tfl_equiv rsegs _ _ (cp_copy (cp_fs1 fs0 ofs2) fe_s fe_d)).
+      apply (tfl_equiv rsegs _ _ (cp_copy (cp_fs1 fs0 ofs2) (in_urandom inp) fe_s fe_d)).
       2:{ intro o. rewrite Harm2. split; intro Ho; exact Ho. }
       assert (Hfd2 : alloc_fd (m_fds m1) = Z_to_bv 64 4)
         by (rewrite Hm1fds; exact (cp_fd2 fe_s)).
@@ -1411,54 +1592,23 @@ Proof.
       assert (Haok : access_okb tbuf (bv_unsigned (Z_to_bv 64 1024)) = true).
       { apply access_okb_intro. rewrite u_tbuf, u_Z2bv by lia. unfold TASK_SIZE. lia. }
       destruct Hkind as [(i & ->) | [(k & ->) | [-> | ->]]].
-      * (* a regular file *)
-        destruct (Z_lt_le_dec (Z.of_nat (length (Fs.fs_ino_data (cp_fs1 fs0 ofs2) i)))
-                    (2^64)) as [Hsmall | Hbig].
-        -- (* a word offset reaches its end: the copy ends *)
-           apply to_floop_of_fout.
-           apply (tfo_equiv rsegs _ _
-                    (fun o => o = (Z_to_bv 64 0,
-                                   cp_copied fe_d (cp_fs1 fs0 ofs2)
-                                     (Fs.fs_ino_data (cp_fs1 fs0 ofs2) i)))).
-           2:{ intro o. cbn [cp_copy]. split.
-               - intros [_ Ho]. exact Ho.
-               - intros Ho. split; [exact Hsmall | exact Ho]. }
-           apply (target_loop (cp_fs1 fs0 ofs2) i (Fs.fs_ino_data (cp_fs1 fs0 ofs2) i)
-                    (Z_to_bv 64 3) (Z_to_bv 64 4) fe_d eq_refl tfd3_ne_fd4
-                    ltac:(vm_compute; reflexivity) ltac:(vm_compute; reflexivity)
-                    Hsmall Hdok
-                    (S (length (Fs.fs_ino_data (cp_fs1 fs0 ofs2) i))) 0%nat).
-           ++ lia.
-           ++ lia.
-           ++ exact (conj K1 (conj K13 (conj K14 K15))).
-           ++ unfold tMI.
-              refine (conj Hm2h (conj Hm2l (conj Hl3 (conj _ _)))).
-              ** rewrite Hl4.
-                 destruct Hdok as [(j & Hj & _) | [Hj | Hj]]; rewrite Hj; reflexivity.
-              ** rewrite Hm2fs.
-                 destruct Hdok as [(j & Hj & _) | [Hj | Hj]]; rewrite Hj; reflexivity.
-        -- (* 2^64 bytes or more: copied forever *)
-           destruct (tgt_head_to_read regsH fmem (Z_to_bv 64 3) (Z_to_bv 64 4)
-                       K1 K13 K14 K15)
-             as (regsR & R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15 & HmsR).
-           eapply tfl_msteps; [exact HmsR|].
-           apply (tfl_loop rsegs _ _ (fpath rsegs tAnchor)).
-           ++ exact (fsilent_fpath rsegs tAnchor tgt_endless_anchored).
-           ++ apply fp_anchor.
-              exists (Z_to_bv 64 3), (Z_to_bv 64 4), regsR, fmem, m2.
-              split; [exact tfd3_ne_fd4|].
-              split; [fd32_ok|]. split; [fd32_ok|].
-              split; [unfold tRpins; tauto|].
-              split; [|reflexivity].
-              split; [exact Hm2h|]. split; [exact Hm2l|].
-              exists (Some i). split.
-              ** cbn [cp_esrc]. exists (Z_to_bv 64 0). split; [exact Hl3|].
-                 rewrite Hm2fs. exact Hbig.
-              ** apply (cp_edst_open (Z_to_bv 64 4) m2 fe_d (Some i) Hl4).
-                 --- rewrite Hm2fs. exact Hdok.
-                 --- intros j Hj Hij. injection Hij as <-.
-                     rewrite Hm2fs in Hj. rewrite Hj in Hbig. cbn in Hbig. lia.
-           ++ intros o Ho. cbn [cp_copy] in Ho. destruct Ho as [Hlt _]. lia.
+      * (* a regular file: copied to its end, or to [cp_cut] *)
+        apply to_floop_of_fout.
+        apply (target_loop (cp_fs1 fs0 ofs2) i (Fs.fs_ino_data (cp_fs1 fs0 ofs2) i)
+                 (Z_to_bv 64 3) (Z_to_bv 64 4) fe_d eq_refl tfd3_ne_fd4
+                 ltac:(vm_compute; reflexivity) ltac:(vm_compute; reflexivity)
+                 Hdok (S cp_cut) 0%nat).
+        -- lia.
+        -- lia.
+        -- lia.
+        -- left. exists 0%Z. reflexivity.
+        -- exact (conj K1 (conj K13 (conj K14 K15))).
+        -- unfold tMI.
+           refine (conj Hm2h (conj Hm2l (conj Hl3 (conj _ _)))).
+           ++ rewrite Hl4.
+              destruct Hdok as [(j & Hj & _) | [Hj | Hj]]; rewrite Hj; reflexivity.
+           ++ rewrite Hm2fs.
+              destruct Hdok as [(j & Hj & _) | [Hj | Hj]]; rewrite Hj; reflexivity.
       * (* a folder: -EISDIR, exit 5 *)
         apply to_floop_of_fout.
         destruct (tgt_head_to_read regsH fmem (Z_to_bv 64 3) (Z_to_bv 64 4)
@@ -1518,26 +1668,42 @@ Proof.
            ++ exact Hm2h.
            ++ exact Hm2l.
            ++ reflexivity.
-      * (* /dev/urandom: copied forever *)
-        destruct (tgt_head_to_read regsH fmem (Z_to_bv 64 3) (Z_to_bv 64 4)
-                    K1 K13 K14 K15)
-          as (regsR & R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15 & HmsR).
-        eapply tfl_msteps; [exact HmsR|].
-        apply (tfl_loop rsegs _ _ (fpath rsegs tAnchor)).
-        -- exact (fsilent_fpath rsegs tAnchor tgt_endless_anchored).
-        -- apply fp_anchor.
-           exists (Z_to_bv 64 3), (Z_to_bv 64 4), regsR, fmem, m2.
-           split; [exact tfd3_ne_fd4|].
-           split; [fd32_ok|]. split; [fd32_ok|].
-           split; [unfold tRpins; tauto|].
-           split; [|reflexivity].
-           split; [exact Hm2h|]. split; [exact Hm2l|].
-           exists None. split.
-           ++ cbn [cp_esrc]. split; [exact Hl3|]. rewrite Hm2ur. exact Hinf.
-           ++ apply (cp_edst_open (Z_to_bv 64 4) m2 fe_d None Hl4).
-              ** rewrite Hm2fs. exact Hdok.
-              ** intros j _ Hij. discriminate Hij.
-        -- intros o Ho. exact Ho.
+      * (* /dev/urandom *)
+        destruct Hdok as [(j & -> & Hjd) | Hdev].
+        -- (* into a regular file: copied to [cp_cut], where the write is
+              -EINVAL, exit 6 *)
+           apply to_floop_of_fout.
+           cbn [cp_copy].
+           apply (target_uloop (cp_fs1 fs0 ofs2) j (in_urandom inp)
+                    (Z_to_bv 64 3) (Z_to_bv 64 4) Hjd Hinf tfd3_ne_fd4
+                    ltac:(vm_compute; reflexivity) ltac:(vm_compute; reflexivity)
+                    (S cp_cut) 0%nat).
+           ++ lia.
+           ++ lia.
+           ++ exists 0%Z. reflexivity.
+           ++ exact (conj K1 (conj K13 (conj K14 K15))).
+           ++ refine (conj Hm2h (conj Hm2l (conj Hl3 (conj Hl4 (conj _ _))))).
+              ** rewrite Hm2fs. reflexivity.
+              ** rewrite Hm2ur. reflexivity.
+        -- (* into a device: copied forever *)
+           destruct (tgt_head_to_read regsH fmem (Z_to_bv 64 3) (Z_to_bv 64 4)
+                       K1 K13 K14 K15)
+             as (regsR & R17 & R10 & R11 & R12 & R1 & R13 & R14 & R15 & HmsR).
+           eapply tfl_msteps; [exact HmsR|].
+           apply (tfl_loop rsegs _ _ (fpath rsegs tAnchor)).
+           ++ exact (fsilent_fpath rsegs tAnchor tgt_endless_anchored).
+           ++ apply fp_anchor.
+              exists (Z_to_bv 64 3), (Z_to_bv 64 4), regsR, fmem, m2.
+              split; [exact tfd3_ne_fd4|].
+              split; [fd32_ok|]. split; [fd32_ok|].
+              split; [unfold tRpins; tauto|].
+              split; [|reflexivity].
+              split; [exact Hm2h|]. split; [exact Hm2l|].
+              split.
+              ** cbn [cp_esrc]. split; [exact Hl3|]. rewrite Hm2ur. exact Hinf.
+              ** exact (cp_edst_open (Z_to_bv 64 4) m2 fe_d Hl4 Hdev).
+           ++ intros o Ho. cbn [cp_copy] in Ho.
+              destruct Hdev as [-> | ->]; exact Ho.
     + (* the outcome set at the second open *)
       intro o. rewrite Hm1fs, Hm1cwd. unfold open_ok.
       destruct (open_arm false fs0 (in_cwd inp) dst) as [[fe_d ofs]|e]; cbv beta iota.

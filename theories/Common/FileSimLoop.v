@@ -790,6 +790,7 @@ Lemma read_file_spec : forall ms model x8 p off data w,
   (bv_unsigned (ms_gpr ms 2) <= rw_bytes_max)%Z ->
   (0 < bv_unsigned (ms_gpr ms 2))%Z ->
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = false ->
   (forall eff m' evs,
      syscall_spec (sys_input segs ms x8) model (Ok eff m' evs) ->
      eff = mkEffect (len_word (file_read data off (ms_gpr ms 2)))
@@ -799,7 +800,7 @@ Lemma read_file_spec : forall ms model x8 p off data w,
      /\ evs = [])
   /\ ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
 Proof.
-  intros ms model x8 p off data w Hno Hfd Hfd32 Hfs Hw Hcnt Hpos Haok.
+  intros ms model x8 p off data w Hno Hfd Hfd32 Hfs Hw Hcnt Hpos Haok Hrwp.
   set (bs := file_read data off (ms_gpr ms 2)).
   assert (HL : (bv_unsigned (len_word (file_read data off (ms_gpr ms 2)))
                 <= bv_unsigned (ms_gpr ms 2))%Z).
@@ -818,6 +819,7 @@ Proof.
     rewrite (check_syscall_63 segs ms x8 eff model Hno). unfold check_read.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite Haok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. cbv beta iota.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned.
     rewrite Hfs. cbv beta iota zeta.
     rewrite in_wmem_si.
@@ -856,6 +858,7 @@ Proof.
     unfold check_read in Hs.
     rewrite Hfd32, Hfd in Hs. cbv beta iota in Hs.
     rewrite Haok in Hs. cbn [negb] in Hs. cbv beta iota in Hs.
+    rewrite Hrwp in Hs. cbv beta iota in Hs.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned in Hs.
     rewrite Hfs in Hs. cbv beta iota zeta in Hs.
     rewrite in_wmem_si in Hs.
@@ -875,6 +878,7 @@ Lemma write_file_spec : forall ms model x8 p off data bs,
   fd32 (ms_gpr ms 0) = ms_gpr ms 0 ->
   read_bytes_map (ms_read_byte ms) (ms_gpr ms 1) (ms_gpr ms 2) = Some bs ->
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = false ->
   (bv_unsigned (ms_gpr ms 2) <= rw_bytes_max)%Z ->
   Fs.fs_ino_data (m_fs model) p = data ->
   negb (modeled_file_gap data off bs) = false ->
@@ -887,7 +891,7 @@ Lemma write_file_spec : forall ms model x8 p off data bs,
      /\ evs = [])
   /\ ~ syscall_spec (sys_input segs ms x8) model Unmodeled.
 Proof.
-  intros ms model x8 p off data bs Hno Hfd Hfd32 Hrd Hok Hcnt Hfs Hgap Hnz.
+  intros ms model x8 p off data bs Hno Hfd Hfd32 Hrd Hok Hrwp Hcnt Hfs Hgap Hnz.
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some bs).
   { rewrite in_mem_si. exact Hrd. }
@@ -902,6 +906,7 @@ Proof.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
     rewrite Hok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. cbv beta iota.
     rewrite (write_source_of_rw _ _ _ Hcnt), (readable_bytes_full _ _ _ _ Hrb).
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hret : len_word bs = ms_gpr ms 2).

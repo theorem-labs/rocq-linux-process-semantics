@@ -729,9 +729,14 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     for the -EINVAL: a flag word the model has not interpreted is one it
     cannot judge the call from.
 
-    Declining rather than asserting -EINVAL costs precision in one
-    shape and nothing else: [newfstatat(AT_FDCWD, <a 4096-byte path>,
-    buf, AT_NO_AUTOMOUNT)] is -ENAMETOOLONG on Linux, and here it is
+    Declining rather than asserting -EINVAL costs precision, and nothing
+    else, in two kinds of call.  Every flag word Linux refuses gives up
+    its -EINVAL, [vfs_statx]'s test (fs/stat.c:348-350, Linux v6.18.46),
+    which is Linux's certain answer there and is declined here.  And
+    every word Linux accepts but the model does not interpret
+    (AT_NO_AUTOMOUNT, the AT_STATX_SYNC_TYPE bits) gives up every answer
+    under it: [newfstatat(AT_FDCWD, <a 4096-byte path>, buf,
+    AT_NO_AUTOMOUNT)] is -ENAMETOOLONG on Linux, and here it is
     declined.  Asserting -EINVAL instead would be a confident wrong
     answer on every flag word Linux ACCEPTS.  The flag arrives already
     truncated to 32 bits ([Syscall.flag32]), so the high half of the

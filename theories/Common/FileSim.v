@@ -3404,6 +3404,9 @@ Lemma tfo_read_file : forall ms model x8 p off data w U,
   (* the range passes [access_ok]: [vfs_read] tests it before the file
      is consulted *)
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  (* and [rw_verify_area]'s position test passes: [off + count] stays at
+     or below [LLONG_MAX] (else the read is [tfo_read_file_einval]) *)
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs
@@ -3418,7 +3421,7 @@ Lemma tfo_read_file : forall ms model x8 p off data w U,
     U ->
   to_fout segs ms model U.
 Proof.
-  intros ms model x8 p off data w U Hsvc Hno Hfd Hfd32 Hfs Hw Hcnt Hpos Haok Hh Hlazy Hcont.
+  intros ms model x8 p off data w U Hsvc Hno Hfd Hfd32 Hfs Hw Hcnt Hpos Haok Hrwp Hh Hlazy Hcont.
   set (bs := file_read data off (ms_gpr ms 2)).
   assert (HL : (bv_unsigned (len_word (file_read data off (ms_gpr ms 2)))
                 <= bv_unsigned (ms_gpr ms 2))%Z).
@@ -3437,6 +3440,7 @@ Proof.
     rewrite (check_syscall_63 segs ms x8 eff model Hno). unfold check_read.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite Haok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. cbv beta iota.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned.
     rewrite Hfs. cbv beta iota zeta.
     rewrite in_wmem_si.
@@ -3481,6 +3485,7 @@ Proof.
     unfold check_read in Hs.
     rewrite Hfd32, Hfd in Hs. cbv beta iota in Hs.
     rewrite Haok in Hs. cbn [negb] in Hs. cbv beta iota in Hs.
+    rewrite Hrwp in Hs. cbv beta iota in Hs.
     rewrite (rw_count_clamp_of_rw _ Hcnt), Z_to_bv_bv_unsigned in Hs.
     rewrite Hfs in Hs. cbv beta iota zeta in Hs.
     rewrite in_wmem_si in Hs.
@@ -3490,6 +3495,46 @@ Proof.
     destruct (file_read data off (ms_gpr ms 2)) as [|b0 bsr]; intro Hs.
     + exact (check_ret_only_no_unmodeled _ _ _ _ Hs).
     + discriminate.
+Qed.
+
+(** The read [rw_verify_area] refuses: [off + count] passes [LLONG_MAX]
+    (fs/read_write.c:467-469, Linux v6.18.46), so the read is -EINVAL
+    before the file is consulted, with nothing delivered and the offset
+    unchanged.  [access_ok] has passed first (:560-561). *)
+Lemma tfo_read_file_einval : forall ms model x8 p off U,
+  ms_svc_pending ms = Some x8 ->
+  bv_unsigned x8 = 63%Z ->
+  fd_lookup (m_fds model) (ms_gpr ms 0) = Some (FdFile p off) ->
+  fd32 (ms_gpr ms 0) = ms_gpr ms 0 ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = true ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  to_fout segs
+    (advance_past_svc (apply_effect ms (mkEffect (errno_ret EINVAL) [] [])))
+    model U ->
+  to_fout segs ms model U.
+Proof.
+  intros ms model x8 p off U Hsvc Hno Hfd Hfd32 Haok Hrwp Hh Hlazy Hcont.
+  assert (Hchk : forall eff,
+    check_syscall (sys_input segs ms x8) eff model
+    = check_ret_only eff (errno_ret EINVAL) model []).
+  { intro eff.
+    rewrite (check_syscall_63 segs ms x8 eff model Hno). unfold check_read.
+    rewrite Hfd32, Hfd. cbv beta iota.
+    rewrite Haok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. reflexivity. }
+  apply (tfo_sys_det segs ms model x8 (mkEffect (errno_ret EINVAL) [] []) model);
+    [exact Hsvc | | | | exact Hh | exact Hlazy | exact Hcont].
+  - apply check_syscall_ok_iff. rewrite Hchk.
+    apply check_ret_only_ok_iff. auto.
+  - intros eff2 m2 evs2 Hs.
+    apply check_syscall_ok_iff in Hs. rewrite Hchk in Hs.
+    apply check_ret_only_ok_iff in Hs. exact Hs.
+  - intro Hs.
+    apply (check_syscall_complete_unmodeled _ _ (mkEffect (Z_to_bv 64 0) [] [])) in Hs.
+    rewrite Hchk in Hs.
+    exact (check_ret_only_no_unmodeled _ _ _ _ Hs).
 Qed.
 
 (* ----- file write (64) ----- *)
@@ -3509,6 +3554,10 @@ Lemma tfo_write_file : forall ms model x8 p off data bs U,
      written.  A repair of a statement that had become false, not a
      weakening *)
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  (* and [rw_verify_area]'s position test, which the arm now makes
+     after [access_ok] for the same reason: [off + count] stays at or
+     below [LLONG_MAX] *)
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = false ->
   (bv_unsigned (ms_gpr ms 2) <= rw_bytes_max)%Z ->
   Fs.fs_ino_data (m_fs model) p = data ->
   (* the guard itself, not the inequality that implies it: a zero-length
@@ -3532,7 +3581,7 @@ Lemma tfo_write_file : forall ms model x8 p off data bs U,
     U ->
   to_fout segs ms model U.
 Proof.
-  intros ms model x8 p off data bs U Hsvc Hno Hfd Hfd32 Hrd Hok Hcnt Hfs Hgap Hnz Hh Hlazy Hcont.
+  intros ms model x8 p off data bs U Hsvc Hno Hfd Hfd32 Hrd Hok Hrwp Hcnt Hfs Hgap Hnz Hh Hlazy Hcont.
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some bs).
   { rewrite in_mem_si. exact Hrd. }
@@ -3547,6 +3596,7 @@ Proof.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
     rewrite Hok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. cbv beta iota.
     rewrite (write_source_of_rw _ _ _ Hcnt), (readable_bytes_full _ _ _ _ Hrb).
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hret : len_word bs = ms_gpr ms 2).
@@ -3582,6 +3632,48 @@ Proof.
     exact (check_ret_only_copyins_no_unmodeled _ _ _ _ _ Hs).
 Qed.
 
+(** The write [rw_verify_area] refuses: [off + count] passes [LLONG_MAX]
+    (fs/read_write.c:467-469, Linux v6.18.46), so the write is -EINVAL
+    before a byte is copied, the file and the offset unchanged.  The count
+    gate and [access_ok] have passed first (:674-675). *)
+Lemma tfo_write_file_einval : forall ms model x8 p off U,
+  ms_svc_pending ms = Some x8 ->
+  bv_unsigned x8 = 64%Z ->
+  fd_lookup (m_fds model) (ms_gpr ms 0) = Some (FdFileW p off) ->
+  fd32 (ms_gpr ms 0) = ms_gpr ms 0 ->
+  (bv_unsigned (ms_gpr ms 2) <= rw_bytes_max)%Z ->
+  access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = true ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  to_fout segs
+    (advance_past_svc (apply_effect ms (mkEffect (errno_ret EINVAL) [] [])))
+    model U ->
+  to_fout segs ms model U.
+Proof.
+  intros ms model x8 p off U Hsvc Hno Hfd Hfd32 Hcnt Hok Hrwp Hh Hlazy Hcont.
+  assert (Hchk : forall eff,
+    check_syscall (sys_input segs ms x8) eff model
+    = check_ret_only eff (errno_ret EINVAL) model []).
+  { intro eff.
+    rewrite (check_syscall_64 segs ms x8 eff model Hno). unfold check_write.
+    rewrite Hfd32, Hfd. cbv beta iota.
+    rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
+    rewrite Hok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. reflexivity. }
+  apply (tfo_sys_det segs ms model x8 (mkEffect (errno_ret EINVAL) [] []) model);
+    [exact Hsvc | | | | exact Hh | exact Hlazy | exact Hcont].
+  - apply check_syscall_ok_iff. rewrite Hchk.
+    apply check_ret_only_ok_iff. auto.
+  - intros eff2 m2 evs2 Hs.
+    apply check_syscall_ok_iff in Hs. rewrite Hchk in Hs.
+    apply check_ret_only_ok_iff in Hs. exact Hs.
+  - intro Hs.
+    apply (check_syscall_complete_unmodeled _ _ (mkEffect (Z_to_bv 64 0) [] [])) in Hs.
+    rewrite Hchk in Hs.
+    exact (check_ret_only_no_unmodeled _ _ _ _ Hs).
+Qed.
+
 (** The [count = 0] half of [tfo_write_file]: no user byte is read, so the
     effect carries no copy-in range at all (the checker rejects a singleton
     zero-length one), and [access_ok]'s range verdict is the whole of what
@@ -3599,6 +3691,7 @@ Lemma tfo_write_file_zero : forall ms model x8 p off data bs U,
   negb (modeled_file_gap data off bs) = false ->
   w_is0 (ms_gpr ms 2) = true ->
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
+  rw_pos_einvalb off (bv_unsigned (ms_gpr ms 2)) = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs
@@ -3609,7 +3702,7 @@ Lemma tfo_write_file_zero : forall ms model x8 p off data bs U,
     U ->
   to_fout segs ms model U.
 Proof.
-  intros ms model x8 p off data bs U Hsvc Hno Hfd Hfd32 Hrd Hcnt Hfs Hgap Hz Hok Hh Hlazy Hcont.
+  intros ms model x8 p off data bs U Hsvc Hno Hfd Hfd32 Hrd Hcnt Hfs Hgap Hz Hok Hrwp Hh Hlazy Hcont.
   assert (Hrb : read_bytes_map (in_mem (sys_input segs ms x8))
                   (ms_gpr ms 1) (ms_gpr ms 2) = Some bs).
   { rewrite in_mem_si. exact Hrd. }
@@ -3624,6 +3717,7 @@ Proof.
     rewrite Hfd32, Hfd. cbv beta iota.
     rewrite (rw_range_in_range _ _ Hcnt). cbv beta iota zeta.
     rewrite Hok. cbn [negb]. cbv beta iota.
+    rewrite Hrwp. cbv beta iota.
     rewrite (write_source_of_rw _ _ _ Hcnt), (readable_bytes_full _ _ _ _ Hrb).
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hret : len_word bs = ms_gpr ms 2).
@@ -3737,9 +3831,10 @@ Lemma tfo_read_rec : forall regs pc mem rom model fdv p off data buf cnt U,
   wseg_ok segs buf (word_to_nat cnt) = true ->
   (bv_unsigned cnt <= rw_bytes_max)%Z ->
   (0 < bv_unsigned cnt)%Z ->
-  (* the range passes [access_ok]: passed straight through to
-     [tfo_read_file] *)
+  (* the range passes [access_ok], and [off + cnt] stays at or below
+     [LLONG_MAX]: passed straight through to [tfo_read_file] *)
   access_okb buf (bv_unsigned cnt) = true ->
+  rw_pos_einvalb off (bv_unsigned cnt) = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs
@@ -3753,7 +3848,7 @@ Lemma tfo_read_rec : forall regs pc mem rom model fdv p off data buf cnt U,
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |} model U.
 Proof.
   intros regs pc mem rom model fdv p off data buf cnt U
-    H17 H10 H11 H12 Hfd Hfd32 Hfs Hwseg Hcnt Hpos Haok Hh Hlazy Hcont.
+    H17 H10 H11 H12 Hfd Hfd32 Hfs Hwseg Hcnt Hpos Haok Hrwp Hh Hlazy Hcont.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |}).
@@ -3774,10 +3869,51 @@ Proof.
   - rewrite Hg2. exact Hcnt.
   - rewrite Hg2. exact Hpos.
   - rewrite Hg1, Hg2. exact Haok.
+  - rewrite Hg2. exact Hrwp.
   - exact Hh.
   - exact Hlazy.
   - rewrite Hg0, Hg1, Hg2. unfold ms.
     rewrite adv_apply_delivered. exact Hcont.
+Qed.
+
+(** The read [rw_verify_area] refuses, at the raw ecall record: see
+    [tfo_read_file_einval]. *)
+Lemma tfo_read_einval_rec : forall regs pc mem rom model fdv p off buf cnt U,
+  bv_unsigned (getr regs 17) = 63%Z ->
+  reg_get regs 10 = fdv -> reg_get regs 11 = buf -> reg_get regs 12 = cnt ->
+  fd_lookup (m_fds model) fdv = Some (FdFile p off) ->
+  fd32 fdv = fdv ->
+  access_okb buf (bv_unsigned cnt) = true ->
+  rw_pos_einvalb off (bv_unsigned cnt) = true ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  to_fout segs (mkst (regupd regs 10 (errno_ret EINVAL)) (v_addi pc 4) mem rom)
+    model U ->
+  to_fout segs {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                  ms_svc_pending := Some (getr regs 17);
+                  ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |} model U.
+Proof.
+  intros regs pc mem rom model fdv p off buf cnt U
+    H17 H10 H11 H12 Hfd Hfd32 Haok Hrwp Hh Hlazy Hcont.
+  set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                ms_svc_pending := Some (getr regs 17);
+                ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |}).
+  assert (Hg0 : ms_gpr ms 0 = fdv)
+    by (unfold ms; rewrite record_gpr, arg_reg_0; exact H10).
+  assert (Hg1 : ms_gpr ms 1 = buf)
+    by (unfold ms; rewrite record_gpr, arg_reg_1; exact H11).
+  assert (Hg2 : ms_gpr ms 2 = cnt)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
+  apply (tfo_read_file_einval ms model (getr regs 17) p off U).
+  - unfold ms. cbn [ms_svc_pending]. reflexivity.
+  - exact H17.
+  - rewrite Hg0. exact Hfd.
+  - rewrite Hg0. exact Hfd32.
+  - rewrite Hg1, Hg2. exact Haok.
+  - rewrite Hg2. exact Hrwp.
+  - exact Hh.
+  - exact Hlazy.
+  - unfold ms. rewrite adv_eff_ret. exact Hcont.
 Qed.
 
 (** File write: deterministic full write of the readable buffer bytes. *)
@@ -3799,8 +3935,11 @@ Lemma tfo_write_rec : forall regs pc mem model fdv p off data bs buf cnt U,
      needs no range premise because the mapping settles the copy.  That
      argument held of a walk that could wrap at 2^64 and does not hold of
      the [FdFileW] arm, which asks [access_ok] on the named count before
-     it reads a byte; see [tfo_write_file]. *)
+     it reads a byte; see [tfo_write_file].  The position test the arm
+     makes next is the second premise: [off + cnt] stays at or below
+     [LLONG_MAX]. *)
   access_okb buf (bv_unsigned cnt) = true ->
+  rw_pos_einvalb off (bv_unsigned cnt) = false ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 cnt) (v_addi pc 4) mem (seg_rom segs))
@@ -3812,7 +3951,7 @@ Lemma tfo_write_rec : forall regs pc mem model fdv p off data bs buf cnt U,
           model U.
 Proof.
   intros regs pc mem model fdv p off data bs buf cnt U
-    H17 H10 H11 H12 Hfd Hfd32 Hrd Hcnt Hfs Hgap Hok Hh Hlazy Hcont.
+    H17 H10 H11 H12 Hfd Hfd32 Hrd Hcnt Hfs Hgap Hok Hrwp Hh Hlazy Hcont.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -3839,6 +3978,7 @@ Proof.
     + exact Hgap.
     + rewrite Hg2. exact Hz.
     + rewrite Hg1, Hg2. exact Hok.
+    + rewrite Hg2. exact Hrwp.
     + exact Hh.
     + exact Hlazy.
     + rewrite Hg0, Hg2. unfold ms.
@@ -3854,6 +3994,7 @@ Proof.
       rewrite (ms_read_bytes_rdn segs ms) by reflexivity.
       exact Hrd.
     + rewrite Hg1, Hg2. exact Hok.
+    + rewrite Hg2. exact Hrwp.
     + rewrite Hg2. exact Hcnt.
     + exact Hfs.
     + exact Hgap.
@@ -3862,6 +4003,48 @@ Proof.
     + exact Hlazy.
     + rewrite Hg0, Hg2. unfold ms.
       rewrite adv_eff_ret_copyins. exact Hcont.
+Qed.
+
+(** The write [rw_verify_area] refuses, at the raw ecall record: see
+    [tfo_write_file_einval]. *)
+Lemma tfo_write_einval_rec : forall regs pc mem rom model fdv p off buf cnt U,
+  bv_unsigned (getr regs 17) = 64%Z ->
+  reg_get regs 10 = fdv -> reg_get regs 11 = buf -> reg_get regs 12 = cnt ->
+  fd_lookup (m_fds model) fdv = Some (FdFileW p off) ->
+  fd32 fdv = fdv ->
+  (bv_unsigned cnt <= rw_bytes_max)%Z ->
+  access_okb buf (bv_unsigned cnt) = true ->
+  rw_pos_einvalb off (bv_unsigned cnt) = true ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  to_fout segs (mkst (regupd regs 10 (errno_ret EINVAL)) (v_addi pc 4) mem rom)
+    model U ->
+  to_fout segs {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                  ms_svc_pending := Some (getr regs 17);
+                  ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |} model U.
+Proof.
+  intros regs pc mem rom model fdv p off buf cnt U
+    H17 H10 H11 H12 Hfd Hfd32 Hcnt Hok Hrwp Hh Hlazy Hcont.
+  set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                ms_svc_pending := Some (getr regs 17);
+                ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := rom |}).
+  assert (Hg0 : ms_gpr ms 0 = fdv)
+    by (unfold ms; rewrite record_gpr, arg_reg_0; exact H10).
+  assert (Hg1 : ms_gpr ms 1 = buf)
+    by (unfold ms; rewrite record_gpr, arg_reg_1; exact H11).
+  assert (Hg2 : ms_gpr ms 2 = cnt)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
+  apply (tfo_write_file_einval ms model (getr regs 17) p off U).
+  - unfold ms. cbn [ms_svc_pending]. reflexivity.
+  - exact H17.
+  - rewrite Hg0. exact Hfd.
+  - rewrite Hg0. exact Hfd32.
+  - rewrite Hg2. exact Hcnt.
+  - rewrite Hg1, Hg2. exact Hok.
+  - rewrite Hg2. exact Hrwp.
+  - exact Hh.
+  - exact Hlazy.
+  - unfold ms. rewrite adv_eff_ret. exact Hcont.
 Qed.
 
 (** close: deterministic, removes the fd. *)
