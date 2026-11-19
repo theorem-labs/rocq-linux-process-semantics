@@ -189,10 +189,13 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (i : Fs.ino) : bool :
       that assumption does not say whether two channels are two ends of
       one pipe or two different pipes — which is exactly the question
       an inode-scoped lock asks.
-    - [FdDir]: "." and ".." are both [FdDir] and the constructor
-      carries nothing, so two directory references cannot be told
-      apart; two [openat(".")] descriptors are two [struct file]s on
-      one inode.
+    - [FdDir]: two descriptors on one folder are two [struct file]s on
+      one inode — two [openat(".")]s, say — and they conflict as two
+      [FdFile]s on one inode do.  [State.FdDir]'s key is the folder's
+      identity, so the sole-opener gate could count them the way
+      [ino_openers] counts an inode; that count is not written, so this
+      decline, like [FdPipe]'s, is a coverage choice with a known shape
+      rather than a missing fact.
     - [FdSocket]: sockfs gives every socket its own inode, so the
       conflicting pair is not constructible — but the answer would then
       be 0 by an argument about [sock_alloc] rather than about
@@ -311,7 +314,7 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
               then ret_only (Z_to_bv 64 0)
               else unmodeled
           | FdChannel _ => unmodeled               (* the object is not in the model *)
-          | FdDir _       => unmodeled               (* two dirrefs are indistinguishable *)
+          | FdDir _       => unmodeled               (* no opener count is kept for a folder *)
           | FdSocket _  => unmodeled               (* no caller, and a different argument *)
           | FdPipe _ _  => unmodeled               (* both ends share one inode *)
           | FdDevNull _ _ => unmodeled

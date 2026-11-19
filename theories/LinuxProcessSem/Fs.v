@@ -30,6 +30,22 @@
     rather than per directory (it retired
     bugs/tmp-assumed-private-directory.md, which said it of /tmp alone).
 
+    TMPFS OR RAMFS, AND NOTHING ELSE.  Every folder of the launch tree outside
+    /proc and /sys is on tmpfs or ramfs (devtmpfs at /dev is a shmem
+    mount), and that is a second premise about the environment, which
+    SCOPE.md states with the launch environment of the agreement checks
+    that meets it.  The image carries no file-system type, so every arm
+    answers with the operations those two install: a [->mkdir] and a
+    [->create] on every folder, a regular file holding the bytes written
+    to it, and an [.fsync] on folders and files alike.  Another file
+    system mounted on a folder changes those answers: an mqueue folder
+    has no [->mkdir] and makes a queue, not a regular file, of a created
+    name (ipc/mqueue.c:612-616, :1613-1617, Linux v6.18.46); a procfs
+    mounted with hidepid=1 can answer -EPERM for a pid folder
+    (fs/proc/base.c:745-771); and procfs, sysfs and kernfs folders have
+    no [.fsync].  [at_outside] declines only the NAMES "proc" and "sys"
+    at the root, so the premise is what keeps such a mount out.
+
     CANONICAL FORM: because the final image appears inside a trace event
     (compared with [=]), the representation must not depend on the order
     in which names were made.  We keep the name tree strictly sorted by
@@ -152,13 +168,24 @@ Inductive Entry :=
   | ELink (body : path).
 
 (** ONE REGULAR FILE'S INODE.  [ino_data] is its bytes, its page cache up
-    to [i_size].  [ino_outside] is the number of its names the image does
-    NOT show: a name on another mount of the same file system, or under a
-    bind mount, counts in Linux's [i_nlink] and is not a key of the tree.
-    The LINK COUNT is derived ([fs_ino_nlink]): the names the tree shows
-    plus [ino_outside].  So a file with a name has a count of at least
-    one, and no image can give a file fewer links than the names it
-    shows. *)
+    to [i_size].  [ino_outside] is the number of its hard links the
+    image does NOT show: a link reachable only on another mount of the
+    same file system counts in Linux's [i_nlink] and is not a key of the
+    tree.  The LINK COUNT is derived ([fs_ino_nlink]): the names the tree
+    shows plus [ino_outside].  So a file with a name has a count of at
+    least one, and no image can give a file fewer links than the names
+    it shows.
+
+    TWO KEYS OF ONE INODE ARE TWO HARD LINKS, and that is a launch
+    premise, not a fact of every tree: a bind mount of a file inside the
+    tree would show one link under a second key without raising the
+    link count: [setup_mnt] (fs/namespace.c:1156-1160, Linux v6.18.46)
+    takes the existing dentry, as [clone_mnt] (:1273-1275) hands it on,
+    and [generic_fillattr] then reports the unchanged count
+    (fs/stat.c:91, Linux v6.18.46); a stat of either
+    key would answer a count this model rejects.  SCOPE.md's launch
+    premise excludes every bind mount inside the launch tree, of a file
+    as of a folder. *)
 Record Inode := mkInode { ino_data : list byte ; ino_outside : nat }.
 
 (** ONE FOLDER'S LINK COUNT, under each of the two rules the model
@@ -420,8 +447,15 @@ Qed.
     removes while a descriptor holds it keeps its row, and the
     descriptor keeps reading and writing it ([State.FdFile] carries the
     inode number): that is Linux's open unlinked file, alive until the
-    last [fput] ([iput_final], fs/inode.c:1874-1915; [inode_generic_drop]
-    keeps an inode that has a link, include/linux/fs.h:3345-3348).
+    last [fput].  On tmpfs and ramfs, the file systems of the
+    configuration of record, [->drop_inode] is [inode_just_drop]
+    (mm/shmem.c:5330, fs/ramfs/inode.c:218, Linux v6.18.46; it is
+    [generic_delete_inode] in v6.16 and v6.17), which answers 1
+    (fs/inode.c:1858-1861), so [iput_final] evicts at every last [iput]
+    (fs/inode.c:1874-1915, the test at 1883-1884): what keeps an inode
+    is a reference, a named one's from the dentry its create pinned
+    ([dget], mm/shmem.c:3908, fs/ramfs/inode.c:114) and an open one's
+    from the [struct file]'s dentry.
     [Open.close_spec] removes the descriptor and nothing else, so the
     row of such a file stays in the table after its last descriptor
     goes; nothing names it then and no arm can reach it.  A file with no
@@ -617,8 +651,10 @@ Definition fs_ino_names (fs : Fs) (i : ino) : nat :=
   length (List.filter (fun ke => entry_names_ino i (snd ke)) (fs_tree fs)).
 
 (** A REGULAR FILE'S LINK COUNT, [i_nlink] as [generic_fillattr]
-    reports it ([stat->nlink = inode->i_nlink], fs/stat.c:88): the names
-    the image shows, plus the names it does not.  Each [unlinkat] of a
+    reports it ([stat->nlink = inode->i_nlink], fs/stat.c:91, Linux
+    v6.18.46): the names the image shows, plus the names it does not,
+    under the launch premise that no bind mount shows a file under a
+    second key ([Inode]).  Each [unlinkat] of a
     name is one [drop_nlink] ([shmem_unlink], mm/shmem.c; ramfs's
     [simple_unlink], fs/libfs.c), and it is the removal of the key that
     lowers this by one; a file [openat] creates has one name and nothing
@@ -1706,7 +1742,11 @@ Inductive LastKind := LastNorm | LastDot | LastDotDot | LastRoot.
       [MAXSYMLINKS] 40 at include/linux/namei.h:13).
     - [ROutside]: "proc" or "sys" looked up while the walk stands on the
       root, whatever spelling or link led there.  Every arm declines it:
-      procfs and sysfs are not in the image.
+      procfs and sysfs are not in the image.  It declines the two NAMES,
+      not two file systems; a procfs, sysfs or any other file system
+      mounted elsewhere in the launch tree is kept out by SCOPE.md's
+      launch premise that every folder outside /proc and /sys is on
+      tmpfs or ramfs.
     - [RParent dir nm]: the walk stopped IN FRONT of its last name [nm],
       standing on the folder [dir], without looking [nm] up.  The parent
       end of [path_parentat] (:2719-2733), which [unlinkat], [rmdir] and
@@ -1775,7 +1815,10 @@ Definition comps_trailing (r : list path) : bool :=
     [O_CREAT] (:3821-3823). *)
 Definition last_slash (r : list path) : bool := comps_done r && comps_trailing r.
 
-(** "proc" or "sys" looked up at the root: outside the model. *)
+(** "proc" or "sys" looked up at the root: outside the model.  A test of
+    the names only: SCOPE.md's launch premise, not this test, keeps a
+    procfs mounted anywhere else out of the launches the statements
+    cover ([ROutside]). *)
 Definition at_outside (k c : path) : bool :=
   path_eqb k root && (path_eqb c proc_comp || path_eqb c sys_comp).
 

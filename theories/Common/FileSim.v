@@ -188,7 +188,7 @@ Qed.
 
 Lemma fs_set_set : forall fs p d d', fs_set (fs_set fs p d) p d' = fs_set fs p d'.
 Proof.
-  intros [t is ds] p d d'. unfold fs_set, Fs.fs_with_tree. cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs].
+  intros [t inos ds] p d d'. unfold fs_set, Fs.fs_with_tree. cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs].
   now rewrite tree_set_set.
 Qed.
 
@@ -209,7 +209,7 @@ Qed.
 Lemma fs_set_ino_data_twice : forall fs i d d',
   Fs.fs_set_ino_data (Fs.fs_set_ino_data fs i d) i d' = Fs.fs_set_ino_data fs i d'.
 Proof.
-  intros [t is ds] i d d'.
+  intros [t inos ds] i d d'.
   unfold Fs.fs_set_ino_data, Fs.fs_put_inode, Fs.fs_with_inodes, Fs.fs_inode.
   cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs].
   rewrite Fs.itab_find_put_eq. cbn [Fs.ino_outside].
@@ -494,6 +494,16 @@ Proof.
   cbv iota in H. inv_ok.
 Qed.
 
+(** The -ETXTBSY beside a write open of an existing file
+    ([open_write_existing]) declines nothing the open does not. *)
+Lemma open_write_existing_answers : forall m i (s : Sys SyscallEffect) si m',
+  ~ s si m' Unmodeled -> ~ open_write_existing m i s si m' Unmodeled.
+Proof.
+  intros m i s si m' Hs H. unfold open_write_existing in H.
+  destruct (ino_write_held (m_fds m) i); [exact (Hs H)|].
+  destruct H as [H|H]; [exact (err_ret_answers _ _ _ H) | exact (Hs H)].
+Qed.
+
 (** The walk [open] takes without O_CREAT never stops in front of a
     last name: only the parent end ([Fs.we_parent_root],
     [Fs.we_parent]) and the O_CREAT end ([Fs.we_create_slash]) answer
@@ -582,7 +592,8 @@ Proof.
   intros r m si m'. unfold openat_create_spec.
   destruct r as [k e|par nm|k|pre| | |dir nm]; cbv beta iota.
   - destruct e as [i| |d|b]; cbv beta iota.
-    + split; [intros _; exact I | intros _; apply create_wronly_answers].
+    + split; [intros _; exact I | intros _].
+      apply open_write_existing_answers. apply create_wronly_answers.
     + split; [intros _; exact I | intros _; apply err_ret_answers].
     + destruct d; cbv beta iota; [unfold open_devnull | unfold open_urandom];
         [destruct (dev_at_home k DevNull) | destruct (dev_at_home k DevUrandom)];
@@ -2186,37 +2197,30 @@ Definition openat_arm_read_missing : Prop :=
     Open.check_openat_resolved p flags eff m
     = check_ret_only eff (errno_ret ENOENT) m [].
 
-(** THE KEY AN O_CREAT|O_TRUNC OPEN WRITES.  The write-create arm has
-    always had TWO ways in and one exit: the name was absent and is
-    made, or a regular file was there and is truncated.  The old arm
-    could not tell them apart -- it tested [fs_under] and then set the
-    raw pathname either way -- and [Open.check_create_wronly] is still
-    the single acceptor both reach.
+(** THE KEY AN O_CREAT|O_TRUNC OPEN WRITES WHEN IT CREATES.  The
+    write-create arm has two ways in: the name was absent and is made,
+    or a regular file was there and is truncated.  Only the first is
+    this contract's.  A name that was absent is a fresh file at the key
+    the walk reached ([Open.create_file_fs] at [Fs.child_key par nm],
+    inode [Open.create_file_ino]), and the open's branch set is the
+    fresh-descriptor acceptor's alone.  A regular file that was there
+    admits a third branch beside the descriptor and the injected
+    errnos: the -ETXTBSY of a file something executes
+    ([Open.open_write_existing]), so its branch set is not this
+    acceptor's; a consumer that opens an existing destination reads
+    that open through [Common.FileSimWalk.open_arm], as the copy
+    examples do.
 
-    Resolution DOES tell them apart, so the two ways in are named here
-    and the one exit stays one: whichever way it came, the descriptor
-    names an inode and the image is [fs'].  A name that was absent is a
-    fresh file at the key the walk reached ([Open.create_file_fs] at
-    [Fs.child_key par nm], inode [Open.create_file_ino]); a regular
-    file that was there is emptied in place ([Fs.fs_set_ino_data]),
-    every other name of it seeing the truncation.  A consumer that only
-    ever creates supplies the left disjunct; a [cp] onto an existing
-    destination supplies the right; neither needs its own contract.
-
-    THE TRAILING-SLASH FLAG IS [false] IN BOTH: a trailing slash with
-    O_CREAT is -EISDIR BEFORE any lookup, so the create walk stops in
-    front of such a name ([Fs.RParent]), a different row. *)
+    THE TRAILING-SLASH FLAG IS [false]: a trailing slash with O_CREAT is
+    -EISDIR BEFORE any lookup, so the create walk stops in front of
+    such a name ([Fs.RParent]), a different row. *)
 Definition resolve_create_target (m : Model) (flags : word) (p : Fs.path)
     (fs' : Fs.Fs) (i : Fs.ino) : Prop :=
-  (exists par nm,
-      Fs.resolve (open_walk_mode flags) (m_fs m) (m_cwd m) p
-        = (Fs.RMissing par nm, Fs.LastNorm, false)
-      /\ fs' = create_file_fs (m_fs m) (Fs.child_key par nm)
-      /\ i = create_file_ino (m_fs m))
-  \/ (exists k,
-      Fs.resolve (open_walk_mode flags) (m_fs m) (m_cwd m) p
-        = (Fs.RFound k (Fs.EFile i), Fs.LastNorm, false)
-      /\ fs' = Fs.fs_set_ino_data (m_fs m) i []).
+  exists par nm,
+    Fs.resolve (open_walk_mode flags) (m_fs m) (m_cwd m) p
+      = (Fs.RMissing par nm, Fs.LastNorm, false)
+    /\ fs' = create_file_fs (m_fs m) (Fs.child_key par nm)
+    /\ i = create_file_ino (m_fs m).
 
 Definition openat_arm_create : Prop :=
   forall (p : Fs.path) (flags : word) (eff : SyscallEffect) (m : Model)
@@ -2245,19 +2249,17 @@ Definition openat_arm_create : Prop :=
     case share this contract instead of carrying one of its own. *)
 (** MINTING A DESCRIPTOR CANNOT CHANGE A CREATE TARGET, because it
     cannot change how a pathname resolves -- [resolve_model_with_fds]
-    says the second part and this carries it through the disjunction.
-    The image a create leaves is the original's, which the descriptor
-    table does not touch.  Named because a proof that has already opened
-    the source and is opening the destination holds the target at the
-    ORIGINAL model and needs it at the one with the first descriptor in
-    it. *)
+    says the second part and this carries it through.  The image a
+    create leaves is the original's, which the descriptor table does not
+    touch.  Named because a proof that has already opened the source and
+    is opening the destination holds the target at the ORIGINAL model
+    and needs it at the one with the first descriptor in it. *)
 Lemma resolve_create_target_with_fds : forall m g flags p fs' i,
   resolve_create_target m flags p fs' i ->
   resolve_create_target (with_fds g m) flags p fs' i.
 Proof.
-  intros m g flags p fs' i [ (par & nm & Hr & Hfs & Hi) | (k & Hr & Hfs) ].
-  - left. exists par, nm. rewrite resolve_model_with_fds. auto.
-  - right. exists k. rewrite resolve_model_with_fds. auto.
+  intros m g flags p fs' i (par & nm & Hr & Hfs & Hi).
+  exists par, nm. rewrite resolve_model_with_fds. auto.
 Qed.
 
 Definition openat_arm_create_isdir : Prop :=
@@ -2364,16 +2366,13 @@ Proof.
   unfold Open.check_openat_read. reflexivity.
 Qed.
 
-(** O_WRONLY|O_CREAT|O_TRUNC: both ways into the write-create arm reach
-    the one acceptor.  The left disjunct is a name that was absent and
-    is made as a fresh inode at [Fs.child_key par nm]; the right is a
-    regular file that was there and is emptied in place. *)
+(** O_WRONLY|O_CREAT|O_TRUNC onto a name that was absent: the
+    fresh-descriptor acceptor, a new inode at [Fs.child_key par nm]. *)
 Lemma openat_arm_create_holds : openat_arm_create.
 Proof.
   intros p flags eff m fs' i Hfl Htgt.
   unfold Open.check_openat_resolved.
-  destruct Htgt as [(par & nm & Hres & Hfs & Hi) | (k & Hres & Hfs)];
-    subst fs'; [subst i|];
+  destruct Htgt as (par & nm & Hres & Hfs & Hi); subst fs' i;
     rewrite (proc_self_fd_none_of_found_or_missing _ _ _ _ _ _ _ Hres I);
     rewrite Hres; cbv beta iota zeta;
     rewrite Hfl, wr_create_flags_not_rd; cbv beta iota;
@@ -2482,27 +2481,30 @@ Qed.
     reached: the flag word is judged first ([build_open_flags] before
     [getname]), then the pathname is fetched and its copy-in range
     recorded, then the empty pathname is -ENOENT ([getname_flags]
-    returns it before any walk), then the dirfd gate.  Around all of it
-    stand [getname_flags]' own refusals ([check_getname_refusals]). *)
+    returns it before any walk), then a table with no free descriptor
+    would be answered ([Open.openat_core_spec]; the table here has one),
+    then the dirfd gate.  Around all of it stand [getname_flags]' own
+    refusals ([check_getname_refusals]). *)
 Lemma openat_reduces_to_resolved : forall segs ms x8 model p eff,
   bv_unsigned x8 = 56%Z ->
   modeled_open_flags (ms_gpr ms 2) = true ->
   ms_gpr ms 0 = AT_FDCWD ->
   read_cstr (ms_read_byte ms) (ms_gpr ms 1) = CstrOk p ->
   path_eqb p [] = false ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   check_syscall (sys_input segs ms x8) eff model
-  = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+  = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
       (Prelude.check_copyins_after (open_copyins ms) eff
          (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
             (ms_gpr ms 1) (clear_copyins eff) model
             (Open.check_openat_resolved p (ms_gpr ms 2) (clear_copyins eff) model))).
 Proof.
-  intros segs ms x8 model p eff Hno Hfl Hdirfd Hpath Hpe.
+  intros segs ms x8 model p eff Hno Hfl Hdirfd Hpath Hpe Hfree.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite Hfl. cbn [negb]. cbv beta iota.
-  unfold Open.check_openat_body.
+  unfold openat_name_fetched, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
-  rewrite Hpe. cbv beta iota.
+  rewrite Hpe, (lowest_fd_none_free _ Hfree). cbn [negb andb]. cbv beta iota.
   rewrite Hdirfd; norm_fd32; rewrite bv_eqb_refl. cbn [negb]. cbv beta iota.
   reflexivity.
 Qed.
@@ -2523,16 +2525,17 @@ Lemma openat_rd_check_ns : forall segs ms x8 model p k i,
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RFound k (Fs.EFile i), Fs.LastNorm, false) ->
   open_walk_plain (ms_gpr ms 2) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (check_open_result_copyins (open_copyins ms) eff model
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFile i (Z_to_bv 64 0))) model)).
 Proof.
-  intros segs ms x8 model p k i Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain eff.
+  intros segs ms x8 model p k i Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain Hfree eff.
   rewrite (openat_reduces_to_resolved segs ms x8 model p eff Hno
-             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe).
+             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe Hfree).
   rewrite (Harm p k i (ms_gpr ms 2) (clear_copyins eff) model Hfl Hres).
   rewrite (walk_refusals_open_result_si segs ms x8 model p _ _ Hpath Hpe Hplain).
   unfold Prelude.check_copyins_after, check_open_result_copyins.
@@ -2559,15 +2562,16 @@ Lemma openat_rd_dir_check_ns : forall segs ms x8 model p k lk,
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RFound k Fs.EDir, lk, false) ->
   open_walk_plain (ms_gpr ms 2) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (check_open_result_copyins (open_copyins ms) eff model
            (fun fd => with_fds (fd_insert (m_fds model) fd (FdDir k)) model)).
 Proof.
-  intros segs ms x8 model p k lk Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain eff.
+  intros segs ms x8 model p k lk Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain Hfree eff.
   rewrite (openat_reduces_to_resolved segs ms x8 model p eff Hno
-             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe).
+             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe Hfree).
   rewrite (Harm p k lk (ms_gpr ms 2) (clear_copyins eff) model Hfl Hres).
   rewrite (walk_refusals_open_result_si segs ms x8 model p _ _ Hpath Hpe Hplain).
   unfold Prelude.check_copyins_after, check_open_result_copyins.
@@ -2579,7 +2583,8 @@ Proof.
   - exfalso. now apply check_open_result_never_unmodeled in Hresult.
 Qed.
 
-(** O_RDONLY of an absent last component: the deterministic -ENOENT. *)
+(** O_RDONLY of an absent last component: the deterministic -ENOENT, on
+    a table with a free descriptor (with none, -EMFILE comes first). *)
 Lemma openat_rd_enoent_check_ns : forall segs ms x8 model p par nm,
   openat_arm_read_missing ->
   bv_unsigned x8 = 56%Z ->
@@ -2589,17 +2594,18 @@ Lemma openat_rd_enoent_check_ns : forall segs ms x8 model p par nm,
   open_shape (ms_gpr ms 2) = 0%Z ->
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RMissing par nm, Fs.LastNorm, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff
            (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
               (ms_gpr ms 1) (clear_copyins eff) model
               (check_ret_only (clear_copyins eff) (errno_ret ENOENT) model []))).
 Proof.
-  intros segs ms x8 model p par nm Harm Hno Hdirfd Hpath Hpe Hfl Hres eff.
+  intros segs ms x8 model p par nm Harm Hno Hdirfd Hpath Hpe Hfl Hres Hfree eff.
   rewrite (openat_reduces_to_resolved segs ms x8 model p eff Hno
-             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe).
+             (modeled_open_flags_rd _ Hfl) Hdirfd Hpath Hpe Hfree).
   rewrite (Harm p par nm (ms_gpr ms 2) (clear_copyins eff) model Hfl Hres).
   reflexivity.
 Qed.
@@ -2615,17 +2621,18 @@ Lemma openat_wr_check_ns : forall segs ms x8 model p fs' i,
   open_shape (ms_gpr ms 2) = wr_create_flags ->
   resolve_create_target model (ms_gpr ms 2) p fs' i ->
   open_walk_plain (ms_gpr ms 2) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (check_open_result_copyins (open_copyins ms) eff model
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFileW i (Z_to_bv 64 0)))
                         (with_fs fs' model))).
 Proof.
-  intros segs ms x8 model p fs' i Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain eff.
+  intros segs ms x8 model p fs' i Harm Hno Hdirfd Hpath Hpe Hfl Hres Hplain Hfree eff.
   rewrite (openat_reduces_to_resolved segs ms x8 model p eff Hno
-             (modeled_open_flags_wr _ Hfl) Hdirfd Hpath Hpe).
+             (modeled_open_flags_wr _ Hfl) Hdirfd Hpath Hpe Hfree).
   rewrite (Harm p (ms_gpr ms 2) (clear_copyins eff) model fs' i Hfl Hres).
   rewrite (walk_refusals_open_result_si segs ms x8 model p _ _ Hpath Hpe Hplain).
   unfold Prelude.check_copyins_after, check_open_result_copyins.
@@ -2642,7 +2649,8 @@ Qed.
 
 (** The write-create open of a pathname that resolves to a DIRECTORY:
     the checker reduces to the deterministic -EISDIR return and the
-    model is untouched.  [Open.openat_create_spec] carries the
+    model is untouched, on a table with a free descriptor.
+    [Open.openat_create_spec] carries the
     derivation ([do_open]'s [d_is_dir], fs/namei.c:3951-3952); this is
     the proof-side handle on it, the twin of [openat_wr_check_ns] for
     the resolution the other cannot take. *)
@@ -2655,17 +2663,18 @@ Lemma openat_wr_isdir_check_ns : forall segs ms x8 model p k lk,
   open_shape (ms_gpr ms 2) = wr_create_flags ->
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RFound k Fs.EDir, lk, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff
            (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
               (ms_gpr ms 1) (clear_copyins eff) model
               (check_ret_only (clear_copyins eff) (errno_ret EISDIR) model []))).
 Proof.
-  intros segs ms x8 model p k lk Harm Hno Hdirfd Hpath Hpe Hfl Hres eff.
+  intros segs ms x8 model p k lk Harm Hno Hdirfd Hpath Hpe Hfl Hres Hfree eff.
   rewrite (openat_reduces_to_resolved segs ms x8 model p eff Hno
-             (modeled_open_flags_wr _ Hfl) Hdirfd Hpath Hpe).
+             (modeled_open_flags_wr _ Hfl) Hdirfd Hpath Hpe Hfree).
   rewrite (Harm p k lk (ms_gpr ms 2) (clear_copyins eff) model Hfl Hres).
   reflexivity.
 Qed.
@@ -2760,7 +2769,7 @@ Lemma openat_empty_enoent_check : forall segs ms x8 model p,
   path_eqb p [] = true ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff
            (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
               (ms_gpr ms 1) (clear_copyins eff) model
@@ -2769,9 +2778,9 @@ Proof.
   intros segs ms x8 model p Hno Hfl Hpath Hpe eff.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite Hfl. cbn [negb]. cbv beta iota.
-  unfold Open.check_openat_body.
+  unfold openat_name_fetched, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota zeta.
-  rewrite Hpe. cbv beta iota.
+  rewrite Hpe. cbn [negb andb]. cbv beta iota.
   reflexivity.
 Qed.
 
@@ -2860,23 +2869,26 @@ Lemma openat_rd_check : forall segs ms x8 model p i,
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RFound p (Fs.EFile i), Fs.LastNorm, false) ->
   open_walk_plain (ms_gpr ms 2) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (check_open_result_copyins (open_copyins ms) eff model
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFile i (Z_to_bv 64 0))) model)).
 Proof.
-  intros segs ms x8 model p i Hno Hdirfd Hpath Hpe Hfl Hdot Hfs Hres Hplain eff.
+  intros segs ms x8 model p i Hno Hdirfd Hpath Hpe Hfl Hdot Hfs Hres Hplain Hfree eff.
   exact (openat_rd_check_ns segs ms x8 model p p i
-           openat_arm_read_found_holds Hno Hdirfd Hpath Hpe Hfl Hres Hplain eff).
+           openat_arm_read_found_holds Hno Hdirfd Hpath Hpe Hfl Hres Hplain Hfree eff).
 Qed.
 
 (** The write-create open of a plain name NOTHING LIVES UNDER: the
-    branch set of a create.  The [fs_under] premise is the image-side
-    half of what [openat_plain_name] says about the path: a plain name
-    some key lives under is an implied directory, and the create arm
-    answers it -EISDIR instead ([openat_wr_isdir_check] below). *)
+    branch set of a create.  The [fs_under] premise is the R21 image-side
+    half of what [openat_plain_name] says about the path: under R21 a
+    plain name some key lived under was an implied directory, and the
+    create arm answered it -EISDIR instead ([openat_wr_isdir_check]
+    below).  Under [Fs.wf_fs] every key is absolute, so no key lives
+    under a plain name and the premise always holds. *)
 Lemma openat_wr_check : forall segs ms x8 model p fs' i,
   bv_unsigned x8 = 56%Z ->
   ms_gpr ms 0 = AT_FDCWD ->
@@ -2887,17 +2899,18 @@ Lemma openat_wr_check : forall segs ms x8 model p fs' i,
   fs_under (m_fs model) p = false ->
   resolve_create_target model (ms_gpr ms 2) p fs' i ->
   open_walk_plain (ms_gpr ms 2) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (check_open_result_copyins (open_copyins ms) eff model
            (fun fd => with_fds (fd_insert (m_fds model) fd
                                   (FdFileW i (Z_to_bv 64 0)))
                         (with_fs fs' model))).
 Proof.
-  intros segs ms x8 model p fs' i Hno Hdirfd Hpath Hpe Hfl Hdot Hun Hres Hplain eff.
+  intros segs ms x8 model p fs' i Hno Hdirfd Hpath Hpe Hfl Hdot Hun Hres Hplain Hfree eff.
   exact (openat_wr_check_ns segs ms x8 model p fs' i
-           openat_arm_create_holds Hno Hdirfd Hpath Hpe Hfl Hres Hplain eff).
+           openat_arm_create_holds Hno Hdirfd Hpath Hpe Hfl Hres Hplain Hfree eff).
 Qed.
 
 (** The write-create open of a plain name SOME KEY LIVES UNDER: the
@@ -2917,17 +2930,18 @@ Lemma openat_wr_isdir_check : forall segs ms x8 model p,
   fs_under (m_fs model) p = true ->
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RFound p Fs.EDir, Fs.LastNorm, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff
            (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
               (ms_gpr ms 1) (clear_copyins eff) model
               (check_ret_only (clear_copyins eff) (errno_ret EISDIR) model []))).
 Proof.
-  intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun Hres eff.
+  intros segs ms x8 model p Hno Hdirfd Hpath Hpe Hfl Hdot Hun Hres Hfree eff.
   exact (openat_wr_isdir_check_ns segs ms x8 model p p Fs.LastNorm
-           openat_arm_create_isdir_holds Hno Hdirfd Hpath Hpe Hfl Hres eff).
+           openat_arm_create_isdir_holds Hno Hdirfd Hpath Hpe Hfl Hres Hfree eff).
 Qed.
 
 (** An over-PATH_MAX path reduces the checker to the deterministic
@@ -2946,7 +2960,7 @@ Lemma openat_toolong_check : forall segs ms x8 model,
   read_cstr (ms_read_byte ms) (ms_gpr ms 1) = CstrTooLong ->
   forall eff,
     check_syscall (sys_input segs ms x8) eff model
-    = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff
            (check_walk_refusals (open_walk_mode (ms_gpr ms 2)) (sys_input segs ms x8)
               (ms_gpr ms 1) (clear_copyins eff) model
@@ -2955,7 +2969,7 @@ Proof.
   intros segs ms x8 model Hno Hfl Hpath eff.
   rewrite (check_syscall_56 segs ms x8 eff model Hno). unfold check_openat.
   rewrite Hfl. cbn [negb]. cbv beta iota.
-  unfold Open.check_openat_body.
+  unfold openat_name_fetched, Open.check_openat_body.
   rewrite in_mem_si, Hpath. cbv beta iota.
   reflexivity.
 Qed.
@@ -2966,8 +2980,8 @@ Qed.
     [openat_errnos]) with a ledger of its own and the model unchanged.
     That one's machine successor is the bare return's with the pathname
     ledger, since [apply_effect] reads no copy-in. *)
-Lemma check_open_result_getname_ok_inv : forall i pathp reads eff m mk m' evs,
-  check_getname_refusals i pathp eff m (check_open_result_copyins reads eff m mk)
+Lemma check_open_result_getname_ok_inv : forall i lead pathp reads eff m mk m' evs,
+  check_getname_refusals i lead pathp eff m (check_open_result_copyins reads eff m mk)
     = CheckOk m' evs ->
   (exists e, In e openat_errnos /\ eff_ret eff = errno_ret e /\ m' = m /\ evs = []
      /\ forall ms, apply_effect ms eff
@@ -2975,7 +2989,7 @@ Lemma check_open_result_getname_ok_inv : forall i pathp reads eff m mk m' evs,
   \/ (exists fd, fd_lookup (m_fds m) fd = None /\ fd = alloc_fd (m_fds m)
      /\ eff = with_copyins reads (mkEffect fd [] []) /\ m' = mk fd /\ evs = []).
 Proof.
-  intros i pathp reads eff m mk m' evs H.
+  intros i lead pathp reads eff m mk m' evs H.
   apply check_getname_refusals_ok_inv in H.
   destruct H as [H | (-> & -> & e & ci & He & ->)].
   - apply check_open_result_copyins_ok_iff in H.
@@ -3003,7 +3017,7 @@ Lemma tfo_open_core : forall ms model (mk : word -> Model) x8 reads
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall eff, check_syscall (sys_input segs ms x8) eff model
-               = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+               = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
                    (check_open_result_copyins reads eff model mk)) ->
   (forall fd, m_halted (mk fd) = None /\ m_vm_lazy (mk fd) = []) ->
   (forall e, In e openat_errnos ->
@@ -3100,7 +3114,7 @@ Qed.
 (** A concrete successful open resolution (used by the escape path). *)
 Lemma open_ok_fd : forall ms model (mk : word -> Model) x8 reads fd,
   (forall eff, check_syscall (sys_input segs ms x8) eff model
-               = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+               = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
                    (check_open_result_copyins reads eff model mk)) ->
   fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
   syscall_spec (sys_input segs ms x8) model
@@ -3125,7 +3139,7 @@ Lemma tfo_open_ret_or_refusals : forall md ms model x8 es E U,
   incl getname_errnos es ->
   (forall eff,
      check_syscall (sys_input segs ms x8) eff model
-     = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+     = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
          (Prelude.check_copyins_after (open_copyins ms) eff
             (check_walk_refusals md (sys_input segs ms x8) (ms_gpr ms 1)
                (clear_copyins eff) model
@@ -3217,7 +3231,7 @@ Lemma tfo_open_ret_or_walk : forall md ms model x8 p E U,
   path_eqb p [] = false ->
   (forall eff,
      check_syscall (sys_input segs ms x8) eff model
-     = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+     = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
          (Prelude.check_copyins_after (open_copyins ms) eff
             (check_walk_refusals md (sys_input segs ms x8) (ms_gpr ms 1)
                (clear_copyins eff) model
@@ -3267,6 +3281,7 @@ Lemma tfo_openat_enoent_ns : forall ms model x8 p par nm U,
   open_shape (ms_gpr ms 2) = 0%Z ->
   Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
     = (Fs.RMissing par nm, Fs.LastNorm, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (advance_past_svc
@@ -3282,11 +3297,11 @@ Lemma tfo_openat_enoent_ns : forall ms model x8 p par nm U,
              model U) ->
   to_fout segs ms model U.
 Proof.
-  intros ms model x8 p par nm U Harm Hsvc Hno Hdirfd Hpath Hpe Hfl Hres
+  intros ms model x8 p par nm U Harm Hsvc Hno Hdirfd Hpath Hpe Hfl Hres Hfree
     Hh Hlazy Hcont Hwalk.
   exact (tfo_open_ret_or_walk _ ms model x8 p ENOENT U Hsvc Hpath Hpe
            (openat_rd_enoent_check_ns segs ms x8 model p par nm Harm Hno
-              Hdirfd Hpath Hpe Hfl Hres)
+              Hdirfd Hpath Hpe Hfl Hres Hfree)
            Hh Hlazy Hcont Hwalk).
 Qed.
 
@@ -3341,6 +3356,7 @@ Lemma tfo_openat_enoent : forall ms model x8 p par nm U,
   (path_eqb p [] = false ->
      Fs.resolve (open_walk_mode (ms_gpr ms 2)) (m_fs model) (m_cwd model) p
        = (Fs.RMissing par nm, Fs.LastNorm, false)) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (advance_past_svc
@@ -3364,14 +3380,14 @@ Lemma tfo_openat_enoent : forall ms model x8 p par nm U,
              model U) ->
   to_fout segs ms model U.
 Proof.
-  intros ms model x8 p par nm U Hsvc Hno Hdirfd Hpath Hfl Hdot Hfs Hres
+  intros ms model x8 p par nm U Hsvc Hno Hdirfd Hpath Hfl Hdot Hfs Hres Hfree
     Hh Hlazy Hcont Hwalk Hnomem.
   destruct (path_eqb p []) eqn:Hpe.
   - exact (tfo_openat_empty_enoent ms model x8 p U Hsvc Hno Hpath Hpe
              (modeled_open_flags_rd _ Hfl) Hh Hlazy Hcont (Hnomem eq_refl)).
   - exact (tfo_openat_enoent_ns ms model x8 p par nm U
              openat_arm_read_missing_holds Hsvc Hno Hdirfd Hpath Hpe Hfl
-             (Hres eq_refl) Hh Hlazy Hcont (Hwalk eq_refl)).
+             (Hres eq_refl) Hfree Hh Hlazy Hcont (Hwalk eq_refl)).
 Qed.
 
 (* ----- file read (63) ----- *)
@@ -3878,8 +3894,8 @@ Proof.
   - rewrite Hg0. unfold ms. rewrite adv_eff_ret. exact Hcont.
 Qed.
 
-(** O_RDONLY openat of an absent file: -ENOENT, or one of the walk's
-    own refusals. *)
+(** O_RDONLY openat of an absent file, on a table with a free
+    descriptor: -ENOENT, or one of the walk's own refusals. *)
 Lemma tfo_open_enoent_ns_rec : forall regs pc mem model p par nm U,
   openat_arm_read_missing ->
   bv_unsigned (getr regs 17) = 56%Z ->
@@ -3888,6 +3904,7 @@ Lemma tfo_open_enoent_ns_rec : forall regs pc mem model p par nm U,
   path_eqb p [] = false ->
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RMissing par nm, Fs.LastNorm, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 (errno_ret ENOENT)) (v_addi pc 4)
@@ -3902,7 +3919,7 @@ Lemma tfo_open_enoent_ns_rec : forall regs pc mem model p par nm U,
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
           model U.
 Proof.
-  intros regs pc mem model p par nm U Harm H17 H10 H12 Hpath Hpe Hres
+  intros regs pc mem model p par nm U Harm H17 H10 H12 Hpath Hpe Hres Hfree
     Hh Hlazy Hcont Hwalk.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
@@ -3919,6 +3936,7 @@ Proof.
   - exact Hpe.
   - rewrite Hg2. vm_compute. reflexivity.
   - rewrite Hg2, open_walk_mode_rd. exact Hres.
+  - exact Hfree.
   - exact Hh.
   - exact Hlazy.
   - unfold ms. rewrite adv_eff_ret_copyins. exact Hcont.
@@ -3981,6 +3999,7 @@ Lemma tfo_open_rd_ns_rec : forall regs pc mem model p k i
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RFound k (Fs.EFile i), Fs.LastNorm, false) ->
   open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -4001,7 +4020,7 @@ Lemma tfo_open_rd_ns_rec : forall regs pc mem model p k i
           model U.
 Proof.
   intros regs pc mem model p k i Te Ts U
-    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hh Hlazy Herr Hok HU.
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -4024,6 +4043,7 @@ Proof.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2, open_walk_mode_rd. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -4048,6 +4068,7 @@ Lemma tfo_open_rd_dir_ns_rec : forall regs pc mem model p k lk
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RFound k Fs.EDir, lk, false) ->
   open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -4067,7 +4088,7 @@ Lemma tfo_open_rd_dir_ns_rec : forall regs pc mem model p k lk
           model U.
 Proof.
   intros regs pc mem model p k lk Te Ts U
-    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hh Hlazy Herr Hok HU.
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -4089,6 +4110,7 @@ Proof.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2, open_walk_mode_rd. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -4098,9 +4120,9 @@ Proof.
 Qed.
 
 (** The create node.  The file is made where the walk settled -- a new
-    inode at the missing name, or the regular file that was there,
-    emptied in place -- and the descriptor carries that inode.  See
-    [resolve_create_target]. *)
+    inode at the missing name -- and the descriptor carries that inode.
+    See [resolve_create_target], which says why an existing destination
+    is not this node's. *)
 Lemma tfo_open_wr_ns_rec : forall regs pc mem model p fs' i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   openat_arm_create ->
@@ -4110,6 +4132,7 @@ Lemma tfo_open_wr_ns_rec : forall regs pc mem model p fs' i
   path_eqb p [] = false ->
   resolve_create_target model (Z_to_bv 64 577) p fs' i ->
   open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -4131,7 +4154,7 @@ Lemma tfo_open_wr_ns_rec : forall regs pc mem model p fs' i
           model U.
 Proof.
   intros regs pc mem model p fs' i Te Ts U
-    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hh Hlazy Herr Hok HU.
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -4155,6 +4178,7 @@ Proof.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split.
     + rewrite with_fds_halted, with_fs_halted. exact Hh.
     + exact Hlazy.
@@ -4166,9 +4190,9 @@ Proof.
 Qed.
 
 (** The -EISDIR node, beside the walk's own refusals (the second
-    continuation).  The premise is now the ENTRY KIND, not the
-    [fs_under] inference the old arm had to make, so an EMPTY
-    directory answers here too. *)
+    continuation), on a table with a free descriptor.  The premise is
+    now the ENTRY KIND, not the [fs_under] inference the old arm had to
+    make, so an EMPTY directory answers here too. *)
 Lemma tfo_open_wr_isdir_ns_rec : forall regs pc mem model p k lk U,
   openat_arm_create_isdir ->
   bv_unsigned (getr regs 17) = 56%Z ->
@@ -4177,6 +4201,7 @@ Lemma tfo_open_wr_isdir_ns_rec : forall regs pc mem model p k lk U,
   path_eqb p [] = false ->
   Fs.resolve (Fs.WalkCreate true) (m_fs model) (m_cwd model) p
     = (Fs.RFound k Fs.EDir, lk, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 (errno_ret EISDIR)) (v_addi pc 4)
@@ -4191,7 +4216,7 @@ Lemma tfo_open_wr_isdir_ns_rec : forall regs pc mem model p k lk U,
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
           model U.
 Proof.
-  intros regs pc mem model p k lk U Harm H17 H10 H12 Hpath Hpe Hres Hh Hlazy
+  intros regs pc mem model p k lk U Harm H17 H10 H12 Hpath Hpe Hres Hfree Hh Hlazy
     Hcont Hwalk.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
@@ -4214,6 +4239,7 @@ Proof.
     + exact Hpe.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2, open_walk_mode_wr. exact Hres.
+    + exact Hfree.
   - exact Hh.
   - exact Hlazy.
   - unfold ms. rewrite adv_eff_ret_copyins. exact Hcont.
@@ -4230,6 +4256,7 @@ Lemma tfo_open_enoent_rec : forall regs pc mem model p par nm U,
   (path_eqb p [] = false ->
      Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
        = (Fs.RMissing par nm, Fs.LastNorm, false)) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 (errno_ret ENOENT)) (v_addi pc 4)
@@ -4250,7 +4277,7 @@ Lemma tfo_open_enoent_rec : forall regs pc mem model p par nm U,
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
           model U.
 Proof.
-  intros regs pc mem model p par nm U H17 H10 H12 Hpath Hdot Hfs Hres
+  intros regs pc mem model p par nm U H17 H10 H12 Hpath Hdot Hfs Hres Hfree
     Hh Hlazy Hcont Hwalk Hnomem.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
@@ -4267,6 +4294,7 @@ Proof.
   - exact Hdot.
   - exact Hfs.
   - rewrite Hg2, open_walk_mode_rd. exact Hres.
+  - exact Hfree.
   - exact Hh.
   - exact Hlazy.
   - unfold ms. rewrite adv_eff_ret_copyins. exact Hcont.
@@ -4289,6 +4317,7 @@ Lemma tfo_open_rd_rec : forall regs pc mem model p i
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RFound p (Fs.EFile i), Fs.LastNorm, false) ->
   open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -4309,7 +4338,7 @@ Lemma tfo_open_rd_rec : forall regs pc mem model p i
           model U.
 Proof.
   intros regs pc mem model p i Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hfs Hres Hplain Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hfs Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -4333,6 +4362,7 @@ Proof.
     + exact Hfs.
     + rewrite Hg2, open_walk_mode_rd. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -4363,6 +4393,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p fs' i
   fs_under (m_fs model) p = false ->
   resolve_create_target model (Z_to_bv 64 577) p fs' i ->
   open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -4383,7 +4414,7 @@ Lemma tfo_open_wr_rec : forall regs pc mem model p fs' i
           model U.
 Proof.
   intros regs pc mem model p fs' i Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hun Hres Hplain Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hun Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -4408,6 +4439,7 @@ Proof.
     + exact Hun.
     + rewrite Hg2. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split.
     + rewrite with_fds_halted, with_fs_halted. exact Hh.
     + exact Hlazy.
@@ -4436,6 +4468,7 @@ Lemma tfo_open_wr_isdir_rec : forall regs pc mem model p U,
   fs_under (m_fs model) p = true ->
   Fs.resolve (Fs.WalkCreate true) (m_fs model) (m_cwd model) p
     = (Fs.RFound p Fs.EDir, Fs.LastNorm, false) ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   to_fout segs (mkst (regupd regs 10 (errno_ret EISDIR)) (v_addi pc 4)
@@ -4450,7 +4483,7 @@ Lemma tfo_open_wr_isdir_rec : forall regs pc mem model p U,
                   ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
           model U.
 Proof.
-  intros regs pc mem model p U H17 H10 H12 Hpath Hpe Hdot Hun Hres
+  intros regs pc mem model p U H17 H10 H12 Hpath Hpe Hdot Hun Hres Hfree
     Hh Hlazy Hcont Hwalk.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
@@ -4474,6 +4507,7 @@ Proof.
     + exact Hdot.
     + exact Hun.
     + rewrite Hg2, open_walk_mode_wr. exact Hres.
+    + exact Hfree.
   - exact Hh.
   - exact Hlazy.
   - unfold ms. rewrite adv_eff_ret_copyins. exact Hcont.

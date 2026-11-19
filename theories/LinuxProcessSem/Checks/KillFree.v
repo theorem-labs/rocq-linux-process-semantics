@@ -170,10 +170,14 @@ Ltac kf_step H :=
       apply check_walk_refusals_ok_cases in H;
       let H1 := fresh in let H2 := fresh in
       destruct H as [H | (_ & H1 & H2 & _)]; [|subst]
-  | check_getname_refusals _ _ _ _ _ = CheckOk _ _ =>
+  | check_getname_refusals _ _ _ _ _ _ = CheckOk _ _ =>
       apply check_getname_refusals_ok_cases in H;
       let H1 := fresh in let H2 := fresh in
       destruct H as [H | (_ & H1 & H2 & _)]; [|subst]
+  | check_open_write_existing _ _ _ _ = CheckOk _ _ =>
+      apply check_open_write_existing_ok_cases in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as [H | (_ & H1 & H2)]; [|subst]
   | check_random_write _ _ _ _ _ = CheckOk _ _ =>
       apply check_random_write_ok_inv in H;
       let H1 := fresh in let H2 := fresh in
@@ -691,7 +695,8 @@ Proof.
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
+    check_create_wronly, check_open_append, check_open_rdwr,
+    check_unused_fd_none in H.
   unfold Open.check_open_devnull, Open.check_open_urandom,
     Open.check_open_result_mk in H.
   kf_frame H m Hoff Hk.

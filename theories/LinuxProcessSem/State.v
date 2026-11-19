@@ -609,6 +609,20 @@ Definition EACCES : Z := 13%Z.
 Definition EBUSY  : Z := 16%Z.
 Definition ENFILE : Z := 23%Z.
 Definition EMFILE : Z := 24%Z.
+(** A write-access open of a file whose writes are denied, the file an
+    [execve] runs ([get_write_access], include/linux/fs.h:3215-3218;
+    include/uapi/asm-generic/errno-base.h:30, Linux v6.18.46).  Drawn
+    beside the write opens of an existing file no descriptor of the
+    model writes, never from a [*_errnos] list
+    ([Fs.Open.open_write_existing]). *)
+Definition ETXTBSY : Z := 26%Z.
+(** No room for a new inode (include/uapi/asm-generic/errno-base.h:32,
+    Linux v6.18.46): tmpfs's inode budget is spent
+    ([shmem_reserve_inode], mm/shmem.c:354-358), or the inode allocation
+    failed, which tmpfs and ramfs both report so (mm/shmem.c:3088-3091;
+    [ramfs_mknod], fs/ramfs/inode.c:101-104).  Drawn from
+    [Fs.Namei.mkdirat_errnos] only. *)
+Definition ENOSPC : Z := 28%Z.
 Definition EROFS  : Z := 30%Z.
 Definition EOVERFLOW : Z := 75%Z.
 
@@ -3041,9 +3055,8 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
       -EISDIR and write -EBADF, as Linux does on an O_RDONLY directory
       fd; directory enumeration (getdents64) answers only where nothing
       is listed — [filldir64]'s -EINVAL for a buffer too small for any
-      entry — and the LISTING itself stays unmodeled and fail-closed,
-      which is what keeps the missing path from mattering
-      ([Readdir.getdents64_spec]).
+      entry — and the LISTING itself stays unmodeled and fail-closed
+      ([Readdir.getdents64_spec] gives the reasons).
     - [FdSocket sk]: an AF_INET/SOCK_STREAM socket, carrying its whole
       state (see [SockState]).  READABLE — a socket is never opened
       write-only, so the -EBADF gate must let it through and the read
@@ -3218,8 +3231,12 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
     [fstat] reports the link count with the name gone
     ([Fs.fs_ino_nlink]).  That is Linux's: [vfs_unlink] (fs/namei.c)
     drops the link count, and the inode is freed only at the last
-    [fput] ([iput_final], fs/inode.c:1874-1915, which evicts only when
-    [inode_generic_drop] is true, include/linux/fs.h:3345-3348).  The
+    [fput].  On tmpfs and ramfs [iput_final] evicts at every last
+    [iput] ([inode_just_drop], mm/shmem.c:5330, fs/ramfs/inode.c:218,
+    fs/inode.c:1858-1861 and 1883-1884), so what keeps the inode is the
+    [struct file]'s dentry reference, as the pinned dentry
+    (mm/shmem.c:3908, fs/ramfs/inode.c:114) kept it while it had a
+    name ([Fs.Fs] says the same).  The
     row of such a file stays in [Fs.fs_inodes] while a descriptor holds
     it ([Fs.fs_unlink_file]).  "/proc/self/fd/N" opens it again
     ([Fs.Open.openat_procfd_spec]). *)
@@ -5726,8 +5743,10 @@ Definition fd_remove (fds : list (word * FdEntry)) (fd : word)
     Linux does (see [File.lowest_fd]/[Open.openat_spec]).  The scan is
     fuel-bounded at 4096 candidates, so the result is always <= 4096
     (never confusable with an error-encoded return); if all of 0..4095
-    are taken the returned candidate may be occupied, and the openat
-    spec's freeness side-condition then leaves only the errno branch. *)
+    are taken the returned candidate may be occupied, and then
+    [File.lowest_fd]'s freeness conjunct empties its choice set
+    ([File.lowest_fd_none]), which [Open.openat_core_spec] tests before
+    it allocates. *)
 Fixpoint alloc_fd_aux (fds : list (word * FdEntry)) (cand : word) (fuel : nat)
     : word :=
   match fuel with

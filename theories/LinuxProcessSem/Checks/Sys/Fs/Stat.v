@@ -30,7 +30,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
 Definition check_readlink_copy (i : SyscallInput) (b : path) (buf bufsiz : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let n := readlink_count b bufsiz in
-  if negb (access_okb buf (Z.of_nat n)) then check_ret_only eff (errno_ret EFAULT) m []
+  if readlink_copy_faults buf n then check_ret_only eff (errno_ret EFAULT) m []
   else
     match read_bytes_map (in_wmem i) buf (Z_to_bv 64 (Z.of_nat n)) with
     | None => CheckUnmodeled
@@ -76,7 +76,7 @@ Definition check_readlinkat (i : SyscallInput) (dirfd pathp buf bufsiz : word)
   then check_ret_only eff (errno_ret EINVAL) m []
   else
     let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
-    check_getname_refusals i pathp eff m
+    check_getname_refusals i [] pathp eff m
       (check_copyins_after reads eff
          (check_walk_refusals (Fs.WalkFull false false) i pathp (clear_copyins eff) m
             (check_readlinkat_body i dirfd pathp buf bufsiz (clear_copyins eff) m))).
@@ -108,7 +108,7 @@ Local Lemma check_readlink_copy_sound_ok : forall i b buf bufsiz eff m m' evs,
 Proof.
   intros i b buf bufsiz eff m m' evs H.
   unfold check_readlink_copy in H. unfold readlink_copy_spec. cbv zeta in H |- *.
-  destruct (negb (access_okb buf (Z.of_nat (readlink_count b bufsiz))));
+  destruct (readlink_copy_faults buf (readlink_count b bufsiz));
     cbv iota in H |- *; [rl_ret_ok|].
   destruct (read_bytes_map (in_wmem i) buf
               (Z_to_bv 64 (Z.of_nat (readlink_count b bufsiz))));
@@ -133,7 +133,7 @@ Local Lemma check_readlink_copy_sound_unmodeled : forall i b buf bufsiz eff m,
 Proof.
   intros i b buf bufsiz eff m H.
   unfold check_readlink_copy in H. unfold readlink_copy_spec. cbv zeta in H |- *.
-  destruct (negb (access_okb buf (Z.of_nat (readlink_count b bufsiz))));
+  destruct (readlink_copy_faults buf (readlink_count b bufsiz));
     cbv iota in H |- *; [rl_ret_nu|].
   destruct (read_bytes_map (in_wmem i) buf
               (Z_to_bv 64 (Z.of_nat (readlink_count b bufsiz))));
@@ -152,7 +152,7 @@ Local Lemma check_readlink_copy_complete_ok : forall i b buf bufsiz eff m m' evs
 Proof.
   intros i b buf bufsiz eff m m' evs H.
   unfold readlink_copy_spec in H. unfold check_readlink_copy. cbv zeta in H |- *.
-  destruct (negb (access_okb buf (Z.of_nat (readlink_count b bufsiz))));
+  destruct (readlink_copy_faults buf (readlink_count b bufsiz));
     cbv iota in H |- *;
     [split; [rl_ret_co|unfold err_ret, ret_only, pure in *; inv_ok; reflexivity]|].
   destruct (read_bytes_map (in_wmem i) buf
@@ -169,7 +169,7 @@ Local Lemma check_readlink_copy_complete_unmodeled : forall i b buf bufsiz eff m
 Proof.
   intros i b buf bufsiz eff m H.
   unfold readlink_copy_spec in H. unfold check_readlink_copy. cbv zeta in H |- *.
-  destruct (negb (access_okb buf (Z.of_nat (readlink_count b bufsiz))));
+  destruct (readlink_copy_faults buf (readlink_count b bufsiz));
     cbv iota in H |- *; [sys_unfold; inv_ok|].
   destruct (read_bytes_map (in_wmem i) buf
               (Z_to_bv 64 (Z.of_nat (readlink_count b bufsiz))));
@@ -430,7 +430,7 @@ Proof.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
   destruct ((sint32 bufsiz <=? 0)%Z); cbv iota; [rl_ret_ok|].
   cbv zeta in H.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_readlinkat_fetched_sound_ok i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_sound_unmodeled i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_complete_ok i dirfd pathp buf bufsiz m)
@@ -449,7 +449,7 @@ Proof.
   eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
   destruct ((sint32 bufsiz <=? 0)%Z); cbv iota; [rl_ret_nu|].
   cbv zeta in H.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_readlinkat_fetched_sound_ok i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_sound_unmodeled i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_complete_ok i dirfd pathp buf bufsiz m)
@@ -470,7 +470,7 @@ Proof.
   destruct ((sint32 bufsiz <=? 0)%Z); cbv iota in H |- *;
     [rl_ret_co|].
   cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_readlinkat_fetched_sound_ok i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_sound_unmodeled i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_complete_ok i dirfd pathp buf bufsiz m)
@@ -491,7 +491,7 @@ Proof.
   destruct ((sint32 bufsiz <=? 0)%Z); cbv iota in H |- *;
     [sys_unfold; inv_ok|].
   cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_readlinkat_fetched_sound_ok i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_sound_unmodeled i dirfd pathp buf bufsiz m)
            (check_readlinkat_fetched_complete_ok i dirfd pathp buf bufsiz m)
@@ -1271,8 +1271,9 @@ Definition check_newfstatat_body (i : SyscallInput)
     The walk's refusals are checked only on a call whose fetch reaches
     [getname_flags] ([Stat.statat_getname_runs]), as
     [Stat.newfstatat_core_spec] admits them, and [getname_flags]' own
-    around the ledger on the same calls ([check_getname_refusals]), as
-    [Stat.newfstatat_spec] admits them. *)
+    around the ledger on the same calls, after the lead byte's load
+    under AT_EMPTY_PATH ([check_getname_refusals],
+    [Stat.statat_lead_reads]), as [Stat.newfstatat_spec] admits them. *)
 Definition check_newfstatat (i : SyscallInput) (dirfd pathp statbuf flag : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let fetched :=
@@ -1285,7 +1286,8 @@ Definition check_newfstatat (i : SyscallInput) (dirfd pathp statbuf flag : word)
            check_walk_refusals (statat_walk_mode flag) i pathp (clear_copyins eff) m
              (check_newfstatat_body i dirfd pathp statbuf flag (clear_copyins eff) m)
          else check_newfstatat_body i dirfd pathp statbuf flag (clear_copyins eff) m) in
-  if statat_getname_runs i pathp flag then check_getname_refusals i pathp eff m fetched
+  if statat_getname_runs i pathp flag then
+    check_getname_refusals i (statat_lead_reads pathp flag) pathp eff m fetched
   else fetched.
 
 (** A DELIVERED [struct stat] NEVER CLAIMS A COPY-IN: each accepting
@@ -1718,7 +1720,8 @@ Proof.
   unfold check_newfstatat in H. cbv zeta in H.
   unfold newfstatat_spec. eapply bind_ok0; [apply input_ok|]. cbv beta.
   apply check_if_cases in H as [(Hr & H) | (Hr & H)]; rewrite Hr; cbv iota.
-  - exact (check_getname_refusals_sound_ok pathp _ _ i m
+  - exact (check_getname_refusals_sound_ok
+             (statat_lead_reads pathp flag) pathp _ _ i m
              (check_newfstatat_fetched_sound_ok i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_sound_unmodeled i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_complete_ok i dirfd pathp statbuf flag m)
@@ -1736,7 +1739,8 @@ Proof.
   unfold check_newfstatat in H. cbv zeta in H.
   unfold newfstatat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
   apply check_if_cases in H as [(Hr & H) | (Hr & H)]; rewrite Hr; cbv iota.
-  - exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  - exact (check_getname_refusals_sound_unmodeled
+             (statat_lead_reads pathp flag) pathp _ _ i m
              (check_newfstatat_fetched_sound_ok i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_sound_unmodeled i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_complete_ok i dirfd pathp statbuf flag m)
@@ -1755,7 +1759,8 @@ Proof.
   apply input_bind_ok_inv in H. cbv beta in H.
   unfold check_newfstatat. cbv zeta.
   apply check_if_intro; intros Hr; rewrite Hr in H; cbv iota in H.
-  - exact (check_getname_refusals_complete_ok pathp _ _ i m
+  - exact (check_getname_refusals_complete_ok
+             (statat_lead_reads pathp flag) pathp _ _ i m
              (check_newfstatat_fetched_sound_ok i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_sound_unmodeled i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_complete_ok i dirfd pathp statbuf flag m)
@@ -1774,7 +1779,8 @@ Proof.
   apply input_bind_unmodeled_inv in H. cbv beta in H.
   unfold check_newfstatat. cbv zeta.
   apply check_if_intro; intros Hr; rewrite Hr in H; cbv iota in H.
-  - exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  - exact (check_getname_refusals_complete_unmodeled
+             (statat_lead_reads pathp flag) pathp _ _ i m
              (check_newfstatat_fetched_sound_ok i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_sound_unmodeled i dirfd pathp statbuf flag m)
              (check_newfstatat_fetched_complete_ok i dirfd pathp statbuf flag m)

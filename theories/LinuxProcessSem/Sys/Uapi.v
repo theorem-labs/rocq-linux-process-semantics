@@ -105,10 +105,13 @@ Definition O_LARGEFILE : Z := 32768%Z.
 
     - A TRANSFER ANSWERS -EAGAIN, which needs an object that could have
       blocked.  Every path [Open.openat_spec] resolves here is a regular
-      file in the interpreted file system or one of the two directory
-      references "." and ".." ([Fs.Open.path_is_dirref]) — never a pipe,
-      a socket, a terminal or any
-      other character device.  On a regular file every -EAGAIN in
+      file, a folder, or one of the two character devices the image can
+      hold ([Fs.DevKind]), /dev/null and /dev/urandom — never a pipe, a
+      socket, a terminal or any other character device, and neither of
+      the two ever answers -EAGAIN: [null_fops]' transfers return at
+      once (drivers/char/mem.c, Linux v6.18.46), and [urandom_read_iter]
+      (drivers/char/random.c:1453-1475, Linux v6.18.46) never tests
+      O_NONBLOCK, unlike [random_read_iter] beside it.  On a regular file every -EAGAIN in
       [generic_file_read_iter] and [filemap_get_pages] (mm/filemap.c) is
       conditioned on IOCB_NOWAIT, IOCB_NOIO or, from v6.17, IOCB_WAITQ;
       those bits come only from RWF_NOWAIT via [kiocb_set_rw_flags],
@@ -132,13 +135,13 @@ Definition O_LARGEFILE : Z := 32768%Z.
 
     THAT IS CONDITIONAL ON THE FILE SYSTEM KEEPING THAT SHAPE.  Should
     [Open.openat_spec] ever resolve a path to a FIFO, a socket or a
-    character device, O_NONBLOCK stops being ignorable — on a FIFO it
+    character device other than those two, O_NONBLOCK stops being ignorable — on a FIFO it
     decides whether the open itself blocks or answers -ENXIO — and
     belongs back OUT of [Open.open_ignored_flags], not widened further.
     The same trigger governs O_NOCTTY's argument in
     [Open.modeled_open_flags]: 9p's [dotl_oflag_map] forwards BOTH flags
-    to the server, so a file system growing past regular files and "."
-    puts the two back in question together. *)
+    to the server, so a file system growing past regular files, folders
+    and those two devices puts the two back in question together. *)
 Definition O_NONBLOCK : Z := 2048%Z.
 
 (** O_DIRECTORY: 0200000.  riscv64 takes the asm-generic ABI
@@ -219,13 +222,15 @@ Definition AT_EMPTY_PATH : Z := 4096%Z.
     is unchanged across every branch this file names). *)
 Definition S_IRWXO : Z := 7%Z.
 
-(** "." (the working directory), the one-component path [openat] uses
-    for the plain directory open.  The other directory reference is
-    [Fs.Namei.dotdot_path]; [Fs.Open.path_is_dirref] is the pair, which
-    [Run.valid_argv] keeps out of argv.  Both are ordinary pathnames to
-    [Fs.resolve], which types them as [Fs.LastDot] and [Fs.LastDotDot].
+(** "." (the working directory) as a one-component pathname.  No open
+    arm matches on it any more: like [Fs.Namei.dotdot_path], the other
+    directory reference, it is an ordinary pathname to [Fs.resolve],
+    which types them as [Fs.LastDot] and [Fs.LastDotDot].
+    [Fs.Open.path_is_dirref] is the pair, read now only by the argv
+    premise and the harness proofs: [Run.valid_argv] keeps ".." out of
+    argv, and the proofs split on "." themselves.
 
-    It sits here rather than with a syscall because more than one spec
+    It sits here rather than with a syscall because more than one file
     reads it, and no file under [Sys/] imports another. *)
 Definition dot_path : path := [Z_to_bv 8 46].
 
@@ -1557,7 +1562,7 @@ Definition stat_is_lnk (bs : list byte) : bool :=
   Z.eqb (stat_ifmt bs) S_IFLNK.
 
 (** [st_nlink] AGAINST A COUNT.  [generic_fillattr] copies [i_nlink]
-    (fs/stat.c:88) and [cp_new_stat] copies that out, as an
+    (fs/stat.c:91) and [cp_new_stat] copies that out, as an
     [unsigned int], so the comparison is modulo 2^32: [i_nlink] is an
     [unsigned int] itself, and a count the model computes past it is one
     no inode holds. *)

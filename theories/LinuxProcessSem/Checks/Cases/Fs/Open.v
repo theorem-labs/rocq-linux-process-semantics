@@ -275,10 +275,10 @@ Proof. check_eq. Qed.
 (** THE OTHER WAY INTO THE SAME EXIT: a regular file that is ALREADY
     THERE is truncated, at the key it was found under, and the
     descriptor is the one the create hands back.  The two ways in are
-    what [Common.FileSim.resolve_create_target] is a disjunction over,
-    and pinning only the absent one would leave every copy onto an
-    existing destination unchecked — which is the whole of what a
-    [cp onto a file that exists] does.
+    the two rows of [Fs.Open.openat_create_spec] that mint a
+    descriptor, and pinning only the absent one would leave every copy
+    onto an existing destination unchecked — which is the whole of what
+    a [cp onto a file that exists] does.
 
     The bytes are what say TRUNCATION happened rather than a reopen:
     [ns_open_f] holds two bytes at this key and the model the checker
@@ -306,6 +306,81 @@ Example openat_create_onto_an_existing_file_truncates :
      <> CheckOk (with_fds (fd_insert (m_fds ns_open_f) 3
                              (FdFileW 1 (Z_to_bv 64 0))) ns_open_f) [].
 Proof. split; [check_eq | vm_compute; discriminate]. Qed.
+
+(** A WRITE OPEN OF A FILE THAT EXISTS ADMITS -ETXTBSY beside its own
+    answers ([Fs.Open.open_write_existing]): the file may be the one an
+    [execve] runs, whose write access [exe_file_deny_write_access] denies
+    (fs/exec.c:798, Linux v6.18.46), and [do_dentry_open]'s
+    [get_write_access] answers -ETXTBSY (fs/open.c:925-928, :883-885)
+    before [handle_truncate] runs, both in [do_open] (fs/namei.c:3974-3979).  So the model
+    is left as it was, the two bytes of "f" included, on the clobbering
+    word, the append word, O_RDWR and O_RDWR|O_TRUNC, and on a reopen of
+    "f" through "/proc/self/fd/3" where descriptor 3 reads it.  Refused:
+    on an O_RDONLY open (no write access is taken), on a file the open
+    CREATES (a fresh inode nothing executes), and on an O_EXCL open of
+    an existing name (-EEXIST comes first, fs/namei.c:3949-3950). *)
+Example openat_write_open_of_an_existing_file_admits_etxtbsy :
+  let call (fl : Z) (p : list Z) (m : Model) :=
+        check_syscall
+          (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+             (open_path_mem p) (fun _ => None))
+          (with_copyins [(8192, S (length p))] (mkEffect (errno_ret ETXTBSY) [] [])) m in
+  let m3 := with_fds (fd_insert (m_fds ns_open_f) 3 (FdFile 1 (Z_to_bv 64 0))) ns_open_f in
+  let procfd3 := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 51]%Z in
+  call wr_create_flags [102]%Z ns_open_f = CheckOk ns_open_f []
+  /\ call append_create_flags [102]%Z ns_open_f = CheckOk ns_open_f []
+  /\ call O_RDWR [102]%Z ns_open_f = CheckOk ns_open_f []
+  /\ call (O_RDWR + O_TRUNC)%Z [102]%Z ns_open_f = CheckOk ns_open_f []
+  /\ call wr_create_flags procfd3 m3 = CheckOk m3 []
+  /\ call append_create_flags procfd3 m3 = CheckOk m3 []
+  /\ call 0%Z [102]%Z ns_open_f = CheckReject
+  /\ call wr_create_flags [103]%Z ns_open_empty = CheckReject
+  /\ call excl_create_flags [102]%Z ns_open_f = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** Two files, "f" (inode 1) and "g" (inode 2). *)
+Definition ns_open_fg : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([102], SFile [104; 105]); ([103], SFile [106])]) IEof).
+
+(** A LIVE WRITER RULES -ETXTBSY OUT ([Fs.Open.ino_write_held]).  The
+    deny an [execve] holds and a writer share the inode's
+    [i_writecount]: [get_write_access] fails only while it is negative
+    (include/linux/fs.h:3217, Linux v6.18.46) and [deny_write_access]
+    takes a deny only while it is not positive (:3222), and
+    [do_dentry_open] (fs/open.c:926-929) took write access for
+    descriptor 3 when it opened, which it keeps to its last fput, where
+    [__fput] (fs/file_table.c:512) drops it.  So while descriptor 3
+    writes inode 1, a write open of that inode refuses -ETXTBSY: by the
+    name "f", by a second name "g" of the same inode, and through
+    "/proc/self/fd/3", for a descriptor of each of the three write kinds.
+    A writer of ANOTHER inode, and a reader of this one, leave it
+    admitted. *)
+Example openat_write_open_beside_a_live_writer_refuses_etxtbsy :
+  let call (fl : Z) (p : list Z) (m : Model) :=
+        check_syscall
+          (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+             (open_path_mem p) (fun _ => None))
+          (with_copyins [(8192, S (length p))] (mkEffect (errno_ret ETXTBSY) [] [])) m in
+  let with3 (e : FdEntry) (m : Model) := with_fds (fd_insert (m_fds m) 3 e) m in
+  let mw := with3 (FdFileW 1 (Z_to_bv 64 0)) ns_open_f in
+  let ma := with3 (FdFileA 1 (Z_to_bv 64 0)) ns_open_f in
+  let mrw := with3 (FdFileRW 1 (Z_to_bv 64 0)) ns_open_f in
+  let mg := with3 (FdFileW 1 (Z_to_bv 64 0))
+              (with_fs (Fs.fs_set (m_fs ns_open_f) (wk [103]) (EFile 1)) ns_open_f) in
+  let mo := with3 (FdFileW 2 (Z_to_bv 64 0)) ns_open_fg in
+  let mr := with3 (FdFile 1 (Z_to_bv 64 0)) ns_open_f in
+  let procfd3 := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 51]%Z in
+  call wr_create_flags [102]%Z mw = CheckReject
+  /\ call append_create_flags [102]%Z ma = CheckReject
+  /\ call O_RDWR [102]%Z mrw = CheckReject
+  /\ call (O_RDWR + O_TRUNC)%Z [102]%Z mw = CheckReject
+  /\ call wr_create_flags [103]%Z mg = CheckReject
+  /\ call wr_create_flags procfd3 mw = CheckReject
+  /\ call append_create_flags procfd3 mrw = CheckReject
+  /\ call wr_create_flags [102]%Z mo = CheckOk mo []
+  /\ call wr_create_flags [102]%Z mr = CheckOk mr [].
+Proof. vm_compute; split_conj; check_eq. Qed.
 
 (* ------------------------------------------------ directories as entries *)
 
@@ -1149,7 +1224,8 @@ Proof. split; [|split]; check_eq. Qed.
 (** EXISTENCE IN THE /dev SUBTREE IS READ OFF THE IMAGE like anywhere
     else: [faccessat(F_OK)] of /dev/zero, a name the image does not
     hold, is -ENOENT, and a 0 for it is refused.  The same name under
-    /tmp is the twin, and the declared device answers 0. *)
+    /tmp is the twin, and the declared device declines
+    ([faccessat_of_a_device_declines]). *)
 Example faccessat_under_dev_absent_is_enoent :
   check_syscall
     (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0]
@@ -1169,14 +1245,50 @@ Example faccessat_under_dev_absent_is_enoent :
        (with_copyins [(8192, 10%nat)] (mkEffect (errno_ret ENOENT) [] []))
        ns_open_empty
      = CheckOk ns_open_empty []
-  (* and the declared device still exists, answering 0 *)
+  (* and the declared device declines, whatever the answer *)
   /\ check_syscall
        (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0]
           (open_path_mem devnull_bytes) (fun _ => None))
        (with_copyins [(8192, 10%nat)] (mkEffect 0 [] []))
        ns_open_empty
-     = CheckOk ns_open_empty [].
+     = CheckUnmodeled.
 Proof. split_conj; check_eq. Qed.
+
+(** A DEVICE DECLINES, WHATEVER THE ANSWER.  [do_faccessat]'s
+    [inode_permission] reaches [devcgroup_inode_permission] for a
+    character node (fs/namei.c:597-599, Linux v6.18.46), where a cgroup
+    BPF device program answers whatever value it set through
+    [bpf_set_retval] (kernel/bpf/cgroup.c:84-115, :1839-1846) and the v1
+    devices controller answers -EPERM (security/device_cgroup.c:832-854):
+    [Fs.Open.faccessat_errnos]'s device-cgroup paragraph.  So F_OK of
+    /dev/null or /dev/urandom is [CheckUnmodeled] beside 0 and beside
+    -EPERM alike, through [faccessat] and through [faccessat2] with
+    either accepted flag.  A regular file still answers 0 and still
+    refuses -EPERM: [devcgroup_inode_permission] returns 0 for a
+    non-device inode (include/linux/device_cgroup.h:21-22), and F_OK
+    reaches no other -EPERM ([Fs.Open.faccessat_errnos]). *)
+Example faccessat_of_a_device_declines :
+  let fa (p : list Z) (n : nat) (e : word) (m : Model) := check_syscall
+        (mkInput 48 [AT_FDCWD; 8192; 0; 0; 0; 0] (open_path_mem p) (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect e [] [])) m in
+  let fa2 (p : list Z) (n : nat) (fl : Z) (e : word) (m : Model) := check_syscall
+        (mkInput 439 [AT_FDCWD; 8192; 0; Z_to_bv 64 fl; 0; 0] (open_path_mem p)
+           (fun _ => None))
+        (with_copyins [(8192, n)] (mkEffect e [] [])) m in
+  fa devnull_bytes 10%nat 0 ns_open_empty = CheckUnmodeled
+  /\ fa devnull_bytes 10%nat (errno_ret EPERM) ns_open_empty = CheckUnmodeled
+  /\ fa urandom_bytes 13%nat 0 ns_open_empty = CheckUnmodeled
+  /\ fa urandom_bytes 13%nat (errno_ret EPERM) ns_open_empty = CheckUnmodeled
+  /\ fa2 devnull_bytes 10%nat 0%Z 0 ns_open_empty = CheckUnmodeled
+  /\ fa2 devnull_bytes 10%nat AT_EACCESS (errno_ret EPERM) ns_open_empty
+     = CheckUnmodeled
+  /\ fa2 urandom_bytes 13%nat AT_SYMLINK_NOFOLLOW (errno_ret EPERM) ns_open_empty
+     = CheckUnmodeled
+  (* a regular file: 0 still, and -EPERM still refused *)
+  /\ fa [102%Z] 2%nat 0 ns_open_f = CheckOk ns_open_f []
+  /\ fa [102%Z] 2%nat (errno_ret EPERM) ns_open_f = CheckReject
+  /\ fa2 [102%Z] 2%nat 0%Z (errno_ret EPERM) ns_open_f = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
 
 (** A bad MODE beats an unreadable path: [do_faccessat]'s first
     statement runs before [getname]. *)
@@ -2335,7 +2447,8 @@ Proof. vm_compute. split_conj; reflexivity. Qed.
     clobbering shape is -EISDIR for each and the read shape hands back a
     directory fd for each.
 
-    Without this arm, the second of each pair would be wrong: the
+    Without the walk's ".." row ([Fs.walk_comps]' [LastDotDot]), the
+    second of each pair would be wrong: the
     create shape would MINT A KEY SPELLED "..", and the read shape would
     answer -ENOENT, which Linux never returns for "..".  The last conjunct is
     the control that keeps the first four from being satisfied by a
@@ -2366,11 +2479,11 @@ Example openat_dotdot_answers_as_dot_does :
   /\ open dotdot 3%nat wr_create_flags (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
-(** THE OVER-MATCH GUARD FOR [path_is_dirref], and the most load-bearing
+(** THE OVER-MATCH GUARD FOR [Fs.comp_kind], and the most load-bearing
     of the three below.  "..." is an ORDINARY NAME: it is not a directory
     reference, so the create arm mints a key for it exactly as it would
-    for "f".  [path_is_dirref] uses [path_eqb] against the two constants
-    and nothing else, so this holds — but nothing else in the tree
+    for "f".  [Fs.comp_kind] uses [path_eqb] against [Fs.dot_comp] and
+    [Fs.dotdot_comp] and nothing else, so this holds — but nothing else in the tree
     pins it, and the obvious "improvement" of matching a LEADING ".."
     would break it silently, turning every dotfile-ish name into a
     directory reference.  A real run cannot make this claim: it would show
@@ -3146,20 +3259,22 @@ Qed.
 Lemma r1_open_unfold : forall mem wmem pathp fl a3 a4 a5 m d f eff,
   read_cstr mem pathp = CstrOk (r1_path d f) ->
   open_shape fl = 0%Z ->
+  fd_lookup (m_fds m) (alloc_fd (m_fds m)) = None ->
   check_syscall (r1_open_in mem wmem pathp fl a3 a4 a5) eff m
-  = check_getname_refusals (r1_open_in mem wmem pathp fl a3 a4 a5) pathp eff m
+  = check_getname_refusals (r1_open_in mem wmem pathp fl a3 a4 a5) [] pathp eff m
       (check_copyins_after (r1_reads mem pathp) eff
          (check_walk_refusals (open_walk_mode fl) (r1_open_in mem wmem pathp fl a3 a4 a5)
             pathp (clear_copyins eff) m
             (Open.check_openat_resolved (r1_path d f) fl (clear_copyins eff) m))).
 Proof.
-  intros mem wmem pathp fl a3 a4 a5 m d f eff Hpath Hfl.
+  intros mem wmem pathp fl a3 a4 a5 m d f eff Hpath Hfl Hfree.
   change (check_syscall (r1_open_in mem wmem pathp fl a3 a4 a5) eff m)
     with (check_openat (r1_open_in mem wmem pathp fl a3 a4 a5) (fd32 AT_FDCWD)
             pathp fl eff m).
   unfold check_openat. rewrite (modeled_open_flags_rd fl Hfl). cbn [negb].
   cbv beta iota zeta.
-  unfold Open.check_openat_body. cbn [r1_open_in in_mem]. rewrite Hpath.
+  unfold openat_name_fetched, Open.check_openat_body. cbn [r1_open_in in_mem]. rewrite Hpath.
+  rewrite (lowest_fd_none_free _ Hfree).
   replace (path_eqb (r1_path d f) []) with false by reflexivity.
   replace (bv_eqb (fd32 AT_FDCWD) AT_FDCWD32) with true by (vm_compute; reflexivity).
   cbn [negb]. cbv beta iota. reflexivity.
@@ -3167,23 +3282,25 @@ Qed.
 
 (** [getname_flags]' own refusals ([check_getname_refusals]) add no
     descriptor: a number below 2^31 is no errno of [getname_errnos]. *)
-Lemma r1_getname_fd_reject : forall i pathp reads fd m c,
+Lemma r1_getname_fd_reject : forall i lead pathp reads fd m c,
   (bv_unsigned fd < 2 ^ 31)%Z -> c = CheckReject ->
-  check_getname_refusals i pathp (with_copyins reads (mkEffect fd [] [])) m c
+  check_getname_refusals i lead pathp (with_copyins reads (mkEffect fd [] [])) m c
   = CheckReject.
 Proof.
-  intros i pathp reads fd m c Hfd ->.
+  intros i lead pathp reads fd m c Hfd ->.
   change (with_copyins reads (mkEffect fd [] [])) with (mkEffectU fd [] [] [] [] reads).
   unfold check_getname_refusals. cbv beta iota.
   rewrite (errno_ret_in_fd getname_errnos fd eq_refl Hfd). reflexivity.
 Qed.
 
-(** OVER N, with flag word 0 and with O_LARGEFILE: -ENOENT with the
-    model unchanged, and a descriptor is refused. *)
+(** OVER N, with flag word 0 and with O_LARGEFILE, on a table with a
+    free descriptor: -ENOENT with the model unchanged, and a descriptor
+    is refused. *)
 Lemma r1_open_absent_enoent : forall mem wmem pathp fl a3 a4 a5 m d f,
   read_cstr mem pathp = CstrOk (r1_path d f) ->
   fl = Z_to_bv 64 0 \/ fl = Z_to_bv 64 O_LARGEFILE ->
   r1_name_ok d -> r1_name_ok f -> r1_image_n (m_fs m) d f ->
+  fd_lookup (m_fds m) (alloc_fd (m_fds m)) = None ->
   check_syscall (r1_open_in mem wmem pathp fl a3 a4 a5)
     (with_copyins (r1_reads mem pathp) (mkEffect (errno_ret ENOENT) [] [])) m
   = CheckOk m []
@@ -3192,7 +3309,7 @@ Lemma r1_open_absent_enoent : forall mem wmem pathp fl a3 a4 a5 m d f,
         (with_copyins (r1_reads mem pathp) (mkEffect fd [] [])) m
       = CheckReject).
 Proof.
-  intros mem wmem pathp fl a3 a4 a5 m d f Hpath Hfl Hd Hf Hn.
+  intros mem wmem pathp fl a3 a4 a5 m d f Hpath Hfl Hd Hf Hn Hfree.
   destruct (r1_flags_ok fl Hfl) as [Hfl0 Hmd].
   destruct (r1_resolve_absent (m_fs m) (m_cwd m) d f Hn) as (r & lk & ts & Hres & Hr).
   assert (Hrd : forall e,
@@ -3203,7 +3320,7 @@ Proof.
     unfold Open.check_openat_read.
     destruct Hr as [(pre & ->) | (par & nm & ->)]; reflexivity. }
   split.
-  - rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0), Hrd.
+  - rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree), Hrd.
     apply check_getname_refusals_of_ok.
     apply check_copyins_after_ok_iff. split; [reflexivity|].
     change (clear_copyins (with_copyins (r1_reads mem pathp)
@@ -3213,7 +3330,7 @@ Proof.
       with (CheckOk m []) by (symmetry; apply check_ret_only_ok_iff; auto).
     reflexivity.
   - intros fd Hfd.
-    rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0), Hrd.
+    rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree), Hrd.
     apply r1_getname_fd_reject; [exact Hfd|].
     change (clear_copyins (with_copyins (r1_reads mem pathp) (mkEffect fd [] [])))
       with (mkEffect fd [] []).
@@ -3242,7 +3359,7 @@ Lemma r1_open_found_descriptor : forall mem wmem pathp fl a3 a4 a5 m d f i c,
 Proof.
   intros mem wmem pathp fl a3 a4 a5 m d f i c Hpath Hfl Hd Hf Hs Hfree.
   destruct (r1_flags_ok fl Hfl) as [Hfl0 Hmd].
-  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0).
+  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree).
   apply check_getname_refusals_of_ok.
   unfold Open.check_openat_resolved.
   rewrite r1_proc_self_fd, Hmd, (r1_resolve_found (m_fs m) (m_cwd m) d f i c Hd Hf Hs).
@@ -3593,12 +3710,14 @@ Proof.
   intros z [<-|[<-|[<-|[<-|[<-|[<-|[<-|[<-|[]]]]]]]]]; split; vm_compute; reflexivity.
 Qed.
 
-(** OVER N, under every word of shape 0 whose walk is [r1_md]: -ENOENT
-    with the process unchanged, and every descriptor refused. *)
+(** OVER N, under every word of shape 0 whose walk is [r1_md], on a
+    table with a free descriptor: -ENOENT with the process unchanged,
+    and every descriptor refused. *)
 Lemma r1_open_absent_enoent_rd : forall mem wmem pathp fl a3 a4 a5 m d f,
   read_cstr mem pathp = CstrOk (r1_path d f) ->
   open_shape fl = 0%Z -> open_walk_mode fl = r1_md ->
   r1_name_ok d -> r1_name_ok f -> r1_image_n (m_fs m) d f ->
+  fd_lookup (m_fds m) (alloc_fd (m_fds m)) = None ->
   check_syscall (r1_open_in mem wmem pathp fl a3 a4 a5)
     (with_copyins (r1_reads mem pathp) (mkEffect (errno_ret ENOENT) [] [])) m
   = CheckOk m []
@@ -3607,7 +3726,7 @@ Lemma r1_open_absent_enoent_rd : forall mem wmem pathp fl a3 a4 a5 m d f,
         (with_copyins (r1_reads mem pathp) (mkEffect fd [] [])) m
       = CheckReject).
 Proof.
-  intros mem wmem pathp fl a3 a4 a5 m d f Hpath Hfl0 Hmd Hd Hf Hn.
+  intros mem wmem pathp fl a3 a4 a5 m d f Hpath Hfl0 Hmd Hd Hf Hn Hfree.
   destruct (r1_resolve_absent (m_fs m) (m_cwd m) d f Hn) as (r & lk & ts & Hres & Hr).
   assert (Hrd : forall e,
     Open.check_openat_resolved (r1_path d f) fl e m
@@ -3617,7 +3736,7 @@ Proof.
     unfold Open.check_openat_read.
     destruct Hr as [(pre & ->) | (par & nm & ->)]; reflexivity. }
   split.
-  - rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0), Hrd.
+  - rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree), Hrd.
     apply check_getname_refusals_of_ok.
     apply check_copyins_after_ok_iff. split; [reflexivity|].
     change (clear_copyins (with_copyins (r1_reads mem pathp)
@@ -3627,7 +3746,7 @@ Proof.
       with (CheckOk m []) by (symmetry; apply check_ret_only_ok_iff; auto).
     reflexivity.
   - intros fd Hfd.
-    rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0), Hrd.
+    rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree), Hrd.
     apply r1_getname_fd_reject; [exact Hfd|].
     change (clear_copyins (with_copyins (r1_reads mem pathp) (mkEffect fd [] [])))
       with (mkEffect fd [] []).
@@ -3655,7 +3774,7 @@ Lemma r1_open_found_descriptor_rd : forall mem wmem pathp fl a3 a4 a5 m d f i c,
                          (FdFile i (Z_to_bv 64 0))) m) [].
 Proof.
   intros mem wmem pathp fl a3 a4 a5 m d f i c Hpath Hfl0 Hmd Hd Hf Hs Hfree.
-  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0).
+  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree).
   apply check_getname_refusals_of_ok.
   unfold Open.check_openat_resolved.
   rewrite r1_proc_self_fd, Hmd, (r1_resolve_found (m_fs m) (m_cwd m) d f i c Hd Hf Hs).
@@ -3730,7 +3849,7 @@ Lemma r1_open_found_dir_rd : forall mem wmem pathp fl a3 a4 a5 m d f,
                          (FdDir (r1_path d f))) m) [].
 Proof.
   intros mem wmem pathp fl a3 a4 a5 m d f Hpath Hfl0 Hmd Hd Hf Hs Hfree.
-  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0).
+  rewrite (r1_open_unfold mem wmem pathp fl a3 a4 a5 m d f _ Hpath Hfl0 Hfree).
   apply check_getname_refusals_of_ok.
   unfold Open.check_openat_resolved.
   rewrite r1_proc_self_fd, Hmd, (r1_resolve_found_dir (m_fs m) (m_cwd m) d f Hd Hf Hs).
@@ -4065,3 +4184,74 @@ Example openat_creat_through_a_dangling_link :
      = CheckOk ln_open_m0 []
   /\ ln_open [108]%Z excl_create_flags (mkEffect (errno_ret ELOOP) [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.
+
+(* ===================================== a table with no free descriptor
+
+   Linux v6.18.46.  [do_sys_openat2] takes the descriptor with
+   [get_unused_fd_flags] after [getname] and before [do_filp_open]
+   (fs/open.c:1431-1437), and [alloc_fd] answers -EMFILE when the
+   lowest free descriptor is at or above the soft RLIMIT_NOFILE, before
+   it allocates anything (fs/file.c:591-593).  So on a table with no
+   free slot below the limit, every name [getname] hands on is -EMFILE,
+   whatever the walk would have answered: the dirfd is read in
+   [path_init] and the walk runs in [path_openat], both inside
+   [do_filp_open].  [getname]'s own answers come first, and its -ENOMEM
+   stands beside the -EMFILE. *)
+
+(** Every descriptor 0 to 4096 held, each on the stdin channel: the
+    table [File.lowest_fd] has no slot in ([File.lowest_fd_none]), under
+    a soft RLIMIT_NOFILE of [n].  At [n] = 4097 the run launched with
+    that limit and opened 4094 descriptors, and the lowest free one, 4097,
+    is at the limit. *)
+Definition full_fds : list (word * FdEntry) :=
+  map (fun k => (Z_to_bv 64 (Z.of_nat k), FdChannel (Z_to_bv 64 0))) (seq 0 4097).
+
+Definition full_table (n : Z) (m : Model) : Model :=
+  with_nofile (Z_to_bv 64 n) (with_fds full_fds m).
+
+(** THE ANSWER IS -EMFILE, BEFORE THE WALK AND EVERY PATH ERROR: for a
+    missing name (not its -ENOENT), for a walk that follows the link "l"
+    (not the walk's -ELOOP or -EACCES), for a write open of the existing
+    file "f" (not -ETXTBSY, and "f" keeps its bytes), for
+    "/proc/self/fd/3" (a channel there, which the reopen arm declines)
+    and under a dirfd the model declines; never a descriptor, and with
+    the pathname's copy-in, which [getname] made first.  [getname]'s
+    own answers stay first: the empty name is -ENOENT, and its -ENOMEM,
+    which copied nothing, stands beside the -EMFILE.  Under a soft limit
+    of 4098 Linux may hand out descriptor 4097, which no spec here
+    returns, and the call declines. *)
+Example openat_with_no_free_descriptor_answers_emfile_first :
+  let call (fl : Z) (p : list Z) (r : word) (m : Model) :=
+        check_syscall
+          (mkInput 56 [AT_FDCWD; 8192; Z_to_bv 64 fl; 420; 0; 0]
+             (open_path_mem p) (fun _ => None))
+          (with_copyins [(8192, S (length p))] (mkEffect r [] [])) m in
+  let mf := full_table 4097 ns_open_f in
+  let ml := full_table 4097 ln_open_m0 in
+  let procfd3 := [47; 112; 114; 111; 99; 47; 115; 101; 108; 102; 47; 102; 100; 47; 51]%Z in
+  lowest_fd_none (m_fds mf) = true
+  /\ call 0%Z [103]%Z (errno_ret EMFILE) mf = CheckOk mf []
+  /\ call 0%Z [103]%Z (errno_ret ENOENT) mf = CheckReject
+  /\ call 0%Z [108]%Z (errno_ret EMFILE) ml = CheckOk ml []
+  /\ call 0%Z [108]%Z (errno_ret ELOOP) ml = CheckReject
+  /\ call 0%Z [108]%Z (errno_ret EACCES) ml = CheckReject
+  /\ call wr_create_flags [102]%Z (errno_ret EMFILE) mf = CheckOk mf []
+  /\ call wr_create_flags [102]%Z (errno_ret ETXTBSY) mf = CheckReject
+  /\ call 0%Z [102]%Z 4097 mf = CheckReject
+  /\ call 0%Z procfd3 (errno_ret EMFILE) mf = CheckOk mf []
+  /\ check_syscall
+       (mkInput 56 [5; 8192; 0; 420; 0; 0] (open_path_mem [102%Z]) (fun _ => None))
+       (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EMFILE) [] [])) mf
+     = CheckOk mf []
+  /\ check_syscall
+       (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0] (open_path_mem [103%Z]) (fun _ => None))
+       (mkEffect (errno_ret EMFILE) [] []) mf
+     = CheckReject
+  /\ call 0%Z [] (errno_ret ENOENT) mf = CheckOk mf []
+  /\ call 0%Z [] (errno_ret EMFILE) mf = CheckReject
+  /\ check_syscall
+       (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0] (open_path_mem [103%Z]) (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) mf
+     = CheckOk mf []
+  /\ call 0%Z [103]%Z (errno_ret EMFILE) (full_table 4098 ns_open_f) = CheckUnmodeled.
+Proof. vm_compute; split_conj; check_eq. Qed.

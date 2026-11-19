@@ -1645,10 +1645,12 @@ Qed.
      alloc  mmap, brk, mremap, mprotect,  the shape's budget test fails,
             munmap                        or no placement exists;
                                           munmap: never
-     fs     openat, faccessat,            openat: no free descriptor;
-            faccessat2, unlinkat,         the others: never
-            getcwd, getdents64, write     (write's is the page an empty
-                                          pipe's write must allocate)
+     fs     openat, faccessat,            openat: no free descriptor, the
+            faccessat2, unlinkat,         -EMFILE it answers before the
+            getcwd, getdents64, write     walk (see below); the others:
+                                          never (write's is the page an
+                                          empty pipe's write must
+                                          allocate)
      fd     dup, pipe2, socket,           no free descriptor (two for
             socketpair, accept, clone,    pipe2 and socketpair; accept
             eventfd2                      also when [Socket.conn_ix_exhausted]);
@@ -1674,17 +1676,57 @@ Qed.
    was avoidable.
 
    So the filter is exact BY CONSTRUCTION rather than by mirroring each
-   arm's branch structure.  An errno the state forces — the budget is
-   spent, the descriptor table is full, [setsid] already succeeded — is
-   the only answer at its state, so no non-refusal outcome exists there
-   and it is kept.  An answer the state DETERMINES is never removed:
-   if the spec admits it beside an injected errno at one state, then by
-   the spec's own construction it is the answer the injection stands
-   beside, and it is not a refusal.  A wrong or over-inclusive errno
-   list can therefore only lose filtering; it can never remove an answer
-   Linux is forced to give.  What the design pays for that is the third
-   conjunct being an existential over spec outcomes rather than a
-   boolean; see the KNOWN GAP below.
+   arm's branch structure, but exact against the SPEC and its lists.  An
+   errno the state forces — the budget is spent, [setsid] already
+   succeeded — is the only answer at its state, so no non-refusal
+   outcome exists there and it is kept.  An answer the state DETERMINES
+   is never removed: if the spec admits it beside an injected errno at
+   one state, then by the spec's own construction it is the answer the
+   injection stands beside, and it is not a refusal.  An over-inclusive
+   errno list can therefore only lose filtering.  A list that leaves out
+   an errno the spec stands beside a refusal Linux is forced to give
+   does the opposite: the unlisted errno counts as a non-refusal, so the
+   filter removes the forced refusal beside it.  OPENAT'S LIST LEAVES
+   ERRNOS OUT, and its spec is built so that the one forced refusal it
+   decides, the -EMFILE of a table with no free descriptor, stands
+   beside none of them.  For [openat] under [forced_only_cfg]:
+
+     - REMOVED: each errno of [Fs.Open.openat_errnos] beside a
+       descriptor, and the walk's -ENOMEM and -EACCES
+       ([Fs.Namei.walk_errnos]) and [getname_flags]' -ENOMEM
+       ([Fs.Namei.getname_refusals]) beside any answer outside
+       [Fs.Open.openat_errnos]: a descriptor, or an errno the walk, the
+       arm or [getname] determines.
+     - KEPT: those answers themselves, among them the errnos
+       [injected_table] deliberately does not list: the -ETXTBSY of a
+       write open of an existing file no descriptor writes
+       ([Fs.Open.open_write_existing]; why it is unlisted is on
+       [injected_table]), the walk's -ELOOP after it followed a link
+       and its -ENAMETOOLONG after a component over [Fs.name_max], and
+       [getname]'s -ENAMETOOLONG, -EFAULT and the empty name's -ENOENT.
+     - FORCED, AND NOT REMOVABLE: on a table with no free descriptor
+       ([File.lowest_fd_none]: 4097 descriptors, 0 to 4096, since
+       [State.alloc_fd] scans 4096 candidates and [File.lowest_fd]
+       tests the one past them), every name [getname] hands on answers
+       -EMFILE ahead of the dirfd and the walk, as [do_sys_openat2] does
+       ([get_unused_fd_flags], fs/open.c:1435, Linux v6.18.46), and the
+       only answer beside it is [getname_flags]' -ENOMEM, which is
+       listed too ([Fs.Open.openat_core_spec]).  With no non-refusal
+       beside it the filter keeps the -EMFILE, and keeps that -ENOMEM.
+       A launch whose soft RLIMIT_NOFILE is above 4096 can hold that
+       table ([valid_nofile] admits up to 2^31 - 64); the -EMFILE is the
+       answer under a soft limit of 4097 or less, and above that limit
+       the call declines ([File.unused_fd_none_spec]).
+
+   A -EMFILE Linux gives at a soft limit the table reaches while a slot
+   below the scan wall is free is still removable: the model hands out
+   that slot ([File.lowest_fd] does not read the limit), so the filter
+   removes the -EMFILE beside the descriptor, and a statement under
+   [forced_only_cfg] does not cover that run
+   (bugs/fd-allocation-ignores-rlimit-nofile.md).  What the design pays
+   for exactness against the spec is the third conjunct being an
+   existential over spec outcomes rather than a boolean; see the KNOWN
+   GAP below.
 
    ** The filtered run is a subset of [run]
 
@@ -1814,7 +1856,21 @@ Record InjectedArm := mkInjectedArm {
     — which is a fact about the programs, not about this table, and
     nothing in this tree states it.
     A refused [rqtp] is not affected either way: its -EFAULT is the
-    only outcome at that state, so it is kept under both readings. *)
+    only outcome at that state, so it is kept under both readings.
+
+    OPENAT'S -ETXTBSY IS NOT LISTED, FOR THE SAME REASON.
+    [Fs.Open.open_write_existing] stands it beside a write open of an
+    existing file no descriptor of the model writes, by a bare [alt],
+    and on the file an [execve] runs it
+    is the answer Linux is forced to give (fs/exec.c:798 denies the
+    write access, fs/open.c:925-928 refuses it).  The model cannot tell
+    that file from another, so listing the errno would let
+    [forced_only_cfg] remove a forced answer wherever a descriptor is
+    also admitted; unlisted, it is kept, and a proof pays one case.
+    Unlisted, it is also a non-refusal, beside which the filter removes
+    every listed errno; the one of those Linux can be forced to give
+    there, the -EMFILE of a table with no free descriptor, comes before
+    the walk, where no -ETXTBSY stands ([Fs.Open.openat_core_spec]). *)
 Definition injected_table : list InjectedArm :=
   (* getcwd     *) mkInjectedArm  17%Z FamFs    getcwd_errnos ::
   (* eventfd2   *) mkInjectedArm  19%Z FamFd    eventfd2_errnos ::
@@ -3270,20 +3326,27 @@ Definition total_arg_bytes (args : list (list byte)) : Z :=
     DOMAIN, written where the domain is stated, and it is here because
     of what it buys:
 
-    [Sys.Fs.Open.openat_resolved_spec] declines a pathname with a
-    separator in it, because answering it at all would mean answering it
-    WRONGLY — the create shapes would mint a flat key where Linux returns
-    -ENOENT.  The whole-program examples in [Examples.cp_ns] and
-    [Examples.headcp_ns] pass argv entries straight to [openat], so
-    without this clause that declined arm is reachable under
-    [valid_input], and since [Equivalence.modeled] is a conjunct of
+    IT WAS WRITTEN AGAINST A SEPARATOR DECLINE THAT R22 REMOVED.
+    [Sys.Fs.Open.openat_resolved_spec] declined a pathname with a
+    separator in it, because answering it at all would have meant
+    answering it WRONGLY — the create shapes would have minted a flat
+    key where Linux returns -ENOENT.  The whole-program examples in
+    [Examples.cp_ns] and [Examples.headcp_ns] pass argv entries straight
+    to [openat], so without this clause that declined arm was reachable
+    under [valid_input], and since [Equivalence.modeled] is a conjunct of
     [strong_equiv]'s CONCLUSION rather than a hypothesis,
-    [Equivalence.strong_universal_T] would be FALSE for both of them
-    rather than merely narrower.
+    [Equivalence.strong_universal_T] would have been FALSE for both of
+    them rather than merely narrower.  Every pathname is walked now, and
+    the walk ends the model still declines are each example's own
+    hypothesis ([operands_inside_model]); what the separator half buys
+    is the operand shape both proofs are written for, a name that is
+    never the "/proc/self/fd/N" pathname answered ahead of the walk
+    ([Common.FileSim.proc_self_fd_no_slash]) and that names an entry of
+    the working folder ([Open.openat_plain_name]).
 
-    THE ".." HALF IS NOT ABOUT SOUNDNESS.  [openat] ANSWERS ".." — it is
-    a directory reference and takes the same arm "." does
-    ([Open.path_is_dirref]), which is correct for every program and
+    THE ".." HALF IS NOT ABOUT SOUNDNESS.  [openat] ANSWERS ".." — the
+    walk takes it to the working folder's parent, a folder, so it
+    reaches the arms "." reaches — which is correct for every program and
     creates no [unmodeled] arm at all.  What the examples cannot absorb
     is the SHAPE of that answer: their case split is empty / "." /
     regular, so a ".." argument would take the dot arm while the regular
@@ -3320,7 +3383,8 @@ Definition total_arg_bytes (args : list (list byte)) : Z :=
     about a launch where any argument AFTER argv[0] contains a
     separator, or is exactly "..".  For a program that takes paths that
     is most real invocations: [cp src dst] is covered, [cp /tmp/src dst]
-    is not.  That is priority 3 paid for priority 1.  The
+    is not.  That was priority 3 paid for priority 1 before R22; what it
+    pays for now is the operand shape above.  The
     clause is stated over every tail entry rather than the two an
     example opens, because [valid_argv] does not know which entries a
     program will treat as a path — so it also excludes launches whose
@@ -4703,8 +4767,15 @@ Definition localtime_path : Fs.path :=
 
     THIS IS THE DECLARED ENVIRONMENT ASSUMPTION the released model
     stated at its [/etc/localtime] arm, restated as a validity clause
-    over the same launches: an O_CREAT-free open of /etc/localtime
-    answers -ENOENT in the image.  Spelled out, /etc is absent or a
+    over the same launches: an open of /etc/localtime that follows a
+    link at its last name (no O_CREAT, no O_NOFOLLOW, the word [tzset]
+    passes) answers -ENOENT in the image.  An O_NOFOLLOW open is not
+    promised -ENOENT: on a dangling link at /etc/localtime itself it is
+    [may_open]'s -ELOOP (fs/namei.c:3538-3539), and -ENOTDIR under
+    O_DIRECTORY|O_NOFOLLOW ([do_open], :3958-3959), which the arms
+    answer through the walk ([Sys.Fs.Open.openat_read_spec]'s [ELink]
+    row, [Sys.Fs.Open.openat_dir_spec]); a link at /etc is followed
+    either way.  Spelled out, /etc is absent or a
     folder, and the walk of /etc/localtime reaches no inode.  A regular
     file at /etc is OUTSIDE it, where [link_path_walk] answers -ENOTDIR
     and the clause is false ([Fs.RNotDir]); so is an image that ships a
@@ -4720,8 +4791,8 @@ Definition localtime_path : Fs.path :=
     so under this clause the open is the walk's -ENOENT and needs no
     content model.
 
-    THE KERNEL PATH.  Under a flag word WITHOUT O_CREAT the walk reaches
-    the last component and finds no inode: [open_last_lookups]
+    THE KERNEL PATH.  Under a flag word WITHOUT O_CREAT that follows the
+    last link the walk reaches the last component and finds no inode: [open_last_lookups]
     (fs/namei.c:3848, Linux v6.18.46) takes the [lookup_fast_for_open]
     or [lookup_open] result, a negative dentry, into [step_into]
     (:1984), whose [handle_mounts] (:1625-1644) calls

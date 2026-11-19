@@ -1381,12 +1381,14 @@ Example mkdirat_injectable_errnos :
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
-(** THE CREATE'S UNTRACKED REFUSALS, all four.  Beside the -ENOMEM and
+(** THE CREATE'S UNTRACKED REFUSALS, three of the five
+    ([mkdirat_create_admits_eoverflow] and [mkdirat_create_admits_enospc]
+    pin the other two; [mkdirat_create_refuses_eperm] pins the -EPERM
+    that is not one).  Beside the -ENOMEM and
     -EROFS above: -EACCES from [may_create]'s [inode_permission] on the
-    parent ([may_create], fs/namei.c:3318, Linux v6.18.46), and -EPERM,
-    from the same call on an immutable parent ([inode_permission]
-    581-582) or from [vfs_mkdir] for a file system with no [->mkdir]
-    (4444-4446).  Each leaves the image as it was.  -EINVAL is refused:
+    parent ([may_create], fs/namei.c:3318, Linux v6.18.46).  Each leaves
+    the image as it was.
+    -EINVAL is refused:
     [do_mkdirat] (4474-4503), [filename_create] (4200-4250), [may_create]
     (3307-3319) and [vfs_mkdir] (4433-4471) do not give it, and tmpfs
     gives it only for a name a strictly case-folding folder refuses
@@ -1398,9 +1400,68 @@ Example mkdirat_create_admits_the_untracked_refusals :
         (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret e) [] [])) ns_empty in
   call ENOMEM = CheckOk ns_empty []
   /\ call EACCES = CheckOk ns_empty []
-  /\ call EPERM = CheckOk ns_empty []
   /\ call EROFS = CheckOk ns_empty []
   /\ call EINVAL = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** [may_create]'s -EOVERFLOW, for a caller whose fsuid or fsgid has no
+    mapping in the superblock's user namespace ([fsuidgid_has_mapping],
+    fs/namei.c:3315-3316 and include/linux/fs.h:1762-1776, Linux
+    v6.18.46), which [vfs_mkdir] reaches at 4440-4442 on the row that
+    creates the folder: admitted there, leaving the image as it was.  An
+    existing name refuses it, a file or a folder alike: [filename_create]'s
+    lookup answers -EEXIST first, and [may_create] itself tests the child
+    (3311-3312) before the mapping. *)
+Example mkdirat_create_admits_eoverflow :
+  let call m := check_syscall
+        (mkInput 34 [AT_FDCWD; 8192; 493; 0; 0; 0] mem_name_a (fun _ => None))
+        (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EOVERFLOW) [] [])) m in
+  call ns_empty = CheckOk ns_empty []
+  /\ call ns_file_a = CheckReject
+  /\ call ns_empty_dir_a = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** The file system's -ENOSPC, for a create that finds no room for its
+    inode, which [vfs_mkdir] reaches only past [may_create], calling
+    [->mkdir] at fs/namei.c:4457 (Linux v6.18.46).  On tmpfs
+    [__shmem_get_inode] answers it when [shmem_reserve_inode] finds the
+    inode budget spent (mm/shmem.c:354-358, Linux v6.18.46) or
+    [new_inode] fails (:3088-3091); on ramfs, [ramfs_mknod] answers it
+    when its inode allocation fails (fs/ramfs/inode.c:101-104, Linux
+    v6.18.46), and [ramfs_mkdir] returns it (:125-128).  Admitted on the
+    row that creates the folder, leaving the image as it was; refused
+    beside an existing name, a file or a folder alike, which
+    [filename_create]'s lookup answers -EEXIST before the file system
+    is asked anything. *)
+Example mkdirat_create_admits_enospc :
+  let call m := check_syscall
+        (mkInput 34 [AT_FDCWD; 8192; 493; 0; 0; 0] mem_name_a (fun _ => None))
+        (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret ENOSPC) [] [])) m in
+  call ns_empty = CheckOk ns_empty []
+  /\ call ns_file_a = CheckReject
+  /\ call ns_empty_dir_a = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** NO -EPERM BESIDE THE CREATE.  [vfs_mkdir] answers -EPERM for a
+    parent whose file system has no [->mkdir] (fs/namei.c:4444-4446,
+    Linux v6.18.46), such as an mqueue folder
+    ([mqueue_dir_inode_operations], ipc/mqueue.c:1613-1617).  SCOPE.md's
+    launch premise puts every folder the walk reaches on tmpfs or ramfs,
+    and both install one ([shmem_dir_inode_operations],
+    mm/shmem.c:5281-5289;
+    [ramfs_dir_inode_operations], fs/ramfs/inode.c:191-197);
+    [inode_permission]'s -EPERM
+    (fs/namei.c:581-582) needs the immutable attribute, which SCOPE.md
+    excludes too.  So -EPERM is refused on the row that creates the
+    folder, and beside an existing name's -EEXIST, a file or a folder
+    alike ([Sys.Fs.Namei.mkdirat_errnos]). *)
+Example mkdirat_create_refuses_eperm :
+  let call m := check_syscall
+        (mkInput 34 [AT_FDCWD; 8192; 493; 0; 0; 0] mem_name_a (fun _ => None))
+        (with_copyins [(8192, 2%nat)] (mkEffect (errno_ret EPERM) [] [])) m in
+  call ns_empty = CheckReject
+  /\ call ns_file_a = CheckReject
+  /\ call ns_empty_dir_a = CheckReject.
 Proof. vm_compute; split_conj; check_eq. Qed.
 
 (** THE ROUND TRIP: rmdir then mkdirat at ONE key leaves the image

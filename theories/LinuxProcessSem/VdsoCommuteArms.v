@@ -138,10 +138,11 @@ Qed.
     too, and is proved the same way: at one model, and, for an arm whose
     wrapper stands outside its own model read, as a frame of its own
     ([vc_getname_refusals]). *)
-Lemma vdso_at_getname_refusals : forall (pathp : word) P, vdso_at P ->
-  vdso_at (fun i m => getname_refusals pathp (P i m)).
+Lemma vdso_at_getname_refusals :
+  forall (lead : list (word * nat)) (pathp : word) P, vdso_at P ->
+  vdso_at (fun i m => getname_refusals lead pathp (P i m)).
 Proof.
-  intros pathp P HP v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
+  intros lead pathp P HP v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
   - left. exact (HP v i m o H).
   - right. split.
     + intro Hu. apply Hnu.
@@ -153,10 +154,11 @@ Proof.
       rewrite with_vdso_idem, with_vdso_same in H'. exact H'.
 Qed.
 
-Lemma vc_getname_refusals : forall (pathp : word) (c : Sys SyscallEffect),
-  vdso_commutes c -> vdso_commutes (getname_refusals pathp c).
+Lemma vc_getname_refusals :
+  forall (lead : list (word * nat)) (pathp : word) (c : Sys SyscallEffect),
+  vdso_commutes c -> vdso_commutes (getname_refusals lead pathp c).
 Proof.
-  intros pathp c Hc v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
+  intros lead pathp c Hc v i m o [H | (Hnu & reads & e & Hr & Hin & -> & Hnot)].
   - left. exact (Hc v i m o H).
   - right. split.
     + intro Hu. apply Hnu.
@@ -194,6 +196,31 @@ Proof. intros b P Q HP HQ v i m o. destruct (b i); [apply HP|apply HQ]. Qed.
 
 Lemma vdso_at_const : forall c, vdso_commutes c -> vdso_at (fun _ _ => c).
 Proof. intros c Hc v i m o H. exact (Hc v i m o H). Qed.
+
+(** The same for a test on the input and the descriptor table, which
+    [State.with_vdso] carries across: [Fs.Open.openat_core_spec]'s test
+    for a table with no free slot. *)
+Lemma vdso_at_if_fds : forall (b : SyscallInput -> list (word * FdEntry) -> bool) P Q,
+  vdso_at P -> vdso_at Q ->
+  vdso_at (fun i m => if b i (m_fds m) then P i m else Q i m).
+Proof.
+  intros b P Q HP HQ v i m o H. cbv beta in H |- *.
+  change (m_fds (with_vdso v m)) with (m_fds m).
+  destruct (b i (m_fds m)); [exact (HP v i m o H) | exact (HQ v i m o H)].
+Qed.
+
+(** What [get_unused_fd_flags] answers on a table with no free slot
+    ([Fs.File.unused_fd_none_spec]) reads the soft limit and the table,
+    both of which [State.with_vdso] carries across. *)
+Lemma vdso_at_unused_fd_none : vdso_at (fun _ m => unused_fd_none_spec m).
+Proof.
+  intros v i m o H. cbv beta in H |- *. unfold unused_fd_none_spec in *.
+  change (m_nofile (with_vdso v m)) with (m_nofile m).
+  change (m_fds (with_vdso v m)) with (m_fds m).
+  destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z.
+  - exact (vc_err_ret EMFILE v i m o H).
+  - exact (vc_unmodeled v i m o H).
+Qed.
 
 (** The arm at one model: its gates, its ledger, [getname_refusals] and
     [walk_refusals], then the body walked as a specification of its own. *)
@@ -233,8 +260,12 @@ Lemma vc_openat_spec : forall dirfd pathp flags,
   vdso_commutes (openat_spec dirfd pathp flags).
 Proof.
   intros.
-  assert (Hc : vdso_commutes (openat_core_spec dirfd pathp flags))
-    by (unfold openat_core_spec; vdso_at_walk).
+  assert (Hc : vdso_commutes (openat_core_spec dirfd pathp flags)).
+  { unfold openat_core_spec. apply vdso_commutes_of_at.
+    apply vdso_at_if; [apply vdso_at_const; solve [vdso_walk] |].
+    apply (vdso_at_if_fds (fun i fds => openat_name_fetched i pathp && lowest_fd_none fds)).
+    - apply vdso_at_unused_fd_none.
+    - apply vdso_at_walk_refusals. apply vdso_at_of_commutes. vdso_walk. }
   unfold openat_spec. apply vc_bind; [vdso_walk | intros x; cbv beta].
   apply vc_getname_refusals. vdso_walk.
 Qed.

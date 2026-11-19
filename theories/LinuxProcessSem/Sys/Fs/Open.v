@@ -23,10 +23,11 @@ Open Scope sys_scope.
 
 (** openat's injectable failures: environment conditions the model does
     not track — kernel memory (ENOMEM, listed first as the canonical
-    witness), permissions (EACCES), fd-table exhaustion (EMFILE/ENFILE,
-    which also keep the spec receptive when no free fd < 2^31 exists).
-    ENOENT is NOT injectable: file existence IS tracked, and a missing
-    file returns a deterministic -ENOENT. *)
+    witness), permissions (EACCES), fd-table exhaustion (EMFILE/ENFILE)
+    — beside every open that hands out a descriptor.  A table with no
+    slot at all is answered before the walk instead
+    ([openat_core_spec]).  ENOENT is NOT injectable: file existence IS
+    tracked, and a missing file returns a deterministic -ENOENT. *)
 Definition openat_errnos : list Z := [ENOMEM; EACCES; EMFILE; ENFILE].
 
 (** The clobbering write-open combination the model covers. *)
@@ -74,18 +75,18 @@ Definition append_create_flags : Z := (O_WRONLY + O_CREAT + O_APPEND)%Z.
     [open_flag & O_CREAT] block with
     [(open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED)], and
     returns -EEXIST there, BEFORE the [d_is_dir(nd->path.dentry)] test
-    that answers -EISDIR.  So a name that exists -- a key, a directory
-    reference, or a directory some key lives under -- is -EEXIST before
+    that answers -EISDIR.  So a name that exists -- any entry the walk
+    finds, a folder and "." and ".." among them -- is -EEXIST before
     anything else is looked at: the answer [openat_excl_spec] gives, and
     the reason no append rule ever meets an existing tail.  A DIRECTORY
     REFERENCE IS -EEXIST AND NOTHING ELSE HERE, which is the one place
     this port differs from main LPS 4d80c33d83: that model admits
     -EISDIR beside it, the answer kernels v4.17 through v5.6 give in the
-    function [do_open] replaced.  This model describes Linux v6.18.46
-    alone, so the arm answers
-    v6.18.46's -EEXIST and offers no alternative across kernel
-    versions.  An absent name is
-    created, and then
+    function [do_open] replaced.  No supported kernel gives it: [do_open]
+    and [do_dentry_open]'s flag clearing read the same at v6.16, v6.17,
+    v6.16.12 and v6.17.13 (fs/namei.c, fs/open.c from git.kernel.org
+    stable) as at v6.18.46, so each answers -EEXIST and the arm offers no
+    alternative across them.  An absent name is created, and then
     [do_open] clears O_TRUNC under [FMODE_CREATED] (which is why the
     O_TRUNC spelling is the same behaviour, as it is for
     [is_excl_create]), while O_APPEND survives into [f_flags]:
@@ -232,8 +233,8 @@ Definition open_walk_mode (flags : word) : Fs.WalkMode :=
       combined arm and no test), O_RDWR|O_DIRECTORY (which
       [build_open_flags] does not reject, and which is -EISDIR on a
       real directory through [may_open]'s MAY_WRITE test — an arm
-      nothing here reaches, since [openat_dir_spec]'s guards were
-      written for the read-only word), and O_RDWR|O_EXCL WITHOUT
+      nothing here reaches, since [openat_resolved_spec] selects
+      [openat_dir_spec] for the read-only word alone), and O_RDWR|O_EXCL WITHOUT
       O_CREAT, which Linux treats as plain O_RDWR (open(2): O_EXCL
       "is undefined" without O_CREAT and [do_open] reads it only inside
       its [open_flag & O_CREAT] block) and which no reported program
@@ -353,10 +354,10 @@ Definition open_result_spec (m : Model) (mk : word -> Model -> Model)
 (** The effect a modeled WRITE-CREATE open records, shared by the
     clobbering (O_TRUNC) and the exclusive (O_EXCL) shapes so the two
     provably record the same thing: either an errno from
-    [openat_errnos] (an environment condition the model does not track;
-    this alternative also keeps the spec receptive when no free
-    fd < 2^31 exists), or the lowest free fd bound to a write-only fd
-    on inode [i], with the file system left as [fs'].
+    [openat_errnos] (an environment condition the model does not track),
+    or the lowest free fd bound to a write-only fd on inode [i], with
+    the file system left as [fs'].  A table with no free fd never
+    reaches this ([openat_core_spec] answers it first).
 
     [fs'] AND [i] ARE ONE OF TWO PAIRS, and every caller computes which.
     A name the walk found as an [Fs.EFile i] keeps its inode and is
@@ -388,7 +389,19 @@ Definition create_wronly (fs' : Fs.Fs) (i : Fs.ino) (m : Model)
 
 (** A NEW REGULAR FILE at the key [k] an [Fs.RMissing] names: a fresh
     inode ([Fs.fs_fresh_ino]), empty, with one name.  [create_file_ino]
-    is the inode the descriptor then holds. *)
+    is the inode the descriptor then holds.
+
+    THE FOLDER IS ON TMPFS OR RAMFS, and that is why the new name is an
+    empty regular file.  The parent's [->create] decides what a create
+    makes ([lookup_open], fs/namei.c:3788-3797, Linux v6.18.46):
+    [shmem_create] and [ramfs_create] make an empty regular file
+    ([shmem_dir_inode_operations], mm/shmem.c:5281-5284;
+    [ramfs_dir_inode_operations], fs/ramfs/inode.c:191-192), while an
+    mqueue folder's [mqueue_create] makes a queue whose [i_size] is 80
+    and whose operations have no [.write] (ipc/mqueue.c:53, :307-312,
+    :612-616, :1619-1624).  SCOPE.md's launch premise puts every folder
+    the walk reaches on tmpfs or ramfs, so every creating arm answers
+    for those two. *)
 Definition create_file_fs (fs : Fs.Fs) (k : Fs.path) : Fs.Fs :=
   Fs.fs_create_file fs k [].
 
@@ -396,10 +409,8 @@ Definition create_file_ino (fs : Fs.Fs) : Fs.ino := Fs.fs_fresh_ino fs.
 
 (** The effect a modeled APPEND write-open records: either an errno from
     [openat_errnos] (the same untracked environment conditions the other
-    write-open shapes admit, this alternative also keeping the spec
-    receptive when no free fd < 2^31 exists), or the lowest free fd bound
-    to a [State.FdFileA] on inode [i], with the file system left as
-    [fs'].
+    write-open shapes admit), or the lowest free fd bound to a
+    [State.FdFileA] on inode [i], with the file system left as [fs'].
 
     AN EXISTING FILE KEEPS ITS BYTES, AND THAT IS THE WHOLE POINT OF THE
     ARM: the callers pass [m_fs m] unchanged for a name the walk found,
@@ -443,6 +454,85 @@ Definition open_rdwr (fs' : Fs.Fs) (i : Fs.ino) (m : Model)
        set_fs fs' ;;
        set_fds (fd_insert (m_fds m) fd (FdFileRW i (Z_to_bv 64 0))) ;;
        ret_only fd).
+
+(** The inode a descriptor holds WRITE ACCESS to, or [None]: the three
+    write kinds of a regular file.  [do_dentry_open] (fs/open.c:926-929,
+    Linux v6.18.46) takes write access for every FMODE_WRITE open of a
+    regular file, and the file keeps it until its last fput, where
+    [__fput] (fs/file_table.c:512) drops it.  ENUMERATED, as
+    [State.entry_ino] is, so that a later [FdEntry] constructor able to
+    hold write access stops the build here. *)
+Definition entry_write_ino (e : FdEntry) : option Fs.ino :=
+  match e with
+  | FdFileW i _ | FdFileA i _ | FdFileRW i _ => Some i
+  | FdFile _ _ | FdChannel _ | FdDir _ | FdSocket _ | FdPipe _ _
+  | FdDevNull _ _ | FdUrandom _ _ | FdStream _ _ _ | FdEventfd _
+  | FdDgram _ => None
+  end.
+
+(** Does some descriptor of the model hold write access to inode [i]? *)
+Definition ino_write_held (fds : list (word * FdEntry)) (i : Fs.ino) : bool :=
+  existsb (fun p => match entry_write_ino (snd p) with
+                    | Some j => Z.eqb j i
+                    | None => false
+                    end) fds.
+
+(** -ETXTBSY BESIDE A WRITE OPEN OF A FILE THAT EXISTS: [s], or a bare
+    -ETXTBSY that leaves the model, the file's bytes included, as it
+    was, unless a descriptor of the model holds write access to the
+    file's inode [i], and then [s] alone.
+
+    LINUX DENIES WRITE ACCESS TO A FILE SOMETHING EXECUTES.  [execve]
+    opens its file with [do_open_execat], which takes
+    [exe_file_deny_write_access] (fs/exec.c:798, Linux v6.18.46; the
+    same line at v6.16 and v6.17), and the process's [mm] keeps the
+    deny for as long as the file is its executable ([set_mm_exe_file],
+    kernel/fork.c:1214).  A later open with write access then fails in
+    [file_get_write_access] (fs/open.c:883-885), which [do_dentry_open]
+    calls for a writer (:925-928), through [get_write_access]
+    (include/linux/fs.h:3215-3218), with
+    -ETXTBSY.  That is [do_open]'s [vfs_open] (fs/namei.c:3974-3975),
+    after [may_open] and BEFORE [handle_truncate] (:3978-3979), so an
+    O_TRUNC open of the file empties nothing.  The [execve] that
+    launched this process holds such a deny on the file its AT_EXECFN
+    names, and SCOPE.md says the image may hold that file.
+
+    A LIVE WRITER RULES IT OUT.  The deny and the writers share one
+    counter, the inode's [i_writecount]: [get_write_access] fails only
+    while it is negative (include/linux/fs.h:3217) and [deny_write_access]
+    only takes a deny while it is not positive (:3222).  A descriptor of
+    the model that holds write access to [i] ([ino_write_held]: an
+    [FdFileW], [FdFileA] or [FdFileRW] on [i], whatever name or
+    "/proc/self/fd/N" it was opened through) was opened successfully, so
+    no deny was in place then, and while it stays open the count stays
+    positive, so none can be taken since: no -ETXTBSY stands beside the
+    open then.
+
+    WHY BESIDE AND NOT INSTEAD otherwise.  The model cannot tell which
+    inode is executed: the launch's exec name is not in the
+    [State.Model], a name [Run.valid_execfn] admits may be "/dev/fd/N"
+    (an [execveat] through a descriptor, which names no file of the
+    image), and the inode numbers of a dropped file are handed out again
+    ([Fs.fs_fresh_ino]).  Declining instead would make the released copy
+    examples' theorems false, since an operand of theirs may name the
+    executable.  So every write-access open of a REGULAR FILE THE WALK
+    FOUND that no descriptor of the model writes admits -ETXTBSY beside
+    its own answers, which admits it for files nothing executes too: a
+    trace no supported kernel gives, an over-admission (AGENTS.md's
+    second priority) and never a rejected answer.  A file the open
+    CREATES is a fresh inode nothing can be executing, so the
+    [Fs.RMissing] rows keep their answers alone; a read-only open takes
+    no write access ([do_dentry_open] counts a reader instead), and an
+    O_EXCL open of an existing name is [do_open]'s -EEXIST first
+    (fs/namei.c:3949-3950).  The devices take no write access either
+    ([special_file], fs/open.c:925).
+
+    The rows: [openat_create_spec], [openat_append_spec] (the plain
+    word), [openat_rdwr_spec] (all four words, O_RDWR alone included)
+    and the two write words of [openat_procfd_spec]. *)
+Definition open_write_existing (m : Model) (i : Fs.ino) (s : Sys SyscallEffect)
+    : Sys SyscallEffect :=
+  if ino_write_held (m_fds m) i then s else alt (err_ret ETXTBSY) s.
 
 (** IS THE DEVICE ENTRY AT [k] AT ITS OWN NAME?  A device descriptor
     carries no key ([State.FdDevNull], [State.FdUrandom]), so [fstat]
@@ -678,8 +768,10 @@ Qed.
     ([Fs.Namei.walk_errnos]).
 
     [Fs.RMissing] IS -ENOENT HERE, not a create: without O_CREAT
-    [lookup_open] hands back a negative dentry with no LOOKUP_CREATE and
-    [do_open] answers -ENOENT.
+    [lookup_fast_for_open] or [lookup_open] hands back a negative dentry,
+    which [step_into] receives from [open_last_lookups] (fs/namei.c:3922);
+    its [handle_mounts] calls [traverse_mounts], which answers -ENOENT
+    for a negative dentry (:1537-1538), so [do_open] is never reached.
 
     A LINK AT THE LAST COMPONENT is one the walk did not follow, which
     is O_NOFOLLOW ([open_walk_mode]); [may_open] refuses it with -ELOOP
@@ -743,8 +835,10 @@ Definition openat_create_spec (r : Fs.Resolved) (m : Model)
   | Fs.RFound k e =>
         match e with
         | EDir => err_ret EISDIR
-        | EFile i => create_wronly (Fs.fs_set_ino_data (m_fs m) i []) i m
-            (* O_TRUNC empties the inode *)
+        | EFile i =>
+            open_write_existing m i
+              (create_wronly (Fs.fs_set_ino_data (m_fs m) i []) i m)
+            (* O_TRUNC empties the inode, or -ETXTBSY first *)
         | EDev DevNull => open_devnull k m false true
         | EDev DevUrandom => open_urandom k m false true
         | ELink _ => err_ret ELOOP
@@ -822,7 +916,7 @@ Definition openat_append_spec (excl : bool) (r : Fs.Resolved) (m : Model)
       else
         match e with
         | EDir => err_ret EISDIR
-        | EFile i => open_append (m_fs m) i m
+        | EFile i => open_write_existing m i (open_append (m_fs m) i m)
         | EDev DevNull => open_devnull k m false true
         | EDev DevUrandom => open_urandom k m false true
         | ELink _ => err_ret ELOOP   (* O_NOFOLLOW: fs/namei.c:3538-3539 *)
@@ -879,8 +973,9 @@ Definition openat_rdwr_spec (creat trunc : bool) (r : Fs.Resolved) (m : Model)
         match e with
         | EDir => err_ret EISDIR
         | EFile i =>
-            open_rdwr (if trunc then Fs.fs_set_ino_data (m_fs m) i []
-                       else m_fs m) i m
+            open_write_existing m i
+              (open_rdwr (if trunc then Fs.fs_set_ino_data (m_fs m) i []
+                          else m_fs m) i m)
         | EDev DevNull => open_devnull k m true true
         | EDev DevUrandom => open_urandom k m true true
         | ELink _ => err_ret ELOOP   (* O_NOFOLLOW: fs/namei.c:3538-3539 *)
@@ -890,7 +985,9 @@ Definition openat_rdwr_spec (creat trunc : bool) (r : Fs.Resolved) (m : Model)
 (** THE EXCLUSIVE READ-WRITE CREATE.  The shape of [openat_excl_spec]
     with the fd kind changed and no other difference: O_EXCL's -EEXIST
     is decided before any type test, so a directory answers -EEXIST here
-    rather than the -EISDIR [openat_rdwr_spec] gives it. *)
+    rather than the -EISDIR [openat_rdwr_spec] gives it.  A missing name
+    becomes an empty regular file because its folder is on tmpfs or
+    ramfs ([create_file_fs]; SCOPE.md's launch premise). *)
 Definition openat_rdwr_excl_spec (r : Fs.Resolved) (m : Model)
     : Sys SyscallEffect :=
   match r with
@@ -1072,7 +1169,11 @@ Definition proc_self_fd (p : path) : option word :=
       empties the file for EVERY name and descriptor: [do_open] arms
       [handle_truncate] for a regular file and runs it after
       [vfs_open], on the inode.  The errno alternatives come before that
-      and leave the file as it was.
+      and leave the file as it was, and so does the -ETXTBSY both write
+      words admit beside them ([open_write_existing]): the inode may be
+      the one an [execve] runs, which a read-only descriptor of it can
+      hold, unless a descriptor of the model holds write access to it,
+      the one at [N] included.
     - any other kind at [N]: declined.  A socket, a pipe end, an eventfd
       and a device each reach their own [->open] through [vfs_open]; a
       directory reached this way is not stated; and a channel is
@@ -1093,8 +1194,9 @@ Definition openat_procfd_spec (n flags : word) (m : Model)
         open_result_spec m (fun fd => with_fds (fd_insert (m_fds m) fd
                                                   (FdFile i (Z_to_bv 64 0))))
       else if Z.eqb fl wr_create_flags then
-        create_wronly (Fs.fs_set_ino_data (m_fs m) i []) i m
-      else open_append (m_fs m) i m
+        open_write_existing m i
+          (create_wronly (Fs.fs_set_ino_data (m_fs m) i []) i m)
+      else open_write_existing m i (open_append (m_fs m) i m)
   | Some (FdChannel _) | Some (FdDir _)
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some (FdUrandom _ _) | Some (FdStream _ _ _) | Some (FdEventfd _)
@@ -1114,7 +1216,9 @@ Definition openat_procfd_spec (n flags : word) (m : Model)
     [Fs.resolve_spec].  The devices are entries the walk reaches, "/tmp/x"
     is an ordinary key, and "/etc/localtime" is whatever the image says:
     [Run.localtime_absent] is the validity clause that keeps it absent,
-    so its open without O_CREAT is the walk's -ENOENT.
+    so its open without O_CREAT and without O_NOFOLLOW is the walk's
+    -ENOENT (under O_NOFOLLOW a dangling link there is [may_open]'s
+    -ELOOP, fs/namei.c:3538-3539).
 
     THE FINAL [else unmodeled] IS UNREACHABLE: [openat_core_spec] has
     already refused every word [modeled_open_flags] does not admit. *)
@@ -1196,11 +1300,14 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     part of R22 (issue #1011, section 3).
 
     ORDER.  The kernel's own order is [build_open_flags()], then
-    [getname()], then [path_init]'s [fdget_raw] on the dirfd, and this
+    [getname()], then [get_unused_fd_flags()], then [do_filp_open],
+    whose [path_init] reads the dirfd ([fdget_raw]) before the walk
+    ([do_sys_openat2], fs/open.c:1427-1437, Linux v6.18.46), and this
     spec follows it: a flag word the model does not interpret yields
-    [unmodeled] BEFORE any pathname is fetched, while an over-long or
-    unresolvable path answers a real errno even when the dirfd is one
-    the model declines.
+    [unmodeled] BEFORE any pathname is fetched, an over-long, unreadable
+    or empty path answers a real errno even when the dirfd is one the
+    model declines, and so does a table with no free descriptor
+    ([openat_core_spec]).
 
     [dirfd] arrives already truncated to 32 bits (see [Syscall.fd32]), as
     openat declares it [int]: AT_FDCWD is recognized in the low half
@@ -1220,9 +1327,10 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     Anything else — a dirfd other than AT_FDCWD, other flag
     combinations — is [unmodeled].  An open on an arm that can SUCCEED
     may instead fail with an errno from [openat_errnos] (environment
-    conditions the model does not decide; this alternative also keeps
-    the spec receptive when no free fd < 2^31 exists).  The -EMFILE
-    among them is the one that is not purely an environment condition:
+    conditions the model does not decide), and a write open of a
+    regular file the walk found may instead answer -ETXTBSY
+    ([open_write_existing]) while no descriptor of the model writes it.  The -EMFILE
+    among [openat_errnos] is the one that is not purely an environment condition:
     the model holds the run's soft RLIMIT_NOFILE in [State.m_nofile],
     and [File.lowest_fd] ignores it, so this spec can hand out an fd
     Linux would have refused.  That is
@@ -1239,8 +1347,13 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     those arms admit no [openat_errnos] alternative, whereas Linux can
     fail an openat with an errno raised BEFORE path resolution —
     [do_sys_openat2] calls [get_unused_fd_flags] before [do_filp_open],
-    so at RLIMIT_NOFILE the real call answers -EMFILE (or -ENFILE at the
-    system limit) where the model insists on the resolution errno.
+    and [path_openat] calls [alloc_empty_file] before its walk
+    (fs/namei.c:4124-4126) — so where the table still has a slot below
+    [State.alloc_fd]'s scan wall but the soft RLIMIT_NOFILE is reached,
+    the real call answers -EMFILE, and at the system limit -ENFILE,
+    where the model insists on the resolution errno.  A table with no
+    free slot at all is not approximate: [openat_core_spec] answers it
+    before the walk.
     What they DO admit beside their answer is the walk's own -EACCES and
     -ENOMEM ([Fs.Namei.walk_refusals], applied in [openat_core_spec];
     a "/proc/self/fd/N" pathname is walked by Linux like any other, so
@@ -1270,6 +1383,32 @@ Definition openat_body_spec (i : SyscallInput) (m : Model)
         else openat_resolved_spec p flags m
   end.
 
+(** [getname()] HANDED ON A NAME: the fetch neither faulted nor ran
+    past PATH_MAX, and the name is not the empty one [getname_flags]
+    refuses with -ENOENT (fs/namei.c:167-171).  These are exactly the
+    fetches [openat_body_spec] carries past its own three answers. *)
+Definition openat_name_fetched (i : SyscallInput) (pathp : word) : bool :=
+  match read_cstr (in_mem i) pathp with
+  | CstrOk p => negb (path_eqb p [])
+  | CstrTooLong | CstrFault => false
+  end.
+
+(** THE DESCRIPTOR COMES BEFORE THE WALK.  [do_sys_openat2] takes it
+    with [get_unused_fd_flags] after [getname] and before
+    [do_filp_open] (fs/open.c:1431-1437, Linux v6.18.46, in the same
+    order at v6.16 and v6.17), so on a table
+    with no free descriptor ([File.lowest_fd_none], the test the success
+    path's [File.lowest_fd] empties on) every fetched name answers what
+    [get_unused_fd_flags] answers there ([File.unused_fd_none_spec]):
+    -EMFILE alone, ahead of the dirfd, the walk and every answer the walk
+    leads to, the walk's own refusals and -ETXTBSY included, or a
+    decline where the soft limit lets Linux hand out a descriptor past
+    the ones [State.alloc_fd] scans.  That covers every arm the flag word
+    selects, "/proc/self/fd/N" too.  [getname]'s own answers come before
+    it and stay where they are, in [openat_body_spec], and
+    [getname_flags]' -ENOMEM still stands beside the -EMFILE
+    ([openat_spec]), since [__getname] runs before the descriptor is
+    taken. *)
 Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -1278,8 +1417,12 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
      [unmodeled], and in particular NOT one of the pathname errnos below,
      which the kernel would never reach for a combination it rejects. *)
   if negb (modeled_open_flags flags) then unmodeled
+  (* then [getname()], and on a name it handed on, [get_unused_fd_flags()]
+     where the table has no free descriptor *)
+  else if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+  then unused_fd_none_spec m
   else
-    (* then [getname()]: all three of its answers are real errnos; and
+    (* otherwise all three of [getname()]'s answers are real errnos; and
        beside everything the walk leads to, the walk's own refusals. *)
     walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags).
 
@@ -1290,7 +1433,7 @@ Definition openat_core_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
     it out, since a call the core declines admits no refusal. *)
 Definition openat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   i <- input ;;
-  getname_refusals pathp
+  getname_refusals [] pathp
     (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
        (openat_core_spec dirfd pathp flags)).
 
@@ -1658,11 +1801,10 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       with [want &= MAY_READ | MAY_WRITE | MAY_EXEC] and then finds
       every [(e_perm & 0) == 0] (fs/namei.c, fs/posix_acl.c).
 
-    WHAT IS EXCLUDED BY THE ENVIRONMENT INSTEAD, and so is a precondition
-    rather than a gate.  These reach a zero mask and can answer outside
-    [faccessat_errnos]; the WORLD paragraph on [faccessat_spec] is what
-    rules them out, and a run that leaves it is a false rejection rather
-    than an unsound admission:
+    WHAT IS LEFT OUT BY OTHER MEANS, and so is not a gate.  These reach a
+    zero mask and can answer outside [faccessat_errnos].  Facts stated
+    elsewhere rule out the first three; the fourth is why the arm
+    declines a device:
 
     - [do_inode_permission] dispatches to [inode->i_op->permission]
       ahead of [generic_permission] and passes the mask through
@@ -1670,16 +1812,51 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       filesystems read: [fuse_permission] turns it into a FUSE_ACCESS
       request whose errno the userspace server picks (fs/fuse/dir.c),
       and [proc_pid_permission] can answer -ESRCH or, under hidepid,
-      -ENOENT/-EPERM with a zero mask (fs/proc/base.c).
-    - [devcgroup_inode_permission] returns early only for a non-device
-      inode; on a block or character node under a restrictive device
-      cgroup it reaches [__devcgroup_check_permission] and can answer
-      -EPERM even with an empty access set
-      (include/linux/device_cgroup.h, security/device_cgroup.c).
+      -ENOENT/-EPERM with a zero mask (fs/proc/base.c).  The
+      configuration of record builds no FUSE (SCOPE.md), and no walk
+      this spec answers reaches a procfs inode: [Fs.ROutside] declines
+      /proc, the working folder lies outside it
+      ([Run.outside_proc_sysb]), and SCOPE.md's launch premise mounts no
+      file system but tmpfs and ramfs on a folder of the launch tree
+      outside /proc and /sys, so no procfs is mounted anywhere else.
+      tmpfs and ramfs install no [->permission] (mm/shmem.c,
+      fs/ramfs/inode.c).
     - [posix_acl_permission] and [check_acl] can answer -EIO on a
-      malformed or unreadable on-disk ACL (fs/posix_acl.c).
+      malformed or unreadable on-disk ACL (fs/posix_acl.c).  tmpfs and
+      ramfs read none: tmpfs keeps an ACL in the inode's cache
+      ([simple_set_acl], fs/posix_acl.c) and has no [->get_inode_acl]
+      to fail, and ramfs sets no SB_POSIXACL, so [check_acl] is not
+      reached.
     - -ESTALE, after [do_faccessat]'s own [retry_estale] loop has
-      re-resolved once with LOOKUP_REVAL and failed again.
+      re-resolved once with LOOKUP_REVAL and failed again.  It needs a
+      [d_revalidate] or a [d_weak_revalidate] that refuses, and tmpfs
+      and ramfs install neither.
+    - A DEVICE CGROUP, WHICH CAN ANSWER ANY ERRNO.
+      [devcgroup_inode_permission] (include/linux/device_cgroup.h:17-39)
+      returns early only for a non-device inode; on a block or character
+      node it calls [devcgroup_check_permission], which returns what the
+      cgroup BPF device programs answer before it asks the v1 devices
+      controller (security/device_cgroup.c:860-865).
+      Their answer is the [run_ctx.retval] of [bpf_prog_run_array_cg]
+      (kernel/bpf/cgroup.c:84-115, called at :1787): -EPERM for a program
+      that denies (:110), and otherwise whatever value a program set
+      through [bpf_set_retval] (:1839-1846), a helper every device
+      program is offered ([cgroup_dev_func_proto] at :1856 takes
+      [cgroup_common_func_proto]'s, :2778-2794), and which
+      include/uapi/linux/bpf.h:5504-5518 documents as the value handed
+      to user space.  The v1 controller answers -EPERM even for an empty
+      access set ([devcgroup_legacy_check_permission],
+      security/device_cgroup.c:832-854), all Linux v6.18.46.  The
+      configuration of record builds both (CONFIG_CGROUP_DEVICE=y,
+      CONFIG_CGROUP_BPF=y and CONFIG_BPF_SYSCALL=y in
+      arch/riscv/configs/defconfig), and no premise in SCOPE.md excludes
+      a device cgroup that denies the process /dev/null or /dev/urandom,
+      or a program that picks another value.  So F_OK of a device can
+      answer any errno, no list could hold the answer, and
+      [faccessat_body_spec] declines the [Fs.EDev] row.  The opens of
+      the two nodes have the same gap ([open_devnull], [open_urandom]):
+      [may_open] reaches the same hook through [inode_permission]
+      (fs/namei.c).
 
     ETXTBSY is not in either list because [do_faccessat] has no path to
     it at all: nothing in its body calls [get_write_access] or tests
@@ -1701,8 +1878,9 @@ Definition modeled_access_mode (mode : word) : bool :=
 (** F_OK — the empty mode, and the only one this model can answer. *)
 Definition access_mode_f_ok (mode : word) : bool := Z.eqb (access_mode mode) 0.
 
-(** The one outcome an F_OK probe of a path that RESOLVES admits: 0, or
-    one of the untracked environment failures above.  Both take a bare
+(** The one outcome an F_OK probe of a path that RESOLVES to anything but
+    a device admits: 0, or one of the untracked environment failures
+    above.  Both take a bare
     return and every one of the five ledgers empty — faccessat writes
     nothing, zeroes nothing, unmaps nothing and copies out nothing, and
     the pathname copy-in is the wrapper's — and neither touches
@@ -1722,14 +1900,14 @@ Definition access_exists_spec : Sys SyscallEffect :=
     [getname_flags] accept it, and no [faccessat] can pass it.
 
     ONLY F_OK IS MODELED, and the reason is the model's file system.
-    [Fs] maps a path to its BYTES and holds nothing else — no mode bits,
-    no owner, no mount.  R_OK, W_OK and X_OK are answered by
-    [generic_permission] out of [inode->i_mode] against the caller's
-    ids (fs/namei.c, [acl_permission_check]), and W_OK reaches
-    [__mnt_is_readonly] besides.  None of that is a function of the byte
-    map, so a mode with any of the low three bits set is [unmodeled].
-    F_OK asks the one question the map can answer: does this path
-    resolve.
+    [Fs] holds the names, each entry's kind, a regular file's bytes and
+    the link counts, and nothing else: no mode bits, no owner, no mount
+    flags.  R_OK, W_OK and X_OK are answered by [generic_permission] out
+    of [inode->i_mode] against the caller's ids (fs/namei.c,
+    [acl_permission_check]), and W_OK reaches [__mnt_is_readonly]
+    besides.  None of that is a function of the image, so a mode with
+    any of the low three bits set is [unmodeled].  F_OK asks the one
+    question the image can answer: does this path resolve.
 
     THE REAL-UID RULE IS WHAT MAKES THAT SLICE SOUND rather than merely
     convenient.  [access(2)] exists to check with the REAL ids, and
@@ -1769,9 +1947,10 @@ Definition access_exists_spec : Sys SyscallEffect :=
       [unmodeled], the same treatment [openat_spec] and
       [Fs.Namei.unlinkat_spec] give it.
 
-    THE ANSWERS, once the path is in hand.  "." and ".." resolve without
-    consulting the byte map: "." is the working directory and ".." its
-    parent, and both exist by construction, so both are the existence
+    THE ANSWERS, once the path is in hand.  "." and ".." are the walk's
+    own rows ([Fs.walk_comps]'s [LastDot] and [LastDotDot] cases): "."
+    is the working directory and ".." its parent, and both exist by
+    construction, so both are the existence
     arm.  ([link_path_walk] types them LAST_DOT and LAST_DOTDOT and
     [handle_dots] answers them; neither reaches a filesystem lookup, and
     an UNLINKED working directory is still 0 — [complete_walk] has no
@@ -1782,10 +1961,11 @@ Definition access_exists_spec : Sys SyscallEffect :=
     [follow_dotdot]'s -EXDEVs, the LOOKUP_NO_XDEV one and the
     LOOKUP_BENEATH one on its [in_root] branch.  The failure that is NOT
     flag-gated is [path_connected]'s -ENOENT, raised when the working
-    directory has been renamed out from under a bind-mount root; it is
-    reachable and is not admitted here, and sits under the same world
-    precondition as everything else below (fs/namei.c).  For an ordinary name the map is the answer: a
-    key present is the existence arm, a key absent is -ENOENT.
+    directory has been renamed out from under a bind-mount root
+    (fs/namei.c); it is not admitted here, because it needs a rename,
+    which no modeled call makes and SCOPE.md's assumption that no other
+    process changes the modeled files rules out for every other
+    process.  Every other name is the walk's answer, below.
 
     THE WORLD IS THE NAMESPACE NOW, and the three guards this arm used
     to take are gone with the flat map.  A path containing "/" was
@@ -1801,13 +1981,17 @@ Definition access_exists_spec : Sys SyscallEffect :=
     the walk's answer there, since tmpfs and ramfs both refuse at
     [simple_lookup]: a priority-2 gap ([Fs.comp_too_long]).
 
-    SO EXISTENCE IS RESOLUTION.  [Fs.RFound] is 0 whatever the entry's
-    kind — a file, a directory and either device all exist, and F_OK
-    asks nothing else.  [Fs.RMissing] and [Fs.RAbsent] are -ENOENT,
+    SO EXISTENCE IS RESOLUTION, BUT FOR A DEVICE.  [Fs.RFound] of a
+    file, a directory or a link is 0 — each exists, and F_OK asks
+    nothing else.  [Fs.RFound] of either device DECLINES: a device
+    cgroup can answer any errno for it (the device-cgroup paragraph of
+    [faccessat_errnos]), so no list of answers would be sound.
+    [Fs.RMissing] and [Fs.RAbsent] are -ENOENT,
     [Fs.RNotDir] is -ENOTDIR, [Fs.RLoop] is -ELOOP, and [Fs.ROutside]
     declines because /proc and /sys are outside the surface (question
     8).  A LINK the walk did not follow (AT_SYMLINK_NOFOLLOW) exists
-    too, and F_OK of it is 0.  bugs/faccessat-sees-only-the-map.md is
+    too, and F_OK of it is 0; a link the walk followed to a device is
+    the device's row.  bugs/faccessat-sees-only-the-map.md is
     narrowed to what is left, which is a fifo and a socket -- kinds
     this model does not have -- and modes other than F_OK.
 
@@ -1849,7 +2033,8 @@ Definition faccessat_body_spec (md : Fs.WalkMode) (dirfd pathp : word)
       else
         let '(r, _, _) := Fs.resolve md (m_fs m) (m_cwd m) p in
         match r with
-        | Fs.RFound _ _ => access_exists_spec   (* it exists, whatever it is *)
+        | Fs.RFound _ (Fs.EDev _) => unmodeled  (* a device cgroup picks the errno *)
+        | Fs.RFound _ _ => access_exists_spec   (* it exists, whatever else it is *)
           (* A trailing separator on a non-directory is the walk's
              [Fs.RNotDir]: [lookup_last] adds LOOKUP_DIRECTORY for a
              LAST_NORM component a separator follows
@@ -1883,7 +2068,7 @@ Definition faccessat_spec (dirfd pathp mode : word) : Sys SyscallEffect :=
   if negb (modeled_access_mode mode) then err_ret EINVAL
   else if negb (access_mode_f_ok mode) then unmodeled
   else
-    getname_refusals pathp
+    getname_refusals [] pathp
       (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
          (walk_refusals (Fs.WalkFull true false) pathp
             (faccessat_body_spec (Fs.WalkFull true false) dirfd pathp i m))).
@@ -2003,7 +2188,7 @@ Definition faccessat2_spec (dirfd pathp mode flags : word)
   else if negb (modeled_access_flags flags) then unmodeled
   else if negb (access_mode_f_ok mode) then unmodeled
   else
-    getname_refusals pathp
+    getname_refusals [] pathp
       (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
          (walk_refusals (access_walk_mode flags) pathp
             (faccessat_body_spec (access_walk_mode flags) dirfd pathp i m))).

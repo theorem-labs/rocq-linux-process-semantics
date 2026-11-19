@@ -35,17 +35,34 @@ Open Scope sys_scope.
 Definition readlink_count (b : path) (bufsiz : word) : nat :=
   Z.to_nat (Z.min (Z.of_nat (length (Fs.link_text b))) (sint32 bufsiz)).
 
+(** DOES THE COPY OF [n] BYTES TO [buf] FAULT before a byte moves?  Only
+    when there is a byte to copy: [copy_to_user] returns the count it
+    did NOT copy, and [_inline_copy_to_user]
+    (include/linux/uaccess.h:190-200, Linux v6.18.46; riscv64's
+    [_copy_to_user] is it, lib/usercopy.c:24-27) returns [n] itself
+    when [access_ok] refuses the range, so a copy of no byte returns 0
+    wherever [buf] points and [readlink_copy] (fs/namei.c:5419-5429)
+    answers its count, 0.  A link whose body is empty, or starts with a
+    NUL, is such a copy: tmpfs makes one from an initramfs entry
+    ([do_symlink], init/initramfs.c:436-452, through [init_symlink],
+    fs/init.c:200-215, to [shmem_symlink], which takes "", mm/shmem.c),
+    and the image may hold one ([Fs.ELink]). *)
+Definition readlink_copy_faults (buf : word) (n : nat) : bool :=
+  negb (Nat.eqb n 0) && negb (access_okb buf (Z.of_nat n)).
+
 (** THE COPY OF A LINK'S BODY to [buf]: [readlink_copy]
     (fs/namei.c:5419-5429) copies [min(len, buflen)] bytes with no NUL
     and returns that count, or -EFAULT when [copy_to_user] faults.  A
-    range [access_ok] refuses faults before a byte moves; a partly
-    writable range commits a prefix the model has no term for, and
-    declines, as [fstat_file_spec] does.  A copy of no byte writes
-    nothing ([delivered_writes]). *)
+    nonempty range [access_ok] refuses faults before a byte moves
+    ([readlink_copy_faults]); a partly writable range commits a prefix
+    the model has no term for, and declines, as [fstat_file_spec] does.
+    A copy of no byte writes nothing ([delivered_writes]) and reads no
+    memory: [read_bytes_map] of a length 0 is [Some []] at any
+    address. *)
 Definition readlink_copy_spec (i : SyscallInput) (b : path) (buf bufsiz : word)
     : Sys SyscallEffect :=
   let n := readlink_count b bufsiz in
-  if negb (access_okb buf (Z.of_nat n)) then err_ret EFAULT
+  if readlink_copy_faults buf n then err_ret EFAULT
   else
     match read_bytes_map (in_wmem i) buf (Z_to_bv 64 (Z.of_nat n)) with
     | None => unmodeled      (* a partial [copy_to_user] then -EFAULT *)
@@ -151,7 +168,7 @@ Definition readlinkat_spec (dirfd pathp buf bufsiz : word) : Sys SyscallEffect :
        [if (bufsiz <= 0) return -EINVAL;] (fs/stat.c:563-572, Linux
        v6.18.46), so a low half of 0x80000000 or more is negative *)
   else
-    getname_refusals pathp
+    getname_refusals [] pathp
       (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
          (walk_refusals (Fs.WalkFull false false) pathp
             (readlinkat_body_spec dirfd pathp buf bufsiz i m))).
@@ -233,8 +250,9 @@ Definition statat_null_name (pathp flag : word) : bool :=
     three functions read the same in v6.16.
 
     So the refusals [getname_flags] gives ahead of its answers
-    ([Fs.Namei.getname_refusals]), and the walk's after it, belong to
-    the call exactly when this holds ([newfstatat_spec],
+    ([Fs.Namei.getname_refusals], after the lead byte's load under
+    AT_EMPTY_PATH: [statat_lead_reads]), and the walk's after it, belong
+    to the call exactly when this holds ([newfstatat_spec],
     [newfstatat_core_spec]). *)
 Definition statat_getname_runs (i : SyscallInput) (pathp flag : word) : bool :=
   negb (statat_empty_path flag)
@@ -243,6 +261,20 @@ Definition statat_getname_runs (i : SyscallInput) (pathp flag : word) : bool :=
          | Some b => negb (bv_eqb b (Z_to_bv 8 0))
          | None => false
          end).
+
+(** WHAT THE FETCH HAS READ WHEN IT CALLS [getname_flags], on a call
+    [statat_getname_runs]: the lead byte under AT_EMPTY_PATH, nothing
+    without it.  [__getname_maybe_null] loads that byte with [get_user]
+    (fs/namei.c:231, Linux v6.18.46) before it calls [getname_flags]
+    (236), so there [__getname]'s -ENOMEM (146-148) carries the one-byte
+    read [(pathp, 1)], never an empty ledger; plain [getname]
+    (include/linux/fs.h:2952-2953) allocates before it reads a byte.
+    The re-copy's -ENOMEM carries the first EMBEDDED_NAME_MAX bytes
+    either way, which hold the lead byte
+    ([Fs.Namei.getname_alloc_reads]).  [newfstatat_spec] reads this
+    only on a call [statat_getname_runs]. *)
+Definition statat_lead_reads (pathp flag : word) : list (word * nat) :=
+  if statat_empty_path flag then [(pathp, 1%nat)] else [].
 
 (* -------------------------------------------------------------------------
    Delivering a struct stat: the machinery both 79 and 80 read
@@ -299,7 +331,7 @@ Definition file_pin_after (ino : Fs.ino) (sp : StatPin) (bs : list byte) (m : Mo
       ([Uapi.stat_is_reg], [Uapi.stat_size_ok]).
 
     - [st_nlink] IS THE INODE'S LINK COUNT, asserted:
-      [generic_fillattr] copies [inode->i_nlink] (fs/stat.c:88), which
+      [generic_fillattr] copies [inode->i_nlink] (fs/stat.c:91), which
       is [Fs.fs_ino_nlink] -- one per name the image shows, plus the
       names it does not ([Fs.Inode]'s [ino_outside]), so 0 for a file
       no name reaches any more ([Uapi.stat_nlink_ok]).
@@ -635,13 +667,15 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     [cp_new_stat], and fs/namei.c, [getname_flags] / [filename_lookup] /
     [path_init].  [SYSCALL_DEFINE4(newfstatat)] and [cp_new_stat] are
     byte-identical across that range; [vfs_fstatat] and [vfs_statx] are
-    not, and the part that moved is the reason AT_EMPTY_PATH is declined
-    below.  From v6.15 to v6.18.46 these functions change only in
-    spelling: [SYSCALL_DEFINE4(newfstatat)] returns early on
-    [unlikely(error)] from v6.16, [filename_lookup] takes a [const] root
-    at v6.18.46, and [path_init] reads [fs->seq] with [read_seqbegin]
-    from v6.17; [cp_new_stat], [vfs_fstatat], [vfs_statx],
-    [statx_lookup_flags] and [getname_flags] are v6.15's text.
+    not, and the part that moved is the fetch through
+    [getname_maybe_null], whose NULL pathname under AT_EMPTY_PATH is
+    declined below ([statat_null_name]).  From v6.15 to v6.18.46 these
+    functions change only in spelling: [SYSCALL_DEFINE4(newfstatat)]
+    returns early on [unlikely(error)] from v6.16, [filename_lookup]
+    takes a [const] root at v6.18.46, and [path_init] reads [fs->seq]
+    with [read_seqbegin] from v6.17; [cp_new_stat], [vfs_fstatat],
+    [vfs_statx], [statx_lookup_flags] and [getname_flags] are v6.15's
+    text.
 
     THE SUCCESS ARM IS THE RESOLVED ENTRY'S DELIVERY.  A successful call
     writes 128 bytes of [struct stat] (riscv64 has no [asm/stat.h] of
@@ -657,9 +691,16 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
 
     [Fs.resolve] finds the entry, and [stat_entry_spec] delivers it with
     the same machinery [fstat] uses for a descriptor on it: the padding
-    pinned to zero, S_IFREG and [st_size] asserted for a file, the type
-    asserted for a directory and for the two devices, and
-    the members [Fs] cannot supply chosen once per key and held.  On
+    pinned to zero; S_IFREG, [st_size] and [st_nlink] asserted for a
+    file, the type and the link count for a directory, the type,
+    [st_rdev], [st_size] and [st_blocks] for the two devices, the type
+    and [st_size] for a link; and of the members [Fs] cannot supply, the
+    stable ones ([Uapi.stat_stable_eqb]: the device, inode number, mode,
+    ids, [st_rdev] and block size) chosen once per identity
+    ([State.StatId]: a file's inode, a folder's, a device node's or a
+    link's key) and held, the rest chosen afresh at every call: a
+    folder's [st_size], the block count but a device's, the three
+    timestamp pairs, and a device node's or a link's link count.  On
     every failing arm [SYSCALL_DEFINE4(newfstatat)] reaches
     [cp_new_stat] only once [vfs_fstatat] has returned 0, so the kernel
     leaves [statbuf] untouched, and a bad [statbuf] with an absent file
@@ -675,9 +716,17 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     actually sees is: the flag word first ([flags & ~(AT_SYMLINK_NOFOLLOW
     | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE)] is -EINVAL),
     then the pathname, then the dirfd ([path_init] raises -EBADF only for
-    a relative walk), then the file, then -EFAULT on [statbuf].  This
-    spec follows that priority exactly, with DECLINING substituted for
-    the -EINVAL: a flag word the model has not interpreted is one it
+    a relative walk), then the file, then -EFAULT on [statbuf].  ONE
+    SHAPE SKIPS THE FLAG TEST: under AT_EMPTY_PATH a NULL pathname or a
+    NUL lead byte gives [getname_maybe_null] no name, and for a dirfd of
+    0 or more [vfs_fstatat] returns [vfs_fstat] of that descriptor
+    (fs/stat.c:372-373, Linux v6.18.46) without reaching [vfs_statx]'s
+    flag test (:348-350), so an otherwise invalid flag word beside
+    AT_EMPTY_PATH answers the descriptor's stat there, not -EINVAL.  The
+    model declines both halves of that shape, the uninterpreted flag
+    word and every dirfd but AT_FDCWD, so no answer here turns on it.
+    This spec follows that priority exactly, with DECLINING substituted
+    for the -EINVAL: a flag word the model has not interpreted is one it
     cannot judge the call from.
 
     Declining rather than asserting -EINVAL costs precision in one
@@ -690,17 +739,25 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
 
     Under a modeled flag word the pathname fetch comes first, with all
     three of [getname_flags]'s answers — -ENAMETOOLONG for no NUL within
-    PATH_MAX, -EFAULT for an unmapped byte, and the string otherwise —
-    and the empty pathname is its -ENOENT ([getname_flags] returns that
-    unless LOOKUP_EMPTY is set, and no modeled flag word sets it at
-    either end of the window: v6.10-v6.12 route through
-    [getname_statx_lookup_flags], which sets LOOKUP_EMPTY only for
-    AT_EMPTY_PATH, and from v6.13 [vfs_fstatat] calls
-    [getname_maybe_null], which for a non-AT_EMPTY_PATH flag word is
-    plain [getname] — that is, [getname_flags] with no flags at all; the
-    successor [statx_lookup_flags] dropped the LOOKUP_EMPTY arm
-    entirely).  All three preempt the dirfd, so they are answered before it
-    is looked at, exactly as [Open.openat_spec] does.
+    PATH_MAX, -EFAULT for an unmapped byte, and the string otherwise.
+    WITHOUT AT_EMPTY_PATH the empty pathname is its -ENOENT
+    ([getname_flags] returns that unless LOOKUP_EMPTY is set, and a flag
+    word without AT_EMPTY_PATH does not set it at either end of the
+    window: v6.10-v6.12 route through [getname_statx_lookup_flags],
+    which sets LOOKUP_EMPTY only for AT_EMPTY_PATH, and from v6.13
+    [vfs_fstatat] calls [getname_maybe_null], which for a
+    non-AT_EMPTY_PATH flag word is plain [getname] — that is,
+    [getname_flags] with no flags at all; the successor
+    [statx_lookup_flags] dropped the LOOKUP_EMPTY arm entirely).  UNDER
+    AT_EMPTY_PATH the empty pathname is no error: [__getname_maybe_null]
+    returns no name for a NUL lead byte (fs/namei.c:233-234, Linux
+    v6.18.46), and [vfs_fstatat] then stats the descriptor for a dirfd
+    of 0 or more, or hands the missing name to [vfs_statx], which for
+    AT_FDCWD stats the working folder (fs/stat.c:370-375, Linux
+    v6.18.46); [newfstatat_body_spec] answers the working folder's stat
+    and declines every other dirfd.  The fetch's errnos preempt the
+    dirfd, so they are answered before it is looked at, exactly as
+    [Open.openat_spec] does.
 
     Then the dirfd: only AT_FDCWD is modeled, and any other is
     [unmodeled] — asserting an errno for a directory the model cannot
@@ -727,10 +784,13 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     fetch's three included, with the copy-in made when its allocation
     failed ([Fs.Namei.getname_refusals], in [newfstatat_spec]) — on
     every call whose fetch reaches [getname_flags]
-    ([statat_getname_runs]).  Under AT_EMPTY_PATH a faulting or NUL lead
-    byte is answered by [__getname_maybe_null] before any allocation,
-    so there neither refusal stands: such a call is answered by
-    [newfstatat_body_spec] alone.
+    ([statat_getname_runs]).  Under AT_EMPTY_PATH that copy-in includes
+    the lead byte [__getname_maybe_null] loaded first
+    ([statat_lead_reads]), so [__getname]'s -ENOMEM reads one byte
+    there and none without the flag.  Under AT_EMPTY_PATH a faulting or
+    NUL lead byte is answered by [__getname_maybe_null] before any
+    allocation, so there neither refusal stands: such a call is answered
+    by [newfstatat_body_spec] alone.
 
     THE COPY-IN LEDGER.  The pathname fetch is a real
     [strncpy_from_user] of user memory, so it is recorded as one, with
@@ -858,12 +918,13 @@ Definition newfstatat_core_spec (dirfd pathp statbuf flag : word)
     [getname_flags]' own -ENOMEM is not downstream of the whole fetch:
     its allocations fail before the copy is done, so it stands outside
     the ledger ([Fs.Namei.getname_refusals]), on a call whose fetch
-    reaches [getname_flags] at all ([statat_getname_runs]). *)
+    reaches [getname_flags] at all ([statat_getname_runs]), after the
+    lead byte's load under AT_EMPTY_PATH ([statat_lead_reads]). *)
 Definition newfstatat_spec (dirfd pathp statbuf flag : word)
     : Sys SyscallEffect :=
   i <- input ;;
   if statat_getname_runs i pathp flag then
-    getname_refusals pathp
+    getname_refusals (statat_lead_reads pathp flag) pathp
       (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
          (newfstatat_core_spec dirfd pathp statbuf flag))
   else
@@ -950,9 +1011,10 @@ Definition newfstatat_spec (dirfd pathp statbuf flag : word)
     WHAT THE ARM COSTS AND WHAT IT BUYS is argued on
     [fstat_file_spec].  In one line: S_IFREG, [st_size] and [st_nlink]
     are asserted off the inode, the twenty bytes of padding are pinned
-    to zero, and the other members are chosen once per inode and then
-    held fixed, so a second [fstat] of one file cannot report a
-    different inode.
+    to zero, the stable members are chosen once per inode and then held
+    fixed, so a second [fstat] of one file cannot report a different
+    inode, and [st_blocks] and the timestamps are chosen afresh at every
+    call.
 
     THE SHAPE A REAL PROGRAM SPENDS ON IT is musl's [__map_file]
     (src/time/__map_file.c, called from src/time/__tz.c), which opens a
@@ -1086,11 +1148,13 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
                                         descriptor ([cp_new_stat]/[generic_fillattr],
                                         fs/stat.c, v6.18.46, 1f99e9ab748f) *)
   | Some (FdDir k)     => fstat_dir_spec k statbuf
-                                     (* the directory the descriptor names.  S_IFDIR is
-                                        asserted off the entry kind and the filesystem's
-                                        own [st_size]/[st_blocks] are chosen once and
-                                        held under the key, which is what the pin is for
-                                        ([fstat_dir_spec]) *)
+                                     (* the directory the descriptor names.  S_IFDIR and
+                                        the link count are asserted off the entry kind
+                                        and the image, the stable members are chosen
+                                        once and held under the key, which is what the
+                                        pin is for, and the filesystem's own
+                                        [st_size]/[st_blocks] are chosen afresh at every
+                                        call ([fstat_dir_spec]) *)
   | Some (FdSocket _)  => unmodeled  (* mode/uid/gid are known; ino, dev and the timestamps are not *)
   | Some (FdStream _ _ _) => unmodeled  (* the [FdSocket] case: S_IFSOCK is known; the sockfs
                                         inode number and the timestamps are not *)

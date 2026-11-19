@@ -24,13 +24,46 @@ Open Scope sys_scope.
 (** The kernel returns the LOWEST free descriptor, as Linux does
     (e.g. after close(1), the next open returns fd 1) — computed by
     [State.alloc_fd].  The choice set is a singleton (no nondeterminism);
-    the freeness conjunct only empties it in the unreachable case where
-    [alloc_fd]'s scan bound (4096 fds) is exhausted, leaving just the
-    errno alternative — as real kernels fail with -EMFILE at RLIMIT_NOFILE
-    well before that.  [alloc_fd fds <= 4096] keeps an fd from ever being
-    confused with an error-encoded return. *)
+    the freeness conjunct empties it only where [alloc_fd]'s scan bound
+    is exhausted, every descriptor 0 to 4096 held ([lowest_fd_none]),
+    which a run whose soft RLIMIT_NOFILE is above 4096 can reach
+    ([Run.valid_nofile]).  A spec that calls [lowest_fd] there is left
+    with its errno alternative alone; [Open.openat_core_spec] answers
+    before it would allocate instead ([unused_fd_none_spec]).
+    [alloc_fd fds <= 4096] keeps an fd from ever being confused with an
+    error-encoded return. *)
 Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
   choose (fun fd => fd_lookup fds fd = None /\ fd = alloc_fd fds).
+
+(** [lowest_fd] HAS NO SLOT: [State.alloc_fd]'s scan answers a descriptor
+    the table holds.  The scan tests the candidates 0 to 4095 and
+    answers 4096 when it finds none free, so this is every descriptor 0
+    to 4096 held, and it is the freeness conjunct of [lowest_fd] as a
+    test, for a spec that answers before it allocates. *)
+Definition lowest_fd_none (fds : list (word * FdEntry)) : bool :=
+  match fd_lookup fds (alloc_fd fds) with
+  | Some _ => true
+  | None => false
+  end.
+
+(** WHAT [get_unused_fd_flags] ANSWERS WHERE [lowest_fd] HAS NO SLOT.
+    [get_unused_fd_flags] hands [alloc_fd] the soft RLIMIT_NOFILE as
+    [end] (fs/file.c:620-623, Linux v6.18.46), and [alloc_fd] takes the
+    lowest free descriptor and answers -EMFILE when it is at or above
+    [end], before [expand_files] can allocate anything (:591-593; the
+    same test in the same place at v6.16 and v6.17).  With
+    every descriptor 0 to [alloc_fd] held ([lowest_fd_none]), the lowest
+    free one is above [alloc_fd], so under a soft limit of at most
+    [alloc_fd] + 1, the limit [State.m_nofile] holds, -EMFILE is the
+    only answer.  Under a higher limit Linux may hand out that lowest
+    free descriptor, one past the candidates [State.alloc_fd] scans,
+    which no spec here can return, so the call declines rather than
+    refuse a descriptor a kernel gives
+    (bugs/fd-allocation-ignores-rlimit-nofile.md). *)
+Definition unused_fd_none_spec (m : Model) : Sys SyscallEffect :=
+  if (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z
+  then err_ret EMFILE
+  else unmodeled.
 
 (* =========================================================================
    Descriptor duplication: dup (23) / dup3 (24)
@@ -59,7 +92,8 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       position is the model-wide [m_stdin] and its writes are trace
       events, so two fds naming one channel already share everything a
       description shares: copying the entry IS the sharing.
-    - [FdDir] is nullary, and no modeled arm observes a directory
+    - [FdDir k] carries only the folder's key, which a copy shares as
+      it is, and no modeled arm observes a directory
       position: [ReadWrite.lseek_spec] declines on [FdDir], and
       [Readdir.getdents64_spec] declines every listing, answering only
       where the buffer has no room for an entry — which is the arm that

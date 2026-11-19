@@ -912,9 +912,16 @@ not apply.
   descriptor of an append-only inode (`include/linux/fs.h:3890-3894`,
   reached from `fs/read_write.c:819-821`). A run on such an inode makes
   this assumption false.
-- The image holds no `/etc/localtime` (`Run.localtime_absent`): `/etc`
-  is absent or a folder without that name, so every open of it without
-  `O_CREAT` is `-ENOENT`.
+- The image holds no `/etc/localtime` (`Run.localtime_absent`): the walk
+  of `/etc/localtime` from `/`, following links as an open without
+  `O_NOFOLLOW` does, ends at a name the folder it reaches does not hold
+  or at a folder that is absent (`Fs.RMissing`, `Fs.RAbsent`). A
+  dangling link at `/etc/localtime` or at `/etc` is inside the premise;
+  a regular file at `/etc`, or a file or folder at `/etc/localtime`, is
+  outside it. So every open of it without `O_CREAT` that follows a link
+  at its last name is `-ENOENT`. Under `O_NOFOLLOW` a dangling link at
+  `/etc/localtime` is `-ELOOP` (`may_open`, `fs/namei.c:3538-3539`), or
+  `-ENOTDIR` with `O_DIRECTORY` (`do_open`, `fs/namei.c:3958-3959`).
 - The working folder is outside `/proc` and `/sys` (`Run.outside_proc_sysb`,
   which `Run.valid_input` requires): it is neither folder and lies below
   neither. The model declines `proc` and `sys` only where a walk looks them
@@ -922,10 +929,56 @@ not apply.
   `fs/namei.c:2590-2604`), so from a working folder inside `/proc` the image
   would answer for procfs (`proc_root_lookup`, `fs/proc/root.c:409-415`). A
   process started in `/proc` or `/sys` is outside the statements.
-- The launch file system is one tree, with no bind mount of a folder
-  inside it, so a folder has one name and `..` of a folder is the folder
-  whose key is its key's parent, after a symbolic link as anywhere else
-  (`follow_dotdot`'s `dget_parent`, `fs/namei.c:2083`).
+- The launch file system is one tree, with no bind mount inside it, of a
+  folder or of a regular file. So a folder has one name and `..` of a
+  folder is the folder whose key is its key's parent, after a symbolic
+  link as anywhere else (`follow_dotdot`'s `dget_parent`,
+  `fs/namei.c:2083`); and two keys the image shows for one inode are two
+  hard links, each counted in the `st_nlink` a stat asserts
+  (`Fs.fs_ino_nlink`). A bind mount of a file shows it under a second
+  name without raising its link count (`setup_mnt`,
+  `fs/namespace.c:1156-1160`, takes the existing dentry;
+  `generic_fillattr` reports the unchanged `i_nlink`, `fs/stat.c:91`), so
+  a stat of it there would answer a count the model rejects.
+- Every folder of the launch tree outside `/proc` and `/sys` is on tmpfs
+  or ramfs: no other file system is mounted on a folder of the tree there.
+  devtmpfs at `/dev` counts as tmpfs, since it is a shmem mount
+  (`drivers/base/devtmpfs.c:68-69`). The model has no file-system type,
+  and its arms answer with the operations tmpfs and ramfs install. Another
+  file system installs other operations, and the answers change:
+  - An mqueue folder has no `->mkdir` (`mqueue_dir_inode_operations`,
+    `ipc/mqueue.c:1613-1617`), so `mkdirat` there is `vfs_mkdir`'s
+    `-EPERM` (`fs/namei.c:4444-4446`).
+  - A name created in an mqueue folder is a queue (`mqueue_create`,
+    `ipc/mqueue.c:612-616`), not an empty regular file. Its `i_size` is 80
+    (`mqueue_get_inode`, `:307-312`; `FILENT_SIZE`, `:53`), which `fstat`
+    reports (`generic_fillattr`, `fs/stat.c:95`), and its
+    `mqueue_file_operations` have no `.write` (`:1619-1624`), so a write
+    through it is `-EINVAL` (`do_dentry_open`, `fs/open.c:973-975`;
+    `vfs_write`, `fs/read_write.c:672-673`).
+  - A second procfs instance can be mounted anywhere (`proc_get_tree`,
+    `fs/proc/root.c:310-313`). Mounted with `hidepid=1`, it answers
+    `-EPERM` for the folder of a process the caller may not inspect, an
+    F_OK `faccessat` included (`proc_pid_permission`,
+    `fs/proc/base.c:745-771`).
+  - A procfs, sysfs or kernfs folder has no `.fsync`
+    (`proc_dir_operations`, `fs/proc/generic.c:346-350`; `kernfs_dir_fops`,
+    `fs/kernfs/dir.c:1924-1929`), so `fsync` of it is `-EINVAL`
+    (`vfs_fsync_range`, `fs/sync.c:183-184`).
+
+  The walk declines the NAMES `proc` and `sys` at `/` (`Fs.at_outside`),
+  not a file system, so this premise is what keeps such a mount anywhere
+  else out of the statements. The launch environment of the agreement
+  checks meets it. The initramfs gives the rootfs, which is tmpfs or ramfs
+  (`init_rootfs`, `init/do_mounts.c`), the folders `cases`, `dev`, `proc`,
+  `sys`, `tmp` and `work` (`testing/vm/mkinitramfs.py:19`). At boot the
+  tracer mounts procfs on `/proc`, sysfs on `/sys` and devtmpfs on `/dev`
+  (`testing/vm/tracer.c:2312-2314`). For each case it mounts a fresh tmpfs
+  on `/work` and `/tmp` (`:935-936`) and on each top-level folder a seed
+  names (`:1287`), and in the case's own mount namespace a tmpfs on `/dev`
+  (`:978-979`). It mounts nothing else. A run with any other file system
+  mounted on a folder of the tree outside `/proc` and `/sys`, such as an
+  mqueue mount at `/dev/mqueue`, makes this assumption false.
 - A write to `/dev/urandom` changes nothing the model holds. Linux mixes
   the bytes into the input pool and credits no entropy
   (`write_pool_user`, `drivers/char/random.c:1420-1446`). The bytes a
@@ -993,12 +1046,16 @@ not apply.
   `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
   (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
   `-ENOENT` where the model opens the file again.
-- A name of a regular file that the image does not show (on another
-  mount of the same file system, or under a bind mount) still counts in
-  its link count, and the image says how many there are
-  (`Fs.ino_outside`). The model has no `link` or `linkat` arm, so the run
-  makes no new name for a file; the names the image holds are the only
-  ones it removes.
+- A hard link of a regular file that the image does not show, a name in
+  a folder of the same file system that only another mount of it
+  reaches, still counts in the file's link count, and the image says
+  how many there are (`Fs.ino_outside`). A bind mount is not such a
+  name: it shows a name that exists already and raises no count
+  (`setup_mnt`, `fs/namespace.c:1156-1160`; `generic_fillattr` reports
+  the unchanged `i_nlink`, `fs/stat.c:91`), and the launch tree holds
+  none (the premise on bind mounts above). The model has no `link` or
+  `linkat` arm, so the run makes no new name for a file; the names the
+  image holds are the only ones it removes.
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1
@@ -1158,7 +1215,17 @@ not apply.
   resolves to the file `execve` loaded. The model holds the image's
   segments, not its file, so `State.in_fs` need not hold a file at that
   name and a program that opens its own `AT_EXECFN` gets the file
-  system's answer.
+  system's answer. `execve` denies write access to that file
+  (`exe_file_deny_write_access`, `fs/exec.c:798`), so a write open of it
+  is `-ETXTBSY` (`get_write_access` in `do_dentry_open`,
+  `fs/open.c:925-928`) and empties nothing. The model cannot tell which
+  file of the image that is, so it admits `-ETXTBSY` beside every write
+  open of an existing regular file no descriptor of the model already
+  writes (`Sys.Fs.Open.open_write_existing`; a writer keeps the inode's
+  write count positive, which no deny can then be taken against,
+  `include/linux/fs.h:3217-3222`): the real answer is admitted, and on
+  files nothing executes the admission is a trace no supported kernel
+  gives.
 - The vDSO image of the kernel that launched the process is one of the
   measured images in `Vdso.vdso_images`. The model holds the bytes of
   one `vdso.so` per kernel build it describes, read out of a build this

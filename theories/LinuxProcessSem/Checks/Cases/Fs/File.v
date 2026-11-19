@@ -56,8 +56,8 @@ Example dup_installs_a_copy_at_the_lowest_free_fd :
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
-(** A directory fd duplicates too: [FdDir] is nullary, so a copy carries
-    no position that could drift. *)
+(** A directory fd duplicates too: [FdDir] carries only the folder's
+    key, so a copy carries no position that could drift. *)
 Example dup_of_a_directory_fd_duplicates :
   check_syscall (mkInput 23 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model

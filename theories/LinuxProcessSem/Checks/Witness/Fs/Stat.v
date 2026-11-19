@@ -23,7 +23,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Witness Require Export
 Local Definition readlink_copy_witness (i : SyscallInput) (b : path)
     (buf bufsiz : word) (m : Model) : outcome SyscallEffect :=
   let n := readlink_count b bufsiz in
-  if negb (access_okb buf (Z.of_nat n)) then ret_outcome (errno_ret EFAULT) m
+  if readlink_copy_faults buf n then ret_outcome (errno_ret EFAULT) m
   else
     match read_bytes_map (in_wmem i) buf (Z_to_bv 64 (Z.of_nat n)) with
     | None => Unmodeled
@@ -36,7 +36,7 @@ Local Lemma readlink_copy_witness_ok : forall i b buf bufsiz m,
   readlink_copy_spec i b buf bufsiz i m (readlink_copy_witness i b buf bufsiz m).
 Proof.
   intros. unfold readlink_copy_spec, readlink_copy_witness. cbv zeta.
-  destruct (negb (access_okb buf (Z.of_nat (readlink_count b bufsiz)))); cbv iota;
+  destruct (readlink_copy_faults buf (readlink_count b bufsiz)); cbv iota;
     [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
   destruct (read_bytes_map (in_wmem i) buf
               (Z_to_bv 64 (Z.of_nat (readlink_count b bufsiz)))); cbv iota;

@@ -198,7 +198,7 @@ Definition check_unlinkat (i : SyscallInput) (dirfd pathp flags : word)
   then check_ret_only eff (errno_ret EINVAL) m []
   else
     let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
-    check_getname_refusals i pathp eff m
+    check_getname_refusals i [] pathp eff m
       (check_copyins_after reads eff
          (check_walk_refusals Fs.WalkParent i pathp (clear_copyins eff) m
             (check_unlinkat_body i dirfd pathp flags (clear_copyins eff) m))).
@@ -208,7 +208,7 @@ Definition check_unlinkat (i : SyscallInput) (dirfd pathp flags : word)
 Definition check_mkdirat (i : SyscallInput) (dirfd pathp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
-  check_getname_refusals i pathp eff m
+  check_getname_refusals i [] pathp eff m
     (check_copyins_after reads eff
        (check_walk_refusals Fs.WalkParent i pathp (clear_copyins eff) m
           (check_mkdirat_body i dirfd pathp (clear_copyins eff) m))).
@@ -1227,7 +1227,7 @@ Proof.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     ul_open. apply pure_ok. }
   cbv zeta in H. ul_open.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_unlinkat_fetched_sound_ok i dirfd pathp flags m)
            (check_unlinkat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_unlinkat_fetched_complete_ok i dirfd pathp flags m)
@@ -1244,7 +1244,7 @@ Proof.
   destruct (negb (modeled_unlink_flags flags)) eqn:Hfl; cbv iota in H;
     [now apply check_ret_only_no_unmodeled in H|].
   cbv zeta in H. ul_open_u.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_unlinkat_fetched_sound_ok i dirfd pathp flags m)
            (check_unlinkat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_unlinkat_fetched_complete_ok i dirfd pathp flags m)
@@ -1265,7 +1265,7 @@ Proof.
   { cbv iota in H. unfold err_ret, ret_only, pure in H. inversion H; subst.
     cbn. rewrite bv_eqb_refl. reflexivity. }
   cbv iota in H. cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_unlinkat_fetched_sound_ok i dirfd pathp flags m)
            (check_unlinkat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_unlinkat_fetched_complete_ok i dirfd pathp flags m)
@@ -1285,7 +1285,7 @@ Proof.
   destruct (negb (modeled_unlink_flags flags)) eqn:Hfl.
   { cbv iota in H. unfold err_ret, ret_only, pure in H. discriminate H. }
   cbv iota in H. cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_unlinkat_fetched_sound_ok i dirfd pathp flags m)
            (check_unlinkat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_unlinkat_fetched_complete_ok i dirfd pathp flags m)
@@ -1304,7 +1304,7 @@ Qed.
     unfolded type is expected cost about 150 s per [Qed]. *)
 Local Lemma check_mkdirat_eq : forall i dirfd pathp eff m,
   check_mkdirat i dirfd pathp eff m
-  = check_getname_refusals i pathp eff m
+  = check_getname_refusals i [] pathp eff m
       (check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
          (check_walk_refusals Fs.WalkParent i pathp (clear_copyins eff) m
             (check_mkdirat_body i dirfd pathp (clear_copyins eff) m))).
@@ -1316,7 +1316,7 @@ Lemma check_mkdirat_sound_ok : forall i dirfd pathp eff m m' evs,
 Proof.
   intros i dirfd pathp eff m m' evs H.
   rewrite check_mkdirat_eq in H. unfold mkdirat_spec. ul_open.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_mkdirat_fetched_sound_ok i dirfd pathp m)
            (check_mkdirat_fetched_sound_unmodeled i dirfd pathp m)
            (check_mkdirat_fetched_complete_ok i dirfd pathp m)
@@ -1330,7 +1330,7 @@ Lemma check_mkdirat_sound_unmodeled : forall i dirfd pathp eff m,
 Proof.
   intros i dirfd pathp eff m H.
   rewrite check_mkdirat_eq in H. unfold mkdirat_spec. ul_open_u.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_mkdirat_fetched_sound_ok i dirfd pathp m)
            (check_mkdirat_fetched_sound_unmodeled i dirfd pathp m)
            (check_mkdirat_fetched_complete_ok i dirfd pathp m)
@@ -1347,7 +1347,7 @@ Proof.
   apply input_bind_ok_inv in H. cbv beta in H.
   apply get_model_bind_ok_inv in H. cbv beta iota in H.
   unfold check_mkdirat. cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_mkdirat_fetched_sound_ok i dirfd pathp m)
            (check_mkdirat_fetched_sound_unmodeled i dirfd pathp m)
            (check_mkdirat_fetched_complete_ok i dirfd pathp m)
@@ -1364,7 +1364,7 @@ Proof.
   apply input_bind_unmodeled_inv in H. cbv beta in H.
   apply get_model_bind_unmodeled_inv in H. cbv beta iota in H.
   unfold check_mkdirat. cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_mkdirat_fetched_sound_ok i dirfd pathp m)
            (check_mkdirat_fetched_sound_unmodeled i dirfd pathp m)
            (check_mkdirat_fetched_complete_ok i dirfd pathp m)

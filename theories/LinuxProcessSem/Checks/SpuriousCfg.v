@@ -767,11 +767,15 @@ Proof.
     [exfalso; apply Hnu; apply unmodeled_intro|].
   destruct (Fs.resolve md (m_fs m) (m_cwd m) p) as [[r lk] ts];
     cbv iota zeta in Hnu |- *.
-  destruct r; cbv iota in Hnu |- *;
+  destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in Hnu |- *;
     try fixed_answer; try (exfalso; apply Hnu; apply unmodeled_intro).
-  exists (mkEffect (Z_to_bv 64 0) [] []), m, []. split.
-  - unfold access_exists_spec. apply alt_r. apply pure_ok.
-  - split; [reflexivity | vm_compute; reflexivity].
+  (* a device declines; every other entry answers 0 *)
+  destruct e; cbv iota in Hnu |- *;
+    try (exfalso; apply Hnu; apply unmodeled_intro);
+    exists (mkEffect (Z_to_bv 64 0) [] []), m, [];
+    (split;
+     [unfold access_exists_spec; apply alt_r; apply pure_ok
+     |split; [reflexivity | vm_compute; reflexivity]]).
 Qed.
 
 Local Lemma faccessat_body_ok_not_unmodeled : forall md dirfd pathp i m core m2 evs2,
@@ -785,7 +789,9 @@ Proof.
   destruct (path_eqb p []); cbv iota in H, Hu; [sys_unfold; inv_ok|].
   destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H, Hu; [sys_unfold; inv_ok|].
   destruct (Fs.resolve md (m_fs m) (m_cwd m) p) as [[r lk] ts]; cbv iota zeta in H, Hu.
-  destruct r; cbv iota in H, Hu; try (sys_unfold; inv_ok; fail).
+  destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H, Hu;
+    try (sys_unfold; inv_ok; fail).
+  destruct e; cbv iota in H, Hu.
   all: sys_unfold; inv_ok.
 Qed.
 

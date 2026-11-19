@@ -161,6 +161,120 @@ Definition check_open_rdwr (fs' : Fs.Fs) (ino : Fs.ino) (eff : SyscallEffect)
     (fun fd => with_fds (fd_insert (m_fds m) fd (FdFileRW ino (Z_to_bv 64 0)))
                  (with_fs fs' m)).
 
+(** Mirrors [Open.open_write_existing]: while a descriptor of [m] holds
+    write access to the inode [ino] ([Open.ino_write_held]), the verdict
+    [c] of the open it wraps and nothing else; otherwise that verdict,
+    unless it rejected the effect, and then a bare -ETXTBSY that leaves
+    the model as it was.  The wrapped acceptors reject a bare -ETXTBSY
+    themselves ([check_create_wronly_txtbsy] and its two siblings), so
+    the two halves never answer one effect twice. *)
+Definition check_open_write_existing (ino : Fs.ino) (eff : SyscallEffect) (m : Model)
+    (c : check_result) : check_result :=
+  if ino_write_held (m_fds m) ino then c
+  else
+    match c with
+    | CheckReject => check_ret_only eff (errno_ret ETXTBSY) m []
+    | _ => c
+    end.
+
+(** What an accepted effect is: the wrapped open's acceptance, or the
+    bare -ETXTBSY with the model and the event list untouched. *)
+Lemma check_open_write_existing_ok_cases : forall ino eff m c m' evs,
+  check_open_write_existing ino eff m c = CheckOk m' evs ->
+  c = CheckOk m' evs
+  \/ (eff = mkEffect (errno_ret ETXTBSY) [] [] /\ m' = m /\ evs = []).
+Proof.
+  intros ino eff m c m' evs H. revert H. unfold check_open_write_existing.
+  destruct (ino_write_held (m_fds m) ino); intro H; [left; exact H|].
+  destruct c as [m1 evs1| |]; [left; exact H| |discriminate H].
+  right. cbv iota in H. exact (proj1 (check_ret_only_ok_iff _ _ _ _ _ _) H).
+Qed.
+
+Lemma check_open_write_existing_unmodeled : forall ino eff m c,
+  check_open_write_existing ino eff m c = CheckUnmodeled -> c = CheckUnmodeled.
+Proof.
+  intros ino eff m c H. revert H. unfold check_open_write_existing.
+  destruct (ino_write_held (m_fds m) ino); intro H; [exact H|].
+  destruct c as [m1 evs1| |]; [discriminate H| |reflexivity].
+  exfalso. cbv iota in H. exact (check_ret_only_no_unmodeled _ _ _ _ H).
+Qed.
+
+(** Whatever the wrapped open accepts, the wrapper accepts. *)
+Lemma check_open_write_existing_lift : forall ino eff m c m' evs,
+  c = CheckOk m' evs -> check_open_write_existing ino eff m c = CheckOk m' evs.
+Proof.
+  intros ino eff m c m' evs ->. unfold check_open_write_existing.
+  destruct (ino_write_held (m_fds m) ino); reflexivity.
+Qed.
+
+(** A live writer leaves the wrapped verdict alone. *)
+Lemma check_open_write_existing_held : forall ino eff m c,
+  ino_write_held (m_fds m) ino = true -> check_open_write_existing ino eff m c = c.
+Proof.
+  intros ino eff m c Hh. unfold check_open_write_existing. rewrite Hh. reflexivity.
+Qed.
+
+(** The spec's wrapper, read the same three ways: every outcome of the
+    wrapped open is one of it, the bare -ETXTBSY is one while no
+    descriptor writes the inode, and nothing else is. *)
+Lemma open_write_existing_intro : forall m ino (s : Sys SyscallEffect) si m0 o,
+  s si m0 o -> open_write_existing m ino s si m0 o.
+Proof.
+  intros m ino s si m0 o H. unfold open_write_existing.
+  destruct (ino_write_held (m_fds m) ino); cbv beta iota;
+    [exact H | apply alt_r; exact H].
+Qed.
+
+Lemma open_write_existing_txtbsy : forall m ino (s : Sys SyscallEffect) si m0,
+  ino_write_held (m_fds m) ino = false ->
+  open_write_existing m ino s si m0 (Ok (mkEffect (errno_ret ETXTBSY) [] []) m0 []).
+Proof.
+  intros m ino s si m0 Hh. unfold open_write_existing. rewrite Hh. cbv beta iota.
+  apply alt_l. unfold err_ret, ret_only. apply pure_ok.
+Qed.
+
+Lemma open_write_existing_cases : forall m ino (s : Sys SyscallEffect) si m0 o,
+  open_write_existing m ino s si m0 o ->
+  s si m0 o
+  \/ (ino_write_held (m_fds m) ino = false
+      /\ o = Ok (mkEffect (errno_ret ETXTBSY) [] []) m0 []).
+Proof.
+  intros m ino s si m0 o H. revert H. unfold open_write_existing.
+  destruct (ino_write_held (m_fds m) ino); intro H; [left; exact H|].
+  destruct H as [H|H]; [right; split; [reflexivity|exact H] | left; exact H].
+Qed.
+
+(** A bare -ETXTBSY is no answer of the fresh-descriptor acceptor: it is
+    not in [openat_errnos], and no descriptor number is an error
+    return. *)
+Lemma check_open_result_txtbsy : forall m mk,
+  check_open_result (mkEffect (errno_ret ETXTBSY) [] []) m mk = CheckReject.
+Proof.
+  intros m mk. unfold check_open_result, check_new_fd_result. cbv beta iota.
+  replace (errno_ret_in openat_errnos (errno_ret ETXTBSY)) with false
+    by (vm_compute; reflexivity).
+  cbv iota.
+  destruct (fd_lookup (m_fds m) (errno_ret ETXTBSY)); [reflexivity|].
+  destruct (bv_eqb (errno_ret ETXTBSY) (alloc_fd (m_fds m))) eqn:He; [|reflexivity].
+  apply bv_eqb_eq in He.
+  pose proof (alloc_fd_not_error_b (m_fds m)) as Ha. rewrite <- He in Ha.
+  rewrite (errno_ret_error_b ETXTBSY ltac:(cbv [ETXTBSY]; lia)
+             ltac:(cbv [ETXTBSY]; lia)) in Ha.
+  discriminate Ha.
+Qed.
+
+Lemma check_create_wronly_txtbsy : forall fs' ino m,
+  check_create_wronly fs' ino (mkEffect (errno_ret ETXTBSY) [] []) m = CheckReject.
+Proof. intros. apply check_open_result_txtbsy. Qed.
+
+Lemma check_open_append_txtbsy : forall fs' ino m,
+  check_open_append fs' ino (mkEffect (errno_ret ETXTBSY) [] []) m = CheckReject.
+Proof. intros. apply check_open_result_txtbsy. Qed.
+
+Lemma check_open_rdwr_txtbsy : forall fs' ino m,
+  check_open_rdwr fs' ino (mkEffect (errno_ret ETXTBSY) [] []) m = CheckReject.
+Proof. intros. apply check_open_result_txtbsy. Qed.
+
 Local Lemma check_open_result_sound_ok : forall i eff m mk m' evs,
   check_open_result eff m (fun fd => mk fd m) = CheckOk m' evs ->
   open_result_spec m mk i m (Ok eff m' evs).
@@ -317,7 +431,9 @@ Local Definition check_openat_create (r : Fs.Resolved)
   | Fs.RFound k e =>
       match e with
       | EDir => check_ret_only eff (errno_ret EISDIR) m []
-      | EFile ino => check_create_wronly (Fs.fs_set_ino_data (m_fs m) ino []) ino eff m
+      | EFile ino =>
+          check_open_write_existing ino eff m
+            (check_create_wronly (Fs.fs_set_ino_data (m_fs m) ino []) ino eff m)
       | EDev DevNull => check_open_devnull k false true eff m
       | EDev DevUrandom => check_open_urandom k false true eff m
       | ELink _ => check_ret_only eff (errno_ret ELOOP) m []
@@ -354,7 +470,7 @@ Local Definition check_openat_append (excl : bool) (r : Fs.Resolved)
       else
         match e with
         | EDir => check_ret_only eff (errno_ret EISDIR) m []
-        | EFile ino => check_open_append (m_fs m) ino eff m
+        | EFile ino => check_open_write_existing ino eff m (check_open_append (m_fs m) ino eff m)
         | EDev DevNull => check_open_devnull k false true eff m
         | EDev DevUrandom => check_open_urandom k false true eff m
         | ELink _ => check_ret_only eff (errno_ret ELOOP) m []
@@ -379,8 +495,9 @@ Local Definition check_openat_rdwr (creat trunc : bool) (r : Fs.Resolved)
       match e with
       | EDir => check_ret_only eff (errno_ret EISDIR) m []
       | EFile ino =>
-          check_open_rdwr (if trunc then Fs.fs_set_ino_data (m_fs m) ino []
-                           else m_fs m) ino eff m
+          check_open_write_existing ino eff m
+            (check_open_rdwr (if trunc then Fs.fs_set_ino_data (m_fs m) ino []
+                              else m_fs m) ino eff m)
       | EDev DevNull => check_open_devnull k true true eff m
       | EDev DevUrandom => check_open_urandom k true true eff m
       | ELink _ => check_ret_only eff (errno_ret ELOOP) m []
@@ -438,8 +555,9 @@ Local Definition check_openat_procfd (n flags : word) (eff : SyscallEffect)
         check_open_result_mk eff m (fun fd => with_fds (fd_insert (m_fds m) fd
                                                   (FdFile ino (Z_to_bv 64 0))))
       else if Z.eqb fl wr_create_flags then
-        check_create_wronly (Fs.fs_set_ino_data (m_fs m) ino []) ino eff m
-      else check_open_append (m_fs m) ino eff m
+        check_open_write_existing ino eff m
+          (check_create_wronly (Fs.fs_set_ino_data (m_fs m) ino []) ino eff m)
+      else check_open_write_existing ino eff m (check_open_append (m_fs m) ino eff m)
   | Some (FdChannel _) | Some (FdDir _)
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
   | Some (FdUrandom _ _) | Some (FdStream _ _ _) | Some (FdEventfd _)
@@ -482,6 +600,22 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
         else check_openat_resolved p flags eff m
   end.
 
+(** Mirrors [File.unused_fd_none_spec]: on a table [File.lowest_fd] has
+    no slot in, the bare -EMFILE under a soft limit at most one past
+    [alloc_fd], and a decline above it.  It sits here rather than in the
+    [Fs.File] mirror because that mirror imports this one. *)
+Definition check_unused_fd_none (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z
+  then check_ret_only eff (errno_ret EMFILE) m []
+  else CheckUnmodeled.
+
+(** A table with a free slot is not one [check_openat] answers before
+    the walk: the hypothesis every open that hands out a descriptor
+    already carries turns the test off. *)
+Lemma lowest_fd_none_free : forall fds,
+  fd_lookup fds (alloc_fd fds) = None -> lowest_fd_none fds = false.
+Proof. intros fds H. unfold lowest_fd_none. rewrite H. reflexivity. Qed.
 
 (** The pathname copy-in is the prefix through the first NUL, the first
     faulting byte, or [PATH_MAX] — [State.cstr_access_len_aux].  That is
@@ -494,18 +628,22 @@ Local Definition check_openat_body (i : SyscallInput) (dirfd pathp flags : word)
     that bounds the difference, are in
     bugs/openat-getname-word-at-a-time.md.  The open body performs no
     later copy-in, so clear the prefix while checking the result and
-    require the complete claimed list to equal that one range.  Around
-    that, [getname_flags]' own refusals ([check_getname_refusals]),
-    which fail before the copy is done. *)
+    require the complete claimed list to equal that one range.  Inside
+    it, ahead of the walk, the answer of a table with no free slot
+    ([Open.openat_core_spec]); around it, [getname_flags]' own refusals
+    ([check_getname_refusals]), which fail before the copy is done. *)
 Definition check_openat (i : SyscallInput) (dirfd pathp flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  check_getname_refusals i pathp eff m
+  check_getname_refusals i [] pathp eff m
     (if negb (modeled_open_flags flags) then CheckUnmodeled
      else
        let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
        check_copyins_after reads eff
-         (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-            (check_openat_body i dirfd pathp flags (clear_copyins eff) m))).
+         (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+          then check_unused_fd_none (clear_copyins eff) m
+          else
+            check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+              (check_openat_body i dirfd pathp flags (clear_copyins eff) m))).
 
 Local Definition openat_nul_mem (a : word) : option byte :=
   if bv_eqb a 0x2000 then Some 102
@@ -877,12 +1015,74 @@ Local Ltac dev_cnil :=
   first [eapply check_open_devnull_no_copyin; eassumption
         |eapply check_open_urandom_no_copyin; eassumption].
 
+(** The -ETXTBSY a write open of an existing file admits beside its own
+    answers ([Open.open_write_existing]), in each direction: the wrapped
+    acceptor's lemma, or the bare -ETXTBSY while no descriptor writes
+    the inode.  Found by shape, so a row without the wrapper fails it at
+    once. *)
+Local Ltac ow_sound_ok :=
+  match goal with
+  | Hx : check_open_write_existing ?ino _ ?mm _ = CheckOk _ _ |- _ =>
+      let Hh := fresh "Hh" in
+      destruct (ino_write_held (m_fds mm) ino) eqn:Hh;
+      [ rewrite (check_open_write_existing_held _ _ _ _ Hh) in Hx;
+        apply open_write_existing_intro;
+        first [ eapply check_create_wronly_sound_ok; exact Hx
+              | eapply check_open_append_sound_ok; exact Hx
+              | eapply check_open_rdwr_sound_ok; exact Hx ]
+      | apply check_open_write_existing_ok_cases in Hx;
+        destruct Hx as [Hx | (-> & -> & ->)];
+        [ apply open_write_existing_intro;
+          first [ eapply check_create_wronly_sound_ok; exact Hx
+                | eapply check_open_append_sound_ok; exact Hx
+                | eapply check_open_rdwr_sound_ok; exact Hx ]
+        | apply open_write_existing_txtbsy; exact Hh ] ]
+  end.
+Local Ltac ow_sound_nu :=
+  match goal with
+  | Hx : check_open_write_existing _ _ _ _ = CheckUnmodeled |- _ =>
+      apply check_open_write_existing_unmodeled in Hx; exfalso;
+      first [ eapply check_create_wronly_no_unmodeled; exact Hx
+            | eapply check_open_append_no_unmodeled; exact Hx
+            | eapply check_open_rdwr_no_unmodeled; exact Hx ]
+  end.
+Local Ltac ow_complete_ok :=
+  match goal with
+  | Hx : open_write_existing ?mm ?ino _ _ _ (Ok _ _ _) |- _ =>
+      apply open_write_existing_cases in Hx;
+      let Hh := fresh "Hh" in
+      destruct Hx as [Hx | (Hh & Hx)];
+      [ unfold check_open_write_existing;
+        first [ rewrite (check_create_wronly_complete_ok' _ _ _ _ _ _ _ Hx)
+              | rewrite (check_open_append_complete_ok' _ _ _ _ _ _ _ Hx)
+              | rewrite (check_open_rdwr_complete_ok' _ _ _ _ _ _ _ Hx) ];
+        destruct (ino_write_held (m_fds mm) ino); reflexivity
+      | injection Hx as -> -> ->;
+        unfold check_open_write_existing; rewrite Hh;
+        first [ rewrite check_create_wronly_txtbsy
+              | rewrite check_open_append_txtbsy
+              | rewrite check_open_rdwr_txtbsy ];
+        cbv beta iota; apply check_ret_only_ok_iff; now repeat split ]
+  end.
+Local Ltac ow_complete_nu :=
+  match goal with
+  | Hx : open_write_existing _ _ _ _ _ Unmodeled |- _ =>
+      apply open_write_existing_cases in Hx;
+      destruct Hx as [Hx | (_ & Hx)];
+      [ exfalso;
+        first [ exact (create_wronly_no_unmodeled _ _ _ _ Hx)
+              | exact (open_append_no_unmodeled _ _ _ _ Hx)
+              | exact (open_rdwr_no_unmodeled _ _ _ _ Hx) ]
+      | discriminate Hx ]
+  end.
+
 (* ------------------------------------------------------------ the arms *)
 
 (** Every arm splits on the outcome, the entry and the device kind, and
     each leaf closes by the lemma for its acceptor, one per direction. *)
 Local Ltac arm_sound_ok :=
-  first [ op_ret_ok
+  first [ ow_sound_ok
+        | op_ret_ok
         | eapply check_open_result_mk_sound_ok; eassumption
         | eapply check_create_wronly_sound_ok; eassumption
         | eapply check_open_append_sound_ok; eassumption
@@ -890,7 +1090,8 @@ Local Ltac arm_sound_ok :=
         | dev_sound_ok
         | discriminate ].
 Local Ltac arm_sound_nu :=
-  first [ op_ret_nu
+  first [ ow_sound_nu
+        | op_ret_nu
         | apply unmodeled_intro
         | exfalso; eapply check_open_result_mk_no_unmodeled; eassumption
         | exfalso; eapply check_create_wronly_no_unmodeled; eassumption
@@ -898,7 +1099,8 @@ Local Ltac arm_sound_nu :=
         | exfalso; eapply check_open_rdwr_no_unmodeled; eassumption
         | dev_sound_nu ].
 Local Ltac arm_complete_ok :=
-  first [ op_ret_co
+  first [ ow_complete_ok
+        | op_ret_co
         | eapply check_open_result_mk_complete_ok; eassumption
         | eapply check_create_wronly_complete_ok'; eassumption
         | eapply check_open_append_complete_ok'; eassumption
@@ -906,7 +1108,8 @@ Local Ltac arm_complete_ok :=
         | dev_complete_ok
         | unfold unmodeled in *; inv_ok ].
 Local Ltac arm_complete_nu :=
-  first [ reflexivity
+  first [ ow_complete_nu
+        | reflexivity
         | sys_unfold; inv_ok; fail
         | exfalso; eapply open_result_spec_no_unmodeled; eassumption
         | exfalso; eapply create_wronly_no_unmodeled; eassumption
@@ -1223,8 +1426,7 @@ Proof.
   all: destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
     [eapply check_open_result_mk_sound_ok; exact H|];
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) wr_create_flags);
-    [eapply check_create_wronly_sound_ok; exact H
-    |eapply check_open_append_sound_ok; exact H].
+    ow_sound_ok.
 Qed.
 
 Local Lemma check_openat_procfd_sound_unmodeled : forall i n flags eff m,
@@ -1247,8 +1449,7 @@ Proof.
             [eapply check_open_result_mk_no_unmodeled; exact H|];
             destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                         wr_create_flags);
-            [eapply check_create_wronly_no_unmodeled; exact H
-            |eapply check_open_append_no_unmodeled; exact H] ].
+            ow_sound_nu ].
 Qed.
 
 Local Lemma check_openat_procfd_complete_ok : forall i n flags eff m m' evs,
@@ -1272,8 +1473,7 @@ Proof.
             [eapply check_open_result_mk_complete_ok; exact H|];
             destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                         wr_create_flags);
-            [eapply check_create_wronly_complete_ok'; exact H
-            |eapply check_open_append_complete_ok'; exact H] ].
+            ow_complete_ok ].
 Qed.
 
 Local Lemma check_openat_procfd_complete_unmodeled : forall i n flags eff m,
@@ -1296,8 +1496,7 @@ Proof.
             [exact (open_result_spec_no_unmodeled _ _ i H)|];
             destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                         wr_create_flags);
-            [exact (create_wronly_no_unmodeled _ _ _ _ H)
-            |exact (open_append_no_unmodeled _ _ _ _ H)] ].
+            ow_complete_nu ].
 Qed.
 
 Local Lemma check_openat_resolved_sound_ok : forall i p flags eff m m' evs,
@@ -1394,8 +1593,22 @@ Local Ltac op_nfd_cnil :=
       eapply check_new_fd_result_no_copyin; exact Hx
   end.
 
+(** The -ETXTBSY wrapper's two leaves: the wrapped acceptor's, or the
+    bare -ETXTBSY, whose ledgers are all empty. *)
+Local Ltac ow_cnil :=
+  match goal with
+  | Hx : check_open_write_existing _ _ _ _ = CheckOk _ _ |- _ =>
+      apply check_open_write_existing_ok_cases in Hx;
+      destruct Hx as [Hx | (-> & _ & _)];
+      [ first [ unfold check_create_wronly, check_open_result in Hx; op_nfd_cnil
+              | unfold check_open_append, check_open_result in Hx; op_nfd_cnil
+              | unfold check_open_rdwr, check_open_result in Hx; op_nfd_cnil ]
+      | reflexivity ]
+  end.
+
 Local Ltac arm_cnil :=
-  first [ op_ret_cnil
+  first [ ow_cnil
+        | op_ret_cnil
         | eapply check_open_result_mk_no_copyin; eassumption
         | unfold check_create_wronly, check_open_result in *; op_nfd_cnil
         | unfold check_open_append, check_open_result in *; op_nfd_cnil
@@ -1482,8 +1695,7 @@ Proof.
     [eapply check_open_result_mk_no_copyin; exact H|];
     destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                 wr_create_flags);
-    [unfold check_create_wronly, check_open_result in H; op_nfd_cnil
-    |unfold check_open_append, check_open_result in H; op_nfd_cnil].
+    ow_cnil.
 Qed.
 
 Local Lemma check_openat_resolved_no_copyin : forall p flags eff m m' evs,
@@ -1579,7 +1791,9 @@ Qed.
 Local Lemma openat_core_ok_inv : forall i dirfd pathp flags eff m m' evs,
   openat_core_spec dirfd pathp flags i m (Ok eff m' evs) ->
   negb (modeled_open_flags flags) = false /\
-  walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags)
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then unused_fd_none_spec m
+   else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
     i m (Ok eff m' evs).
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
@@ -1597,7 +1811,9 @@ Local Lemma openat_core_unmodeled_inv : forall i dirfd pathp flags m,
   openat_core_spec dirfd pathp flags i m Unmodeled ->
   negb (modeled_open_flags flags) = true \/
   (negb (modeled_open_flags flags) = false /\
-   walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags)
+   (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+    then unused_fd_none_spec m
+    else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
      i m Unmodeled).
 Proof.
   intros i dirfd pathp flags m H. unfold openat_core_spec in H.
@@ -1692,6 +1908,123 @@ Proof.
   - intros. eapply check_openat_body_complete_unmodeled. eassumption.
 Qed.
 
+(** The answer of a table with no free slot ([File.unused_fd_none_spec])
+    against its checker, in the four directions. *)
+Local Lemma check_unused_fd_none_sound_ok : forall i eff m m' evs,
+  check_unused_fd_none eff m = CheckOk m' evs ->
+  unused_fd_none_spec m i m (Ok eff m' evs).
+Proof.
+  intros i eff m m' evs H. unfold check_unused_fd_none in H.
+  unfold unused_fd_none_spec.
+  destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z;
+    cbv beta iota in H |- *; [op_ret_ok | discriminate H].
+Qed.
+
+Local Lemma check_unused_fd_none_sound_unmodeled : forall i eff m,
+  check_unused_fd_none eff m = CheckUnmodeled ->
+  unused_fd_none_spec m i m Unmodeled.
+Proof.
+  intros i eff m H. unfold check_unused_fd_none in H.
+  unfold unused_fd_none_spec.
+  destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z;
+    cbv beta iota in H |- *; [op_ret_nu | apply unmodeled_intro].
+Qed.
+
+Local Lemma check_unused_fd_none_complete_ok : forall i eff m m' evs,
+  unused_fd_none_spec m i m (Ok eff m' evs) ->
+  check_unused_fd_none eff m = CheckOk m' evs /\ eff_copyins eff = [].
+Proof.
+  intros i eff m m' evs H. unfold unused_fd_none_spec in H.
+  unfold check_unused_fd_none.
+  destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z;
+    cbv beta iota in H |- *.
+  - split; [op_ret_co
+           |unfold err_ret, ret_only, pure in *; inv_ok; reflexivity].
+  - unfold unmodeled in H. discriminate H.
+Qed.
+
+Local Lemma check_unused_fd_none_complete_unmodeled : forall i eff m,
+  unused_fd_none_spec m i m Unmodeled ->
+  check_unused_fd_none eff m = CheckUnmodeled.
+Proof.
+  intros i eff m H. unfold unused_fd_none_spec in H.
+  unfold check_unused_fd_none.
+  destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z;
+    cbv beta iota in H |- *; [|reflexivity].
+  unfold err_ret in H. exfalso. exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
+
+(** The core past the flag word: the no-slot answer ahead of the walk,
+    or the body with [check_walk_refusals] around it. *)
+Local Lemma check_openat_gated_sound_ok : forall i dirfd pathp flags m eff m' evs,
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then check_unused_fd_none eff m
+   else check_walk_refusals (open_walk_mode flags) i pathp eff m
+          (check_openat_body i dirfd pathp flags eff m)) = CheckOk m' evs ->
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then unused_fd_none_spec m
+   else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
+    i m (Ok eff m' evs).
+Proof.
+  intros i dirfd pathp flags m eff m' evs H.
+  destruct (openat_name_fetched i pathp && lowest_fd_none (m_fds m));
+    cbv beta iota in H |- *.
+  - now apply check_unused_fd_none_sound_ok.
+  - now apply check_openat_walked_sound_ok.
+Qed.
+
+Local Lemma check_openat_gated_sound_unmodeled : forall i dirfd pathp flags m eff,
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then check_unused_fd_none eff m
+   else check_walk_refusals (open_walk_mode flags) i pathp eff m
+          (check_openat_body i dirfd pathp flags eff m)) = CheckUnmodeled ->
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then unused_fd_none_spec m
+   else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
+    i m Unmodeled.
+Proof.
+  intros i dirfd pathp flags m eff H.
+  destruct (openat_name_fetched i pathp && lowest_fd_none (m_fds m));
+    cbv beta iota in H |- *.
+  - eapply check_unused_fd_none_sound_unmodeled. exact H.
+  - eapply check_openat_walked_sound_unmodeled. exact H.
+Qed.
+
+Local Lemma check_openat_gated_complete_ok : forall i dirfd pathp flags m eff m' evs,
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then unused_fd_none_spec m
+   else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
+    i m (Ok eff m' evs) ->
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then check_unused_fd_none eff m
+   else check_walk_refusals (open_walk_mode flags) i pathp eff m
+          (check_openat_body i dirfd pathp flags eff m)) = CheckOk m' evs
+  /\ eff_copyins eff = [].
+Proof.
+  intros i dirfd pathp flags m eff m' evs H.
+  destruct (openat_name_fetched i pathp && lowest_fd_none (m_fds m));
+    cbv beta iota in H |- *.
+  - eapply check_unused_fd_none_complete_ok. exact H.
+  - eapply check_openat_walked_complete_ok. exact H.
+Qed.
+
+Local Lemma check_openat_gated_complete_unmodeled : forall i dirfd pathp flags m eff,
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then unused_fd_none_spec m
+   else walk_refusals (open_walk_mode flags) pathp (openat_body_spec i m dirfd pathp flags))
+    i m Unmodeled ->
+  (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+   then check_unused_fd_none eff m
+   else check_walk_refusals (open_walk_mode flags) i pathp eff m
+          (check_openat_body i dirfd pathp flags eff m)) = CheckUnmodeled.
+Proof.
+  intros i dirfd pathp flags m eff H.
+  destruct (openat_name_fetched i pathp && lowest_fd_none (m_fds m));
+    cbv beta iota in H |- *.
+  - eapply check_unused_fd_none_complete_unmodeled. exact H.
+  - eapply check_openat_walked_complete_unmodeled. exact H.
+Qed.
+
 (** The call from the flag word on, under its pathname ledger: the part
     [getname_flags]' own refusals wrap.  The four are stated over
     [check_openat]'s own expression, not over a name for it: a name
@@ -1701,8 +2034,11 @@ Local Lemma check_openat_fetched_sound_ok : forall i dirfd pathp flags m eff m' 
   (if negb (modeled_open_flags flags) then CheckUnmodeled
    else
      check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
-       (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-          (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
+       (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+        then check_unused_fd_none (clear_copyins eff) m
+        else
+          check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+            (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
   = CheckOk m' evs ->
   record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_spec dirfd pathp flags) i m (Ok eff m' evs).
@@ -1716,15 +2052,18 @@ Proof.
   eapply bind_ok0; [apply input_ok|]. cbv beta.
   eapply bind_ok0; [apply get_model_ok|]. cbv beta iota.
   rewrite Hfl. cbv iota.
-  now apply check_openat_walked_sound_ok.
+  now apply check_openat_gated_sound_ok.
 Qed.
 
 Local Lemma check_openat_fetched_sound_unmodeled : forall i dirfd pathp flags m eff,
   (if negb (modeled_open_flags flags) then CheckUnmodeled
    else
      check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
-       (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-          (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
+       (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+        then check_unused_fd_none (clear_copyins eff) m
+        else
+          check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+            (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
   = CheckUnmodeled ->
   record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
     (openat_core_spec dirfd pathp flags) i m Unmodeled.
@@ -1736,7 +2075,7 @@ Proof.
   destruct (negb (modeled_open_flags flags)) eqn:Hfl; cbv iota;
     [apply unmodeled_intro|].
   cbv iota zeta in H. apply check_copyins_after_unmodeled in H.
-  eapply check_openat_walked_sound_unmodeled. exact H.
+  eapply check_openat_gated_sound_unmodeled. exact H.
 Qed.
 
 Local Lemma check_openat_fetched_complete_ok : forall i dirfd pathp flags m eff m' evs,
@@ -1745,8 +2084,11 @@ Local Lemma check_openat_fetched_complete_ok : forall i dirfd pathp flags m eff 
   (if negb (modeled_open_flags flags) then CheckUnmodeled
    else
      check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
-       (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-          (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
+       (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+        then check_unused_fd_none (clear_copyins eff) m
+        else
+          check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+            (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
   = CheckOk m' evs.
 Proof.
   intros i dirfd pathp flags m eff m' evs H.
@@ -1754,7 +2096,7 @@ Proof.
   destruct H as (core & Hcore & ->).
   apply openat_core_ok_inv in Hcore.
   destruct Hcore as (Hflags & Hbody).
-  apply check_openat_walked_complete_ok in Hbody.
+  apply check_openat_gated_complete_ok in Hbody.
   destruct Hbody as (Hchecked & Hcopyins).
   rewrite Hflags. cbv iota zeta.
   apply (proj2 (check_copyins_after_ok_iff _ _ _ _ _)). split.
@@ -1770,8 +2112,11 @@ Local Lemma check_openat_fetched_complete_unmodeled : forall i dirfd pathp flags
   (if negb (modeled_open_flags flags) then CheckUnmodeled
    else
      check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
-       (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-          (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
+       (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+        then check_unused_fd_none (clear_copyins eff) m
+        else
+          check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+            (check_openat_body i dirfd pathp flags (clear_copyins eff) m)))
   = CheckUnmodeled.
 Proof.
   intros i dirfd pathp flags m eff H.
@@ -1779,7 +2124,7 @@ Proof.
   apply openat_core_unmodeled_inv in H.
   destruct H as [Hflags | (Hflags & Hbody)].
   - rewrite Hflags. reflexivity.
-  - apply check_openat_walked_complete_unmodeled
+  - apply check_openat_gated_complete_unmodeled
       with (eff := clear_copyins eff) in Hbody.
     rewrite Hflags. cbv iota zeta.
     unfold check_copyins_after. rewrite Hbody. reflexivity.
@@ -1791,12 +2136,15 @@ Qed.
     minutes per [Qed]. *)
 Local Lemma check_openat_eq : forall i dirfd pathp flags eff m,
   check_openat i dirfd pathp flags eff m
-  = check_getname_refusals i pathp eff m
+  = check_getname_refusals i [] pathp eff m
       (if negb (modeled_open_flags flags) then CheckUnmodeled
        else
          check_copyins_after [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] eff
-           (check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
-              (check_openat_body i dirfd pathp flags (clear_copyins eff) m))).
+           (if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+            then check_unused_fd_none (clear_copyins eff) m
+            else
+              check_walk_refusals (open_walk_mode flags) i pathp (clear_copyins eff) m
+                (check_openat_body i dirfd pathp flags (clear_copyins eff) m))).
 Proof. intros. unfold check_openat. cbv zeta. reflexivity. Qed.
 
 (** The four exports: the fetched call with [getname_flags]' own
@@ -1808,7 +2156,7 @@ Proof.
   intros i dirfd pathp flags eff m m' evs H.
   rewrite check_openat_eq in H.
   unfold openat_spec. eapply bind_ok0; [apply input_ok|]. cbv beta.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_openat_fetched_sound_ok i dirfd pathp flags m)
            (check_openat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_openat_fetched_complete_ok i dirfd pathp flags m)
@@ -1823,7 +2171,7 @@ Proof.
   intros i dirfd pathp flags eff m H.
   rewrite check_openat_eq in H.
   unfold openat_spec. eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_openat_fetched_sound_ok i dirfd pathp flags m)
            (check_openat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_openat_fetched_complete_ok i dirfd pathp flags m)
@@ -1839,7 +2187,7 @@ Proof.
   unfold openat_spec in H.
   apply input_bind_ok_inv in H. cbv beta in H.
   unfold check_openat. cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_openat_fetched_sound_ok i dirfd pathp flags m)
            (check_openat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_openat_fetched_complete_ok i dirfd pathp flags m)
@@ -1854,7 +2202,7 @@ Proof.
   intros i dirfd pathp flags m eff H.
   unfold openat_spec in H. apply input_bind_unmodeled_inv in H. cbv beta in H.
   unfold check_openat. cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_openat_fetched_sound_ok i dirfd pathp flags m)
            (check_openat_fetched_sound_unmodeled i dirfd pathp flags m)
            (check_openat_fetched_complete_ok i dirfd pathp flags m)
@@ -2030,6 +2378,7 @@ Local Definition check_faccessat_body (md : Fs.WalkMode) (i : SyscallInput)
       else
         let '(r, _, _) := Fs.resolve md (m_fs m) (m_cwd m) p in
         match r with
+        | Fs.RFound _ (Fs.EDev _) => CheckUnmodeled
         | Fs.RFound _ _ => check_access_exists eff m
         | Fs.RMissing _ _ => check_ret_only eff (errno_ret ENOENT) m []
         | Fs.RNotDir _ => check_ret_only eff (errno_ret ENOTDIR) m []
@@ -2055,7 +2404,7 @@ Definition check_faccessat (i : SyscallInput) (dirfd pathp mode : word)
   else if negb (access_mode_f_ok mode) then CheckUnmodeled
   else
     let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
-    check_getname_refusals i pathp eff m
+    check_getname_refusals i [] pathp eff m
       (check_copyins_after reads eff
          (check_walk_refusals (Fs.WalkFull true false) i pathp (clear_copyins eff) m
             (check_faccessat_body (Fs.WalkFull true false) i dirfd pathp
@@ -2200,7 +2549,8 @@ Proof.
     cbv iota beta zeta in H |- *.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H |- *;
     try fa_ret_ok; try discriminate.
-  now apply check_access_exists_sound_ok.
+  destruct e; cbv iota in H |- *; try discriminate;
+    now apply check_access_exists_sound_ok.
 Qed.
 
 Local Lemma check_faccessat_body_sound_unmodeled : forall md i dirfd pathp eff m,
@@ -2218,7 +2568,8 @@ Proof.
     cbv iota beta zeta in H |- *.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H |- *;
     try fa_ret_nu; try apply unmodeled_intro.
-  exfalso. eapply check_access_exists_no_unmodeled. exact H.
+  destruct e; cbv iota in H |- *; try apply unmodeled_intro;
+    exfalso; eapply check_access_exists_no_unmodeled; exact H.
 Qed.
 
 Local Lemma check_faccessat_body_complete_ok :
@@ -2237,7 +2588,8 @@ Proof.
     cbv iota beta zeta in H |- *.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H |- *;
     try fa_ret_co; try (unfold unmodeled in H; inv_ok; fail).
-  eapply check_access_exists_complete_ok. exact H.
+  destruct e; cbv iota in H |- *; try (unfold unmodeled in H; inv_ok; fail);
+    eapply check_access_exists_complete_ok; exact H.
 Qed.
 
 Local Lemma check_faccessat_body_complete_unmodeled :
@@ -2256,7 +2608,8 @@ Proof.
     cbv iota beta zeta in H |- *.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H |- *;
     try (sys_unfold; inv_ok; fail); try reflexivity.
-  exfalso. eapply access_exists_no_unmodeled. exact H.
+  destruct e; cbv iota in H |- *; try reflexivity;
+    exfalso; eapply access_exists_no_unmodeled; exact H.
 Qed.
 
 Local Lemma check_faccessat_body_ok_copyins_nil :
@@ -2274,7 +2627,8 @@ Proof.
     cbv iota beta zeta in H.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota in H;
     try fa_ret_cnil; try discriminate.
-  eapply check_access_exists_ok_copyins_nil. exact H.
+  destruct e; cbv iota in H; try discriminate;
+    eapply check_access_exists_ok_copyins_nil; exact H.
 Qed.
 
 (** The body with [check_walk_refusals] around it, from the body's four
@@ -2428,7 +2782,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [discriminate|].
   cbv zeta in H. fa_open.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (Fs.WalkFull true false) i dirfd pathp m)
@@ -2447,7 +2801,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H.
   { fa_open_u. apply unmodeled_intro. }
   cbv zeta in H. fa_open_u.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (Fs.WalkFull true false) i dirfd pathp m)
@@ -2470,7 +2824,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [fa_unmod_h|].
   cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (Fs.WalkFull true false) i dirfd pathp m)
@@ -2492,7 +2846,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [reflexivity|].
   cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (Fs.WalkFull true false) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (Fs.WalkFull true false) i dirfd pathp m)
@@ -2518,7 +2872,7 @@ Definition check_faccessat2 (i : SyscallInput) (dirfd pathp mode flags : word)
   else if negb (access_mode_f_ok mode) then CheckUnmodeled
   else
     let reads := [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)] in
-    check_getname_refusals i pathp eff m
+    check_getname_refusals i [] pathp eff m
       (check_copyins_after reads eff
          (check_walk_refusals (access_walk_mode flags) i pathp (clear_copyins eff) m
             (check_faccessat_body (access_walk_mode flags) i dirfd pathp
@@ -2542,7 +2896,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [discriminate|].
   cbv zeta in H. fa_open.
-  exact (check_getname_refusals_sound_ok pathp _ _ i m
+  exact (check_getname_refusals_sound_ok [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (access_walk_mode flags) i dirfd pathp m)
@@ -2566,7 +2920,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H.
   { fa_open_u. apply unmodeled_intro. }
   cbv zeta in H. fa_open_u.
-  exact (check_getname_refusals_sound_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_sound_unmodeled [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (access_walk_mode flags) i dirfd pathp m)
@@ -2595,7 +2949,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [fa_unmod_h|].
   cbv zeta.
-  exact (check_getname_refusals_complete_ok pathp _ _ i m
+  exact (check_getname_refusals_complete_ok [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (access_walk_mode flags) i dirfd pathp m)
@@ -2622,7 +2976,7 @@ Proof.
   destruct (negb (access_mode_f_ok mode)) eqn:Hfok; cbv iota in H;
     [reflexivity|].
   cbv zeta.
-  exact (check_getname_refusals_complete_unmodeled pathp _ _ i m
+  exact (check_getname_refusals_complete_unmodeled [] pathp _ _ i m
            (check_faccessat_fetched_sound_ok (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_sound_unmodeled (access_walk_mode flags) i dirfd pathp m)
            (check_faccessat_fetched_complete_ok (access_walk_mode flags) i dirfd pathp m)

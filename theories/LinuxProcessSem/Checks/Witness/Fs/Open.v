@@ -33,8 +33,17 @@ Proof.
   unfold err_ret, ret_only, ret_outcome. apply pure_ok.
 Qed.
 
-Local Ltac open_env := unfold open_result_spec, create_wronly, open_append,
-  open_rdwr; apply open_env_failure.
+(** A write open of an existing file stands beside its -ETXTBSY while
+    no descriptor writes it ([Open.open_write_existing]), so the
+    injectable errno is the right branch there, and the only branch
+    while one does. *)
+Local Ltac ow_split :=
+  try (match goal with
+       | |- context [ino_write_held ?a ?b] => destruct (ino_write_held a b); cbv beta iota
+       end).
+Local Ltac open_env := unfold open_write_existing, open_result_spec, create_wronly,
+  open_append, open_rdwr; ow_split;
+  first [ apply open_env_failure | apply alt_r; apply open_env_failure ].
 
 (** A device row: the decline of a device entry away from its own name
     ([Open.dev_at_home]), else the injectable errno. *)
@@ -249,7 +258,7 @@ Local Lemma openat_procfd_witness_ok : forall n flags i m,
 Proof.
   intros n flags i m.
   unfold openat_procfd_spec, openat_procfd_witness, open_result_spec,
-    create_wronly, open_append. cbv zeta.
+    open_write_existing, create_wronly, open_append. cbv zeta.
   destruct (negb (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0
                   || Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                        wr_create_flags
@@ -262,14 +271,22 @@ Proof.
   all: destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags) 0);
       [|destruct (Z.eqb (Z.ldiff (bv_unsigned flags) open_ignored_flags)
                     wr_create_flags)];
-      (apply alt_l; eapply bind_step;
-       [apply errno_head_witness|apply pure_ok]).
+      ow_split; first [ apply open_env_failure | apply alt_r; apply open_env_failure ].
 Qed.
+
+(** Mirrors [File.unused_fd_none_spec]: the -EMFILE where it is forced,
+    the decline above it. *)
+Local Definition unused_fd_none_witness (m : Model) : outcome SyscallEffect :=
+  if (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z
+  then ret_outcome (errno_ret EMFILE) m
+  else Unmodeled.
 
 Local Definition openat_core_witness (dirfd pathp flags : word)
     (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   if negb (modeled_open_flags flags) then Unmodeled  (* unmodeled flag combination *)
+  else if openat_name_fetched i pathp && lowest_fd_none (m_fds m)
+  then unused_fd_none_witness m                      (* no free descriptor *)
   else match read_cstr (in_mem i) pathp with
        | CstrTooLong => ret_outcome (errno_ret ENAMETOOLONG) m  (* over-long path *)
        | CstrFault => ret_outcome (errno_ret EFAULT) m          (* unreadable path *)
@@ -310,6 +327,10 @@ Proof.
   eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
   destruct (negb (modeled_open_flags flags)) eqn:Hfl; cbv iota;
     [apply unmodeled_intro|].
+  destruct (openat_name_fetched i pathp && lowest_fd_none (m_fds m)); cbv iota.
+  { unfold unused_fd_none_spec, unused_fd_none_witness.
+    destruct (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z;
+      cbv iota; [apply pure_ok | apply unmodeled_intro]. }
   apply walk_refusals_intro. unfold openat_body_spec.
   destruct (read_cstr (in_mem i) pathp) as [p| |] eqn:Hp; cbv iota;
     [|apply pure_ok|apply pure_ok].
@@ -412,7 +433,8 @@ Proof.
 Qed.
 
 (** faccessat witness: the deterministic errno arms, the fail-closed
-    [Unmodeled], or — where the path resolves — plain SUCCESS.  That is
+    [Unmodeled] (a device among them), or — where the path resolves to
+    anything else — plain SUCCESS.  That is
     the [alt]'s RIGHT branch, unlike the openat and unlinkat witnesses
     which take the injectable-errno branch to avoid building a new model
     state.  Nothing has to be built here: faccessat changes no state, so
@@ -429,6 +451,7 @@ Local Definition faccessat_body_witness (md : Fs.WalkMode) (dirfd pathp : word)
       else
         let '(r, _, _) := Fs.resolve md (m_fs m) (m_cwd m) p in
         match r with
+        | Fs.RFound _ (Fs.EDev _) => Unmodeled
         | Fs.RFound _ _ => ret_outcome (Z_to_bv 64 0) m
         | Fs.RMissing _ _ => ret_outcome (errno_ret ENOENT) m
         | Fs.RNotDir _ => ret_outcome (errno_ret ENOTDIR) m
@@ -462,7 +485,8 @@ Proof.
   destruct (Fs.resolve md (m_fs m) (m_cwd m) p) as [[r lk] ts]; cbv iota beta zeta.
   destruct r as [k e|par nm|q|q| | |dr nm']; cbv iota;
     try apply pure_ok; try apply unmodeled_intro.
-  unfold access_exists_spec. apply alt_r. apply pure_ok.
+  destruct e; cbv iota; try apply unmodeled_intro;
+    unfold access_exists_spec; apply alt_r; apply pure_ok.
 Qed.
 
 Lemma faccessat_witness_ok : forall dirfd pathp mode i m,

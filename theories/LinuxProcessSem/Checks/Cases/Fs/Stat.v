@@ -22,6 +22,7 @@ Import ListNotations.
 Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Fs.Namei.
 
 (** newfstatat(AT_FDCWD, "f", <buf>, 0) against an empty file system: the
     path bytes are 'f', NUL at 0x2000, the file is absent, and the answer
@@ -133,17 +134,17 @@ Proof. split_conj; check_eq. Qed.
 
 (** [getname_flags]' -ENOMEM beside its own answers and every answer
     past them: the name is allocated before a byte is copied
-    (fs/namei.c:146-148, Linux v6.18.46), so that -ENOMEM carries no
-    copy-in ([Fs.Namei.getname_refusals]).  [newfstatat] without
-    AT_EMPTY_PATH fetches with plain [getname]
-    (include/linux/fs.h:2952-2953), so the empty name's -ENOENT, an
-    unmapped pointer's -EFAULT and an absent name's -ENOENT admit it.
-    Under AT_EMPTY_PATH, [__getname_maybe_null] goes on to
-    [getname_flags] once the lead byte reads and is not NUL
-    (fs/namei.c:231-236), so a name that faults on its SECOND byte
-    admits it too.  [readlinkat] fetches with [getname_flags] under
+    (fs/namei.c:146-148, Linux v6.18.46), so on a fetch that reads
+    nothing before [getname_flags] that -ENOMEM carries no copy-in
+    ([Fs.Namei.getname_refusals]).  [newfstatat] without AT_EMPTY_PATH
+    fetches with plain [getname] (include/linux/fs.h:2952-2953), so the
+    empty name's -ENOENT, an unmapped pointer's -EFAULT, an absent
+    name's -ENOENT and the -EFAULT of a name that faults on its second
+    byte admit it.  [readlinkat] fetches with [getname_flags] under
     LOOKUP_EMPTY (fs/stat.c:569, :575), which lets the empty name
-    through only after the allocation, so its -ENOENT (593) admits it. *)
+    through only after the allocation, so its -ENOENT (593) admits it.
+    Under AT_EMPTY_PATH the fetch reads the lead byte first
+    ([newfstatat_empty_path_getname_enomem_reads_the_lead_byte]). *)
 Example newfstatat_getname_enomem_copies_nothing :
   let call (nr : word) a2 a3 mp := check_syscall
         (mkInput nr [AT_FDCWD; 0x2000; a2; a3; 0; 0] mp (fun _ => None))
@@ -152,15 +153,16 @@ Example newfstatat_getname_enomem_copies_nothing :
   /\ call 79 0 0 (fun _ => None) = CheckOk statat_ns_model []
   /\ call 79 0 0 (statat_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z)
      = CheckOk statat_ns_model []
-  /\ call 79 0 (Z_to_bv 64 AT_EMPTY_PATH)
-       (fun a => if bv_eqb a 0x2000 then Some 102 else None)
+  /\ call 79 0 0 (fun a => if bv_eqb a 0x2000 then Some 102 else None)
      = CheckOk statat_ns_model []
   /\ call 78 0 16 (statat_mem []) = CheckOk statat_ns_model [].
 Proof. vm_compute; split_conj; check_eq. Qed.
 
 (** ...and not with the copy-in on a name no answer reads and then
     fails for memory: the empty one, an unmapped one, and the one whose
-    second byte faults. *)
+    second byte faults, whose -ENOMEM under AT_EMPTY_PATH reads the
+    lead byte alone
+    ([newfstatat_empty_path_getname_enomem_reads_the_lead_byte]). *)
 Example newfstatat_getname_enomem_with_the_copyin_rejected :
   check_syscall
     (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0] (statat_mem []) (fun _ => None))
@@ -184,6 +186,69 @@ Example newfstatat_getname_enomem_with_the_copyin_rejected :
        statat_ns_model
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
+
+(** UNDER AT_EMPTY_PATH THE FETCH READS THE LEAD BYTE BEFORE IT
+    ALLOCATES.  [__getname_maybe_null] loads that byte with [get_user]
+    (fs/namei.c:231, Linux v6.18.46) and calls [getname_flags] (236)
+    only on a readable byte that is not NUL, so [__getname]'s -ENOMEM
+    (146-148) carries the one-byte read [(pathp, 1)]
+    ([Stat.statat_lead_reads]): on a name whose second byte faults, and
+    on an ordinary absent name. *)
+Example newfstatat_empty_path_getname_enomem_reads_the_lead_byte :
+  let call mp := check_syscall
+        (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0] mp
+           (fun _ => None))
+        (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+        statat_ns_model in
+  call (fun a => if bv_eqb a 0x2000 then Some 102 else None)
+    = CheckOk statat_ns_model []
+  /\ call (statat_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z)
+     = CheckOk statat_ns_model [].
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** ...and never with nothing read: the lead byte's [get_user]
+    (fs/namei.c:231) comes before the [getname_flags] (236) whose
+    [__getname] fails, so under AT_EMPTY_PATH an -ENOMEM with no
+    copy-in is a ledger no kernel writes, on either name.  The one-byte
+    ledger is AT_EMPTY_PATH's: plain [getname] allocates before it
+    reads, so without the flag the same name's -ENOMEM with that ledger
+    is refused. *)
+Example newfstatat_empty_path_getname_enomem_without_the_lead_byte_rejected :
+  let call mp := check_syscall
+        (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0] mp
+           (fun _ => None))
+        (mkEffect (errno_ret ENOMEM) [] []) statat_ns_model in
+  call (fun a => if bv_eqb a 0x2000 then Some 102 else None) = CheckReject
+  /\ call (statat_mem [47; 116; 109; 112; 47; 122; 101; 114; 111]%Z) = CheckReject
+  /\ check_syscall
+       (mkInput 79 [AT_FDCWD; 0x2000; 0; 0; 0; 0]
+          (fun a => if bv_eqb a 0x2000 then Some 102 else None) (fun _ => None))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOMEM) [] []))
+       statat_ns_model
+     = CheckReject.
+Proof. vm_compute; split_conj; check_eq. Qed.
+
+(** A name with no NUL in its first PATH_MAX bytes under AT_EMPTY_PATH
+    ([Cases.Fs.Namei.mem_long_name], 'a' from 0x2000): its lead byte
+    reads, so [getname_flags] runs, and its first copy fills
+    EMBEDDED_NAME_MAX = 4064 bytes ([Fs.Namei.embedded_name_max]).  So
+    -ENOMEM is admitted with the first copy's 4064 bytes read (the
+    re-copy's [kzalloc], fs/namei.c:189-193), which hold the lead byte,
+    and with the lead byte alone ([__getname], 146-148, after the
+    [get_user] at 231); it is refused with nothing read and with all of
+    PATH_MAX read, which only the second copy does, and the second
+    copy's -ENAMETOOLONG (207-211) carries the whole. *)
+Example newfstatat_empty_path_long_name_enomem_carries_the_first_copy :
+  let call ci e := check_syscall
+        (mkInput 79 [AT_FDCWD; 0x2000; 0; Z_to_bv 64 AT_EMPTY_PATH; 0; 0]
+           Cases.Fs.Namei.mem_long_name (fun _ => None))
+        (with_copyins ci (mkEffect (errno_ret e) [] [])) statat_ns_model in
+  call [(0x2000, 4064%nat)] ENOMEM = CheckOk statat_ns_model []
+  /\ call [(0x2000, 1%nat)] ENOMEM = CheckOk statat_ns_model []
+  /\ call [] ENOMEM = CheckReject
+  /\ call [(0x2000, 4096%nat)] ENOMEM = CheckReject
+  /\ call [(0x2000, 4096%nat)] ENAMETOOLONG = CheckOk statat_ns_model [].
+Proof. vm_compute; split_conj; check_eq. Qed.
 
 (** ...and where [getname_flags] is not reached, no -ENOMEM.  Under
     AT_EMPTY_PATH a lead byte that faults is [__getname_maybe_null]'s
@@ -1264,4 +1329,37 @@ Example readlinkat_largest_int_bufsiz_copies_a_short_body :
      = CheckOk rl_link []
   /\ rl_call [110]%Z 2147483647 (mkEffect 2 [(4096, [97; 98])] []) = CheckOk rl_link []
   /\ rl_call [108]%Z 2147483647 (mkEffect 2 [(4096, [97; 98])] []) = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** AN EMPTY BODY IS A COPY OF NO BYTE, and that returns 0 wherever
+    [buf] points: [readlink_copy] (fs/namei.c:5419-5429, Linux v6.18.46)
+    calls [copy_to_user(buf, link, 0)], whose [_inline_copy_to_user]
+    (include/linux/uaccess.h:190-200) returns the 0 bytes it did not
+    copy when [access_ok] refuses [buf], so no -EFAULT is reached
+    ([Stat.readlink_copy_faults]).  tmpfs holds such a link when an
+    initramfs entry names one ([shmem_symlink] takes ""), and a body
+    whose first byte is NUL is read as empty (:5469).  Above TASK_SIZE
+    (0x900000000000), "e" (the empty body) and "z" (a NUL first) answer
+    0 with no write and refuse -EFAULT; at a writable [buf] "e" answers
+    0 too; and the three-byte body "l" at the same [buf] still faults,
+    -EFAULT and not 0. *)
+Definition rl_body_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([101], SLink []); ([108], SLink [97; 98; 99]);
+                          ([122], SLink [0; 97])])
+       IEof).
+
+Definition rl_call_at (bs : list Z) (buf : word) (eff : SyscallEffect) : check_result :=
+  check_syscall (mkInput 78 [AT_FDCWD; 8192; buf; 64; 0; 0] (rl_mem bs) stat_out)
+    (with_copyins [(8192, S (length bs))] eff) rl_body_model.
+
+Example readlinkat_empty_body_returns_zero_whatever_buf :
+  rl_call_at [101]%Z 158329674399744 (mkEffect 0 [] []) = CheckOk rl_body_model []
+  /\ rl_call_at [122]%Z 158329674399744 (mkEffect 0 [] []) = CheckOk rl_body_model []
+  /\ rl_call_at [101]%Z 4096 (mkEffect 0 [] []) = CheckOk rl_body_model []
+  /\ rl_call_at [101]%Z 158329674399744 (mkEffect (errno_ret EFAULT) [] []) = CheckReject
+  /\ rl_call_at [122]%Z 158329674399744 (mkEffect (errno_ret EFAULT) [] []) = CheckReject
+  /\ rl_call_at [108]%Z 158329674399744 (mkEffect (errno_ret EFAULT) [] [])
+     = CheckOk rl_body_model []
+  /\ rl_call_at [108]%Z 158329674399744 (mkEffect 0 [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.

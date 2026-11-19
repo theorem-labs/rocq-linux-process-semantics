@@ -1743,8 +1743,12 @@ Ltac vm_step H :=
       apply check_walk_refusals_ok_cases in H;
       let Hm := fresh in
       destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
-  | check_getname_refusals _ _ _ _ _ = CheckOk _ _ =>
+  | check_getname_refusals _ _ _ _ _ _ = CheckOk _ _ =>
       apply check_getname_refusals_ok_cases in H;
+      let Hm := fresh in
+      destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
+  | check_open_write_existing _ _ _ _ = CheckOk _ _ =>
+      apply check_open_write_existing_ok_cases in H;
       let Hm := fresh in
       destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
   | context [ if ?b then _ else _ ] => destruct b eqn:?
@@ -1917,7 +1921,8 @@ Proof.
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
+    check_create_wronly, check_open_append, check_open_rdwr,
+    check_unused_fd_none in H.
   unfold Open.check_open_devnull, Open.check_open_urandom,
     Open.check_open_result_mk in H.
   vm_frame2 H.

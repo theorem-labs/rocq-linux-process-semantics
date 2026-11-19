@@ -5,10 +5,10 @@
     therefore not a judgement call — look up where the kernel defines
     the syscall.  [Specs.v] carries the whole map.
 
-    "." is the only path constant more than one syscall file needs, so
-    it does not live in any of them: [Uapi.dot_path] defines it, and
-    [openat], [newfstatat] and the [unlinkat] here all read it from
-    there rather than from each other.
+    "." is a path constant more than one file needs, so it does not
+    live in any syscall file: [Uapi.dot_path] defines it.  No arm here
+    or in [openat] or [newfstatat] reads it any more: [Fs.resolve]
+    answers "." itself, as [Fs.LastDot].
 
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
@@ -89,7 +89,8 @@ Definition fs_under (fs : Fs) (p : path) : bool := tree_under (Fs.fs_tree fs) p.
     directory an open descriptor still names: [vfs_rmdir] marks the
     inode S_DEAD, detaches the mounts, and the descriptor survives
     pointing at a directory that is no longer in any namespace, whose
-    [getdents64] returns nothing and whose [openat] children are all
+    [getdents64] is -ENOENT ([iterate_dir] tests [IS_DEADDIR],
+    fs/readdir.c:105-112, Linux v6.18.46) and whose [openat] children are all
     -ENOENT.  This model has no term for a dead directory — an
     [State.FdDir] names a key, and [State.descriptor_invariant] says that
     key resolves to an [Fs.EDir] — so it declines instead of inventing
@@ -157,16 +158,50 @@ Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EBUSY; EOV
     own [->mkdir] make (ENOMEM), the parent's write and search
     permission (EACCES, from [may_create]'s [inode_permission]), a
     read-only mount (EROFS, from [filename_create]'s [mnt_want_write]),
-    and an append-only or immutable parent (EPERM, from [may_create]'s
-    [IS_APPEND] clause) (Linux fs/namei.c, [do_mkdirat] /
-    [filename_create] / [may_create] / [vfs_mkdir]).
+    a caller whose fsuid or fsgid has no mapping in the
+    superblock's user namespace (EOVERFLOW, from
+    [may_create]'s [fsuidgid_has_mapping] test, Linux v6.18.46
+    fs/namei.c:3315-3316 and include/linux/fs.h:1762-1776, which
+    [vfs_mkdir] reaches at 4440-4442; tmpfs can be mounted in another
+    user namespace, mm/shmem.c:5380-5388, and the model tracks no
+    mount's namespace, as [unlinkat_errnos] does not for [may_delete]'s
+    -EOVERFLOW), and no room for the new inode (ENOSPC, from the
+    filesystem's [->mkdir], which [vfs_mkdir] calls at 4457, past
+    [may_create] and its -EMLINK test at 4454.  On tmpfs, Linux
+    v6.18.46: [shmem_mkdir] (mm/shmem.c:3944-3949) creates the folder
+    through [shmem_mknod] (:3883), and [__shmem_get_inode] (:3084-3091)
+    answers -ENOSPC when [new_inode] fails and when
+    [shmem_reserve_inode] finds the inode budget spent (:354-358), the
+    budget [shmem_fill_super] gives every tmpfs a user mounts (:5062,
+    :5092-5093).  On ramfs, Linux v6.18.46, which keeps no budget:
+    [ramfs_mknod] answers -ENOSPC when [ramfs_get_inode] finds no new
+    inode (fs/ramfs/inode.c:101-104), and [ramfs_mkdir] passes it on
+    (:125-128)) (Linux fs/namei.c, [do_mkdirat] / [filename_create] /
+    [may_create] / [vfs_mkdir]).
+    Every member is admitted only on the row that creates the folder
+    ([mkdirat_body_spec]): [may_create] answers -EEXIST for an existing
+    name before its -EOVERFLOW (3311-3312), [vfs_mkdir] reaches
+    [->mkdir] only past [may_create], and [filename_create]'s lookup has
+    answered -EEXIST earlier still.
 
     EEXIST IS NOT INJECTABLE: existence is resolution, and the arm
-    decides it.  Neither is ENOSPC, which this model has no errno
-    constant for and no notion of a full filesystem to raise it from;
-    an image with no room is outside the surface rather than a failure
-    the model may inject. *)
-Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS].
+    decides it.  The model tracks neither the inode budget nor kernel
+    memory, so -ENOSPC is injected rather than decided, as -ENOMEM is.
+
+    -EPERM IS NOT ADMITTED.  [vfs_mkdir] answers it for a parent whose
+    file system has no [->mkdir] (fs/namei.c:4444-4446, Linux v6.18.46),
+    as an mqueue folder has none ([mqueue_dir_inode_operations],
+    ipc/mqueue.c:1613-1617).  SCOPE.md's launch premise puts every folder
+    the walk reaches on tmpfs or ramfs, and both install one
+    ([shmem_dir_inode_operations], mm/shmem.c:5281-5289;
+    [ramfs_dir_inode_operations], fs/ramfs/inode.c:191-197).  The other
+    -EPERM on this path, [inode_permission]'s for an immutable parent
+    (fs/namei.c:581-582), needs the attribute, which SCOPE.md's premise
+    on the launch file system excludes and no modeled call sets.
+    [may_create] has no [IS_APPEND] test; that one is [may_delete]'s at
+    3277-3278, so an append-only parent takes a new folder.  This stops
+    being true when either premise is dropped. *)
+Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EROFS; EOVERFLOW; ENOSPC].
 
 (** THE REFUSALS THE PATH WALK ITSELF CAN GIVE, ahead of whatever answer
     the walk's outcome leads to.  Linux v6.18.46, fs/namei.c:
@@ -189,11 +224,21 @@ Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS].
       nested link body ([nd_alloc_stack], 1881-1886, 1899), each of them
       after [getname_flags] has copied the whole name, so this -ENOMEM
       carries the pathname copy-in.  A pathname that is nothing but
-      separators ([Fs.LastRoot]) looks nothing up, and keeps the member
-      for the arms that allocate past the walk ([path_openat]'s
-      [alloc_empty_file], 4124-4126 and fs/file_table.c:258-260, is
-      one); on an arm that allocates nothing there it admits an answer
-      Linux does not give, a priority-2 gap.
+      separators ([Fs.LastRoot]) looks nothing up, and neither does one
+      made of nothing but "." and ".." components: [link_path_walk] runs
+      only [may_lookup] on each (2466-2469), which allocates nothing in
+      the configuration of record (it builds no LSM), [handle_dots]
+      steps on dentries the walk already holds, and a "." or ".." LAST
+      name is answered before any lookup ([do_unlinkat]'s -EISDIR at
+      4720-4722, [do_rmdir]'s switch at 4582-4592, [filename_create]'s
+      -EEXIST at 4219-4220).  Both keep the member, for the arms that
+      allocate past the walk ([path_openat]'s [alloc_empty_file],
+      4124-4126 and fs/file_table.c:258-260, is one).  On an arm that
+      allocates nothing there -- [unlinkat(".")], [rmdir("..")],
+      [mkdirat("./.")], a [newfstatat] or [readlinkat] of "." -- the
+      -ENOMEM is no allocation of Linux's: it is an over-admission this
+      list makes on purpose by standing -ENOMEM beside every walk, an
+      answer Linux does not give, a priority-2 gap.
     - -ELOOP beside every walk that followed a link ([Fs.wr_followed]):
       a [nosymfollow] mount refuses every follow ([pick_link],
       1927-1929), and the follow count is not reset when the kernel
@@ -274,39 +319,48 @@ Definition getname_recopies (mp : word -> option byte) (pathp : word) : bool :=
 
 (** THE COPY-IN EACH OF [getname_flags]' ALLOCATION FAILURES CARRIES.
     [__getname] fails before the first copy (146-148, before 157): no
-    copy-in, whatever the pathname is, an ordinary one included.  The
-    [kzalloc] of the re-copy path fails after the first copy and before
-    the second (189-193, between 157 and 195): exactly the first
-    EMBEDDED_NAME_MAX bytes, on a pathname [getname_recopies].  Neither
+    copy-in of [getname_flags]' own, whatever the pathname is, an
+    ordinary one included, so its ledger is [lead], what the fetch read
+    before it called [getname_flags].  That is [] for a plain [getname]
+    and for [do_readlinkat]'s [getname_flags], which read nothing first,
+    and the lead byte [(pathp, 1)] for [__getname_maybe_null]
+    (fs/namei.c:225-242, Linux v6.18.46), whose [get_user] loads it at
+    231 before the [getname_flags] at 236 ([Stat.statat_lead_reads]).
+    The [kzalloc] of the re-copy path fails after the first copy and
+    before the second (189-193, between 157 and 195): exactly the first
+    EMBEDDED_NAME_MAX bytes, on a pathname [getname_recopies], a range
+    that holds the lead byte too, so [lead] adds nothing to it.  Neither
     is the whole name every answer past the fetch records: only the
     second copy reads an over-long name to PATH_MAX, or a name that
     faults past EMBEDDED_NAME_MAX to its fault. *)
-Definition getname_alloc_reads (mp : word -> option byte) (pathp : word)
-    : list (list (word * nat)) :=
-  [] :: (if getname_recopies mp pathp then [[(pathp, embedded_name_max)]] else []).
+Definition getname_alloc_reads (lead : list (word * nat))
+    (mp : word -> option byte) (pathp : word) : list (list (word * nat)) :=
+  lead :: (if getname_recopies mp pathp then [[(pathp, embedded_name_max)]] else []).
 
 (** [s], and BESIDE EVERY ANSWER [s] GIVES, [getname_flags]' -ENOMEM
-    ([getname_errnos]) with each copy-in of [getname_alloc_reads], as a
-    bare return that leaves the model as it was.  [s] is the arm from
-    the pathname fetch on, its copy-in ledger included, so this stands
-    OUTSIDE [record_copyins]: from inside, the refusal would claim the
-    whole name read, and [State.materialize_model_accesses] charges what
-    is claimed, so a page Linux never touched could fault the run where
-    Linux answered -ENOMEM and went on.
+    ([getname_errnos]) with each copy-in of [getname_alloc_reads] after
+    the fetch's [lead] reads, as a bare return that leaves the model as
+    it was.  [s] is the arm from the pathname fetch on, its copy-in
+    ledger included, so this stands OUTSIDE [record_copyins]: from
+    inside, the refusal would claim the whole name read, and
+    [State.materialize_model_accesses] charges what is claimed, so a
+    page Linux never touched could fault the run where Linux answered
+    -ENOMEM and went on.
 
     As in [walk_refusals], a call [s] declines admits no refusal, and an
     effect [s] gives itself is answered once, with [s]'s model.  Each
     arm applies this once it has reached [getname_flags]: behind every
     test Linux makes before [getname] (a flag word's -EINVAL, readlink's
     count), and in [newfstatat] only where the fetch reaches it
-    ([Stat.statat_getname_runs]). *)
-Definition getname_refusals (pathp : word) (s : Sys SyscallEffect)
-    : Sys SyscallEffect :=
+    ([Stat.statat_getname_runs]), with the lead byte as [lead] under
+    AT_EMPTY_PATH; every other arm's [lead] is []. *)
+Definition getname_refusals (lead : list (word * nat)) (pathp : word)
+    (s : Sys SyscallEffect) : Sys SyscallEffect :=
   fun i m o =>
     s i m o
     \/ (~ s i m Unmodeled
         /\ exists reads e,
-             In reads (getname_alloc_reads (in_mem i) pathp)
+             In reads (getname_alloc_reads lead (in_mem i) pathp)
              /\ In e getname_errnos
              /\ o = Ok (with_copyins reads (mkEffect (errno_ret e) [] [])) m []
              /\ forall m1 evs1,
@@ -314,8 +368,8 @@ Definition getname_refusals (pathp : word) (s : Sys SyscallEffect)
                               m1 evs1)).
 
 (** Every outcome of [s] is one of the wrapped arm's. *)
-Lemma getname_refusals_intro : forall pathp s i m o,
-  s i m o -> getname_refusals pathp s i m o.
+Lemma getname_refusals_intro : forall lead pathp s i m o,
+  s i m o -> getname_refusals lead pathp s i m o.
 Proof. intros. left. assumption. Qed.
 
 (** The refusals a call admits beside its answer once [getname_flags]
@@ -440,10 +494,13 @@ Definition unlink_before_slashes_errnos : list Z := [EROFS; ENOMEM].
 
     THE INODE STAYS WHILE SOMETHING HOLDS IT.  Another name keeps it, and
     so does an open descriptor ([State.ino_held]): the inode is freed
-    only by the last [iput] ([iput_final], fs/inode.c:1874-1915), which
-    keeps an inode that still has a link ([inode_generic_drop],
-    include/linux/fs.h:3345-3348) and is not reached while a [struct
-    file] holds it.  musl's [tmpfile()] (src/stdio/tmpfile.c) creates a
+    only by the last [iput] ([iput_final], fs/inode.c:1874-1915), and
+    on tmpfs and ramfs that last [iput] always evicts ([->drop_inode] is
+    [inode_just_drop], mm/shmem.c:5330 and fs/ramfs/inode.c:218, which
+    answers 1, fs/inode.c:1858-1861), so it is the references that
+    keep the inode: each name's dentry, which the create pinned
+    ([dget], mm/shmem.c:3908, fs/ramfs/inode.c:114), and each [struct
+    file]'s.  musl's [tmpfile()] (src/stdio/tmpfile.c) creates a
     file with O_RDWR|O_CREAT|O_EXCL and removes its name at once, and
     this is the arm its descriptor then lives on.  A file nothing holds
     any more is not in the file system the exit event carries, as on
@@ -667,20 +724,28 @@ Definition unlinkat_file_spec (r : Fs.Resolved) (lk : Fs.LastKind)
     -EBUSY for a mount point (fs/namei.c:4532-4552), so every member of
     [unlinkat_errnos] stands beside it.
 
-    THE THREE DECLINES, and each is a state the model has no term for
-    rather than an errno it is unsure of.  Linux SUCCEEDS at all three
-    and leaves something behind:
+    THE THREE DECLINES, and each is a state the model has no term for or
+    a decline kept for safety rather than an errno it is unsure of.
+    Linux SUCCEEDS at the first and the third and leaves something
+    behind:
 
     - the working directory itself.  [vfs_rmdir] marks it S_DEAD
       (4557) and the process keeps standing in a directory that is in
-      no namespace; every relative path it then resolves is -ENOENT.
+      no namespace.  A name looked up in it is -ENOENT ([__lookup_slow]
+      tests [IS_DEADDIR], 1797-1799), but "." still resolves to it and
+      ".." to its parent: [walk_component] hands both to [handle_dots]
+      (2141-2145, 2096-2131), which tests no dead folder.
       The model's [State.m_cwd] would name a key the image no longer
       holds, which [State.model_fs_wf]'s third conjunct forbids.
-    - an ANCESTOR of the working directory.  Linux refuses this one for
-      a non-empty ancestor (-ENOTEMPTY, since the cwd is in it) but a
-      chain of empty directories above an empty cwd is not the shape the
-      model can rule out, and the same S_DEAD state results.
-      [key_strictly_under] is the test.
+    - an ANCESTOR of the working directory.  Linux never removes one:
+      every strict ancestor holds the next folder of the chain down to
+      the working directory, which the image holds (the decline above
+      keeps it there), so it is never empty, and [->rmdir] answers
+      -ENOTEMPTY ([simple_rmdir], fs/libfs.c:799-807, with
+      [simple_empty], :766-784; [shmem_rmdir], mm/shmem.c:4032-4035),
+      as [fs_dir_empty] would too.  The decline is conservative, not
+      needed to keep the S_DEAD state out; [key_strictly_under] is the
+      test.
     - a directory an open [State.FdDir] names, which [fd_names_dir]
       carries with its own argument.
 
@@ -853,13 +918,27 @@ Definition unlinkat_body_spec (dirfd pathp flags : word)
     THE MODE IS IGNORED, and that is a decline about permissions rather
     than about the directory.  [Fs.EDir] carries no mode, no owner and
     no timestamps, so a directory this creates is indistinguishable from
-    one the image shipped; every later call that would read a mode —
-    [faccessat]'s W_OK, R_OK and X_OK — is already [unmodeled], and
-    [newfstatat]'s S_IFDIR answer pins its metadata rather than deriving
-    it.  So no modeled arm can observe the mode, and accepting every
-    mode word is exact rather than approximate.  [mode_strip_umask] and
-    the umask itself are the same decline one level up,
-    bugs/umask-unmodeled.md.
+    one the image shipped.  [faccessat]'s W_OK, R_OK and X_OK, which
+    would read the mode, are [unmodeled].  [newfstatat] is not: it
+    delivers the folder's [st_mode], and its first stat of a folder
+    ([Stat.fstat_dir_spec]) asserts the type and the link count but
+    chooses the permission bits, which later stats then hold.  So after
+    [mkdirat(AT_FDCWD, "d", 0)] the model admits a stat of "d" that
+    reports 0777, which no supported kernel gives.  [vfs_mkdir]
+    (fs/namei.c:4448, Linux v6.18.46) hands the mode to
+    [vfs_prepare_mode] (3448-3455), which strips the umask
+    ([mode_strip_umask], include/linux/namei.h:116) and keeps only
+    S_IRWXUGO and S_ISVTX; a default ACL only clears bits too
+    ([posix_acl_create_masq], fs/posix_acl.c:459-511); the one bit a new
+    folder can gain is S_ISGID, from a set-group-ID parent
+    ([inode_init_owner], fs/inode.c:2593-2606, which tmpfs calls at
+    mm/shmem.c:3095); and [generic_fillattr] reports that [i_mode]
+    (fs/stat.c:90).  Accepting every mode word is therefore an
+    over-admission (AGENTS.md's second priority), not an exact answer:
+    bounding the stat's bits would need the requested mode, the umask
+    and the parent's S_ISGID, and the model holds none of them: folders
+    carry no mode, and the umask is not modeled (bugs/umask-unmodeled.md
+    records that decline and this cost of it).
 
     A NON-NORMAL LAST COMPONENT IS -EEXIST, all three of them, and this
     is the one place [do_mkdirat] differs from [do_rmdir] in how it
@@ -925,12 +1004,15 @@ Definition unlinkat_body_spec (dirfd pathp flags : word)
     A LINK AT THE LAST NAME IS -EEXIST like any other existing name:
     [filename_create] looks the last name up without following it.
 
-    WHAT THIS DOES NOT MODEL.  -ENOSPC has no term here and is not
-    injectable; it is outside the surface rather than declined per call,
-    in the same way [openat]'s fd-exhaustion errnos are.  The walk's own
-    -EACCES and -ENOMEM stand beside every answer past the fetch
-    ([walk_refusals], in [mkdirat_spec]), the deterministic -EEXIST's
-    included, and [getname_flags]' own -ENOMEM beside every answer
+    THE CREATE'S REFUSALS ARE [mkdirat_errnos], -ENOSPC among them:
+    the file system's [->mkdir] answers it when the inode budget is
+    spent or the inode allocation fails, on tmpfs and on ramfs alike,
+    and the model tracks neither.  They stand on the creating row only,
+    since [vfs_mkdir] reaches [->mkdir] and [may_create] only for a name
+    the lookup found absent.  The walk's own -EACCES and -ENOMEM stand
+    beside every answer past the fetch ([walk_refusals], in
+    [mkdirat_spec]), the deterministic -EEXIST's included, and
+    [getname_flags]' own -ENOMEM beside every answer
     ([getname_refusals]). *)
 Definition mkdirat_body_spec (dirfd pathp : word)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
@@ -981,7 +1063,7 @@ Definition mkdirat_body_spec (dirfd pathp : word)
 Definition mkdirat_spec (dirfd pathp : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
-  getname_refusals pathp
+  getname_refusals [] pathp
     (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
        (walk_refusals Fs.WalkParent pathp (mkdirat_body_spec dirfd pathp i m))).
 
@@ -1005,6 +1087,6 @@ Definition unlinkat_spec (dirfd pathp flags : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if negb (modeled_unlink_flags flags) then err_ret EINVAL
   else
-    getname_refusals pathp
+    getname_refusals [] pathp
       (record_copyins [(pathp, cstr_access_len_aux (in_mem i) pathp path_max)]
          (walk_refusals Fs.WalkParent pathp (unlinkat_body_spec dirfd pathp flags i m))).

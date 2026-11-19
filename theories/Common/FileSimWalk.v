@@ -144,10 +144,27 @@ Definition open_model (m : Model) (fd : word) (fe : FdEntry) (ofs : option Fs.Fs
   with_fds (fd_insert (m_fds m) fd fe)
     (match ofs with Some fs' => with_fs fs' m | None => m end).
 
+(** Does [open_arm]'s descriptor entry stand beside a -ETXTBSY, and for
+    which inode?  Exactly the write-create open of a regular file the
+    walk found ([Open.open_write_existing], which then asks whether a
+    descriptor writes that inode): a created file and every read-only
+    open do not. *)
+Definition open_arm_txtbsy (rd : bool) (fs : Fs.Fs) (cwd p : Fs.path) : option Fs.ino :=
+  match fst (fst (Fs.resolve (open_walk rd) fs cwd p)) with
+  | Fs.RFound _ (Fs.EFile i) => if rd then None else Some i
+  | _ => None
+  end.
+
 Definition open_arm_check (rd : bool) (m : Model) (p : Fs.path) (eff : SyscallEffect)
     : check_result :=
   match open_arm rd (m_fs m) (m_cwd m) p with
-  | inl (fe, ofs) => check_open_result eff m (fun fd => open_model m fd fe ofs)
+  | inl (fe, ofs) =>
+      match open_arm_txtbsy rd (m_fs m) (m_cwd m) p with
+      | Some i =>
+          check_open_write_existing i eff m
+            (check_open_result eff m (fun fd => open_model m fd fe ofs))
+      | None => check_open_result eff m (fun fd => open_model m fd fe ofs)
+      end
   | inr e => check_ret_only eff (errno_ret e) m []
   end.
 
@@ -281,7 +298,7 @@ Lemma check_openat_resolved_arm : forall rd p eff m,
 Proof.
   intros rd p eff m Hpsf Hans.
   unfold Open.check_openat_resolved. rewrite Hpsf.
-  unfold open_arm_check, open_arm, open_answered, open_model in *.
+  unfold open_arm_check, open_arm_txtbsy, open_arm, open_answered, open_model in *.
   destruct rd; cbn [open_flag_word open_walk] in *.
   - rewrite open_walk_mode_rd. revert Hans.
     destruct (Fs.resolve (Fs.WalkFull true false) (m_fs m) (m_cwd m) p)
@@ -347,7 +364,7 @@ Lemma tfo_sys_signed : forall ms model x8 pathp reads (c : SyscallEffect -> chec
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall eff, check_syscall (sys_input segs ms x8) eff model
-               = check_getname_refusals (sys_input segs ms x8) pathp eff model
+               = check_getname_refusals (sys_input segs ms x8) [] pathp eff model
                    (Prelude.check_copyins_after reads eff (c (clear_copyins eff)))) ->
   (forall eff, c eff <> CheckUnmodeled) ->
   (exists r0, addr_is_error_b r0 = true /\ c (mkEffect r0 [] []) = CheckOk model []) ->
@@ -494,11 +511,11 @@ Proof.
                         (open_arm_check rd model p e)).
   assert (Hchk : forall eff,
     check_syscall (sys_input segs ms (getr regs 17)) eff model
-    = check_getname_refusals (sys_input segs ms (getr regs 17)) (ms_gpr ms 1) eff model
+    = check_getname_refusals (sys_input segs ms (getr regs 17)) [] (ms_gpr ms 1) eff model
         (Prelude.check_copyins_after (open_copyins ms) eff (c (clear_copyins eff)))).
   { intro eff. unfold c.
     rewrite (openat_reduces_to_resolved segs ms (getr regs 17) model p eff
-               H17 Hfl Hg0 Hpath' Hpe).
+               H17 Hfl Hg0 Hpath' Hpe Hfree).
     rewrite Hg2.
     rewrite (check_openat_resolved_arm rd p (clear_copyins eff) model Hpsf Hans).
     reflexivity. }
@@ -515,7 +532,9 @@ Proof.
     apply check_walk_refusals_unmodeled in Hc.
     unfold open_arm_check in Hc.
     destruct (open_arm rd (m_fs model) (m_cwd model) p) as [[fe ofs]|e].
-    - exact (check_open_result_never_unmodeled _ _ _ Hc).
+    - destruct (open_arm_txtbsy rd (m_fs model) (m_cwd model) p);
+        [apply check_open_write_existing_unmodeled in Hc|];
+        exact (check_open_result_never_unmodeled _ _ _ Hc).
     - exact (check_ret_only_no_unmodeled _ _ _ _ Hc). }
   (* What [c] accepts outside the arm: a bare errno of the walk. *)
   assert (Hrej : forall eff m' evs,
@@ -541,11 +560,22 @@ Proof.
     split; [reflexivity|]. split; [|split; reflexivity].
     cbn [eff_ret]. exact (errno_ret_error_b e He1 He2). }
   destruct (open_arm rd (m_fs model) (m_cwd model) p) as [[fe ofs]|e] eqn:Harm.
-  - (* a descriptor, or an errno beside it *)
-    assert (Hac : forall eff, open_arm_check rd model p eff
-                              = check_open_result eff model
-                                  (fun fd => open_model model fd fe ofs)).
-    { intro eff. unfold open_arm_check. rewrite Harm. reflexivity. }
+  - (* a descriptor, or an errno beside it, -ETXTBSY among them on an
+       existing file's write open *)
+    assert (Hacok : forall eff m1 evs1, open_arm_check rd model p eff = CheckOk m1 evs1 ->
+              check_open_result eff model (fun fd => open_model model fd fe ofs)
+                = CheckOk m1 evs1
+              \/ (eff = mkEffect (errno_ret ETXTBSY) [] [] /\ m1 = model /\ evs1 = [])).
+    { intros eff m1 evs1 Ha. unfold open_arm_check in Ha. rewrite Harm in Ha.
+      destruct (open_arm_txtbsy rd (m_fs model) (m_cwd model) p);
+        [exact (check_open_write_existing_ok_cases _ _ _ _ _ _ Ha) | left; exact Ha]. }
+    assert (Haclift : forall eff m1 evs1,
+              check_open_result eff model (fun fd => open_model model fd fe ofs)
+                = CheckOk m1 evs1 ->
+              open_arm_check rd model p eff = CheckOk m1 evs1).
+    { intros eff m1 evs1 Ho. unfold open_arm_check. rewrite Harm.
+      destruct (open_arm_txtbsy rd (m_fs model) (m_cwd model) p);
+        [exact (check_open_write_existing_lift _ _ _ _ _ _ Ho) | exact Ho]. }
     apply (tfo_sys_signed ms model (getr regs 17) (ms_gpr ms 1) (open_copyins ms) c
              (fun fd => open_model model fd fe ofs) true Uf Us U).
     + unfold ms. reflexivity.
@@ -556,32 +586,39 @@ Proof.
     + exists (errno_ret ENOMEM).
       destruct (openat_errno_range ENOMEM ENOMEM_in_openat_errnos) as [He1 He2].
       split; [exact (errno_ret_error_b _ He1 He2)|].
-      unfold c. cbv beta. rewrite Hac.
-      rewrite (proj2 (check_open_result_ok_iff _ _ _ model []))
-        by (left; exists ENOMEM; repeat split; try reflexivity;
-            apply ENOMEM_in_openat_errnos).
-      reflexivity.
+      unfold c. cbv beta.
+      rewrite (Haclift _ model []); [reflexivity|].
+      apply (proj2 (check_open_result_ok_iff _ _ _ model [])).
+      left; exists ENOMEM; repeat split; try reflexivity;
+        apply ENOMEM_in_openat_errnos.
     + intros eff m' evs Hc.
       destruct (open_arm_check rd model p eff) as [m1 evs1| |] eqn:Ha.
       * unfold c in Hc. cbv beta in Hc. rewrite Ha in Hc. cbn [check_walk_refusals] in Hc.
         injection Hc as <- <-.
-        rewrite Hac in Ha. apply check_open_result_ok_iff in Ha.
-        destruct Ha as [(e & HIn & Heff & Hm & Hev) | (fd & Hlk & Hfd & Heff & Hm & Hev)].
+        destruct (Hacok _ _ _ Ha) as [Ha' | (Heff & Hm & Hev)].
+        -- apply check_open_result_ok_iff in Ha'.
+           destruct Ha' as [(e & HIn & Heff & Hm & Hev) | (fd & Hlk & Hfd & Heff & Hm & Hev)].
+           ++ split; [exact Hev|]. left.
+              destruct (openat_errno_range e HIn) as [He1 He2].
+              subst eff. rewrite eff_ret_mk.
+              split; [exact (errno_ret_error_b e He1 He2)|]. split; [exact Hm | reflexivity].
+           ++ split; [exact Hev|]. right. subst fd.
+              split; [reflexivity|]. split; [exact Heff | exact Hm].
         -- split; [exact Hev|]. left.
-           destruct (openat_errno_range e HIn) as [He1 He2].
            subst eff. rewrite eff_ret_mk.
-           split; [exact (errno_ret_error_b e He1 He2)|]. split; [exact Hm | reflexivity].
-        -- split; [exact Hev|]. right. subst fd.
-           split; [reflexivity|]. split; [exact Heff | exact Hm].
+           split; [exact (errno_ret_error_b ETXTBSY ltac:(cbv [ETXTBSY]; lia)
+                            ltac:(cbv [ETXTBSY]; lia))|].
+           split; [exact Hm | reflexivity].
       * destruct (Hrej eff m' evs Ha Hc) as (Hev & He & Hm & Heq).
         split; [exact Hev|]. left. exact (conj He (conj Hm Heq)).
       * unfold c in Hc. cbv beta in Hc. rewrite Ha in Hc. discriminate Hc.
-    + intros _. unfold c. cbv beta. rewrite Hac.
-      rewrite (proj2 (check_open_result_ok_iff _ _ _
-                        (open_model model (alloc_fd (m_fds model)) fe ofs) []))
-        by (right; exists (alloc_fd (m_fds model)); repeat split; try reflexivity;
-            exact Hfree).
-      reflexivity.
+    + intros _. unfold c. cbv beta.
+      rewrite (Haclift _ (open_model model (alloc_fd (m_fds model)) fe ofs) []);
+        [reflexivity|].
+      apply (proj2 (check_open_result_ok_iff _ _ _
+                      (open_model model (alloc_fd (m_fds model)) fe ofs) [])).
+      right; exists (alloc_fd (m_fds model)); repeat split; try reflexivity;
+        exact Hfree.
     + unfold open_model. destruct ofs; exact Hh.
     + unfold open_model. destruct ofs; exact Hlazy.
     + intros r Hr. unfold ms. rewrite adv_eff_ret_copyins. exact (Herr r Hr).

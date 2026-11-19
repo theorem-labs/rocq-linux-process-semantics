@@ -333,7 +333,7 @@ Lemma tfm_open_core : forall ms model (mk : word -> Model) x8 reads
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall eff, check_syscall (sys_input segs ms x8) eff model
-               = check_getname_refusals (sys_input segs ms x8) (ms_gpr ms 1) eff model
+               = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
                    (check_open_result_copyins reads eff model mk)) ->
   (forall fd, m_halted (mk fd) = None /\ m_vm_lazy (mk fd) = []) ->
   (forall e, In e openat_errnos ->
@@ -442,6 +442,7 @@ Lemma tfm_open_rd_ns_rec : forall regs pc mem model p k i
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RFound k (Fs.EFile i), Fs.LastNorm, false) ->
   FileSim.open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -463,7 +464,7 @@ Lemma tfm_open_rd_ns_rec : forall regs pc mem model p k i
               model U.
 Proof.
   intros regs pc mem model p k i Te Ts U
-    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hh Hlazy Herr Hok HU.
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -486,6 +487,7 @@ Proof.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2, FileSim.open_walk_mode_rd. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -496,10 +498,10 @@ Qed.
 
 (** The create node of the mixed family.  The file is made where the
     walk SETTLED, and the premise is [FileSim.resolve_create_target]:
-    the name was absent and a new inode is made there, or a REGULAR
-    FILE WAS THERE AND IS TRUNCATED in place.  Both ways in reach one
-    exit, so this node covers a copy onto an existing destination and
-    the pre-namespace [tfm_open_wr_rec] below does not.  See
+    the name was absent and a new inode is made there.  An existing
+    destination is not this node's: its open also admits -ETXTBSY
+    ([Open.open_write_existing]), and [FileSim.resolve_create_target]
+    says where such an open is read instead.  See
     [FileSim.tfo_open_wr_ns_rec], which is the twin. *)
 Lemma tfm_open_wr_ns_rec : forall regs pc mem model p fs' i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
@@ -510,6 +512,7 @@ Lemma tfm_open_wr_ns_rec : forall regs pc mem model p fs' i
   path_eqb p [] = false ->
   FileSim.resolve_create_target model (Z_to_bv 64 577) p fs' i ->
   FileSim.open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -532,7 +535,7 @@ Lemma tfm_open_wr_ns_rec : forall regs pc mem model p fs' i
               model U.
 Proof.
   intros regs pc mem model p fs' i Te Ts U
-    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hh Hlazy Herr Hok HU.
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -556,6 +559,7 @@ Proof.
     + rewrite Hg2. vm_compute. reflexivity.
     + rewrite Hg2. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split.
     + rewrite with_fds_halted, with_fs_halted. exact Hh.
     + exact Hlazy.
@@ -606,6 +610,7 @@ Lemma tfm_open_rd_rec : forall regs pc mem model p i
   Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
     = (Fs.RFound p (Fs.EFile i), Fs.LastNorm, false) ->
   FileSim.open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -627,7 +632,7 @@ Lemma tfm_open_rd_rec : forall regs pc mem model p i
               model U.
 Proof.
   intros regs pc mem model p i Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hfs Hres Hplain Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hfs Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -651,6 +656,7 @@ Proof.
     + exact Hfs.
     + rewrite Hg2, FileSim.open_walk_mode_rd. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -661,9 +667,10 @@ Qed.
 
 (** O_WRONLY|O_CREAT|O_TRUNC openat at the raw ecall record, with
     [to_fout_mix] continuations.  Like [FileSim.tfo_open_wr_rec] it is
-    the create lane only — a plain name nothing lives under; the
-    implied-directory lane (a deterministic -EISDIR) has no mix-flavoured
-    node because no proof on this route reaches one. *)
+    the create lane only — a plain name nothing lives under; the lane of
+    the R21 implied directory (a deterministic -EISDIR, vacuous under
+    [Fs.wf_fs]) has no mix-flavoured node because no proof on this
+    route reaches one. *)
 Lemma tfm_open_wr_rec : forall regs pc mem model p fs' i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   bv_unsigned (getr regs 17) = 56%Z ->
@@ -674,6 +681,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p fs' i
   fs_under (m_fs model) p = false ->
   resolve_create_target model (Z_to_bv 64 577) p fs' i ->
   FileSim.open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -694,7 +702,7 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p fs' i
               model U.
 Proof.
   intros regs pc mem model p fs' i Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hun Hres Hplain Hh Hlazy Herr Hok HU.
+    H17 H10 H12 Hpath Hpe Hdot Hun Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
@@ -719,6 +727,7 @@ Proof.
     + exact Hun.
     + rewrite Hg2. exact Hres.
     + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split.
     + rewrite with_fds_halted, with_fs_halted. exact Hh.
     + exact Hlazy.
