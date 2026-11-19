@@ -1864,13 +1864,15 @@ jobs:
           # whose screen job names another account (screen <account>: the account whose limit its trust job counted it
           # on, as the author of a pull request on <login>'s fork branch) used that account's limit, and does not count
           # for <login>. A CI run of another account counts when its screen job names <login>, and also while its jobs
-          # do not show yet on whom its trust job counted it: its trust job is not listed or has not finished (queued or
-          # in progress), or no job after it is listed yet (the name of the screen job needs the trust job's outputs). A
-          # run of <login>'s own counts in that state too. So when one push starts the CI runs of more than one pull
-          # request of <login>, whose trust jobs run side by side, the trust job of each counts those before it. Such a
-          # run whose screen job names another account, or whose jobs after its trust job name no account (GitHub can
-          # list a skipped job with its name not filled in), does not show that its trust job counted it on <login>, and
-          # does not count. A run whose trust job stopped it screened nothing, and does not count:
+          # do not show yet on whom its trust job counted it: no screen job of it is listed yet. Its trust job is not
+          # listed or has not finished (queued or in progress), or its gather job, which the screen job needs beside
+          # the trust job, has not finished (the name of the screen job needs the trust job's outputs, and GitHub lists
+          # the screen job only once both have ended). A run of <login>'s own counts in that state too. So when one
+          # push starts the CI runs of more than one pull request of <login>, whose trust jobs run side by side, the
+          # trust job of each counts those before it. Such a run whose screen job is listed and names another account,
+          # or names no account (GitHub lists a skipped job with its name not filled in: the trust job routed it to no
+          # screen), does not show that its trust job counted it on <login>, and does not count.
+          # A run whose trust job stopped it screened nothing, and does not count:
           # every job after the trust job was skipped, and GitHub lists the run as one that succeeded (the CI run of a
           # pull request into another branch, of a head that more than one open pull request has, or a run by hand
           # whose item closed, or lost its label, in between). Nor does a run whose screen job stopped at a failed step
@@ -1992,7 +1994,7 @@ jobs:
                     | ([$rest[] | .name // "" | capture("^screen (?<a>[A-Za-z0-9-]+(\\[bot\\])?)$") | .a]
                        | first) as $named
                     | if $ENV.OWN == "2" and $named != $ENV.LOGIN
-                         and ($named != null or ($t.conclusion != null and ($rest | length) > 0)) then "other"
+                         and ($named != null or any($rest[]; (.name // "") | test("^screen( |$)"))) then "other"
                       elif $t == null then "count" elif $t.conclusion == "skipped" then "skip"
                       elif $t.status == "completed" and ($rest | length) > 0
                            and ($rest | all(.conclusion == "skipped")) then "skip"
