@@ -5606,13 +5606,14 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertRegex(shown, r"(?m)^- `vendor/x\.hex`: the build reads it through the link `t/ext`\.$")
         self.assertRegex(shown, r"(?m)^- `t/ext`: the build reads `t/ext/y\.hex` through this link\.$")
 
-    def test_a_link_that_dune_cannot_follow_in_the_tree_is_a_file_of_the_build_that_the_job_could_not_read(self):
+    def test_a_link_that_dune_cannot_follow_in_the_tree_is_a_link_of_its_own_list_with_why(self):
         """R8: a link whose way leaves the tree (an absolute target, or one above the root), a loop (a link to a
         directory on its own way, which dune 3.23 refuses: "Path . has already been scanned", or two links to each
-        other), and a link whose target git holds in more than LINK_BYTES bytes can lead anywhere: each is a file of
-        the build that the job could not read, so every outside pull request gets the person verdict. So are the links
-        to directories that would take dune's view of the tree over VIEW_PATHS paths: two links in each of 18
-        directories, each to the next one, make 2^18 paths of the last file."""
+        other, whose way follows more than LINK_HOPS links), and a link whose target git holds in more than LINK_BYTES
+        bytes can lead anywhere: each goes on the list of the links that dune cannot follow, with why, so every outside
+        pull request gets the person verdict. It is no dune file that the job could not read. So are the links to
+        directories that would take dune's view of the tree over VIEW_PATHS paths: two links in each of 18 directories,
+        each to the next one, make 2^18 paths of the last file."""
         d, _head = self.repository({"t/dune": "(rule (deps (glob_files_rec *.hex)) (action (echo \"\")))\n",
                                     "vendor/x.hex": "00\n"},
                                    {"t/up": "..", "t/self": ".", "t/abs": "/usr/include", "t/out": "../../x",
@@ -5624,14 +5625,165 @@ class SoundnessScanTest(unittest.TestCase):
                            capture_output=True)
         files = [{"filename": "vendor/x.hex", "previous_filename": None}]
         facts = rules.proofs("HEAD", files, 1, cwd=d)
-        self.assertEqual(facts["unparsed"], ["loop/a", "loop/b", "t/abs", "t/long", "t/out", "t/self", "t/up"])
+        self.assertEqual(facts["unparsed"], [])
+        self.assertEqual({f["path"]: f["why"] for f in facts["unfollowed"]},
+                         {"loop/a": "hops", "loop/b": "hops", "t/abs": "out", "t/long": "unread", "t/out": "out",
+                          "t/self": "loop", "t/up": "loop"})
         self.assertEqual(facts["files"], [{"path": "vendor/x.hex", "why": "target", "by": "t/ok", "at_head": True}])
         levels = 18
         d, _head = self.repository({f"d{i}/f": "f\n" for i in range(levels + 1)},
                                    {f"d{i}/{c}": f"../d{i + 1}" for i in range(levels) for c in "ab"})
-        unparsed = rules.proofs("HEAD", [], 0, cwd=d)["unparsed"]
-        self.assertTrue(unparsed)
-        self.assertTrue(all(re.fullmatch(r"d[0-9]+/[ab]", p) for p in unparsed), unparsed)
+        unfollowed = rules.proofs("HEAD", [], 0, cwd=d)["unfollowed"]
+        self.assertTrue(unfollowed)
+        self.assertTrue(all(re.fullmatch(r"d[0-9]+/[ab]", f["path"]) and f["why"] == "many" for f in unfollowed),
+                        unfollowed)
+
+    def test_the_section_lists_the_links_that_dune_cannot_follow_apart_from_the_files_that_it_could_not_read(self):
+        """b7: a pull request that adds docs/manual, a link to /usr/share/doc that no dune file reads through, and
+        changes README.md gets the person verdict: the workflow cannot tell which files the build reads through the
+        link. The section says so in a list of its own, with why for each link, and does not call the link a file of
+        the build that the workflow could not read. A dune file that does not parse still gets that sentence."""
+        main_files = {"theories/dune": "(rocq.theory (name M))\n", "theories/A.v": "Lemma a : True.\n",
+                      "README.md": "hi\n"}
+        d, main = self.repository(main_files)
+        _d, head = self.repository(dict(main_files, **{"README.md": "hi again\n"}), {"docs/manual": "/usr/share/doc"},
+                                   at=d)
+        files = [{"filename": p, "previous_filename": None} for p in ("README.md", "docs/manual")]
+        facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+        self.assertEqual((facts["files"], facts["unparsed"], facts["unfollowed"]),
+                         ([], [], [{"path": "docs/manual", "why": "out"}]))
+        self.write("commits.txt", f"base {main}\nhead {head}\n")
+        self.write(rules.SOUNDNESS_FILE, json.dumps(facts))
+        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
+        got, section, _all = rules.soundness(self.review, output, "true", "true")
+        self.assertEqual(got["verdict"], "person")
+        self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", section)
+        self.assertIn("The workflow cannot tell which files the build reads through these links:\n\n"
+                      "- `docs/manual`: it points out of the repository.", section)
+        self.assertNotIn("could not read", section)
+        scope = {"v": False, "others": [], "whole": True, "unparsed": ["broken/dune"], "unread": [],
+                 "unfollowed": [(f"l{i}", why) for i, why in enumerate(rules.UNFOLLOWED)]}
+        shown = rules.section([], scope=scope)
+        self.assertIn("The workflow could not read these files of the build:\n\n- `broken/dune`\n\n", shown)
+        self.assertEqual(re.findall(r"(?m)^- `(l[0-9]+)`: (.+)$", shown),
+                         [(f"l{i}", text) for i, text in enumerate(rules.UNFOLLOWED.values())])
+
+    def test_the_paths_of_the_c_flags_of_a_stanza_and_of_an_env_stanza_count_joined_or_apart(self):
+        """R8: a flag of the C compiler or of the linker reads a path, joined to it or apart: -L in c_library_flags,
+        -isystem, -iquote, and a path that -Wl,... passes to the linker. c_library_flags apply where an executable links
+        the library, and the C flags of an env stanza to each stanza below it: dune 3.23 compiles a stub of stubs/ in
+        _build/default/stubs, so the root's (env (_ (c_flags -I../../../inc))) reads inc/ from there. A variable or an
+        (:include ...) in C flags makes the dune file one that the job could not read for certain, but a variable of
+        a macro does not. A Markdown file of docs/, which no flag names, does not count."""
+        stub = "(foreign_stubs (language c) (names s)"
+        for files, path, by in (
+                ({"stubs/dune": f"(library (name s) {stub}) (c_library_flags (-L../../../vendor/lib -lz)))\n"},
+                 "vendor/lib/libz.a", "stubs/dune"),
+                ({"lib/dune": f"(library (name l) {stub}) (c_library_flags (-L ../../../../ext -lz)))\n",
+                  "bin/x/dune": "(executable (name main) (libraries l))\n"}, "ext/libz.a", "lib/dune"),
+                ({"dune": "(env (_ (c_flags (:standard -I../../../inc))))\n",
+                  "stubs/dune": f"(library (name s) {stub}))\n"}, "inc/x.h", "dune"),
+                ({"dune": "(env (dev (cxx_flags -isystem ../../../sys)) (_ (c_flags -O2)))\n",
+                  "stubs/dune": f"(library (name s) {stub}))\n"}, "sys/y.h", "dune"),
+                ({"stubs/dune": f"(library (name s) {stub} (flags :standard -iquote../../../q)))\n"}, "q/z.h",
+                 "stubs/dune"),
+                ({"stubs/dune": f"(library (name s) {stub}) (c_library_flags (-Wl,-L../../../wl,-lq)))\n"},
+                 "wl/libq.a", "stubs/dune"),
+                ({"clib/dune": "(foreign_library (archive_name c) (language c) (names c) (flags -I../../../h))\n"},
+                 "h/c.h", "clib/dune"),
+                ({"stubs/dune": f"(library (name s) {stub}) (c_flags (-DV=%{{version:s}} -I../../../inc)))\n"},
+                 "inc/x.h", "stubs/dune")):
+            with self.subTest(files=files):
+                d, _head = self.repository(dict(files, **{path: "x\n", "docs/README.md": "# Docs\n"}))
+                changed = [{"filename": p, "previous_filename": None} for p in (path, "docs/README.md")]
+                facts = rules.proofs("HEAD", changed, len(changed), cwd=d)
+                self.assertEqual(({f["path"]: (f["why"], f["by"]) for f in facts["files"]}, facts["unparsed"]),
+                                 ({path: ("named", by)}, []))
+        for files, unread in (
+                ({"stubs/dune": f"(library (name s) {stub}) (c_flags (:standard -I%{{env:INC=inc}})))\n"},
+                 "stubs/dune"),
+                ({"stubs/dune": f"(library (name s) {stub} (flags (:include flags.sexp))))\n"}, "stubs/dune"),
+                ({"dune": "(env (_ (c_library_flags (%{read-lines:libs}))))\n"}, "dune")):
+            with self.subTest(files=files):
+                d, _head = self.repository(dict(files, **{"docs/README.md": "# Docs\n"}))
+                changed = [{"filename": "docs/README.md", "previous_filename": None}]
+                self.assertEqual(rules.proofs("HEAD", changed, 1, cwd=d)["unparsed"], [unread])
+
+    def test_the_merge_counts_a_file_that_the_links_of_main_and_of_the_head_make_the_build_read(self):
+        """R8: the merge of a head from an older main builds with the head's changed paths and main's other files and
+        links. The head adds t/ext, a link to ../vendor, and changes t/secret.txt, and main gets vendor/dune, whose
+        rule reads ../secret.txt: in the merge, dune reads vendor/dune as t/ext/dune, and so t/secret.txt. And main
+        points the link t/ext of the start from ../vendor to ../vendor2, which the (glob_files_rec *.hex) of t/dune
+        then reads, while the head adds vendor2/new.hex: the merge reads it as t/ext/new.hex. The head alone reads
+        neither file."""
+        base = {"t/dune": "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
+                          " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n",
+                "t/secret.txt": "s\n", "vendor/old.hex": "00\n", "vendor2/old.hex": "00\n"}
+        for links, main_links, main_files, head_links, head_files, path, why, by in (
+                ({}, {}, {"vendor/dune": "(rule (target V) (deps ../secret.txt) (action (copy ../secret.txt V)))\n"},
+                 {"t/ext": "../vendor"}, {"t/secret.txt": "t\n"}, "t/secret.txt", "named", "t/ext/dune"),
+                ({"t/ext": "../vendor"}, {"t/ext": "../vendor2"}, {}, {"t/ext": "../vendor"},
+                 {"vendor2/new.hex": "11\n"}, "vendor2/new.hex", "target", "t/ext")):
+            with self.subTest(path=path):
+                d, start = self.repository(base, links)
+                _d, main = self.repository(dict(base, **main_files), main_links, at=d)
+                subprocess.run(["git", "checkout", "-q", "-b", "head", start], cwd=d, check=True, capture_output=True)
+                _d, head = self.repository(dict(base, **head_files), head_links, at=d)
+                changed = sorted(set(head_files) | {p for p in head_links if links.get(p) != head_links[p]})
+                files = [{"filename": p, "previous_filename": None} for p in changed]
+                facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+                self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]}.get(path), (why, by))
+                alone = rules.proofs(head, files, len(files), cwd=d)
+                self.assertNotIn(path, [f["path"] for f in alone["files"]])
+
+    def test_the_c_flags_of_the_env_of_a_dune_workspace_file_of_main_count_for_a_head_of_an_older_main(self):
+        """R8: a dune-workspace file sets the C and linker flags of each stanza of the tree, in an (env ...) at its top
+        or in a (context (default (env ...))). main gets such a file after the commit that the head starts from, and the
+        head changes only a file that the flags of that file name: inc/x.h, which the stub of stubs/ then reads through
+        -I../../../inc, or lib/libz.a through -L../../../lib. Each counts, by main's dune-workspace file, and the head
+        alone does not count it. A variable in such a field makes the dune-workspace file one that the job could not
+        read for certain."""
+        base = {"stubs/dune": "(library (name s) (foreign_stubs (language c) (names s)))\n", "stubs/s.c": "int s;\n",
+                "inc/x.h": "#define X 1\n", "lib/libz.a": "a\n", "README.md": "# Model\n"}
+        for workspace, path in (
+                ("(lang dune 3.23)\n(context (default (env (_ (c_flags (:standard -I../../../inc))))))\n", "inc/x.h"),
+                ("(lang dune 3.23)\n(env (_ (c_library_flags (-L../../../lib -lz))))\n", "lib/libz.a")):
+            with self.subTest(path=path):
+                d, start = self.repository(base)
+                _d, main = self.repository(dict(base, **{"dune-workspace": workspace}), at=d)
+                subprocess.run(["git", "checkout", "-q", "-b", "head", start], cwd=d, check=True, capture_output=True)
+                _d, head = self.repository(dict(base, **{path: "changed\n"}), at=d)
+                files = [{"filename": path, "previous_filename": None}]
+                facts = rules.proofs(head, files, 1, cwd=d, main=main)
+                self.assertEqual(([(f["path"], f["why"], f["by"]) for f in facts["files"]], facts["unparsed"]),
+                                 ([(path, "named", "dune-workspace")], []))
+                self.assertEqual(rules.proofs(head, files, 1, cwd=d)["files"], [])
+        d, _head = self.repository(dict(base, **{"dune-workspace": "(lang dune 3.23)\n"
+                                                                   "(env (_ (c_flags (%{env:CFLAGS=}))))\n"}))
+        self.assertEqual(rules.proofs("HEAD", [{"filename": "README.md", "previous_filename": None}], 1,
+                                      cwd=d)["unparsed"], ["dune-workspace"])
+
+    def test_facts_past_the_bound_of_work_count_the_pull_request_and_say_that_the_check_stopped(self):
+        """The work of the facts stops past WORK, well within the 20 minutes of the gather job: then proofs gives no
+        file and a list that is not whole, which gives the person verdict, and the section says that the check
+        stopped, not that GitHub cut the list."""
+        d, head = self.repository({"t/dune": "(rule (deps (glob_files_rec *.hex)) (action (echo \"\")))\n",
+                                   "README.md": "# Model\n"})
+        files = [{"filename": "README.md", "previous_filename": None}]
+        self.assertEqual(rules.proofs(head, files, 1, cwd=d, main=head),
+                         {"whole": True, "files": [], "unparsed": [], "unfollowed": [], "stopped": False})
+        self.addCleanup(setattr, rules, "WORK", rules.WORK)
+        rules.WORK = 10
+        facts = rules.proofs(head, files, 1, cwd=d, main=head)
+        self.assertEqual(facts, {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": True})
+        self.write("commits.txt", f"base {head}\nhead {head}\n")
+        self.write(rules.SOUNDNESS_FILE, json.dumps(facts))
+        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
+        got, section, _all = rules.soundness(self.review, output, "true", "true")
+        self.assertEqual(got["verdict"], "person")
+        self.assertIn("The workflow stopped its check of the changed files at its limit of work, so it did not check "
+                      "each of them.", section)
+        self.assertNotIn("GitHub did not give", section)
 
     def test_a_dune_file_that_nests_too_deep_to_read_is_a_file_of_the_build_that_the_job_could_not_read(self):
         """R8: a dune file whose lists nest deeper than DUNE_DEPTH is one that the job does not read. A chain of
@@ -5669,7 +5821,7 @@ class SoundnessScanTest(unittest.TestCase):
         r = subprocess.run([sys.executable, RULES_PY, "proofs", head, head, os.path.join(self.review, "files.jsonl"),
                             "1"], cwd=d, capture_output=True, text=True)
         self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
-                         (0, {"whole": False, "files": [], "unparsed": []}))
+                         (0, {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": False}))
 
 
 def filled(env, ctx, **extra):
@@ -9965,8 +10117,7 @@ class HeadScheduleTest(Scheduled):
         self.relabelled([self.line_label()])
         self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
         body = self.label_of()
-        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The workflow tries this pull request or "
-                                        "issue again.\n"), body)
+        self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** The workflow tries again.\n"), body)
         self.assertNotIn("review-conflict-state", body)
         self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
         self.ran(11, f"relabel #7 at {HEAD}", made=4, ended=2,
@@ -10943,7 +11094,8 @@ class LabelRuleTest(unittest.TestCase):
                     ("README.md", "unread", None, [unread, live, copy], [merge]),
                     ("README.md", "", None, [live, copy], [merge, unread]),
                     (None, "markdown", None, [merge, "Sami approves the head commit for the import"], [live, unread]),
-                    (None, "steering", None, [merge, "If not, when the import runs, Sami copies the change"],
+                    (None, "steering", None, [merge, "If the import runs but does not copy each changed path, Sami "
+                                                     "copies the change"],
                      [live, unread]),
                     (None, "unread", None, [merge, unread], [live])):
                 if state == "decide" and decision == "person":
@@ -10959,7 +11111,7 @@ class LabelRuleTest(unittest.TestCase):
                         self.assertEqual(step_line, "**Next step:** Sami answers the questions of the automated "
                                                     "review.")
                         if step_words:
-                            self.assertIn(f"If the answers to the questions leave no problem to fix, {step_words}",
+                            self.assertIn(f"If the answers to the questions leave no change to make, {step_words}",
                                           body)
                     for w in words:
                         self.assertIn(w, body)
@@ -10974,7 +11126,8 @@ class LabelRuleTest(unittest.TestCase):
                       "repository.\n",
                       "- If not, when the import into the internal repository runs and copies each changed path, Sami "
                       "approves the head commit for the import.\n",
-                      "- If not, when the import runs, Sami copies the change into the internal repository by hand."):
+                      "- If the import runs but does not copy each changed path, Sami copies the change into the "
+                      "internal repository by hand."):
             self.assertIn(words, body)
 
     def test_the_label_comment_keeps_its_markers_and_takes_new_ones_in_their_place(self):
@@ -11309,7 +11462,7 @@ class ImportCheckTest(ReaderRunner):
     APPROVE = "Sami approves the head commit for the import into the internal repository."
     COPY = "Sami copies the change into the internal repository by hand."
     # The text before Sami's step of the import in the label comment of a person verdict.
-    ANSWERED = "If the answers to the questions leave no problem to fix,"
+    ANSWERED = "If the answers to the questions leave no change to make,"
     NOT_TAKEN = "This pull request changes a path that the import does not copy."
     UNREAD = "GitHub did not give the full list of the files that this pull request changes"
 
@@ -11470,7 +11623,8 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["docs/guide.md"], value=None)
         self.assertRecorded(got, None)
         self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and copies "
-                         "each changed path", "If not, when the import runs, Sami copies the change", value=None)
+                         "each changed path", "If the import runs but does not copy each changed path, Sami copies the "
+                         "change", value=None)
 
     def test_with_the_variable_and_each_path_matching_the_check_run_and_no_label(self):
         """The variable holds the pair's import_paths, and each changed path is a Markdown file that they take: the
@@ -11529,8 +11683,8 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(paths, "pass", None)
                 self.assertNotRecorded(got, "steering")
                 self.assertWaits(got, self.SOME, self.MERGE, "when the import into the internal repository runs and "
-                                 "copies each changed path", "If not, when the import runs, Sami copies the change",
-                                 value=None)
+                                 "copies each changed path", "If the import runs but does not copy each changed path, "
+                                 "Sami copies the change", value=None)
 
     def test_a_change_of_reports_corpus_replay_md_gets_the_copy_by_hand_comment(self):
         """A Markdown-only pull request that changes only reports/corpus-replay.md, with the variable set to the

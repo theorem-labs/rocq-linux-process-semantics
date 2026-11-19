@@ -2644,14 +2644,20 @@ jobs:
             # every page of the files of the pull request (gh pr view gives at most 100), each file's path and the path
             # that it had before a rename, read after a check of the head and before a second check of it. A list that
             # a read did not finish, of another head, or shorter than changed_files (GitHub lists at most 3,000 files)
-            # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files of the
-            # head and of main from git objects, since the merge builds with the dune files of main where the head
-            # leaves them as they were, and writes soundness.json: each changed path that can change a proof (a .v
-            # file, a dune, dune-project, dune-workspace, opam or *.opam file, a file that a dune file names or reads,
-            # also a header, object or archive of a C stub and a file below a directory that a stanza installs, a file
-            # of an OCaml module or a C file that a dune stanza builds, a link that a dune file reads through, and the
-            # file or the files below the directory that such a link points to), whether the list is whole, and each
-            # dune file or link that it could not read.
+            # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files and the
+            # links of the head and of main from git objects, and dune's view of three trees: the head, main and their
+            # merge (main's tree with the changed paths as the head has them), since the merge builds with the dune
+            # files and the links of main where the head leaves them as they were. It writes soundness.json: each
+            # changed path that can change a proof, with why (a .v file, a dune, dune-project, dune-workspace, opam or
+            # *.opam file, a file that a dune file names or reads, also a header, object or archive of a C stub, a path
+            # that a flag of the C compiler or of the linker names, joined to it or apart, in a stanza, an env stanza
+            # or the env of a dune-workspace file, a file below a directory that a stanza installs, a file of an OCaml
+            # module or a C file that a dune stanza builds, a link that a dune file reads through, and the file or the
+            # files below the directory that such a link points to), whether the list is whole, each dune or
+            # dune-workspace file that it could not read (unparsed), each link that dune cannot follow in one of the
+            # trees, with its reason (unfollowed: it points out of the repository, makes a loop, leads through more
+            # than 40 links, has a target that the job did not read, or adds more than 100,000 paths), and whether it
+            # stopped at its bound of work (stopped: then the list is not whole and holds no file).
             count=""
             : > "$RUNNER_TEMP/files.jsonl"
             if pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -3305,11 +3311,14 @@ jobs:
       # gather job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
       # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths can
       # change a proof (a .v file, a dune, dune-project, dune-workspace or opam file, a file that a dune file of the
-      # head or of main names, or a file of an OCaml module or a C file that a dune stanza builds), from every page of
-      # the pull request's files: a list that is not whole, or a dune file that the job could not read, counts as such
-      # a change too. The section lists, as facts, those files, the lines of the
-      # changed .v files at the head that use the VM, the native compiler or a primitive array, and each changed .v
-      # file at the head that the gather job did not keep whole.
+      # head, of main or of their merge names, also as the path of a flag of the C compiler or of the linker, a file
+      # that the build reads through a link, or a file of an OCaml module or a C file that a dune stanza builds), from
+      # every page of the pull request's files. A list that is not whole, a dune or dune-workspace file that the job
+      # could not read (unparsed), a link that dune cannot follow (unfollowed, with its reason), and a stop at the bound
+      # of work (stopped) each count as such a change too. The section lists, as facts, those files, the files that the
+      # job could not read, the links that dune cannot follow in a list of their own with their reasons, that the check
+      # stopped when it did, the lines of the changed .v files at the head that use the VM, the native compiler or a
+      # primitive array, and each changed .v file at the head that the gather job did not keep whole.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds

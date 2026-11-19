@@ -157,10 +157,20 @@ many files the pull request has:
   the stanza (`../include`), the object `x.o` of `(extra_objects x)`, the
   archives `libx.a` and `dllx.so` of `(foreign_archives x)`, and the
   header `x.h` of `(install_c_headers x)`.
+- a file that a flag of the C compiler or of the linker names, such as
+  `-I`, `-L`, `-isystem`, `-iquote` or `-include`, with each file below
+  it. The path can be joined to the flag (`-I../inc`) or apart
+  (`-I ../inc`). A path that `-Wl,...` gives to the linker counts too.
+  The C flags of an `env` stanza apply to each stanza below it, those of
+  the `env` of a `dune-workspace` file to each stanza, and
+  `c_library_flags` to each stanza that can link the library.
 - the file that a link points to, when the link is one of these files.
   Also a file that the build reads through a link to its directory: with
   `t/ext` a link to `../vendor`, a rule of `t/dune` that reads
-  `ext/x.hex` reads `vendor/x.hex`. Such a link counts too.
+  `ext/x.hex` reads `vendor/x.hex`. Such a link counts too. The merge
+  holds the links of `main` and the files that the head changes: when
+  only `main` has the link `t/ext`, a new `vendor/x.hex` of the head
+  counts.
 
 The workflow reads the changed files itself, from every page of the list
 of files of the pull request, and the `dune` files and the links of the
@@ -169,9 +179,12 @@ request also counts as one that can change a Rocq proof in these cases:
 
 - GitHub does not give the whole list.
 - The workflow cannot read a `dune` file, or cannot read a field of one
-  for certain. For example: a variable, an `(:include ...)` or an
-  absolute path in a C field.
-- A link leaves the tree or makes a loop.
+  for certain. For example: a variable or an `(:include ...)` in a C
+  field or in C flags, or an absolute path in a C field.
+- The workflow cannot follow a link. For example: the link points out of
+  the repository or makes a loop.
+- The check of the changed files needs more work than the workflow does
+  for one pull request.
 
 For each outside pull request that can change a Rocq proof, the review
 does these three things:
