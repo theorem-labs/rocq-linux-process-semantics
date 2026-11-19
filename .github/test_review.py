@@ -5263,7 +5263,7 @@ class SoundnessTest(ReaderRunner):
         """b5 (R8, v61): the rule counts "any file that is not a Markdown file (.md)". A pull request that changes only
         a Python helper, only files of dune.lock/, or only a helper after 100 Markdown files, on the second page of the
         files, gets the person verdict, whatever the model gave. The section says the rule and lists each such file,
-        with no dune file beside it."""
+        with no dune file beside it, and gives no case of a Markdown file: it lists none."""
         docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(100)}
         lock = {"dune.lock/lock.dune": "(lang package 0.1)\n", "dune.lock/rocq.1.0.pkg": "(version 1.0)\n"}
         for name, changes, counted in (
@@ -5280,6 +5280,8 @@ class SoundnessTest(ReaderRunner):
                 self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", shown)
                 self.assertIn("So it counts each changed file that is not a Markdown file (`.md`) as a change of the "
                               "proofs.", shown)
+                self.assertNotIn("It also counts each changed Markdown file", shown)
+                self.assertNotIn("- A `dune` file", shown)
                 self.assertEqual(re.findall(r"(?m)^- `([^`]+)`$", shown), counted)
                 self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
 
@@ -5385,7 +5387,7 @@ class SoundnessTest(ReaderRunner):
         self.assertEqual(rc, 0, out)
         shown = got["body"].split(self.WHOLE, 1)[0]
         self.assertSoundness(head, got, shown)
-        self.assertIn("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
+        self.assertIn("The workflow could not read these `dune` files, so it counts each changed Markdown file:\n\n"
                       "- `theories/dune`", shown)
         self.assertRegex(shown, r"(?m)^- `README\.md`: the workflow could not read `theories/dune`\.$")
         self.tearDown()
@@ -5530,8 +5532,8 @@ class SoundnessScanTest(unittest.TestCase):
         the place of a dune file (theories/dune) and a submodule in the place of a dune-workspace file
         (sub/dune-workspace) are such files: README.md and docs/a.md count by the first of them, and the section lists
         both. A Markdown file below tests/, whose dune file holds .md, counts by tests/dune, the nearest one, and a file
-        that is not a Markdown file counts as it always does. With no changed Markdown file, the job reads no dune
-        file."""
+        that is not a Markdown file counts as it always does. The section gives the cases of a Markdown file, as it
+        lists one. With no changed Markdown file, the job reads no dune file."""
         d, head = self.repository({"tests/dune": "; notes.md\n", "docs/a.md": "a\n", "tools/x.py": "x\n"},
                                   {"theories/dune": "../docs/a.md"})
         for args in (("update-index", "--add", "--cacheinfo", f"160000,{head},sub/dune-workspace"),
@@ -5557,12 +5559,14 @@ class SoundnessScanTest(unittest.TestCase):
         got, section, _all = rules.soundness(self.review, output, "true", "true")
         self.assertEqual(got["verdict"], "person")
         self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", section)
-        self.assertIn("These changed files that are not `.v` files count:\n\n"
+        self.assertIn("It also counts each changed Markdown file in these cases.", section)
+        self.assertIn("- The workflow cannot read one of the `dune` files, in any directory.\n\n"
+                      "The workflow counts these changed files, other than `.v` files, as changes of the proofs:\n\n"
                       "- `README.md`: the workflow could not read `sub/dune-workspace`.\n"
                       "- `docs/a.md`: the workflow could not read `sub/dune-workspace`.\n"
                       "- `tests/deep/y.md`: `tests/dune` holds `.md`.\n"
                       "- `tools/x.py`\n\n", section)
-        self.assertIn("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
+        self.assertIn("The workflow could not read these `dune` files, so it counts each changed Markdown file:\n\n"
                       "- `sub/dune-workspace`\n- `theories/dune`", section)
 
     def test_a_word_a_glob_or_a_path_of_a_dune_file_anywhere_makes_each_markdown_file_count(self):
@@ -5570,8 +5574,8 @@ class SoundnessScanTest(unittest.TestCase):
         does not: with lib/dune as the text, a change of docs/a.md, whose directories hold no dune file, counts by
         lib/dune and the text in it, or does not count. The words are whole words of the text split at white space and
         parentheses, after its comment lines go; a glob counts unless its pattern ends with one fixed extension other
-        than md; a word or a string counts when it holds .md and also .., %{project_root} or %{workspace_root}, or
-        starts with /."""
+        than md, and a #| ... |# or #; comment between the glob and its pattern counts as a ; comment does; a word or a
+        string counts when it holds .md and also .., %{project_root} or %{workspace_root}, or starts with /."""
         rule = '(rule (target o) (deps {}) (action (echo "")))\n'
         for text, what in (
                 ("(include dune.inc)\n", "include"), ("(rule (deps (:include deps.sexp)))\n", ":include"),
@@ -5587,6 +5591,8 @@ class SoundnessScanTest(unittest.TestCase):
                 (rule.format('(glob_files "*.MD")'), 'glob_files "*.MD"'),
                 (rule.format("(glob_files *.vo)"), None), (rule.format("(glob_files_rec %{project_root}/x/*.vo)"), None),
                 (rule.format("(glob_files *MemImage_seg_*.hex)"), None),
+                (rule.format("(glob_files #|x.vo |# *)"), "glob_files #|x.vo"),
+                (rule.format("(glob_files #; x.vo *)"), "glob_files #"),
                 (rule.format('"../x.md"'), '"../x.md"'),
                 (rule.format('"%{project_root}/x.md"'), '"%{project_root}/x.md"'),
                 (rule.format("%{dep:../docs/x.md}"), "%{dep:../docs/x.md}"),

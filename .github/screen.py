@@ -584,9 +584,10 @@ def claude_request(text, marker):
     return {
         "model": env("SCREEN_MODEL"),
         "max_tokens": CLAUDE_MAX_TOKENS,
-        # The lowest temperature the Messages API takes (it takes 0 to 1), so that the same text gets the same word as
-        # often as the model allows; even at 0 its answers can differ.
-        "temperature": 0,
+        # No temperature, so the API's default, 1, holds. For claude-haiku-5-5 the model gateway refused 0 and 0.5 with
+        # HTTP 400 ("Only temperature=1 is supported", measured on 2026-11-19), and the screen of
+        # theorem-labs/oss-verify sends no temperature to this model for that reason. At 1, the same text can get
+        # another word in another request.
         "system": SYSTEM,
         "messages": [{"role": "user", "content": f"{marker}\n{text}\n{marker}"}],
         "output_config": {"format": {"type": "json_schema", "schema": SCHEMA}},

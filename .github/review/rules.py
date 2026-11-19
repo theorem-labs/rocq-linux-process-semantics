@@ -1001,13 +1001,16 @@ REGULAR = ("100644", "100755")
 # split at white space and parentheses (SPLIT), after each line whose first character other than a space or a tab is ;
 # goes (COMMENT_LINE), so not include_subdirs, and a word after code on a line all the same; a glob field (GLOB_FIELD)
 # whose pattern, the word or the string after it as dune reads it (dune_text), does not end with a . and a fixed
-# extension (EXTENSION: letters, digits and _ only), or ends with .md, .MD, .Md or .mD; and a word or a string
-# (WORD, as dune reads it, and each word of a comment) that holds .md and also one of ROOTS, or that starts with /.
-# WORD splits the text as dune 3.23 does: a comment from ; to the end of its line; a block string from "\| or "\> to
-# the end of its line, whatever it holds; a quoted string, in which a backslash and the character after it, a line
-# break too, are one escape, so a string goes on after a backslash before a line break; or an atom. dune reads a
-# block string from after its "\| or "\> and the one space after it (BLOCK), and a quoted string between its quotes
-# (STRING), with no backslash before a line break, nor that line break and the spaces and tabs after it (CONTINUED).
+# extension (EXTENSION: letters, digits and _ only), or ends with .md, .MD, .Md or .mD, or whose next word starts with ;
+# or # (a comment: ; to the end of the line, #| ... |# or #;), which gives the pattern "" and counts; and a word or a
+# string (WORD, as dune reads it, and each word of a comment) that holds .md and also one of ROOTS, or that starts
+# with /.
+# WORD splits the text as dune 3.23 does, except that it does not know a #| ... |# or #; comment: a comment from ; to
+# the end of its line; a block string from "\| or "\> to the end of its line, whatever it holds; a quoted string, in
+# which a backslash and the character after it, a line break too, are one escape, so a string goes on after a backslash
+# before a line break; or an atom. dune reads a block string from after its "\| or "\> and the one space after it
+# (BLOCK), and a quoted string between its quotes (STRING), with no backslash before a line break, nor that line break
+# and the spaces and tabs after it (CONTINUED).
 KEYWORDS = ("include", ":include", "source_tree", "copy_files", "copy_files#")
 COMMENT_LINE = re.compile(r"(?m)^[ \t]*;.*$")
 SPLIT = re.compile(r"[\s()]+")
@@ -1098,15 +1101,16 @@ def trigger(text):
     """The first part of text, the text of a dune file, that makes each changed Markdown file count wherever it is, or
     None: a word of KEYWORDS in text split at SPLIT after its lines of COMMENT_LINE go; the text from the start of a
     glob field to the end of the word after it, also inside a longer word, when the part of its pattern (that word as
-    dune reads it, dune_text) after its last . is not a fixed extension (EXTENSION), or is md, MD, Md or mD; or a word
-    or a string (WORD) that holds .md and also one of ROOTS, or that starts with /, as dune reads it, each word of a
-    comment as a word of its own."""
+    dune reads it, dune_text) after its last . is not a fixed extension (EXTENSION), or is md, MD, Md or mD, or when
+    that word starts with ; or # (a comment, or an odd pattern, which can only give the person verdict), whose pattern
+    is then ""; or a word or a string (WORD) that holds .md and also one of ROOTS, or that starts with /, as dune reads
+    it, each word of a comment as a word of its own."""
     word = next((w for w in SPLIT.split(COMMENT_LINE.sub("", text)) if w in KEYWORDS), None)
     if word:
         return word
     for m in GLOB_FIELD.finditer(text):
         w = WORD.match(text, BLANKS.match(text, m.end()).end())
-        pattern = dune_text(w.group()) if w and not w.group().startswith(";") else ""
+        pattern = dune_text(w.group()) if w and not w.group().startswith((";", "#")) else ""
         extension = pattern.rpartition(".")[2] if "." in pattern else ""
         if not EXTENSION.fullmatch(extension) or extension.lower() == "md":
             return text[m.start():w.end() if w else m.end()]
@@ -1260,10 +1264,10 @@ def code(text):
 def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
     """The fixed section on soundness: first that Sami answers whether the proofs are sound, then why the rule holds,
     from scope (soundness; None for a change of a .v file and nothing else), and the facts for Sami: the rule with the
-    changed files other than .v files that it counts, the dune files that the job could not read, the lines that found
-    holds (uses), and the changed .v files at the head that the search did not read whole. Its lists hold at most
-    listed lines in at most characters characters in all, and a list that holds fewer than it has ends with a line that
-    says how many more there are."""
+    changed files other than .v files that it counts (with the cases of a Markdown file only when it counts one), the
+    dune files that the job could not read, the lines that found holds (uses), and the changed .v files at the head
+    that the search did not read whole. Its lists hold at most listed lines in at most characters characters in all,
+    and a list that holds fewer than it has ends with a line that says how many more there are."""
     scope = scope or {"v": True, "others": [], "whole": True, "unparsed": [], "unread": []}
     issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
     if scope["v"]:
@@ -1294,30 +1298,33 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
         lines = [f"- {code(path)}" + (f": {code(by)} holds {code(what or '.md')}." if kind == "named" else
                                       f": the workflow could not read {code(by)}." if kind == "unread" else "")
                  for path, kind, by, what in scope["others"]]
-        parts.append("The workflow does not examine which files the build of the proofs reads. So it counts each "
-                     "changed file that is not a Markdown file (`.md`) as a change of the proofs. It also counts each "
-                     "changed Markdown file in these cases. Here a `dune` file is a `dune`, `dune-project` or "
-                     "`dune-workspace*` file of the head or of `main`.\n\n"
+        rule = ("The workflow does not examine which files the build of the proofs reads. So it counts each changed "
+                "file that is not a Markdown file (`.md`) as a change of the proofs.")
+        if any(markdown(path) for path, _kind, _by, _what in scope["others"]):
+            rule += (" It also counts each changed Markdown file in these cases. Here a `dune` file is a `dune`, "
+                     "`dune-project` or `dune-workspace*` file of the head or of `main`.\n\n"
                      "- A `dune` file in the directory of the Markdown file, or in a directory above it, holds the "
                      "text `.md`.\n"
                      "- A `dune` file anywhere holds one of the words `include`, `:include`, `source_tree`, "
                      "`copy_files` or `copy_files#`. A word ends at white space or at a parenthesis, so "
                      "`include_subdirs` does not count. A word on a comment line, whose first character other than a "
                      "space or a tab is `;`, does not count. A word after code on the same line counts.\n"
-                     "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a pattern "
-                     "whose part after the last `.` is `md`, `MD`, `Md` or `mD`, or is not one fixed extension. A "
-                     "fixed extension has only letters, digits and `_`. So `*.vo` does not count, but `*.md`, `*.MD`, "
-                     "`*.{v,md}`, `*.[ch]` and `*` count.\n"
-                     "- A `dune` file anywhere holds a word or a quoted string with `.md` in it that also holds `..`, "
-                     "`%{project_root}` or `%{workspace_root}`, or that starts with `/`, also in a comment. For "
-                     "example: `%{dep:../docs/x.md}`.\n"
-                     "- The workflow cannot read a `dune` file anywhere.\n\n"
-                     "These changed files that are not `.v` files count:\n\n" + listing(lines, files))
+                     "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a "
+                     "pattern. The pattern counts unless its part after the last `.` is one fixed extension other "
+                     "than `md`, `MD`, `Md` or `mD`. A fixed extension has only letters, digits and `_`. So `*.vo` "
+                     "does not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. A comment between "
+                     "`glob_files` and its pattern also counts.\n"
+                     "- A `dune` file anywhere holds a word or a quoted string with `.md` in it, also in a comment. "
+                     "That word or string also holds `..`, `%{project_root}` or `%{workspace_root}`, or starts with "
+                     "`/`. For example: `%{dep:../docs/x.md}`.\n"
+                     "- The workflow cannot read one of the `dune` files, in any directory.")
+        parts.append(f"{rule}\n\nThe workflow counts these changed files, other than `.v` files, as changes of the "
+                     "proofs:\n\n" + listing(lines, files))
     if not scope["whole"]:
         parts.append("GitHub did not give the full list of the files that this pull request changes, so the workflow "
                      "could not check each of them.")
     if scope["unparsed"]:
-        parts.append("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
+        parts.append("The workflow could not read these `dune` files, so it counts each changed Markdown file:\n\n"
                      + listing([f"- {code(path)}" for path in scope["unparsed"]], files))
     if scope["v"]:
         what = "the VM, the native compiler, a cast with no check or a primitive array"

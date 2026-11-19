@@ -150,16 +150,16 @@ many files the pull request has:
     first character other than a space or a tab is `;`, does not count.
     A word after code on the same line counts.
   - Each Markdown file counts when a `dune` file anywhere holds
-    `glob_files` or `glob_files_rec`, also in a comment, with a pattern
-    whose part after the last `.` is `md`, `MD`, `Md` or `mD`, or is not
-    one fixed extension. A fixed extension has only letters, digits and
-    `_`. So `*.vo` and `*MemImage_seg_*.hex` do not count, but `*.md`,
-    `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count.
+    `glob_files` or `glob_files_rec`, also in a comment, with a pattern.
+    The pattern counts unless its part after the last `.` is one fixed
+    extension other than `md`, `MD`, `Md` or `mD`. A fixed extension has
+    only letters, digits and `_`. So `*.vo` and `*MemImage_seg_*.hex` do
+    not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. A
+    comment between `glob_files` and its pattern also counts.
   - Each Markdown file counts when a `dune` file anywhere holds a word
-    or a quoted string with `.md` in it that also holds `..`,
-    `%{project_root}` or `%{workspace_root}`, or that starts with `/`,
-    also in a comment. For example: `"../x.md"` or
-    `%{dep:../docs/x.md}`.
+    or a quoted string with `.md` in it, also in a comment. That word or
+    string also holds `..`, `%{project_root}` or `%{workspace_root}`, or
+    starts with `/`. For example: `"../x.md"` or `%{dep:../docs/x.md}`.
 
 This rule fails closed: the workflow does not examine which files the
 build of the proofs reads.
@@ -172,9 +172,10 @@ request also counts as one that can change a Rocq proof in these cases:
 
 - GitHub does not give the whole list.
 - The pull request changes a Markdown file, and the workflow cannot read
-  a `dune`, `dune-project` or `dune-workspace*` file anywhere in the
-  tree of the head or of `main`. For example: a link or a submodule is in
-  the place of the file. Then each changed Markdown file counts.
+  one of the `dune`, `dune-project` and `dune-workspace*` files, in any
+  directory of the tree of the head or of `main`. For example: a link or
+  a submodule is in the place of the file. Then each changed Markdown
+  file counts.
 
 For each outside pull request that can change a Rocq proof, the review
 does these three things:
