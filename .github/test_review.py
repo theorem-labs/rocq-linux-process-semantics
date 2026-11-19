@@ -5309,6 +5309,42 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertEqual((facts["whole"], facts["unparsed"]), (True, ["broken/dune"]))
         self.assertEqual(({f["path"] for f in alone["files"]}, alone["unparsed"]), ({"opam", "pkg/rocq-x.opam"}, []))
 
+    def test_a_new_file_below_a_directory_that_a_link_of_main_points_to_counts_for_a_head_of_an_older_main(self):
+        """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". The merge
+        of a head from an older main builds with main's links and the head's files: with main's t/ext a link to
+        ../vendor and the (glob_files_rec *.hex) of t/dune, dune 3.23 reads the head's new vendor/new.hex as
+        t/ext/new.hex, and runs the rule again after a change of it. So it counts, as it does for a head that has the
+        link. A Markdown file beside it, which no rule reads, does not."""
+        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
+            def git(*args):
+                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def write(path, text):
+                os.makedirs(os.path.dirname(os.path.join(d, path)) or d, exist_ok=True)
+                with open(os.path.join(d, path), "w") as f:
+                    f.write(text)
+            git("init", "-q", "-b", "main")
+            write("t/dune", "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
+                            " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n")
+            write("vendor/old.hex", "00\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "base")
+            base = git("rev-parse", "HEAD")
+            os.symlink("../vendor", os.path.join(d, "t", "ext"))
+            git("add", "-A")
+            git("commit", "-q", "-m", "main links vendor")
+            main = git("rev-parse", "HEAD")
+            git("checkout", "-q", "-b", "head", base)
+            write("vendor/new.hex", "11\n")
+            write("vendor/notes.md", "# Notes\n")
+            git("add", "-A")
+            git("commit", "-q", "-m", "the pull request")
+            head = git("rev-parse", "HEAD")
+            files = [{"filename": p, "previous_filename": None} for p in ("vendor/new.hex", "vendor/notes.md")]
+            facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+        self.assertEqual([f["path"] for f in facts["files"]], ["vendor/new.hex"])
+
     def test_a_dune_stanza_builds_the_ocaml_modules_that_its_modules_field_takes(self):
         """R8: an executable, executables, library, test or tests stanza names modules, not files. A file of a module
         (.ml, .mli, .mll, .mly) counts when the stanza takes it, as dune reads the modules field: every module with no
