@@ -1842,6 +1842,284 @@ Proof.
 Qed.
 
 (* -------------------------------------------------------------------------
+   Three answers: yes, no or maybe
+   ------------------------------------------------------------------------- *)
+
+(** A classifier can answer "maybe" as well as yes and no: it exits 0
+    for yes, 1 for no and 2 for maybe.  This part adds the third
+    verdict, totality with three answers, the set of inputs that get
+    neither a firm yes nor a firm no, and a soundness obligation that is
+    weaker than [decides_fo].  The source is Jason's decision on ZLIB-1
+    (2026-11-03) and BET-618.
+
+    No definition above changes.  A proof of [classifier_total_T_fo]
+    gives [classifier_total3_T_fo]
+    ([classifier_total3_T_fo_of_total_fo]).  A proof of [decides_fo]
+    gives [sound_fo] and [maybe_empty_T_fo] ([sound_fo_of_decides_fo],
+    [maybe_empty_T_fo_of_decides_fo]), and the declared forms of
+    [decides_fo] give the declared forms of those two the same way.
+    [Measure.maybe_bound_T_fo_zero_of_maybe_empty] and its declared
+    twins then give a maybe bound of 0.  No bridge uses an axiom.  So a
+    proof written against the exact statements still compiles, and it
+    still proves what the new statements ask.
+
+    Every new statement quantifies over valid entries.  So an image
+    with no valid entry has an empty maybe set, and it satisfies
+    totality, the maybe statement, and soundness for every property, for
+    the reason this file's header gives.  [Equivalence.IMAGE_WF] in the
+    consuming checker closes that route. *)
+
+(** The "maybe" exit code, exit(2).  It is written plain, with no mask,
+    for the reason [verdict_accept] gives.  Jason's decision on ZLIB-1
+    (2026-11-03) and BET-618. *)
+Definition verdict_maybe : word := Z_to_bv 64 2.
+
+(** "Maybe" is a different word from "yes" and from "no", so
+    [MustExit.must_exit_with_scfg_exclusive] can tell them apart.  The
+    proofs go through [bv_unsigned], as [verdict_accept_neq_reject]
+    does. *)
+Lemma verdict_accept_neq_maybe : verdict_accept <> verdict_maybe.
+Proof.
+  intros H. apply (f_equal bv_unsigned) in H.
+  unfold verdict_accept, verdict_maybe in H. rewrite !Z_to_bv_unsigned in H.
+  vm_compute in H. discriminate.
+Qed.
+
+Lemma verdict_reject_neq_maybe : verdict_reject <> verdict_maybe.
+Proof.
+  intros H. apply (f_equal bv_unsigned) in H.
+  unfold verdict_reject, verdict_maybe in H. rewrite !Z_to_bv_unsigned in H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** Totality with three answers: on every valid finite input, at every
+    valid entry, every run of the classifier exits 0, every run exits 1,
+    or every run exits 2.  A crash, a hang or another exit code is not
+    an answer.  [classifier_total_T_fo] is the two-answer form and does
+    not change.  Jason's decision on ZLIB-1 (2026-11-03) and BET-618. *)
+Definition classifier_total3_T_fo (Cl : Image) : Prop :=
+  forall f : FinProcInput,
+    valid_fin_input f ->
+    forall en,
+      valid_entry Cl en (to_proc_input f) ->
+      must_exit_with_scfg forced_only_cfg verdict_accept Cl classifier_alloc_limit en (to_proc_input f)
+      \/ must_exit_with_scfg forced_only_cfg verdict_reject Cl classifier_alloc_limit en (to_proc_input f)
+      \/ must_exit_with_scfg forced_only_cfg verdict_maybe Cl classifier_alloc_limit en (to_proc_input f).
+
+(** The bridge from the two-answer form: a classifier that always
+    answers yes or no answers one of the three. *)
+Lemma classifier_total3_T_fo_of_total_fo : forall Cl,
+  classifier_total_T_fo Cl -> classifier_total3_T_fo Cl.
+Proof.
+  intros Cl H f Hf en Hen.
+  destruct (H f Hf en Hen) as [H0 | H1]; [left; exact H0 | right; left; exact H1].
+Qed.
+
+(** "No" at every start state: at every valid entry, every run of the
+    classifier exits 1.  It is the "no" side of [accepts_fo].  Jason's
+    decision on ZLIB-1 (2026-11-03) and BET-618. *)
+Definition says_no_fo (C : Image) (f : FinProcInput) : Prop :=
+  forall en,
+    valid_entry C en (to_proc_input f) ->
+    must_exit_with_scfg forced_only_cfg verdict_reject C classifier_alloc_limit en (to_proc_input f).
+
+(** The maybe set: the valid finite inputs that do not get yes at every
+    start state and do not get no at every start state.  Jason's
+    decision on ZLIB-1 (2026-11-03) and BET-618.
+
+    An exit 2 puts an input here, and so do a crash, a hang and mixed
+    answers across start states: the definition asks only for the
+    absence of a firm yes and of a firm no.  So its meaning does not
+    depend on totality: an input on which the classifier gives no
+    answer at a valid entry is a maybe input, and it does not drop out
+    of the count.  An input at which the image has no valid entry gets
+    a firm yes and a firm no vacuously, so it is not a maybe input;
+    this section's header names that route.  [maybe_fo_rejects_fo] puts
+    this set inside [rejects_fo], which is the set the existing bound
+    [Measure.weight_bound_T_fo] counts.
+    [Checks.GatedSize.gate_exit2_maybe_fo] and
+    [Checks.GatedSize.undecodable_maybe_fo] show the set inhabited, by
+    an exit 2 and by a run that leaves the model. *)
+Definition maybe_fo (C : Image) (f : FinProcInput) : Prop :=
+  valid_fin_input f /\ ~ accepts_fo C f /\ ~ says_no_fo C f.
+
+(** Each maybe input is a rejected input in the sense of [rejects_fo]:
+    valid, and not yes at every start state. *)
+Lemma maybe_fo_rejects_fo : forall C f, maybe_fo C f -> rejects_fo C f.
+Proof. intros C f (Hf & Hna & _). exact (conj Hf Hna). Qed.
+
+(** Soundness: on every valid finite input, at every valid entry, a yes
+    means that the input has the property, and an input that has the
+    property never gets a no.  Maybe is allowed on either side.  This is
+    weaker than [decides_fo] ([sound_fo_of_decides_fo]).  Jason's
+    decision on ZLIB-1 (2026-11-03) and BET-618.
+
+    An image with no valid entry satisfies this vacuously, for every
+    [spec], as it does [decides_fo] ([decides_fo_vacuous_no_entries]).
+    This file's header gives that route, and [Equivalence.IMAGE_WF] in
+    the consuming checker closes it. *)
+Definition sound_fo (C : Image) (spec : ProcInput -> Prop) : Prop :=
+  forall f : FinProcInput,
+    valid_fin_input f ->
+    forall en,
+      valid_entry C en (to_proc_input f) ->
+      (must_exit_with_scfg forced_only_cfg verdict_accept C classifier_alloc_limit en (to_proc_input f)
+       -> spec (to_proc_input f))
+      /\ (spec (to_proc_input f)
+          -> ~ must_exit_with_scfg forced_only_cfg verdict_reject C classifier_alloc_limit en (to_proc_input f)).
+
+(** [sound_fo] with the task's AT_HWCAP declaration as a hypothesis on
+    the input, in the shape of [decides_fo_hwcap_rv64gc], for the reason
+    that definition gives. *)
+Definition sound_fo_hwcap_rv64gc (C : Image) (spec : ProcInput -> Prop) : Prop :=
+  forall f : FinProcInput,
+    valid_fin_input f ->
+    in_hwcap (to_proc_input f) = hwcap_rv64gc ->
+    forall en,
+      valid_entry C en (to_proc_input f) ->
+      (must_exit_with_scfg forced_only_cfg verdict_accept C classifier_alloc_limit en (to_proc_input f)
+       -> spec (to_proc_input f))
+      /\ (spec (to_proc_input f)
+          -> ~ must_exit_with_scfg forced_only_cfg verdict_reject C classifier_alloc_limit en (to_proc_input f)).
+
+Definition sound_fo_hwcap_rv64gcv (C : Image) (spec : ProcInput -> Prop) : Prop :=
+  forall f : FinProcInput,
+    valid_fin_input f ->
+    in_hwcap (to_proc_input f) = hwcap_rv64gcv ->
+    forall en,
+      valid_entry C en (to_proc_input f) ->
+      (must_exit_with_scfg forced_only_cfg verdict_accept C classifier_alloc_limit en (to_proc_input f)
+       -> spec (to_proc_input f))
+      /\ (spec (to_proc_input f)
+          -> ~ must_exit_with_scfg forced_only_cfg verdict_reject C classifier_alloc_limit en (to_proc_input f)).
+
+(** The bridges from an exact proof: a decider is sound.  The yes side
+    is one half of the iff.  The no side is the other half, and then
+    [MustExit.must_exit_with_scfg_exclusive] against
+    [verdict_accept_neq_reject]. *)
+Lemma sound_fo_of_decides_fo : forall C spec, decides_fo C spec -> sound_fo C spec.
+Proof.
+  intros C spec H f Hf en Hen.
+  destruct (H f Hf en Hen) as [Hiff _].
+  split.
+  - exact (proj1 Hiff).
+  - intros Hs Hno.
+    exact (verdict_accept_neq_reject
+             (must_exit_with_scfg_exclusive _ _ _ _ _ _ _ (proj2 Hiff Hs) Hno)).
+Qed.
+
+Lemma sound_fo_hwcap_rv64gc_of_decides_fo_hwcap_rv64gc : forall C spec,
+  decides_fo_hwcap_rv64gc C spec -> sound_fo_hwcap_rv64gc C spec.
+Proof.
+  intros C spec H f Hf Hw en Hen.
+  destruct (H f Hf Hw en Hen) as [Hiff _].
+  split.
+  - exact (proj1 Hiff).
+  - intros Hs Hno.
+    exact (verdict_accept_neq_reject
+             (must_exit_with_scfg_exclusive _ _ _ _ _ _ _ (proj2 Hiff Hs) Hno)).
+Qed.
+
+Lemma sound_fo_hwcap_rv64gcv_of_decides_fo_hwcap_rv64gcv : forall C spec,
+  decides_fo_hwcap_rv64gcv C spec -> sound_fo_hwcap_rv64gcv C spec.
+Proof.
+  intros C spec H f Hf Hw en Hen.
+  destruct (H f Hf Hw en Hen) as [Hiff _].
+  split.
+  - exact (proj1 Hiff).
+  - intros Hs Hno.
+    exact (verdict_accept_neq_reject
+             (must_exit_with_scfg_exclusive _ _ _ _ _ _ _ (proj2 Hiff Hs) Hno)).
+Qed.
+
+(** The maybe statement of a pair with no input distribution: the maybe
+    set is empty, so every valid input gets a firm yes or a firm no.
+    Jason's decision on ZLIB-1 (2026-11-03) and BET-618.
+    [Checks.GatedSize.gate_exit2_refutes_maybe_empty] refutes it for an
+    image that exits 2.  An image with no valid entry satisfies it
+    vacuously; this section's header names that route. *)
+Definition maybe_empty_T_fo (C : Image) : Prop := forall f, ~ maybe_fo C f.
+
+(** [maybe_empty_T_fo] on the inputs that declare the capability word,
+    in the shape of [decides_fo_hwcap_rv64gc]. *)
+Definition maybe_empty_T_fo_hwcap_rv64gc (C : Image) : Prop :=
+  forall f, in_hwcap (to_proc_input f) = hwcap_rv64gc -> ~ maybe_fo C f.
+
+Definition maybe_empty_T_fo_hwcap_rv64gcv (C : Image) : Prop :=
+  forall f, in_hwcap (to_proc_input f) = hwcap_rv64gcv -> ~ maybe_fo C f.
+
+(** The bridges from an exact proof: a decider has no maybe input.  No
+    axiom: [~ spec] comes from [~ accepts_fo], and then totality gives
+    "no" at every entry. *)
+Lemma maybe_empty_T_fo_of_decides_fo : forall C spec,
+  decides_fo C spec -> maybe_empty_T_fo C.
+Proof.
+  intros C spec H f (Hf & Hna & Hnn).
+  assert (Hns : ~ spec (to_proc_input f)).
+  { intros Hs. apply Hna. intros en Hen. exact (proj2 (proj1 (H f Hf en Hen)) Hs). }
+  apply Hnn. intros en Hen.
+  destruct (H f Hf en Hen) as [Hiff [H0 | H1]].
+  - exfalso. exact (Hns (proj1 Hiff H0)).
+  - exact H1.
+Qed.
+
+Lemma maybe_empty_T_fo_hwcap_rv64gc_of_decides_fo_hwcap_rv64gc : forall C spec,
+  decides_fo_hwcap_rv64gc C spec -> maybe_empty_T_fo_hwcap_rv64gc C.
+Proof.
+  intros C spec H f Hw (Hf & Hna & Hnn).
+  assert (Hns : ~ spec (to_proc_input f)).
+  { intros Hs. apply Hna. intros en Hen. exact (proj2 (proj1 (H f Hf Hw en Hen)) Hs). }
+  apply Hnn. intros en Hen.
+  destruct (H f Hf Hw en Hen) as [Hiff [H0 | H1]].
+  - exfalso. exact (Hns (proj1 Hiff H0)).
+  - exact H1.
+Qed.
+
+Lemma maybe_empty_T_fo_hwcap_rv64gcv_of_decides_fo_hwcap_rv64gcv : forall C spec,
+  decides_fo_hwcap_rv64gcv C spec -> maybe_empty_T_fo_hwcap_rv64gcv C.
+Proof.
+  intros C spec H f Hw (Hf & Hna & Hnn).
+  assert (Hns : ~ spec (to_proc_input f)).
+  { intros Hs. apply Hna. intros en Hen. exact (proj2 (proj1 (H f Hf Hw en Hen)) Hs). }
+  apply Hnn. intros en Hen.
+  destruct (H f Hf Hw en Hen) as [Hiff [H0 | H1]].
+  - exfalso. exact (Hns (proj1 Hiff H0)).
+  - exact H1.
+Qed.
+
+(** The two task-facing soundness obligations, with the same arguments
+    in the same order as [classifies_good_inputs_T_s] and
+    [classifies_patch_diff_T_s]: the property under the task's
+    configuration [cfg], the classifier under forced-only.  Jason's
+    decision on ZLIB-1 (2026-11-03) and BET-618. *)
+Definition classifies_good_inputs_sound_T_s (cfg : SpuriousCfg) (O1 O2 C : Image) : Prop :=
+  sound_fo C (good_input_s cfg O1 O2).
+
+Definition classifies_patch_diff_sound_T_s (cfg : SpuriousCfg) (O1 P1 O2 P2 C : Image) : Prop :=
+  sound_fo C (fun inp => agree_s cfg O1 P1 source_alloc_limit inp
+                         /\ agree_s cfg O2 P2 target_alloc_limit inp).
+
+(** The same two obligations, declared, over [sound_fo_hwcap_rv64gc]
+    and [sound_fo_hwcap_rv64gcv]. *)
+Definition classifies_good_inputs_sound_T_s_hwcap_rv64gc
+    (cfg : SpuriousCfg) (O1 O2 C : Image) : Prop :=
+  sound_fo_hwcap_rv64gc C (good_input_s cfg O1 O2).
+
+Definition classifies_good_inputs_sound_T_s_hwcap_rv64gcv
+    (cfg : SpuriousCfg) (O1 O2 C : Image) : Prop :=
+  sound_fo_hwcap_rv64gcv C (good_input_s cfg O1 O2).
+
+Definition classifies_patch_diff_sound_T_s_hwcap_rv64gc
+    (cfg : SpuriousCfg) (O1 P1 O2 P2 C : Image) : Prop :=
+  sound_fo_hwcap_rv64gc C (fun inp => agree_s cfg O1 P1 source_alloc_limit inp
+                                      /\ agree_s cfg O2 P2 target_alloc_limit inp).
+
+Definition classifies_patch_diff_sound_T_s_hwcap_rv64gcv
+    (cfg : SpuriousCfg) (O1 P1 O2 P2 C : Image) : Prop :=
+  sound_fo_hwcap_rv64gcv C (fun inp => agree_s cfg O1 P1 source_alloc_limit inp
+                                       /\ agree_s cfg O2 P2 target_alloc_limit inp).
+
+(* -------------------------------------------------------------------------
    The buggy / not-buggy gate, under a configuration
    ------------------------------------------------------------------------- *)
 
@@ -2007,6 +2285,34 @@ Lemma classifies_error_free_inputs_T_fo_hwcap_splits : forall O C,
   <-> (classifies_error_free_inputs_T_fo_hwcap_rv64gc O C
        /\ classifies_error_free_inputs_T_fo_hwcap_rv64gcv O C).
 Proof. intros. apply decides_fo_hwcap_splits. Qed.
+
+(** The soundness forms of the two gate obligations: [sound_fo] in
+    place of [decides_fo], the property and the arguments unchanged.
+    The gate's yes says that the original is error-free on the input,
+    so soundness asks that each yes be true and that an input on which
+    the original is error-free never get a no.  Jason's decision on
+    ZLIB-1 (2026-11-03) and BET-618. *)
+Definition classifies_error_free_inputs_sound_T_s (cfg : SpuriousCfg) (O C : Image) : Prop :=
+  sound_fo C (error_free_input_s cfg O).
+
+Definition classifies_error_free_inputs_sound_T_fo (O C : Image) : Prop :=
+  sound_fo C (error_free_input O).
+
+(** The declared twins of the two gate soundness obligations, over
+    [sound_fo_hwcap_rv64gc] and [sound_fo_hwcap_rv64gcv]. *)
+Definition classifies_error_free_inputs_sound_T_s_hwcap_rv64gc
+    (cfg : SpuriousCfg) (O C : Image) : Prop :=
+  sound_fo_hwcap_rv64gc C (error_free_input_s cfg O).
+
+Definition classifies_error_free_inputs_sound_T_s_hwcap_rv64gcv
+    (cfg : SpuriousCfg) (O C : Image) : Prop :=
+  sound_fo_hwcap_rv64gcv C (error_free_input_s cfg O).
+
+Definition classifies_error_free_inputs_sound_T_fo_hwcap_rv64gc (O C : Image) : Prop :=
+  sound_fo_hwcap_rv64gc C (error_free_input O).
+
+Definition classifies_error_free_inputs_sound_T_fo_hwcap_rv64gcv (O C : Image) : Prop :=
+  sound_fo_hwcap_rv64gcv C (error_free_input O).
 
 (** The identification just claimed, and it is a clean [iff] rather than
     an implication: both sides are [decides_fo] of the SAME classifier
