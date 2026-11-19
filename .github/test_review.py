@@ -2327,6 +2327,40 @@ class LimitTest(Runner):
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
                                  [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in mine + pushes[:read]])
 
+    def test_runs_that_cannot_count_on_the_author_leave_the_reads_for_another_accounts_pushes(self):
+        """Ruling 1: a limit counts against the reviewed pull request's author, and bob does not start screened runs
+        without a limit (OUTSIDE_HOURLY_LIMIT: the most runs that one account without write access may start in an hour
+        and have screened). Two kinds of runs of the hour can never count on eve, and must not use up the reads that
+        find bob's OUTSIDE_HOURLY_LIMIT pushes to the head of eve's #20 (screen eve): eve's own comments on an item that
+        she did not open, which her trust job stops (each costs her nothing, and she can make 2 * OUTSIDE_HOURLY_LIMIT
+        of them at will), and the CI runs of a writer's pushes, newer than bob's, which count on the writer (a writer's
+        action has no limit). With either, as with none, bob's next push holds eve's review at her limit."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+        trust = {"name": "trust", "status": "completed", "conclusion": "success"}
+        stopped = [{"name": n, "status": "completed", "conclusion": "skipped"}
+                   for n in ("gather", "screen", "review", "post", "comment", "hold")]
+        reviewed = [attempt_job("gather"), {"name": "screen alice", "status": "completed", "conclusion": "skipped"},
+                    attempt_job("review", name="review")]
+        screened = [attempt_job("screen", name="screen eve"), attempt_job("review", name="review (screened)")]
+        pushes = [(90 - i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(self.LIMIT)]
+        budget = 2 * self.LIMIT
+        for case, others in (
+                ("no other run", []),
+                ("eve's comments on another's item", [(50 - i, "eve", "issue_comment", "success",
+                                                       f"answer #9 for {900 + i} by eve", stopped)
+                                                      for i in range(budget)]),
+                ("a writer's newer CI runs", [(99 - i, "alice", "workflow_run", "success",
+                                               f"review {OTHER_HEAD} by alice", reviewed) for i in range(budget)])):
+            with self.subTest(case=case):
+                self.runs(*[r[:5] for r in others], *pushes,
+                          jobs={**{r[0]: screened for r in pushes}, **{r[0]: r[5] for r in others}})
+                for r in others:
+                    self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": [trust, *r[5]]})
+                rc, out, got = self.run_trust("workflow_run", actor="bob", number="", head=HEAD,
+                                              head_repository=str(FORK_ID), pulls=[])
+                self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", "limit"), out)
+
     def test_a_ci_run_of_another_account_counts_on_the_author_as_a_run_of_her_own_does(self):
         """Ruling 1: a CI run of bob's push counts on eve when its screen job names eve, whether its screen ran or
         the run was held at her limit (a held run of her own counts too). It does not count on eve when its trust job
