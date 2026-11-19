@@ -41,41 +41,35 @@ is there with another one. It reads the label first, and writes only what differ
 label that does not exist makes it, with no description.
 
 proofs: the facts of the soundness rule at the head <head> of a pull request, as JSON on standard output, which the
-gather job writes into .review/ as soundness.json (proofs): each changed path that can change a Rocq proof, with why,
-whether the list of the changed paths is whole, each dune or dune-workspace file that the job could not read, each link
-that dune cannot follow in the tree, with why, and whether the job stopped at its limit of work. <files.jsonl> holds the
-files of the pull request as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on
-each line, and <changed files> is the pull request's changed_files, or empty when a read did not finish or read another
-head: then the list is not whole. A changed path counts when it is a .v file, a dune, dune-project or dune-workspace
-file or an opam file (opam or *.opam) anywhere in the tree, a file that a dune file of <head> or of <main> names
-(dune_names), also as the path of a flag of the C compiler or the linker, joined to it or apart (flag_paths), in a
-stanza, an env stanza or the env of a dune-workspace file (workspace_flags), the files that the C fields of a stanza
-read among them (c_inputs), a file of an OCaml module or a C file that a stanza of such a dune file builds
-(Names.built), a file that the build reads through a link (the file that a link that counts points to, or a file that
-counts through a link to its directory, as dune follows such a link: View), or a link to a directory through which the
-build reads a file that counts. <main> is the commit of main that the pull request merges into: a head from an older
-main still counts each file that the dune files of main name, and the links count in dune's view of <head>, of <main>
-and of their merge (merged: main's tree with the changed paths as <head> has them). The dune files and the links come
-from git objects of <head> and <main>, in the repository of the working directory, never from a checkout. A dune or
-dune-workspace file, or a C field of one, that the job cannot read goes on the list of the files of the build that the
-job could not read, and a link that dune cannot follow in the tree (it leaves the tree or makes a loop, among others)
-on the list of such links. The job stops past WORK, well within the gather job's 20 minutes: then the facts hold no
-file and a list that is not whole.
+gather job writes into .review/ as soundness.json (proofs): each changed path that counts, with why, whether the list
+of the changed paths is whole, and each dune file that the job could not read. <files.jsonl> holds the files of the
+pull request as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line,
+and <changed files> is the pull request's changed_files, or empty when a read did not finish or read another head:
+then the list is not whole. The rule fails closed and models no feature of dune. A changed path counts when it is not
+a Markdown file (markdown: its name ends with .md). A Markdown file counts when a dune file (dune_file: dune,
+dune-project or dune-workspace*) of <head> or of <main> in the directory of the Markdown file or in a directory above
+it holds the text .md anywhere, and each Markdown file counts when a dune file anywhere in either tree holds a text of
+trigger (a word of KEYWORDS, a glob whose pattern does not end with one fixed extension other than md, or a word or a
+string that holds .md and also .., %{project_root} or %{workspace_root}, or that starts with /), or cannot be read (a
+link or a submodule in its place, or an object that git does not hold). <main> is the commit of main that the pull
+request merges into. The dune files come from git objects of <head> and <main>, in the repository of the working
+directory, never from a checkout, and the job reads them once, only when a changed path is a Markdown file. Each
+dune file that the job cannot read goes on the list of such files.
 
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
 on stock Rocq, as the checks that the import's copy must pass do. So a pass of the checks does not show a proof sound.
 The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the gather job's outside,
-is not false) that changes a path that soundness.json counts or a .v file under head/, whose list of changed paths is
-not whole, or for which a file of the build could not be read or a link could not be followed: the job cannot show
-then that no proof changed. Then <output.json>, the review's output {comment, verdict, will_fix, items}, gets the
-verdict person whatever the model gave, and QUESTION when its list has no question on soundness (forced). <section>
-gets the fixed section on soundness, which trim.py puts after the trimmed text, where the reader never sees it: it
-says why the rule holds, and lists, as facts for Sami, each changed file of the build, each line of the changed .v
-files at the head that uses one of USES, an array literal or make of the array module (uses), and each changed .v file
-at the head that the gather job did not keep whole. None of them is a fail: honest proofs use the same constructs. A
-proof with no such line gets the section too: a proof reaches the VM through a tactic such as lia, and a primitive
-array through make with no array literal, so a search of the text cannot rule a forgery out. The section lists at most
+is not false) that changes a path that soundness.json counts or a .v file under head/, or whose list of changed paths
+is not whole: the job cannot show then that no proof changed. Then <output.json>, the review's output {comment,
+verdict, will_fix, items}, gets the verdict person whatever the model gave, and QUESTION when its list has no question
+on soundness (forced). <section> gets the fixed section on soundness, which trim.py puts after the trimmed text, where
+the reader never sees it: it says why the rule holds, and lists, as facts for Sami, the rule with each changed file
+other than a .v file that it counts, each dune file that the job could not read, each line of the changed .v files at
+the head that uses one of USES, an array literal or make of the array module (uses), and each changed .v file at the
+head that the gather job did not keep whole. None of them is a fail: honest proofs use the same constructs. A proof
+with no such line gets the section too: a proof reaches the VM through a tactic such as lia, and a primitive array
+through make with no array literal, so a search of the text cannot rule a forgery out. The section lists at most
 LISTED lines in at most LISTED_CHARACTERS characters, and says how many more there are. <all> gets the section with
 every line, for the run's summary. When the rule does not hold, <output.json> stays as it is and the two files are
 empty.
@@ -864,6 +858,12 @@ def imported(globs, path):
         return False
 
 
+def markdown(path):
+    """Whether path is a Markdown file: its name ends with .md. While the soundness hold lasts, the rule of R8 counts
+    each changed path that is not one, and R12 records the import check run only when each changed path is one."""
+    return path.endswith(".md")
+
+
 def changed_paths(files):
     """Each path that files change, as the API lists them (pulls/<n>/files): the path of each file, and the path that
     it had before a rename."""
@@ -903,7 +903,7 @@ def import_decision(files, changed_files, screen, verdict, hold, value):
         return "unread"
     if verdict == "person":
         return "person"
-    if hold and not all(p.endswith(".md") for p in paths):
+    if hold and not all(markdown(p) for p in paths):
         return "markdown"
     return "record"
 
@@ -958,8 +958,8 @@ def review_verdict(comments, head):
 # uses, code, section and the constants from USES to LISTED are copied from theorem-labs/oss-verify-proofs-internal
 # .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its checks are its CI lanes on stock Rocq,
 # not oft check; code keeps a path of any form in one code span, because trim.py does not make the section inert; and
-# the section names Sami and the files of the build. The files that the rule counts (proofs, dune_names) and the rule
-# itself (soundness, forced) are this file's own.
+# the section names Sami and the changed files that count. The files that the rule counts (proofs) and the rule itself
+# (soundness, forced) are this file's own.
 
 # Each construct of "Soundness of a Rocq proof" that a line can use: its name in the section, and its pattern.
 USES = (
@@ -988,90 +988,30 @@ LISTED_CHARACTERS = 10_000
 # them, and so adds no mention of each review to these issues of rocq-prover/rocq.
 ISSUES = ("rocq-prover/rocq#22651", "rocq-prover/rocq#22760", "rocq-prover/rocq#22772")
 # The facts of the rule that the gather job writes into the .review/ of a pull request (proofs), and why a changed path
-# counts: a .v file, a file of the build (BUILD, or an opam file), a file that a dune file names, a file of a module or
-# of a C stub that a stanza of a dune file builds, a file that the build reads through a link (the file that a link
-# that counts points to, or a file that counts through a link to its directory), or a link through which the build
-# reads a file.
+# counts: proof for a .v file, other for any other file that is not a Markdown file (markdown), and for a Markdown file
+# named when a dune file (dune_file) holds what made it count (dune_marks), and unread when the job could not read a
+# dune file.
 SOUNDNESS_FILE = "soundness.json"
-WHYS = ("proof", "build", "named", "module", "target", "link")
-# The files that tell dune and opam how to build the proofs, by their name in any directory: an opam file is opam, or
-# <package>.opam (OPAM), and its pin-depends can change the Rocq that CI builds with.
-BUILD = ("dune", "dune-project", "dune-workspace", "opam")
-OPAM = ".opam"
-# The stanzas of a dune file that build OCaml modules of their directory (libraries, executables and tests): every
-# module of the directory, or each one that their modules fields take (module_set). The stanzas that run an OCaml tool
-# on modules that they name (ocamllex, menhir, the grammar of a Rocq plugin), which this reads as every module of the
-# directory, and foreign_library, which compiles C files and no module. With (include_subdirs ...) other than no, the
-# modules of a directory are those of each directory below it too. The files of a module by their extension, the
-# fields of a stanza that compile C files, and those files by their extension.
-MODULE_STANZAS = ("executable", "executables", "library", "test", "tests")
-TOOL_STANZAS = ("ocamllex", "ocamlyacc", "menhir", "rocq.pp", "coq.pp", "foreign_library")
-MODULE_SOURCES = (".ml", ".mli", ".mll", ".mly", ".re", ".rei", ".mlg")
-FOREIGN_FIELDS = ("foreign_stubs", "foreign_archives", "extra_objects")
-FOREIGN_SOURCES = (".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".hxx")
-MODULE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_']*")
-# The modes of a regular file and of a link in a tree of git, the most bytes of a link's target that the job reads,
-# and the most links that the way to a file follows, as Linux follows them (MAXSYMLINKS): more is a loop. The most
-# paths that the links to directories of one tree can add to it (View): a tree with more holds links that the job
-# does not follow.
+WHYS = ("proof", "other", "named", "unread")
+# The modes of a regular file in a tree of git: a dune file in another mode, a link or a submodule, is one that the job
+# cannot read.
 REGULAR = ("100644", "100755")
-LINK = "120000"
-LINK_BYTES = 4096
-LINK_HOPS = 40
-VIEW_PATHS = 100_000
-# Why dune's view of a tree does not follow a link (View.bad), as the section on soundness gives it after the link.
-UNFOLLOWED = {
-    "out": "it points out of the repository.",
-    "loop": "it makes a loop.",
-    "hops": f"it leads through more than {LINK_HOPS} links.",
-    "unread": "the workflow did not read its target.",
-    "many": f"with it, the links to directories add more than {VIEW_PATHS:,} paths, the most that the workflow "
-            "follows.",
-}
-# The most work that the facts of one pull request take (Work), in steps: one path of a tree or of a view, one node or
-# name of a dune file, one directory or glob that a path is checked against, one byte of a dune file that the job
-# reads. A regular expression of a glob takes GLOB_WORK steps, and a call of git GIT_WORK. Past WORK, the job stops,
-# and the facts hold no file and a list that is not whole. Measured on 2026-11-19 with Python 3.13 under gVisor, the
-# slowest kind of step that was measured, a path of a tree of 200,000 files, ran at 200,000 steps a second: WORK such
-# steps take 100 seconds, well within the 20 minutes of the gather job. The facts of this repository's own tree take
-# 50,000 steps.
-WORK = 20_000_000
-GLOB_WORK = 100
-GIT_WORK = 10_000
-# The most bytes of a dune file, or of a file that it includes, that the rule reads, the most includes in a chain, and
-# the most lists inside lists of one such file: a longer file or chain, or one that nests deeper, is a file of the
-# build that the job could not read.
-DUNE_BYTES = 1 << 20
-INCLUDES = 20
-DUNE_DEPTH = 64
-# The characters between the tokens of a dune file, an atom, and the escapes of a quoted string, as dune 3 reads them.
-BLANKS = " \t\n\r\f"
-ATOM = re.compile(r'[^ \t\n\r\f;()"]+')
-STRING_ESCAPES = {"n": "\n", "t": "\t", "b": "\b", "r": "\r", "\\": "\\", '"': '"', "'": "'", "%": "%"}
-# A variable of a dune file, %{<name>} or %{<name>:<argument>}, the variables that name the root of the repository, and
-# the characters that make a name a glob.
-VARIABLE = re.compile(r"%\{([^}]*)\}")
-ROOTS = ("project_root", "workspace_root")
-GLOB = re.compile(r"[*?\[{]")
-# The actions whose strings a shell reads, and the shells that (run <shell> ...) starts: the rule takes each word of
-# such a string as a name too.
-SHELL_ACTIONS = ("system", "bash")
-SHELLS = ("sh", "bash", "dash", "ksh", "zsh")
-SHELL_WORD = re.compile(r"[^\s;|&<>()`'\"$=]+")
-# The flags of a C compiler or of a linker that take a path, joined to it (-I../inc) or as the next word (-I ../inc),
-# the longest first: dune 3.23 compiles a C stub in _build/default/<directory>, so -I../../../inc makes gcc read the
-# source tree's inc/ with no rule of dune in between. A flag -<name>=<value> takes its value as a path too, but a
-# macro's (MACROS). The flags that pass words on to another program, which are read as flags in their turn: gcc's
-# -Wl,<word>,<word> and -Xlinker <word>, and the OCaml compilers' -ccopt <words> and -cclib <words>.
-PATH_FLAGS = ("-idirafter", "-isysroot", "-isystem", "-iprefix", "-imacros", "-include", "-iquote", "-I", "-L", "-B",
-              "-F", "-T", "@")
-PASS_FLAGS = ("-Xlinker", "-ccopt", "-cclib")
-MACROS = ("-D", "-U")
-# The fields of the flags of the C compiler or of the linker, in a stanza or in a profile of an env stanza. With the
-# flags of a foreign_stubs field or of a foreign_library, a variable of one of them (but those of ROOTS, or one in a
-# macro) or an (:include ...) makes its dune file one that the job cannot read for certain. c_library_flags apply where
-# an executable links the library, and those of an env stanza to each stanza below it.
-C_FLAGS = ("c_flags", "cxx_flags", "c_library_flags", "link_flags")
+# The texts of a dune file that make each changed Markdown file count, wherever it is (trigger), as plain text: a word
+# of KEYWORDS, a field or a stanza that reads files whose names the dune file does not hold, as a whole word of the text
+# split at white space and parentheses (SPLIT), after each line whose first character other than a space or a tab is ;
+# goes (COMMENT_LINE), so not include_subdirs, and a word after code on a line all the same; a glob field (GLOB_FIELD)
+# whose pattern, the word or the quoted string after it, does not end with a . and a fixed extension (EXTENSION:
+# letters, digits and _ only) other than md; and a word or a quoted string (WORD, and each word of a comment) that holds
+# .md and also one of ROOTS, or that starts with /.
+KEYWORDS = ("include", ":include", "source_tree", "copy_files", "copy_files#")
+COMMENT_LINE = re.compile(r"(?m)^[ \t]*;.*$")
+SPLIT = re.compile(r"[\s()]+")
+GLOB_FIELD = re.compile(r"glob_files(?:_rec)?")
+EXTENSION = re.compile(r"[A-Za-z0-9_]+")
+WORD = re.compile(r';[^\n]*|"(?:[^"\\]|\\.)*"?|[^\s();"]+')
+ATOM = re.compile(r'[^\s();"]+')
+BLANKS = re.compile(r"\s*")
+ROOTS = ("..", "%{project_root}", "%{workspace_root}")
 # A line of omitted.txt, as the gather job writes it, for a changed file that .review/head/ holds only in part.
 CUT = re.compile(r"(.+): cut at 2 MiB of its [0-9]+ bytes")
 # A question on soundness in the review's list, and the question that the rule adds when the list has none.
@@ -1093,544 +1033,6 @@ def head_proofs(review):
     return sorted(found)
 
 
-def dune_sexps(text):
-    """The S-expressions of the text of a dune file, as dune 3 reads them: a list is a list, and an atom or a quoted
-    string is a str. A ; starts a comment to the end of its line, also inside an atom, and #| and #; are atoms. A
-    ValueError for a text that dune refuses or that this reader does not read: a ( or a ) with no pair, a string with
-    no end, an escape that dune does not know (a block string, "\\| or "\\>, among them), or lists nested deeper than
-    DUNE_DEPTH, which the readers of the S-expressions could not take apart."""
-    stack, i = [[]], 0
-    while i < len(text):
-        c = text[i]
-        if c in BLANKS:
-            i += 1
-        elif c == ";":
-            end = text.find("\n", i)
-            i = len(text) if end < 0 else end + 1
-        elif c == "(":
-            if len(stack) > DUNE_DEPTH:
-                raise ValueError(f"lists nested deeper than {DUNE_DEPTH}")
-            stack.append([])
-            i += 1
-        elif c == ")":
-            if len(stack) == 1:
-                raise ValueError("a ) with no (")
-            done = stack.pop()
-            stack[-1].append(done)
-            i += 1
-        elif c == '"':
-            value, i = dune_string(text, i + 1)
-            stack[-1].append(value)
-        else:
-            m = ATOM.match(text, i)
-            stack[-1].append(m.group())
-            i = m.end()
-    if len(stack) > 1:
-        raise ValueError("a ( with no )")
-    return stack[0]
-
-
-def dune_string(text, i):
-    """The value of the quoted string of a dune file whose first character is text[i], after its opening quote, and
-    the index after its closing quote."""
-    out = []
-    while i < len(text):
-        c = text[i]
-        if c == '"':
-            return "".join(out), i + 1
-        if c != "\\":
-            out.append(c)
-            i += 1
-            continue
-        escape, digits = text[i + 1:i + 2], text[i + 1:i + 4]
-        if escape in STRING_ESCAPES:
-            out.append(STRING_ESCAPES[escape])
-            i += 2
-        elif escape == "\n":
-            i += 2
-            while i < len(text) and text[i] in " \t":
-                i += 1
-        elif re.fullmatch(r"[0-9]{3}", digits) and int(digits) < 256:
-            out.append(chr(int(digits)))
-            i += 4
-        elif escape == "x" and re.fullmatch(r"[0-9A-Fa-f]{2}", text[i + 2:i + 4]):
-            out.append(chr(int(text[i + 2:i + 4], 16)))
-            i += 4
-        else:
-            raise ValueError(f"an escape that dune does not know: \\{escape}")
-    raise ValueError("a string with no end")
-
-
-def from_root(base, name):
-    """The path from the root of the repository of name, a path of a dune file from the directory base: "" for the
-    root itself, and None for a path outside the repository."""
-    if name.startswith("/"):
-        return None
-    path = posixpath.normpath(posixpath.join(base, name))
-    if path == ".":
-        return ""
-    return None if path == ".." or path.startswith("../") else path
-
-
-def from_build(base, name):
-    """The path of the source tree that name reaches when a program reads it in the directory base under
-    _build/<context>, where dune runs the programs of the rules of base, or None. A relative name that leaves the
-    repository from base (from_root gives None) by the two directories of _build/<context> reaches the source tree,
-    which the program then reads with no rule of dune in between: %{project_root}/../../include, from a stanza of the
-    root."""
-    path = from_root(posixpath.join("_build", "context", base), name)
-    return None if path is None or path.split("/")[0] == "_build" else path
-
-
-def expand(name, base):
-    """name, an atom or a quoted string of a dune file in the directory base, after dune's variables, and the argument
-    of each variable %{<name>:<argument>} (dep, read, exe and the others name a file so), or None when name is one
-    variable with no argument alone (%{target}, %{deps}), which names no file of its own. %{project_root} and
-    %{workspace_root} are the root, and any other variable in a longer name can be any text (a * of a glob)."""
-    arguments = []
-    up = "/".join([".."] * (base.count("/") + 1)) if base else "."
-
-    def value(m):
-        inner = m.group(1)
-        if inner in ("project_root", "workspace_root"):
-            return up
-        if ":" in inner:
-            arguments.append(inner.split(":", 1)[1])
-            return arguments[-1]
-        return "*"
-    alone = VARIABLE.fullmatch(name)
-    text = VARIABLE.sub(value, name)
-    if alone and text == "*":
-        return None, arguments
-    return text, arguments
-
-
-def braces_close(glob, i):
-    """Whether the { at glob[i] has a } that closes it."""
-    depth = 0
-    while i < len(glob):
-        if glob[i] == "\\":
-            i += 2
-            continue
-        depth += {"{": 1, "}": -1}.get(glob[i], 0)
-        if depth == 0:
-            return True
-        i += 1
-    return False
-
-
-def glob_pattern(glob):
-    """The regular expression of a dune glob from the root of the repository, wider than dune's, so that it misses no
-    path that dune's glob matches, nor one that glob_files_rec matches, which applies the glob in each directory below
-    its own: * and ? match any characters, / among them, a bracket expression matches any one character, {a,b} either
-    choice, and \\ makes the next character literal. A { or a [ with no pair is a character of the name."""
-    out, i, depth = [], 0, 0
-    while i < len(glob):
-        c = glob[i]
-        if c == "\\" and i + 1 < len(glob):
-            out.append(re.escape(glob[i + 1]))
-            i += 2
-            continue
-        if c == "[" and (end := glob.find("]", i + 2)) > 0:
-            out.append(".")
-            i = end + 1
-            continue
-        if c == "*":
-            out.append(".*")
-        elif c == "?":
-            out.append(".")
-        elif c == "{" and braces_close(glob, i):
-            out.append("(?:")
-            depth += 1
-        elif c == "," and depth:
-            out.append("|")
-        elif c == "}" and depth:
-            out.append(")")
-            depth -= 1
-        else:
-            out.append(re.escape(c))
-        i += 1
-    return re.compile("".join(out), re.S)
-
-
-def capital(name):
-    """A module name as dune compares it: with its first letter in upper case (foo.ml and Foo.ml are module Foo)."""
-    return name[:1].upper() + name[1:]
-
-
-def module_set(items, module, sure=False):
-    """Whether items, the elements of a modules field in dune's ordered set language, take the module named module
-    (capital): :standard takes every module of the directory, a name takes its module, a list takes what its elements
-    take, and a \\ takes out what the elements after it take. An element that this does not read (an (:include ...),
-    a variable, any other atom) can take any module, so that a file that dune may build counts: with sure, the
-    question is whether items surely take module, and such an element takes none. A level with more than one \\ is
-    read as the elements before its first \\, with nothing taken out."""
-    cuts = [i for i, e in enumerate(items) if e == "\\"]
-    if len(cuts) > 1:
-        return not sure and module_set(items[:cuts[0]], module)
-    if cuts:
-        left, right = items[:cuts[0]], items[cuts[0] + 1:]
-        return module_set(left, module, sure) and not module_set(right, module, not sure)
-    for e in items:
-        if isinstance(e, list):
-            took = not sure if e[:1] == [":include"] else module_set(e, module, sure)
-        elif e == ":standard":
-            took = True
-        else:
-            took = capital(e) == module if MODULE_NAME.fullmatch(e) else not sure
-        if took:
-            return True
-    return False
-
-
-class Overwork(Exception):
-    """The facts of a pull request took more than WORK steps (Work)."""
-
-
-class Work:
-    """The steps that the facts of one pull request took (done), up to WORK, which spend counts: past WORK, spend
-    raises Overwork. WORK is read when the count starts."""
-
-    def __init__(self):
-        self.done, self.bound = 0, WORK
-
-    def spend(self, steps=1):
-        self.done += steps
-        if self.done > self.bound:
-            raise Overwork(f"the facts took more than {self.bound} steps")
-
-
-def directories(path):
-    """The directories on the way to path, from the root of the repository: "" for the root, then each directory
-    below it ("", "a" and "a/b" for a/b/c)."""
-    found, at = [""], path.find("/")
-    while at >= 0:
-        found.append(path[:at])
-        at = path.find("/", at + 1)
-    return found
-
-
-def glob_directory(glob):
-    """The directory, with its /, that each path that glob_pattern(glob) matches starts with ("" for the root): the part
-    of glob before its first character of a glob or \\, up to its last /."""
-    m = re.search(r"[*?\[{\\]", glob)
-    literal = glob[:m.start()] if m else glob
-    return literal[:literal.rfind("/") + 1]
-
-
-class Names:
-    """The files that the dune files of the trees that proofs reads name, each from the root of the repository, with
-    the file that names it: files by their path, trees (each file below a directory: of a source_tree, of include_dirs,
-    of what an install stanza copies or a rule writes whole, or of a path that leaves _build) by their directory, and
-    globs (glob_pattern) by the directory that each path that they match starts with (glob_directory), so that of
-    checks a path against the trees and the globs of the directories on its way alone. The first name that a dune file
-    gave wins. And the stanzas that build modules or C files (stanza), by their directory, with the directories whose
-    dune file has include_subdirs (subdirs: its value, for each directory), and the flags that apply in other
-    directories than their own (later, which settle takes). work counts the steps (Work)."""
-
-    def __init__(self, work=None):
-        self.files, self.trees, self.globs, self.stanzas, self.subdirs = {}, {}, {}, {}, {}
-        self.later, self.seen, self.work, self.count = set(), set(), work or Work(), 0
-
-    def add(self, by, name, base, tree=False):
-        """Takes name, an atom or a quoted string of the file by, as the name of a file (of each file below a directory
-        for tree) from the directory base, with the argument of each of its variables (expand). A name that leaves the
-        repository from base but reaches the source tree from _build (from_build) names that path and each file below
-        it: the program that reads it can read any of them."""
-        self.work.spend()
-        text, arguments = expand(name, base)
-        for argument in arguments:
-            self.add(by, argument, base, tree)
-        if text is None:
-            return
-        path, kinds = from_root(base, text), [tree]
-        if path is None:
-            path, kinds = from_build(base, text), [False, True]
-        if path is None:
-            return
-        for below in kinds:
-            if not path and not below:
-                continue
-            self.count += 1
-            if GLOB.search(path):
-                glob = path + "/*" if below else path
-                globs = self.globs.setdefault(glob_directory(glob), {})
-                if glob not in globs:
-                    self.work.spend(GLOB_WORK)
-                    globs[glob] = (self.count, glob_pattern(glob), by)
-            elif below:
-                self.trees.setdefault(path, (self.count, by))
-            else:
-                self.files.setdefault(path, by)
-
-    def of(self, path):
-        """The file that names path, or None when no dune file names it."""
-        if path in self.files:
-            return self.files[path]
-        on_way = directories(path)
-        self.work.spend(len(on_way))
-        trees = [self.trees[d] for d in on_way if d in self.trees]
-        if trees:
-            return min(trees)[1]
-        found = None
-        for d in on_way:
-            for count, pattern, by in self.globs.get(d and d + "/", {}).values():
-                self.work.spend()
-                if (found is None or count < found[0]) and pattern.fullmatch(path):
-                    found = (count, by)
-        return found and found[1]
-
-    def stanza(self, by, node, here):
-        """Takes node, a stanza of MODULE_STANZAS or TOOL_STANZAS of the file by, for the directory here: the modules
-        that it builds (the elements of each of its modules fields, or None for every module of the directory), and
-        whether it compiles C files (a field of FOREIGN_FIELDS, or foreign_library)."""
-        fields = [f for f in node[1:] if isinstance(f, list) and f and isinstance(f[0], str)]
-        if node[0] in MODULE_STANZAS:
-            sets = [f[1:] for f in fields if f[0] == "modules"] or None
-            foreign = any(f[0] in FOREIGN_FIELDS for f in fields)
-        else:
-            sets, foreign = ([], True) if node[0] == "foreign_library" else (None, False)
-        key = (here, by, repr(sets), foreign)
-        if key not in self.seen:
-            self.seen.add(key)
-            self.count += 1
-            self.stanzas.setdefault(here, []).append((self.count, sets, foreign, by))
-
-    def built(self, path):
-        """The file whose stanza builds path, or None: path is a file of a module (MODULE_SOURCES) that a stanza of its
-        directory takes, or a C file (FOREIGN_SOURCES) of a directory whose stanza compiles C files. A stanza also
-        builds the files of each directory below its own when the dune file there has include_subdirs: by the name of
-        the module with unqualified, and every one with qualified or another value. A file whose name is no module
-        name counts for each stanza that can build it."""
-        directory, base = posixpath.split(path)
-        extension = posixpath.splitext(base)[1]
-        if extension not in MODULE_SOURCES and extension not in FOREIGN_SOURCES:
-            return None
-        module = capital(base.split(".", 1)[0])
-        found = sorted((count, here, sets, foreign, by) for here in directories(path)
-                       if here == directory or here in self.subdirs for count, sets, foreign, by in
-                       self.stanzas.get(here, ()))
-        for _count, here, sets, foreign, by in found:
-            self.work.spend(1 + sum(len(items) for items in sets or ()))
-            below = directory != here
-            if extension in FOREIGN_SOURCES:
-                if foreign:
-                    return by
-            elif (sets is None or (below and self.subdirs[here] != "unqualified") or not MODULE_NAME.fullmatch(module)
-                  or any(module_set(items, module) for items in sets)):
-                return by
-        return None
-
-    def settle(self):
-        """Takes each path of the flags of later (flag_paths) from each directory where they apply: the flags of a
-        profile of an env stanza from its own directory and from that of each stanza below it, and c_library_flags and
-        the flags of the env of a dune-workspace file from the directory of each stanza, which can link the library or
-        which the workspace builds. Each variable of ROOTS is read both from there and from the directory of the dune
-        file, as either can be the one that dune reads it from."""
-        homes = sorted(self.stanzas)
-        for at, words, by, anywhere in sorted(self.later):
-            for here in [at] + [h for h in homes if h != at and (anywhere or not at or h.startswith(at + "/"))]:
-                for word in [*words, *flag_paths(words)]:
-                    for text in dict.fromkeys((word, expand(word, at)[0] or word)):
-                        self.add(by, text, here)
-                        self.add(by, text, here, tree=True)
-
-
-def flag_paths(words):
-    """Each path that words, the words of a command line of a C compiler or of a linker in order, can name besides each
-    word itself: the path of a flag of PATH_FLAGS, joined to it or the next word, the value of a flag -<name>=<value>
-    but a macro's (MACROS), and each word that a flag of PASS_FLAGS passes on, with the paths that it names as a flag in
-    its turn (-Wl,-L../lib,-rpath,lib gives -L../lib, -rpath, lib and ../lib)."""
-    found, i = [], 0
-    while i < len(words):
-        word, after, passed = words[i], words[i + 1] if i + 1 < len(words) else None, None
-        flag = next((f for f in PATH_FLAGS if word.startswith(f)), None)
-        if word.startswith("-Wl,"):
-            passed = word[4:].split(",")
-        elif word in PASS_FLAGS and after is not None:
-            passed, i = after.split(), i + 1
-        elif flag is not None and word != flag:
-            found.append(word[len(flag):])
-        elif flag is not None and after is not None:
-            found.append(after)
-            i += 1
-        elif word.startswith("-") and "=" in word and not word.startswith(MACROS):
-            found.append(word.split("=", 1)[1])
-        if passed is not None:
-            found += passed + flag_paths(passed)
-        i += 1
-    return [path for path in found if path]
-
-
-def flag_names(names, by, words, bases):
-    """Adds to names, as named by the file by, each path of flag_paths(words) from each directory of bases, with each
-    file below it."""
-    for path in flag_paths(words):
-        for base in bases:
-            names.add(by, path, base)
-            names.add(by, path, base, tree=True)
-
-
-def c_flags(field):
-    """The words of field, a field of C_FLAGS or the flags of a foreign_stubs field or of a foreign_library, in order
-    (ordered). A ValueError for a field that the job cannot read for certain: an (:include ...), or a word that holds a
-    variable other than those of ROOTS but a macro's (MACROS), which can stand for any word or path."""
-    words = tuple(ordered(field[1:]))
-    for word in words:
-        if not word.startswith(MACROS) and "%{" in VARIABLE.sub(lambda m: "" if m.group(1) in ROOTS else "%{", word):
-            raise ValueError(f"a C field holds {word!r}, which the job cannot read for certain")
-    return words
-
-
-def c_path(name, here):
-    """The path from the root of the repository of name, an element of a C field of a stanza in the directory here
-    (c_inputs). A ValueError for an element that the job cannot read for certain: a list, such as (lib <name>) or
-    (:include <file>), a variable other than those of ROOTS, an absolute path, or a path outside the repository."""
-    if not isinstance(name, str) or "%{" in VARIABLE.sub(lambda m: "" if m.group(1) in ROOTS else "%{", name):
-        raise ValueError(f"a C field holds {name!r}, which the job cannot read for certain")
-    path = from_root(here, expand(name, here)[0])
-    if path is None:
-        raise ValueError(f"a C field names {name!r}, which is outside the repository")
-    return path
-
-
-def ordered(items):
-    """The names of items, the elements of a field in dune's ordered set language: each atom but :standard and \\, also
-    inside a list. A ValueError for an (:include <file>), whose names the job does not read."""
-    for e in items:
-        if isinstance(e, list):
-            if e[:1] == [":include"]:
-                raise ValueError("a C field holds an (:include ...)")
-            yield from ordered(e)
-        elif e not in (":standard", "\\"):
-            yield e
-
-
-def c_inputs(names, by, node, here):
-    """Adds to names, as named by the file by, the files that node, a stanza of MODULE_STANZAS or a foreign_library in
-    the directory here, reads beside its C files, each from here, as dune 3.23 reads them: each file below a directory
-    of include_dirs (of the stanza, or of one of its foreign_stubs fields), also outside here (../include), the object
-    x.o of (extra_objects x), the archives libx.a and dllx.so of (foreign_archives x), and the header x.h of
-    (install_c_headers x). Its flags of the C compiler and of the linker (C_FLAGS, and the flags of a foreign_stubs
-    field or of a foreign_library) name paths from here (dune_names, flag_paths), and the c_library_flags of a library
-    also from the directory of each stanza, which can link it (Names.settle). A ValueError for an element that the job
-    cannot read for certain (c_path, ordered, c_flags)."""
-    fields = [f for f in node[1:] if isinstance(f, list) and f and isinstance(f[0], str)]
-    stubs = [g for f in fields if f[0] == "foreign_stubs"
-             for g in f[1:] if isinstance(g, list) and g and isinstance(g[0], str)]
-    flags = [f for f in fields if f[0] in C_FLAGS or (f[0] == "flags" and node[0] == "foreign_library")]
-    for f in flags + [g for g in stubs if g[0] == "flags"]:
-        words = c_flags(f)
-        if f[0] == "c_library_flags":
-            names.later.add((here, words, by, True))
-    fields += [g for g in stubs if g[0] == "include_dirs"]
-    for f in fields:
-        if f[0] == "include_dirs":
-            for e in f[1:]:
-                names.add(by, c_path(e, here), "", tree=True)
-        elif f[0] in ("extra_objects", "install_c_headers"):
-            for e in ordered(f[1:]):
-                names.add(by, c_path(e, here) + (".o" if f[0] == "extra_objects" else ".h"), "")
-        elif f[0] == "foreign_archives":
-            for e in ordered(f[1:]):
-                directory, base = posixpath.split(c_path(e, here))
-                for archive in (f"lib{base}.a", f"dll{base}.so"):
-                    names.add(by, posixpath.join(directory, archive), "")
-
-
-def dune_names(names, by, node, here, bases, read, depth=0, shell=False):
-    """Adds to names each file that node, an S-expression of the file by (a dune file, or a file that one includes),
-    names: each atom and each quoted string, from the directory of its stanza (here) and from each directory of a
-    chdir around it (bases), each word of a string that a shell reads, and each path of a flag of a C compiler or of a
-    linker among the atoms of a list or the words of such a string, with each file below it (flag_names).
-    (subdir <dir> ...) moves here to <dir>, (source_tree <dir>), the source_trees and dirs of an install stanza and a
-    (dir <dir>) of targets name each file below <dir>, and (include <file>) names <file> and, from here, each file that
-    the stanzas of <file> name: read(path) gives the text of a file of the tree. A stanza that builds modules or C
-    files (MODULE_STANZAS, TOOL_STANZAS) goes to names.stanza, with the files that its C fields read (c_inputs), an
-    (include_subdirs <mode>) other than no to names.subdirs, and the C flags of a profile of an env stanza to
-    names.later, as they apply to each stanza below here (Names.settle). A ValueError for a subdir outside the
-    repository, for an include that the job cannot read or that is deeper than INCLUDES, and for a C field that it
-    cannot read for certain."""
-    names.work.spend()
-    if isinstance(node, str):
-        words = SHELL_WORD.findall(node) if shell else []
-        for word in [node] + words:
-            for base in bases:
-                names.add(by, word, base)
-        flag_names(names, by, words, bases)
-        return
-    head = node[0] if node and isinstance(node[0], str) else None
-    if head == "subdir" and len(node) > 1 and isinstance(node[1], str):
-        sub = from_root(here, node[1])
-        if sub is None:
-            raise ValueError(f"(subdir {node[1]}) is outside the repository")
-        for child in node[2:]:
-            dune_names(names, by, child, sub, [sub], read, depth)
-        return
-    if head == "include" and len(node) == 2 and isinstance(node[1], str):
-        path = from_root(here, node[1])
-        if not path or depth >= INCLUDES:
-            raise ValueError(f"(include {node[1]}) cannot be read")
-        names.add(by, node[1], here)
-        for stanza in dune_sexps(read(path)):
-            dune_names(names, path, stanza, here, [here], read, depth + 1)
-        return
-    if head in MODULE_STANZAS or head in TOOL_STANZAS:
-        names.stanza(by, node, here)
-        if head in MODULE_STANZAS or head == "foreign_library":
-            c_inputs(names, by, node, here)
-    elif head == "include_subdirs" and len(node) == 2 and isinstance(node[1], str) and node[1] != "no":
-        names.subdirs[here] = node[1]
-    elif head == "env":
-        # The C flags of a profile apply to each stanza below here (Names.settle).
-        for words in env_flags(node):
-            names.later.add((here, words, by, False))
-    if head == "source_tree" and len(node) == 2 and isinstance(node[1], str):
-        for base in bases:
-            names.add(by, node[1], base, tree=True)
-    # The directories that an install stanza copies whole, (source_trees docs) or (dirs (docs as doc)), and a
-    # directory that a rule writes, (targets (dir gen)): each file below them.
-    trees = [e for f in node[1:] if head == "install" and isinstance(f, list) and f[:1] in (["source_trees"], ["dirs"])
-             for e in f[1:]]
-    trees += [e[1] for e in node[1:] if head == "targets" and isinstance(e, list) and len(e) == 2 and e[0] == "dir"]
-    for e in trees:
-        for name in e if isinstance(e, list) else [e]:
-            if isinstance(name, str) and name != "as":
-                for base in bases:
-                    names.add(by, name, base, tree=True)
-    if head == "chdir" and len(node) > 2 and isinstance(node[1], str):
-        moved = [d for base in bases for text in [expand(node[1], base)[0]] if text is not None
-                 for d in (from_root(base, text), from_build(base, text)) if d is not None]
-        bases = bases + moved
-    shell = shell or head in SHELL_ACTIONS or (head == "run" and len(node) > 2 and isinstance(node[1], str)
-                                               and posixpath.basename(node[1]) in SHELLS)
-    # A flag of a C compiler or of a linker with its path, in any list: (flags -I../../../inc), (run gcc -I ../inc).
-    flag_names(names, by, [e for e in node if isinstance(e, str)], bases)
-    for child in node:
-        dune_names(names, by, child, here, bases, read, depth, shell)
-
-
-def env_flags(node):
-    """The words of each field of C_FLAGS of each profile of node, an env stanza, (env (_ (c_flags ...)) (dev ...)), in
-    order (c_flags). A ValueError for a field that the job cannot read for certain."""
-    return [c_flags(f) for profile in node[1:] if isinstance(profile, list) for f in profile[1:]
-            if isinstance(f, list) and f and isinstance(f[0], str) and f[0] in C_FLAGS]
-
-
-def workspace_flags(names, by, node, here):
-    """Adds to names.later the C flags of each env of node, an S-expression of the dune-workspace file by in the
-    directory here, at its top, (env ...), or in a context, (context (default (env ...))): they apply to each stanza of
-    the tree (Names.settle). A ValueError for a field that the job cannot read for certain (c_flags)."""
-    if not isinstance(node, list):
-        return
-    names.work.spend()
-    if node[:1] == ["env"]:
-        for words in env_flags(node):
-            names.later.add((here, words, by, True))
-    for child in node:
-        workspace_flags(names, by, child, here)
-
-
 def git(*args, cwd=None, input=None):
     """The standard output of git with args, as bytes, with input (bytes) on its standard input."""
     return subprocess.run(["git", *args], cwd=cwd, input=input, capture_output=True, check=True).stdout
@@ -1645,17 +1047,6 @@ def tree_of(commit, cwd=None):
             mode, _kind, oid = meta.decode("ascii").split(" ")
             tree[path.decode("utf-8", "surrogateescape")] = (mode, oid)
     return tree
-
-
-def blob_sizes(oids, cwd=None):
-    """{object: size} of each object of oids that git holds: one git cat-file --batch-check."""
-    oids = sorted(set(oids))
-    if not oids:
-        return {}
-    out = git("cat-file", "--batch-check=%(objectname) %(objectsize)", cwd=cwd,
-              input="".join(oid + "\n" for oid in oids).encode()).decode("ascii")
-    return {parts[0]: int(parts[1]) for parts in map(str.split, out.splitlines())
-            if len(parts) == 2 and parts[1].isdigit()}
 
 
 def blob_data(oids, cwd=None):
@@ -1676,310 +1067,116 @@ def blob_data(oids, cwd=None):
     return found
 
 
-def link_texts(tree, cwd=None):
-    """{path: target} of each link of tree (tree_of), its target decoded as tree_of decodes paths, or None for a target
-    that git does not hold in at most LINK_BYTES bytes: one git cat-file --batch-check for the sizes, and one --batch
-    for the targets."""
-    links = sorted(p for p, (mode, _oid) in tree.items() if mode == LINK)
-    sizes = blob_sizes([tree[p][1] for p in links], cwd)
-    data = blob_data([oid for oid, size in sizes.items() if size <= LINK_BYTES], cwd)
-    return {p: data[tree[p][1]].decode("utf-8", "surrogateescape") if tree[p][1] in data else None for p in links}
+def dune_file(path):
+    """Whether path is a file whose text the soundness rule reads for the changed Markdown files (dune_marks): dune,
+    dune-project, or a file whose name starts with dune-workspace, in any directory."""
+    base = posixpath.basename(path)
+    return base in ("dune", "dune-project") or base.startswith("dune-workspace")
 
 
-class Unfollowed(ValueError):
-    """A link on the way of a path that the system cannot follow in the tree, with why, a key of UNFOLLOWED."""
-
-    def __init__(self, why, text):
-        super().__init__(text)
-        self.why = why
-
-
-def resolved(path, texts, last=True):
-    """(real, followed): the path of the tree that path, a path from the root of the repository, is when each link on
-    its way is followed as the system follows it (the link of its last part only with last), and the links that it
-    followed, in order. texts holds the target of each link of the tree (link_texts). Unfollowed when the way leaves
-    the tree (an absolute target among them: out), meets a link whose target the job did not read (unread), or follows
-    more than LINK_HOPS links (hops), as a loop of links does."""
-    done, todo, followed = [], path.split("/")[::-1], []
-    while todo:
-        part = todo.pop()
-        if part in ("", "."):
-            continue
-        if part == "..":
-            if not done:
-                raise Unfollowed("out", f"{path} leaves the tree")
-            done.pop()
-            continue
-        here = "/".join(done + [part])
-        if here in texts and (todo or last):
-            text = texts[here]
-            if text is None:
-                raise Unfollowed("unread", f"the job did not read the target of the link {here}")
-            if text.startswith("/"):
-                raise Unfollowed("out", f"the link {here} points to no path of the tree")
-            if len(followed) == LINK_HOPS:
-                raise Unfollowed("hops", f"{path} follows more than {LINK_HOPS} links")
-            followed.append(here)
-            todo += text.split("/")[::-1]
-            continue
-        done.append(part)
-    return "/".join(done), followed
+def trigger(text):
+    """The first part of text, the text of a dune file, that makes each changed Markdown file count wherever it is, or
+    None: a word of KEYWORDS in text split at SPLIT after its lines of COMMENT_LINE go; a glob field and its pattern,
+    when the part of the pattern after its last . is not a fixed extension (EXTENSION) other than md, in any case; or a
+    word or a quoted string (WORD) that holds .md and also one of ROOTS, or that starts with /, each word of a comment
+    as a word of its own."""
+    word = next((w for w in SPLIT.split(COMMENT_LINE.sub("", text)) if w in KEYWORDS), None)
+    if word:
+        return word
+    for m in GLOB_FIELD.finditer(text):
+        w = WORD.match(text, BLANKS.match(text, m.end()).end())
+        pattern = w.group() if w and not w.group().startswith(";") else ""
+        if pattern.startswith('"'):
+            pattern = pattern[1:-1] if len(pattern) > 1 and pattern.endswith('"') else pattern[1:]
+        extension = pattern.rpartition(".")[2] if "." in pattern else ""
+        if not EXTENSION.fullmatch(extension) or extension.lower() == "md":
+            return f"{m.group()} {w.group() if w else ''}".rstrip()
+    for w in WORD.finditer(text):
+        for word in ATOM.findall(w.group()) if w.group().startswith(";") else [w.group()]:
+            if ".md" in word and (any(root in word for root in ROOTS) or word.lstrip('"').startswith("/")):
+                return word
+    return None
 
 
-class View:
-    """dune's view of a tree of git (tree_of) whose links point where texts says (link_texts), with work (Work). dune
-    follows a link to a directory: with t/ext a link to ../vendor, it reads vendor/x.hex as t/ext/x.hex, and vendor/dune
-    as t/ext/dune, whose names go from t/ext. It stops at a loop ("Path ... has already been scanned"): a link to a
-    directory on its own way.
-
-    paths: {path: real} of each file of the view, with real the path of the tree that it is (a file, or a link to no
-    directory); aliases: {real: [(path, link)]} of each path of the view other than real itself, a link to a directory
-    among them, with the first link to a directory on its way; below: {link: [path]} of each path of the view on whose
-    way the system follows the link; links: each link that dune can follow; under: {path: [link]} of each link of links
-    that is path or below it; bad: {link: why} (a key of UNFOLLOWED) of each link whose way leaves the tree, meets a
-    target that the job did not read, or follows more than LINK_HOPS links (resolved), of each link to a directory on
-    its own way (loop), and of each link to a directory that would take the view over VIEW_PATHS paths more than the
-    tree has (many)."""
-
-    def __init__(self, tree, texts, work):
-        self.texts, self.paths, self.aliases, self.below, self.bad, self.under = texts, {}, {}, {}, {}, {}
-        children, size = {}, {}
-        for path in tree:
-            work.spend()
-            on_way = directories(path)
-            for directory, name in zip(on_way, path.split("/")):
-                children.setdefault(directory, set()).add(name)
-                size[directory] = size.get(directory, 0) + 1
-        children = {directory: sorted(names) for directory, names in children.items()}
-        added, stack = 0, [("", "", (), frozenset([""]))] if tree else []
-        while stack:
-            virtual, real, way, seen = stack.pop()
-            for name in children[real]:
-                work.spend()
-                at, entry = posixpath.join(virtual, name), posixpath.join(real, name)
-                if entry in children:
-                    stack.append((at, entry, way, seen | {entry}))
-                    continue
-                to, followed = entry, []
-                if entry in texts:
-                    try:
-                        to, followed = resolved(entry, texts)
-                    except Unfollowed as e:   # to stays entry, a link and no directory
-                        self.bad.setdefault(entry, e.why)
-                if way:
-                    self.aliases.setdefault(entry, []).append((at, way[0]))
-                if to in children:
-                    added += 0 if to in seen else size[to]
-                    if to in seen or added > VIEW_PATHS:
-                        self.bad.setdefault(entry, "loop" if to in seen else "many")
-                    else:
-                        stack.append((at, to, way + tuple(followed), seen | {to}))
-                    continue
-                self.paths[at] = entry
-                for link in set(way):
-                    self.below.setdefault(link, []).append(at)
-        self.links = [link for link in sorted(texts) if link not in self.bad]
-        for link in self.links:
-            for directory in directories(link) + [link]:
-                self.under.setdefault(directory, []).append(link)
-
-
-def merged(main, main_texts, head, head_texts, paths):
-    """(tree, texts) of the merge of head into main, as git makes it when the two do not conflict: main's tree
-    (tree_of) with each path of paths, the changed paths of the pull request, as head has it, and with none where head
-    has none. A path of head takes the place of main's file at a directory on its way, and of main's files below it.
-    texts holds the target of each link of the merge (link_texts), from the tree that it comes from."""
-    taken = {p for p in paths if p in head}
-    tree = {p: entry for p, entry in main.items() if p not in paths}
-    tree.update((p, head[p]) for p in taken)
-    for path in list(tree):
-        for directory in directories(path)[1:]:
-            if path in tree and directory in tree:
-                del tree[directory if path in taken else path]
-    return tree, {p: (head_texts if p in taken else main_texts)[p] for p, (mode, _oid) in tree.items() if mode == LINK}
-
-
-def views_of(head, main, paths, cwd, work):
-    """(tree, views, names, unparsed, unfollowed) of proofs: the tree of head (tree_of), dune's view (View) of it, of
-    main and of the merge of head into main (merged), each tree once, the names of their dune files (dune_names,
-    Names.settle) and the C flags of their dune-workspace files (workspace_flags), the dune and dune-workspace files
-    that the job could not read, and {link: why} of each link that a view does not follow (View.bad), with work
-    (Work). Each of these files is read and parsed once, with those of its view in one call of git."""
-    tree = tree_of(head, cwd)
-    trees = [(head, tree, link_texts(tree, cwd))]
-    if main:
-        tree = tree_of(main, cwd)
-        trees.append((main, tree, link_texts(tree, cwd)))
-        trees.append(("the merge", *merged(tree, trees[1][2], trees[0][1], trees[0][2], paths)))
-    names, unparsed, unfollowed, views = Names(work), set(), {}, []
-    contents, unread, parsed, walked = {}, {}, {}, {}
-
-    def fetch(oids):
-        new = sorted({oid for oid in oids if oid not in contents and oid not in unread})
-        if not new:
-            return
-        work.spend(GIT_WORK)
-        sizes = blob_sizes(new, cwd)
-        small = [oid for oid in new if sizes.get(oid, DUNE_BYTES + 1) <= DUNE_BYTES]
-        work.spend(GIT_WORK + sum(sizes[oid] for oid in small))
-        data = blob_data(small, cwd)
-        for oid in new:
-            try:
-                contents[oid] = data[oid].decode("utf-8")
-            except KeyError:
-                unread[oid] = f"holds over {DUNE_BYTES} bytes"
-            except UnicodeDecodeError:
-                unread[oid] = "is not UTF-8 text"
-
-    for i, (name, tree, links) in enumerate(trees):
-        work.spend(len(tree))
-        if any(tree == other and links == known for _name, other, known in trees[:i]):
-            continue
-        view = View(tree, links, work)
-
-        def read(path, name=name, tree=tree):
-            mode, oid = tree.get(path, ("", ""))
-            if mode not in REGULAR:
-                raise ValueError(f"{path} has the mode {mode or 'of no file'} in {name}")
-            fetch([oid])
-            if oid in unread:
-                raise ValueError(f"{path} {unread[oid]}")
-            return contents[oid]
-        dunes = sorted((path, real) for path, real in view.paths.items()
-                       if posixpath.basename(path) in ("dune", "dune-workspace"))
-        fetch([tree[real][1] for _path, real in dunes if tree[real][0] in REGULAR])
-        for path, real in dunes:
-            # A dune file at a path names the same files in each tree that holds it, unless it includes a file, which
-            # another tree can hold in another form.
-            key, included = (path, tree[real]), []
-            if key in walked:
-                if walked[key]:
-                    unparsed.add(path)
+def dune_marks(trees, cwd=None):
+    """(near, anywhere, unread), from the dune files (dune_file) of trees (tree_of): near: {directory: (path, why,
+    what)} of the first dune file by path in each directory that makes each changed Markdown file in that directory
+    and below it count, named with what .md when its text holds .md in one of the trees, else unread when the job
+    could not read it in one of them (a link or a submodule in the place of a file, or an object that git does not
+    hold). anywhere: (path, why, what) of the first dune file by path that makes each changed Markdown file count
+    wherever it is, unread when the job could not read it, else named with what the first text that trigger gives in
+    one of the trees, or None. unread: the paths of the dune files that the job could not read, in order. One git
+    cat-file --batch reads them all."""
+    objects, unread = {}, set()
+    for tree in trees:
+        for path, (mode, oid) in tree.items():
+            if not dune_file(path):
                 continue
-
-            def include(p, read=read, view=view, included=included):
-                included.append(p)
-                return read(view.paths.get(p, p))
-            here = posixpath.dirname(path)
-            try:
-                if tree[real] not in parsed:
-                    try:
-                        parsed[tree[real]] = dune_sexps(read(real))
-                    except ValueError as e:
-                        parsed[tree[real]] = e
-                if isinstance(parsed[tree[real]], ValueError):
-                    raise parsed[tree[real]]
-                for stanza in parsed[tree[real]]:
-                    if posixpath.basename(path) == "dune":
-                        dune_names(names, path, stanza, here, [here], include)
-                    else:
-                        workspace_flags(names, path, stanza, here)
-                failed = False
-            except (ValueError, RecursionError):   # a chain of includes can nest deeper than Python reads
-                unparsed.add(path)
-                failed = True
-            if not included:
-                walked[key] = failed
-        for link, why in sorted(view.bad.items()):
-            unfollowed.setdefault(link, why)
-        views.append(view)
-    names.settle()
-    return trees[0][1], views, names, unparsed, unfollowed
+            if mode in REGULAR:
+                objects.setdefault(path, set()).add(oid)
+            else:
+                unread.add(path)
+    data = blob_data({oid for oids in objects.values() for oid in oids}, cwd)
+    unread.update(path for path, oids in objects.items() if any(oid not in data for oid in oids))
+    near, anywhere = {}, None
+    for path in sorted(set(objects) | unread):
+        if path in unread:
+            mark = found = (path, "unread", None)
+        else:
+            texts = [data[oid].decode("utf-8", "replace") for oid in sorted(objects[path])]
+            mark = (path, "named", ".md") if any(".md" in text for text in texts) else None
+            found = next(((path, "named", what) for what in map(trigger, texts) if what), None)
+        if mark:
+            near.setdefault(posixpath.dirname(path), mark)
+        anywhere = anywhere or found
+    return near, anywhere, sorted(unread)
 
 
 def proofs(head, files, count, cwd=None, main=None):
     """The facts of the soundness rule at the commit head of a pull request, as soundness.json holds them: {whole,
-    files, unparsed, unfollowed, stopped}. files are the files of the pull request at head as the API lists them on
-    every page of pulls/<n>/files, and count its changed_files, None when a read did not finish or read another head.
-    whole: the list holds each changed file. files: each changed path (of a file, and the path that it had before a
-    rename) that can change a proof, {path, why, by, at_head}: why is proof for a .v file, build for a file of BUILD or
-    an opam file (OPAM), named for a file that the dune file by names (dune_names), module for a file of a module or a
-    C file that a stanza of the dune file by builds (Names.built), target for a file that the build reads through the
-    link by (the file that a link that counts points to, or a file that counts at a path through by, a link to its
-    directory), and link for a link to a directory through which the build reads the path by; at_head says whether
-    head has the path. The dune files and the paths that they name are those of dune's view of each tree (View), which
-    follows each link to a directory. unparsed: each dune file and dune-workspace file that the job could not read (not
-    a regular file, over DUNE_BYTES, not UTF-8, not read by dune_sexps, or a C field that it cannot read for certain),
-    with the C flags of the env of a dune-workspace file among them (workspace_flags). unfollowed: each link that dune
-    cannot follow in the tree, {path, why} (View.bad). The dune files and the links come from git objects of head and of
-    main, the commit of main that the pull request merges into, in the repository of cwd: a head from an older main
-    still counts each file that the dune files of main name, and the merge, which builds with the links of main and the
-    files of head, is a tree of its own (merged). The work is linear in the paths, the links and the names (Names,
-    View.under), and stops past WORK (Work): then stopped is true, and the facts hold no file and a list that is not
-    whole."""
+    files, unparsed}. files are the files of the pull request at head as the API lists them on every page of
+    pulls/<n>/files, and count its changed_files, None when a read did not finish or read another head. whole: the
+    list holds each changed file. files: each changed path (of a file, and the path that it had before a rename) that
+    counts, {path, why, by, what, at_head}, in order: why is proof for a .v file, other for any other path that is not
+    a Markdown file (markdown), and for a Markdown file the why of by, the dune file that makes it count (dune_marks):
+    the nearest one in its directory or in a directory above it, else the one that makes each Markdown file count.
+    what is the text of by that made it count (None for unread and for a path that is not a Markdown file). at_head
+    says whether head has the path. unparsed: each dune file that the job could not read. The dune files are those of
+    the trees of head and of main, the commit of main that the pull request merges into, from git objects in the
+    repository of cwd, read only when a changed path is a Markdown file."""
     paths = set()
     for f in files:
         try:
             paths.update(changed_paths([f]))
         except ValueError:
             count = None
-    work = Work()
-    try:
-        head_tree, views, names, unparsed, unfollowed = views_of(head, main, paths, cwd, work)
+    tree = tree_of(head, cwd)
+    near, anywhere, unparsed = {}, None, []
+    if any(markdown(p) for p in paths):
+        near, anywhere, unparsed = dune_marks([tree] + ([tree_of(main, cwd)] if main else []), cwd)
 
-        def reasons(path):
-            base = posixpath.basename(path)
-            if path.endswith(".v"):
-                return "proof", None
-            if base in BUILD or base.endswith(OPAM):
-                return "build", None
-            by = names.of(path)
-            if by:
-                return "named", by
-            by = names.built(path)
-            return ("module", by) if by else (None, None)
-        targets, linked = {}, {}
-
-        def counts(path):
-            why, by = reasons(path)
-            if why:
-                return why, by
-            for view in views:
-                for at, link in sorted(view.aliases.get(path, ())):
-                    if reasons(at)[0]:
-                        return "target", link
-            to = min((targets[d] for d in directories(path) + [path] if d in targets), default=None)
-            if to is not None:
-                return "target", to[1]
-            for view in views:
-                for at in sorted(view.below.get(path, ())):
-                    if reasons(at)[0]:
-                        return "link", at
-            return ("link", linked[path]) if path in linked else (None, None)
-        # The build reads a file through a link to it: so the file that a link that counts points to counts too (a
-        # link in the place of a dune file among them), with each file below it when it is a directory, and so does
-        # each link to a directory on the way there. A link that this makes count counts in its turn. A link that counts
-        # only as the way to a file (link) makes nothing else count. Each tree's links are read in that tree.
-        todo = [(i, link) for i, view in enumerate(views) for link in view.links
-                if counts(link)[0] not in (None, "link")]
-        done = set()
-        for i, link in todo:
-            if (i, link) in done:
-                continue
-            done.add((i, link))
-            work.spend()
-            texts = views[i].texts
-            to, followed = resolved(posixpath.join(posixpath.dirname(link), texts[link]), texts, last=False)
-            for way in followed:
-                linked.setdefault(way, link)
-            if to not in targets:
-                targets[to] = (len(targets), link)
-                todo += [(j, l) for j, view in enumerate(views) for l in view.under.get(to, ())]
-        found = [{"path": p, "why": why, "by": by, "at_head": p in head_tree}
-                 for p in sorted(paths) for why, by in [counts(p)] if why]
-    except Overwork:
-        return {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": True}
-    return {"whole": count is not None and count == len(files), "files": found, "unparsed": sorted(unparsed),
-            "unfollowed": [{"path": p, "why": why} for p, why in sorted(unfollowed.items())], "stopped": False}
+    def counts(path):
+        if not markdown(path):
+            return ("proof" if path.endswith(".v") else "other"), None, None
+        directory = path
+        while directory:
+            directory = posixpath.dirname(directory)
+            if directory in near:
+                by, why, what = near[directory]
+                return why, by, what
+        by, why, what = anywhere or (None, None, None)
+        return why, by, what
+    found = [{"path": p, "why": why, "by": by, "what": what, "at_head": p in tree}
+             for p in sorted(paths) for why, by, what in [counts(p)] if why]
+    return {"whole": count is not None and count == len(files), "files": found, "unparsed": unparsed}
 
 
 def facts_of(review):
     """The facts of soundness.json in review, a .review/ (proofs), or None for an issue's, which has none. A pull
     request's .review/ (it holds commits.txt) with no such file, or with one in another form, gives a list that is not
-    whole. A file with no unfollowed or stopped, as the gather job wrote it before them, has no such link and did not
-    stop."""
+    whole."""
     path = os.path.join(review, SOUNDNESS_FILE)
-    unread = {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": False}
+    unread = {"whole": False, "files": [], "unparsed": []}
     if not os.path.exists(path):
         return unread if os.path.exists(os.path.join(review, "commits.txt")) else None
     try:
@@ -1987,17 +1184,12 @@ def facts_of(review):
             facts = json.load(f)
     except ValueError:
         return unread
-    if isinstance(facts, dict):
-        facts = dict({"unfollowed": [], "stopped": False}, **facts)
     if not (isinstance(facts, dict) and isinstance(facts.get("whole"), bool)
             and isinstance(facts.get("files"), list) and isinstance(facts.get("unparsed"), list)
             and all(isinstance(f, dict) and isinstance(f.get("path"), str) and f.get("why") in WHYS
+                    and isinstance(f.get("by") or "", str) and isinstance(f.get("what") or "", str)
                     for f in facts["files"])
-            and all(isinstance(p, str) for p in facts["unparsed"])
-            and isinstance(facts["unfollowed"], list)
-            and all(isinstance(f, dict) and isinstance(f.get("path"), str) and f.get("why") in tuple(UNFOLLOWED)
-                    for f in facts["unfollowed"])
-            and isinstance(facts["stopped"], bool)):
+            and all(isinstance(p, str) for p in facts["unparsed"])):
         return unread
     return facts
 
@@ -2047,17 +1239,15 @@ def code(text):
 
 def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
     """The fixed section on soundness: first that Sami answers whether the proofs are sound, then why the rule holds,
-    from scope (soundness; None for a change of a .v file and nothing else), and the facts for Sami: the changed files
-    of the build, the files of the build that the job could not read, the links that dune cannot follow in the tree,
-    with why (UNFOLLOWED), the lines that found holds (uses), and the changed .v files at the head that the search did
-    not read whole. Its lists hold at most listed lines in at most characters characters in all, and a list that holds
-    fewer than it has ends with a line that says how many more there are."""
+    from scope (soundness; None for a change of a .v file and nothing else), and the facts for Sami: the rule with the
+    changed files other than .v files that it counts, the dune files that the job could not read, the lines that found
+    holds (uses), and the changed .v files at the head that the search did not read whole. Its lists hold at most
+    listed lines in at most characters characters in all, and a list that holds fewer than it has ends with a line that
+    says how many more there are."""
     scope = scope or {"v": True, "others": [], "whole": True, "unparsed": [], "unread": []}
     issues = ", ".join(code(i) for i in ISSUES[:-1]) + f" and {code(ISSUES[-1])}"
     if scope["v"]:
         why = "This pull request adds, changes or deletes a `.v` file, which holds Rocq proofs."
-    elif scope["others"]:
-        why = "This pull request changes a file that the build of the Rocq proofs reads or writes."
     else:
         why = "The workflow cannot show that this pull request changes no Rocq proof."
     parts = [f"**Soundness of the proofs.** Sami answers whether the proofs are sound. You do not need to do anything "
@@ -2080,28 +1270,35 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
 
     def files(n):
         return f"- {n} more {'file' if n == 1 else 'files'}. The summary of the workflow run lists all files."
-
-    def links(n):
-        return f"- {n} more {'link' if n == 1 else 'links'}. The summary of the workflow run lists all links."
     if scope["others"]:
-        lines = [f"- {code(path)}" + (f": {code(by)} names it." if kind == "named" else
-                                      f": {code(by)} builds it." if kind == "module" else
-                                      f": the build reads it through the link {code(by)}." if kind == "target" else
-                                      f": the build reads {code(by)} through this link." if kind == "link" else "")
-                 for path, kind, by in scope["others"]]
-        parts.append("The build of the proofs reads or writes these changed files:\n\n" + listing(lines, files))
-    if scope.get("stopped"):
-        parts.append("The workflow stopped its check of the changed files at its limit of work, so it did not check "
-                     "each of them.")
-    elif not scope["whole"]:
+        lines = [f"- {code(path)}" + (f": {code(by)} holds {code(what or '.md')}." if kind == "named" else
+                                      f": the workflow could not read {code(by)}." if kind == "unread" else "")
+                 for path, kind, by, what in scope["others"]]
+        parts.append("The workflow does not examine which files the build of the proofs reads. So it counts each "
+                     "changed file that is not a Markdown file (`.md`) as a change of the proofs. It also counts each "
+                     "changed Markdown file in these cases. Here a `dune` file is a `dune`, `dune-project` or "
+                     "`dune-workspace*` file of the head or of `main`.\n\n"
+                     "- A `dune` file in the directory of the Markdown file, or in a directory above it, holds the "
+                     "text `.md`.\n"
+                     "- A `dune` file anywhere holds one of the words `include`, `:include`, `source_tree`, "
+                     "`copy_files` or `copy_files#`. A word ends at white space or at a parenthesis, so "
+                     "`include_subdirs` does not count. A word on a comment line, whose first character other than a "
+                     "space or a tab is `;`, does not count. A word after code on the same line counts.\n"
+                     "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a pattern "
+                     "whose part after the last `.` is not one fixed extension other than `md`. A fixed extension has "
+                     "only letters, digits and `_`. So `*.vo` does not count, but `*.md`, `*.{v,md}`, `*.[ch]` and `*` "
+                     "count.\n"
+                     "- A `dune` file anywhere holds a word or a quoted string with `.md` in it that also holds `..`, "
+                     "`%{project_root}` or `%{workspace_root}`, or that starts with `/`, also in a comment. For "
+                     "example: `%{dep:../docs/x.md}`.\n"
+                     "- The workflow cannot read a `dune` file anywhere.\n\n"
+                     "These changed files that are not `.v` files count:\n\n" + listing(lines, files))
+    if not scope["whole"]:
         parts.append("GitHub did not give the full list of the files that this pull request changes, so the workflow "
                      "could not check each of them.")
     if scope["unparsed"]:
-        parts.append("The workflow could not read these files of the build:\n\n"
+        parts.append("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
                      + listing([f"- {code(path)}" for path in scope["unparsed"]], files))
-    if scope.get("unfollowed"):
-        parts.append("The workflow cannot tell which files the build reads through these links:\n\n"
-                     + listing([f"- {code(path)}: {UNFOLLOWED[why]}" for path, why in scope["unfollowed"]], links))
     if scope["v"]:
         what = "the VM, the native compiler, a cast with no check or a primitive array"
         searched = "The workflow searched the text of the `.v` files that this pull request adds or changes."
@@ -2135,17 +1332,15 @@ def forced(output):
 def soundness(review, output, hold, outside):
     """(output, section, all): the review's output after the soundness rule, the section of the comment, and the
     section with every line for the run's summary. The rule holds while hold is true, for an outside pull request
-    (outside is not false) that changes a path that the facts of review count (facts_of) or a .v file under head/,
-    whose list of changed paths is not whole, or for which a file of the build could not be read or a link could not be
-    followed. When it does not hold: output as it is, and no section."""
+    (outside is not false) that changes a path that the facts of review count (facts_of) or a .v file under head/, or
+    whose list of changed paths is not whole. When it does not hold: output as it is, and no section."""
     if hold != "true" or outside == "false":
         return output, "", ""
-    facts = facts_of(review) or {"whole": True, "files": [], "unparsed": [], "unfollowed": [], "stopped": False}
+    facts = facts_of(review) or {"whole": True, "files": [], "unparsed": []}
     read = set(head_proofs(review))
     changed = [f for f in facts["files"] if f["why"] == "proof"]
-    others = [(f["path"], f["why"], f.get("by")) for f in facts["files"] if f["why"] != "proof"]
-    if not (read or changed or others or not facts["whole"] or facts["stopped"] or facts["unparsed"]
-            or facts["unfollowed"]):
+    others = [(f["path"], f["why"], f.get("by"), f.get("what")) for f in facts["files"] if f["why"] != "proof"]
+    if not (read or facts["files"] or not facts["whole"]):
         return output, "", ""
     # The .v files at the head that the search did not read whole: the gather job cut them, removed them with a
     # directory of Claude Code's instructions, or found a link or a submodule in their place.
@@ -2153,7 +1348,6 @@ def soundness(review, output, hold, outside):
     at_head = read | {f["path"] for f in changed if f.get("at_head")}
     unread = [(path, "cut" if path in cut else "unread") for path in sorted(at_head) if path in cut or path not in read]
     scope = {"v": bool(read or changed), "others": others, "whole": facts["whole"], "unparsed": facts["unparsed"],
-             "unfollowed": [(f["path"], f["why"]) for f in facts["unfollowed"]], "stopped": facts["stopped"],
              "unread": unread}
     found = uses(review)
     return forced(output), section(found, scope=scope), section(found, sys.maxsize, sys.maxsize, scope)

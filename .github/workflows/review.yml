@@ -155,10 +155,13 @@
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
-#           to the review of an outside pull request that changes a .v file, a dune, dune-project, dune-workspace or
-#           opam file, a file that a dune file of the head or of main names, or a file of an OCaml module that a dune
-#           stanza builds (the gather job reads the changed paths and the dune files itself), and adds the section on
-#           soundness after the shortened review (.github/review/rules.py soundness). For an
+#           to the review of an outside pull request that changes a file that is not a Markdown file (.md), or a
+#           Markdown file that a dune, dune-project or dune-workspace* file of the head or of main makes count: one in
+#           its directory or above it that holds .md, or one anywhere that holds a word such as include or source_tree,
+#           a glob whose pattern does not end with one fixed extension other than md, or a word with .md and also ..,
+#           %{project_root}, %{workspace_root} or a leading /, or that the job cannot read (the gather job reads the
+#           changed paths and those files itself), and adds the section on soundness after the shortened review
+#           (.github/review/rules.py soundness). For an
 #           answer, Claude answers the comments of the author that wait (.github/review-answer.md, "An answer"), and
 #           the fresh reader shortens the answer. For a blocking finding of an outside pull request, or an answer that
 #           asks for it, Claude then writes the fix as suggested changes on the lines of the diff
@@ -372,9 +375,9 @@ env:
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
   # in theorem-labs/rocq-linux-process-semantics-internal, run stock Rocq, as this repository's CI lanes do. While this
-  # is "true", code gives the review of an outside pull request that can change a proof (a .v file, a dune,
-  # dune-project, dune-workspace or opam file, a file that a dune file of the head or of main names, or a file of an
-  # OCaml module that a dune stanza builds, wherever it is) the verdict person and a section on soundness, whatever the
+  # is "true", code gives the review of an outside pull request that can change a proof (any changed file that is
+  # not a Markdown file, or a Markdown file that a dune, dune-project or dune-workspace* file of the head or of main
+  # makes count, as .github/review.md says) the verdict person and a section on soundness, whatever the
   # model wrote (.github/review/rules.py soundness). The hold lasts
   # until those checks run a Rocq with the fixes for the three issues: only then set another value. Another value also
   # ends R12's Markdown-only rule: while the hold lasts, the post job records the import's check run only for a pull
@@ -2683,20 +2686,17 @@ jobs:
             # every page of the files of the pull request (gh pr view gives at most 100), each file's path and the path
             # that it had before a rename, read after a check of the head and before a second check of it. A list that
             # a read did not finish, of another head, or shorter than changed_files (GitHub lists at most 3,000 files)
-            # is not whole, and the rule counts it as a change of a proof. rules.py proofs reads the dune files and the
-            # links of the head and of main from git objects, and dune's view of three trees: the head, main and their
-            # merge (main's tree with the changed paths as the head has them), since the merge builds with the dune
-            # files and the links of main where the head leaves them as they were. It writes soundness.json: each
-            # changed path that can change a proof, with why (a .v file, a dune, dune-project, dune-workspace, opam or
-            # *.opam file, a file that a dune file names or reads, also a header, object or archive of a C stub, a path
-            # that a flag of the C compiler or of the linker names, joined to it or apart, in a stanza, an env stanza
-            # or the env of a dune-workspace file, a file below a directory that a stanza installs, a file of an OCaml
-            # module or a C file that a dune stanza builds, a link that a dune file reads through, and the file or the
-            # files below the directory that such a link points to), whether the list is whole, each dune or
-            # dune-workspace file that it could not read (unparsed), each link that dune cannot follow in one of the
-            # trees, with its reason (unfollowed: it points out of the repository, makes a loop, leads through more
-            # than 40 links, has a target that the job did not read, or adds more than 100,000 paths), and whether it
-            # stopped at its bound of work (stopped: then the list is not whole and holds no file).
+            # is not whole, and the rule counts it as a change of a proof. rules.py proofs writes soundness.json: each
+            # changed path that counts, with why (a .v file, any other file that is not a Markdown file, or a Markdown
+            # file that a dune, dune-project or dune-workspace* file of the head or of main makes count: one in its
+            # directory or above it that holds .md; or one anywhere that holds the word include, :include,
+            # source_tree, copy_files or copy_files# outside a comment line, a glob_files or glob_files_rec whose
+            # pattern does not end with one fixed extension other than md, or a word or a string with .md and also ..,
+            # %{project_root} or %{workspace_root}, or a leading /), and the dune file that made it count with the text
+            # in it. It reads those files once, from git objects anywhere in the tree, only when a changed path is a
+            # Markdown file. It also writes whether the list is whole, and each such dune file that it could not read
+            # (unparsed: a link or a submodule in its place, or an object that git does not hold), which makes each
+            # changed Markdown file count.
             count=""
             : > "$RUNNER_TEMP/files.jsonl"
             if pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -3348,16 +3348,14 @@ jobs:
       # comment, its verdict, will_fix and its list. First comes the soundness rule of R8, whatever the model wrote
       # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
       # gather job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
-      # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths can
-      # change a proof (a .v file, a dune, dune-project, dune-workspace or opam file, a file that a dune file of the
-      # head, of main or of their merge names, also as the path of a flag of the C compiler or of the linker, a file
-      # that the build reads through a link, or a file of an OCaml module or a C file that a dune stanza builds), from
-      # every page of the pull request's files. A list that is not whole, a dune or dune-workspace file that the job
-      # could not read (unparsed), a link that dune cannot follow (unfollowed, with its reason), and a stop at the bound
-      # of work (stopped) each count as such a change too. The section lists, as facts, those files, the files that the
-      # job could not read, the links that dune cannot follow in a list of their own with their reasons, that the check
-      # stopped when it did, the lines of the changed .v files at the head that use the VM, the native compiler or a
-      # primitive array, and each changed .v file at the head that the gather job did not keep whole.
+      # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths
+      # count (a .v file, any other file that is not a Markdown file, or a Markdown file that a dune, dune-project or
+      # dune-workspace* file of the head or of main makes count, by the rule of .github/review.md), from every page of
+      # the pull request's files. A list that is not whole counts as such a change too, and a dune file that the job
+      # could not read (unparsed) makes each changed Markdown file count. The section lists, as facts, the rule with
+      # those files but the .v files, the files that the job could not read, the lines of the changed .v files at
+      # the head that use the VM, the native compiler or a primitive array, and each changed .v file at the head that
+      # the gather job did not keep whole.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds

@@ -133,58 +133,48 @@ An outside pull request can change a Rocq proof when it adds, changes or
 deletes one of these files, wherever the file is in the tree, however
 many files the pull request has:
 
-- a `.v` file.
-- a `dune`, `dune-project` or `dune-workspace` file.
-- an `opam` or `*.opam` file: its `pin-depends` can change the Rocq that
-  CI builds with.
-- a file that a `dune` file of the head or of `main` names. For example: a
-  file that a rule reads or writes (its `deps`, its `targets` or `target`,
-  and the files of its `action`, such as `run`, `with-stdout-to` and
-  `copy`), a file of a glob (`glob_files`, `glob_files_rec`, `copy_files`),
-  each file below a `source_tree`, below the `source_trees` or `dirs` of an
-  `install` stanza or below a `(dir ...)` of `targets`, and the file of an
-  `(include ...)` or a `(:include ...)`. A path that leaves `_build` and
-  reaches the tree (`%{project_root}/../../include`) counts, with each
-  file below it. The `dune` files of `main` count too: a pull request
-  that starts from an older `main` merges into the newest one.
-- a file of an OCaml module that an `executable`, `executables`,
-  `library`, `test` or `tests` stanza builds (`.ml`, `.mli`, `.mll`,
-  `.mly`): every module of its directory, or the modules of its `modules`
-  field. Also such a file of a directory with an `ocamllex`, `ocamlyacc`
-  or `menhir` stanza, and a C file of a stanza with C stubs.
-- a file that a stanza with C stubs reads beside its C files: each file
-  below a directory of its `include_dirs`, also outside the directory of
-  the stanza (`../include`), the object `x.o` of `(extra_objects x)`, the
-  archives `libx.a` and `dllx.so` of `(foreign_archives x)`, and the
-  header `x.h` of `(install_c_headers x)`.
-- a file that a flag of the C compiler or of the linker names, such as
-  `-I`, `-L`, `-isystem`, `-iquote` or `-include`, with each file below
-  it. The path can be joined to the flag (`-I../inc`) or apart
-  (`-I ../inc`). A path that `-Wl,...` gives to the linker counts too.
-  The C flags of an `env` stanza apply to each stanza below it, those of
-  the `env` of a `dune-workspace` file to each stanza, and
-  `c_library_flags` to each stanza that can link the library.
-- the file that a link points to, when the link is one of these files.
-  Also a file that the build reads through a link to its directory: with
-  `t/ext` a link to `../vendor`, a rule of `t/dune` that reads
-  `ext/x.hex` reads `vendor/x.hex`. Such a link counts too. The merge
-  holds the links of `main` and the files that the head changes: when
-  only `main` has the link `t/ext`, a new `vendor/x.hex` of the head
-  counts.
+- a file that is not a Markdown file (`.md`). For example: a `.v` file,
+  a `dune`, `dune-project`, `dune-workspace` or `opam` file, a Python
+  helper, or a file of `dune.lock/`.
+- a Markdown file, in the cases below. Here a `dune` file is a `dune`,
+  `dune-project` or `dune-workspace*` file of the head or of `main`.
+  - A `dune` file in the directory of the Markdown file, or in a
+    directory above it, holds the text `.md` anywhere, also in a
+    comment. For example: when `theories/Examples/dune` names
+    `README.md` in a comment, each Markdown file below
+    `theories/Examples/` counts.
+  - Each Markdown file counts when a `dune` file anywhere holds one of
+    the words `include`, `:include`, `source_tree`, `copy_files` or
+    `copy_files#`. A word ends at white space or at a parenthesis, so
+    `include_subdirs` does not count. A word on a comment line, whose
+    first character other than a space or a tab is `;`, does not count.
+    A word after code on the same line counts.
+  - Each Markdown file counts when a `dune` file anywhere holds
+    `glob_files` or `glob_files_rec`, also in a comment, with a pattern
+    whose part after the last `.` is not one fixed extension other than
+    `md`. A fixed extension has only letters, digits and `_`. So `*.vo`
+    and `*MemImage_seg_*.hex` do not count, but `*.md`, `*.{v,md}`,
+    `*.[ch]` and `*` count.
+  - Each Markdown file counts when a `dune` file anywhere holds a word
+    or a quoted string with `.md` in it that also holds `..`,
+    `%{project_root}` or `%{workspace_root}`, or that starts with `/`,
+    also in a comment. For example: `"../x.md"` or
+    `%{dep:../docs/x.md}`.
+
+This rule fails closed: the workflow does not examine which files the
+build of the proofs reads.
 
 The workflow reads the changed files itself, from every page of the list
-of files of the pull request, and the `dune` files and the links of the
-head and of `main` from git: `soundness.json` gives the result. The pull
+of files of the pull request. When one of them is a Markdown file, it
+reads the `dune`, `dune-project` and `dune-workspace*` files of the head
+and of `main` from git. `soundness.json` gives the result. The pull
 request also counts as one that can change a Rocq proof in these cases:
 
 - GitHub does not give the whole list.
-- The workflow cannot read a `dune` file, or cannot read a field of one
-  for certain. For example: a variable or an `(:include ...)` in a C
-  field or in C flags, or an absolute path in a C field.
-- The workflow cannot follow a link. For example: the link points out of
-  the repository or makes a loop.
-- The check of the changed files needs more work than the workflow does
-  for one pull request.
+- The pull request changes a Markdown file, and the workflow cannot read
+  a `dune`, `dune-project` or `dune-workspace*` file anywhere in the
+  tree of the head or of `main`. For example: a link or a submodule is in
+  the place of the file. Then each changed Markdown file counts.
 
 For each outside pull request that can change a Rocq proof, the review
 does these three things:
@@ -208,8 +198,9 @@ compiler is off, or through a tactic such as `lia`. A proof reaches the
 array bug through `make` with no array literal. So the list gives facts to
 Sami, not a judgement of the proof.
 
-The workflow adds its own section with the same facts after the trimmed
-review. The comment still gives them.
+The workflow adds its own section after the trimmed review. The section
+gives the same facts, and lists the changed files other than `.v` files
+that count. The comment still gives the facts of point 3.
 
 ## The bar
 

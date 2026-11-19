@@ -4849,11 +4849,11 @@ class FreshReaderTest(ReaderRunner):
 
 class SoundnessTest(ReaderRunner):
     """b5 (R8): while SOUNDNESS_HOLD is "true", the review of an outside pull request that can change a Rocq proof (a
-    .v file, a dune, dune-project or opam file, a file that a dune file of the head or of main names, or a file of an
-    OCaml module that a dune stanza builds, wherever it is, however many files the pull request has) gives the person
-    verdict on soundness, whatever the model gave. Its comment gets the
-    fixed section after the trimmed text, where the reader never sees it: the three Rocq issues, the changed files of
-    the build, and each line of the changed .v files at the head that uses the VM, the native compiler or a primitive
+    changed file that is not a Markdown file, or a Markdown file whose name is in the text of a dune, dune-project or
+    dune-workspace* file of the head or of main, wherever it is, however many files the pull request has) gives the
+    person verdict on soundness, whatever the model gave. Its comment gets the
+    fixed section after the trimmed text, where the reader never sees it: the three Rocq issues, the changed files that
+    count, and each line of the changed .v files at the head that uses the VM, the native compiler or a primitive
     array, as a fact and never as a fail. The gather job's own step reads the pull request from git and its files from
     every page of the API's list, with a checks.json in which this repository's CI lanes on stock Rocq passed (P7), and
     the comment job's label step sets the label of the review's verdict."""
@@ -5025,14 +5025,15 @@ class SoundnessTest(ReaderRunner):
                                                                   "No blocking finding.")
                 self.assertSoundness(head, got, shown)
 
-    def test_the_rule_needs_the_hold_an_outside_author_and_a_v_file(self):
-        """A writer's proof, an outside proof with SOUNDNESS_HOLD not "true", and an outside change of no .v file
-        keep the model's verdict, and get no section."""
+    def test_the_rule_needs_the_hold_an_outside_author_and_a_file_that_counts(self):
+        """A writer's proof, an outside proof with SOUNDNESS_HOLD not "true", and an outside change of only a Markdown
+        file that no dune file makes count keep the model's verdict, and get no section."""
         for name, changes, author, hold, outside in (
                 ("a writer's proof", self.VM, "alice", WF["env"]["SOUNDNESS_HOLD"], "false"),
                 ("the hold off", self.VM, "mallory", "false", "true"),
                 ("no hold set", self.VM, "mallory", None, "true"),
-                ("no .v file", {"README.md": "# Model of Linux\n"}, "mallory", WF["env"]["SOUNDNESS_HOLD"], "true")):
+                ("only a Markdown file", {"README.md": "# Model of Linux\n"}, "mallory", WF["env"]["SOUNDNESS_HOLD"],
+                 "true")):
             with self.subTest(case=name):
                 self.tearDown()
                 self.setUp()
@@ -5046,78 +5047,153 @@ class SoundnessTest(ReaderRunner):
                 with open(self.summary, encoding="utf-8") as f:
                     self.assertNotIn("rocq-prover", f.read())
 
-    # main with dune files whose rules read and write files other than .v files: a rule of theories/ that writes a .v
-    # file from a script and a table, a rule of tests/ whose deps take each .hex file below theories/
-    # (glob_files_rec), and the files that copy_files copies into tests/ from shared/.
-    BUILT = dict(MAIN, **{
-        "dune-project": "(lang dune 3.23)\n",
-        "theories/dune": "; A rule that writes a .v file.\n(rule\n (targets Gen.v)\n (deps gen.py data/table.txt)\n"
-                         " (action (with-stdout-to Gen.v (run python3 %{dep:gen.py} data/table.txt))))\n",
-        "theories/gen.py": "import sys\nprint('Lemma g : True. Proof. exact I. Qed.')\n",
-        "theories/data/table.txt": "1 2 3\n", "theories/Chunks/a.hex": "00\n", "shared/A.lemma": "x\n",
-        "tests/dune": "(rule\n (target Hex.v)\n (deps (glob_files_rec %{project_root}/theories/*.hex))\n"
-                      " (action (with-stdout-to %{target} (echo \"(* Generated. *)\\n\"))))\n\n"
-                      "(copy_files (files %{project_root}/shared/*.lemma))\n"})
+    def move_main(self, head, files, links=None):
+        """main moves on after the commit that pull request #7 at head starts from: a commit that gives each path of
+        files its text and makes each path of links ({path: its target}) a link. Then the gather job's step again."""
+        src = os.path.join(self.dir, "src")
+        self.git("checkout", "-q", "-b", "later", "HEAD~1", cwd=src)
+        for path, to in (links or {}).items():
+            full = os.path.join(src, path)
+            if os.path.lexists(full):
+                os.remove(full)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            os.symlink(to, full)
+        self.commit(src, files, "main moves on")
+        self.git("push", "-q", os.path.join(self.dir, "origin.git"), "later:main", cwd=src)
+        self.git("fetch", "-q", "origin", cwd=self.work)
+        rc, out, _ = self.run_script(step("gather", "Gather the pull request or issue")["run"], KIND="pr", NUMBER="7",
+                                     EVENT_HEAD=head)
+        self.assertEqual(rc, 0, out)
 
-    def test_a_change_of_a_file_that_a_dune_rule_reads_or_writes_gets_the_person_verdict(self):
-        """R8 (v50): "any other file that a dune rule of the repository reads or writes, wherever it is in the tree".
-        With main's dune files of BUILT, which the gather job reads from git objects of the head: a pull request that
-        changes only the table or the script of the rule that writes Gen.v, only a .hex file in a directory below
-        theories/ (a deps glob), only a file that copy_files copies, only the dune-project file or only a dune file
-        gets the person verdict, whatever the model gave, and the section names the file and the dune file that names
-        it. So does the table after 100 Markdown files, on the second page of the files. A Markdown file that no dune
-        file names keeps the model's pass."""
+    def test_an_outside_change_of_a_python_helper_or_of_dune_lock_alone_gets_the_person_verdict(self):
+        """b5 (R8, v61): the rule counts "any file that is not a Markdown file (.md)". A pull request that changes only
+        a Python helper, only files of dune.lock/, or only a helper after 100 Markdown files, on the second page of the
+        files, gets the person verdict, whatever the model gave. The section says the rule and lists each such file,
+        with no dune file beside it."""
         docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(100)}
-        for changes, path, by in (
-                ({"theories/data/table.txt": "4 5 6\n"}, "theories/data/table.txt", "theories/dune"),
-                ({"theories/gen.py": "print('Lemma g : False. Admitted.')\n"}, "theories/gen.py", "theories/dune"),
-                ({"theories/Chunks/Deep/b.hex": "01\n"}, "theories/Chunks/Deep/b.hex", "tests/dune"),
-                ({"shared/A.lemma": "y\n"}, "shared/A.lemma", "tests/dune"),
-                ({"dune-project": "(lang dune 3.23)\n(name x)\n"}, "dune-project", None),
-                ({"tests/dune": "(rule (alias runtest) (action (echo \"ok\\n\")))\n"}, "tests/dune", None),
-                (dict(docs, **{"theories/data/table.txt": "4 5 6\n"}), "theories/data/table.txt", "theories/dune")):
-            with self.subTest(path=path, files=len(changes)):
-                self.tearDown()
-                self.setUp()
-                head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
-                                                                 "No blocking finding.", main=self.BUILT)
-                self.assertSoundness(head, got, shown)
-                self.assertEqual(listed, [rules.QUESTION])
-                self.assertIn("This pull request changes a file that the build of the Rocq proofs reads or writes.",
-                              shown)
-                named = re.escape(f"- `{path}`") + (re.escape(f": `{by}` names it.") if by else "")
-                self.assertRegex(shown, f"(?m)^{named}$")
-                self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
-        self.tearDown()
-        self.setUp()
-        head, got, _shown, listed, _outside = self.review({"theories/README.md": "# Theories\n"}, "pass", [],
-                                                          "No blocking finding.", "No blocking finding.",
-                                                          main=self.BUILT)
-        self.assertEqual((got["verdict"], listed), ("pass", []))
-        self.assertNotIn("rocq-prover", got["body"])
-
-    def test_a_list_that_is_not_whole_or_a_dune_file_that_the_job_cannot_read_gets_the_person_verdict(self):
-        """Fail-safe: when GitHub lists only 100 of the 101 files of a pull request, or main holds a dune file that
-        the job cannot read (a ( with no ), here), the job cannot show that no proof changed. A pull request of Markdown
-        files then gets the person verdict, and the section says why. The same 101 files listed whole, with their
-        second page, keep the model's pass."""
-        docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(101)}
-        for name, changes, main, cut, why in (
-                ("a list cut at 100", docs, None, 100,
-                 "GitHub did not give the full list of the files that this pull request changes"),
-                ("a dune file that does not parse", {"README.md": "# Model of Linux\n"},
-                 dict(self.MAIN, **{"theories/dune": "(rule\n (deps table.txt)\n"}), None,
-                 "The workflow could not read these files of the build:")):
+        lock = {"dune.lock/lock.dune": "(lang package 0.1)\n", "dune.lock/rocq.1.0.pkg": "(version 1.0)\n"}
+        for name, changes, counted in (
+                ("a Python helper", {"tools/check_one.py": "print('ok')\n"}, ["tools/check_one.py"]),
+                ("dune.lock/", lock, sorted(lock)),
+                ("a helper on the second page", dict(docs, **{"tools/gen.py": "print(1)\n"}), ["tools/gen.py"])):
             with self.subTest(case=name):
                 self.tearDown()
                 self.setUp()
                 head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
-                                                                 "No blocking finding.", main=main, cut=cut)
+                                                                 "No blocking finding.")
                 self.assertSoundness(head, got, shown)
-                self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", shown)
-                self.assertIn(why, shown)
                 self.assertEqual(listed, [rules.QUESTION])
-        self.assertRegex(shown, r"(?m)^- `theories/dune`$")
+                self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", shown)
+                self.assertIn("So it counts each changed file that is not a Markdown file (`.md`) as a change of the "
+                              "proofs.", shown)
+                self.assertEqual(re.findall(r"(?m)^- `([^`]+)`$", shown), counted)
+                self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
+
+    # main with a dune file that holds .md: theories/dune, in a comment.
+    NAMED = dict(MAIN, **{"theories/dune": "; See notes.md.\n(rocq.theory (name T))\n"})
+
+    def test_a_markdown_file_below_a_dune_file_that_holds_md_gets_the_person_verdict_and_one_elsewhere_does_not(self):
+        """b5 (R8, v67): a Markdown file counts when a dune, dune-project or dune-workspace* file of main or of the head
+        in its directory or in a directory above it holds .md at all. With NAMED, whose theories/dune holds .md in a
+        comment: a pull request that changes only theories/notes.md, or only theories/sub/x.md, gets the person
+        verdict, and the section names theories/dune. One that changes only docs/other.md, with no such file above it,
+        gets the model's own verdict. And a dune file at the top of the tree that holds .md makes docs/other.md count
+        too."""
+        top = dict(self.MAIN, **{"dune": "; See README.md.\n"})
+        for changes, path, by, main in (({"theories/notes.md": "# Notes\n"}, "theories/notes.md", "theories/dune",
+                                          self.NAMED),
+                                         ({"theories/sub/x.md": "# X\n"}, "theories/sub/x.md", "theories/dune",
+                                          self.NAMED),
+                                         ({"docs/other.md": "# Other\n"}, "docs/other.md", "dune", top)):
+            with self.subTest(path=path, by=by):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review(changes, "pass", [], "No blocking finding.",
+                                                                 "No blocking finding.", main=main)
+                self.assertSoundness(head, got, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+                self.assertRegex(shown, f"(?m)^- `{re.escape(path)}`: `{re.escape(by)}` holds `\\.md`\\.$")
+                self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
+        self.tearDown()
+        self.setUp()
+        _head, got, _shown, listed, _outside = self.review({"docs/other.md": "# Other\n"}, "pass", [],
+                                                           "No blocking finding.", "No blocking finding.",
+                                                           main=self.NAMED)
+        self.assertEqual((got["verdict"], listed), ("pass", []))
+        self.assertNotIn("rocq-prover", got["body"])
+
+    def test_a_dune_file_anywhere_that_can_read_any_file_makes_each_markdown_file_count(self):
+        """b5 (R8, v67): each Markdown file counts when a dune file of main or of the head, anywhere, holds the word
+        include, :include, source_tree, copy_files or copy_files# (split at white space and parentheses, with its
+        comment lines gone), a glob_files or glob_files_rec whose pattern does not end with one fixed extension other
+        than md, or a word or a string with .md and also .., %{project_root} or %{workspace_root}. With main's lib/dune
+        as each text below, a pull request that changes only docs/a.md gets the person verdict, and the section names
+        lib/dune and the text in it; (include_subdirs qualified), a comment line with the word include, and a glob of
+        *.vo add nothing, and the model's pass stays."""
+        rule = '(rule (target o) (deps {}) (action (echo "")))\n'
+        for text, what in (("(include dune.inc)\n", "include"), ("( source_tree docs)\n", "source_tree"),
+                           (rule.format("a.v") + "; include\n", None),
+                           (rule.format("a.v")[:-1] + " ; include\n", "include"),
+                           (rule.format("(glob_files *.{v,md})"), "glob_files *.{v,md}"),
+                           (rule.format("%{workspace_root}/docs/x.md"), "%{workspace_root}/docs/x.md"),
+                           ("(include_subdirs qualified)\n", None),
+                           ("; theories/ would include theories/Examples\n" + rule.format("(glob_files_rec *.vo)"),
+                            None)):
+            with self.subTest(text=text):
+                self.tearDown()
+                self.setUp()
+                head, got, shown, listed, _outside = self.review({"docs/a.md": "# A\n"}, "pass", [],
+                                                                 "No blocking finding.", "No blocking finding.",
+                                                                 main=dict(self.MAIN, **{"lib/dune": text}))
+                if what is None:
+                    self.assertEqual((got["verdict"], listed), ("pass", []))
+                    self.assertNotIn("rocq-prover", got["body"])
+                    continue
+                self.assertSoundness(head, got, shown)
+                self.assertEqual(listed, [rules.QUESTION])
+                self.assertIn(f"\n- `docs/a.md`: `lib/dune` holds {rules.code(what)}.\n", shown)
+
+    def test_a_markdown_file_counts_by_the_dune_files_of_main_and_of_a_head_from_an_older_main(self):
+        """b5 (R8, v67): "any dune ... file of main or of the head". A pull request starts from an older main, whose
+        docs/dune holds .md. After that commit, main drops .md from docs/dune and adds notes/dune, which holds .md. A
+        pull request that changes only docs/old.md and notes/new.md gets the person verdict: docs/old.md counts by the
+        head's docs/dune, and notes/new.md by main's notes/dune."""
+        head, outside = self.gather({"docs/old.md": "# Old\n", "notes/new.md": "# New\n"},
+                                    main=dict(self.MAIN, **{"docs/dune": "; old.md\n"}))
+        self.move_main(head, {"docs/dune": "(rocq.theory (name T))\n", "notes/dune": "; new.md\n"})
+        rc, out, got = self.post("No blocking finding.", [], "No blocking finding.", "pass", outside=outside)
+        self.assertEqual(rc, 0, out)
+        shown = got["body"].split(self.WHOLE, 1)[0]
+        self.assertSoundness(head, got, shown)
+        self.assertEqual(re.findall(r"(?m)^- `([a-z]+/[a-z]+\.md)`: `(.+)` holds `\.md`\.$", shown),
+                         [("docs/old.md", "docs/dune"), ("notes/new.md", "notes/dune")])
+
+    def test_a_list_that_is_not_whole_or_a_dune_file_that_the_job_cannot_read_gets_the_person_verdict(self):
+        """Fail-safe: when GitHub lists only 100 of the 101 files of a pull request, the job cannot show that no proof
+        changed, and a pull request of Markdown files gets the person verdict: the section says why. A dune file that
+        the job cannot read anywhere (here main makes theories/dune a link after the commit that the pull request
+        starts from) makes each changed Markdown file count: a pull request that changes only README.md gets the person
+        verdict, and the section names that dune file. The same 101 files listed whole, with their second page, keep
+        the model's pass."""
+        docs = {f"docs/{i:03d}.md": f"# Note {i}\n" for i in range(101)}
+        head, got, shown, listed, _outside = self.review(docs, "pass", [], "No blocking finding.",
+                                                         "No blocking finding.", cut=100)
+        self.assertSoundness(head, got, shown)
+        self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", shown)
+        self.assertIn("GitHub did not give the full list of the files that this pull request changes", shown)
+        self.assertEqual(listed, [rules.QUESTION])
+        self.tearDown()
+        self.setUp()
+        head, outside = self.gather({"README.md": "# Model of Linux\n"},
+                                    main=dict(self.MAIN, **{"theories/dune": "(rocq.theory (name T))\n"}))
+        self.move_main(head, {}, {"theories/dune": "../README.md"})
+        rc, out, got = self.post("No blocking finding.", [], "No blocking finding.", "pass", outside=outside)
+        self.assertEqual(rc, 0, out)
+        shown = got["body"].split(self.WHOLE, 1)[0]
+        self.assertSoundness(head, got, shown)
+        self.assertIn("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
+                      "- `theories/dune`", shown)
+        self.assertRegex(shown, r"(?m)^- `README\.md`: the workflow could not read `theories/dune`\.$")
         self.tearDown()
         self.setUp()
         _head, got, _shown, listed, _outside = self.review(docs, "pass", [], "No blocking finding.",
@@ -5197,8 +5273,8 @@ class SoundnessTest(ReaderRunner):
 
 
 class SoundnessScanTest(unittest.TestCase):
-    """rules.py's facts of the rule (proofs, dune_names, soundness.json), its scan of a pull request's .v files (uses),
-    its section and its rule."""
+    """rules.py's facts of the rule (proofs, soundness.json), its scan of a pull request's .v files (uses), its section
+    and its rule."""
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="review-test-")
@@ -5280,83 +5356,81 @@ class SoundnessScanTest(unittest.TestCase):
                           ("theories/link.v", "did not read it")])
         self.assertEqual(rules.uses(self.review), [("theories/A.v", 2, ["vm_compute"])])
 
-    def test_a_dune_file_names_each_file_that_its_rules_read_or_write(self):
-        """dune_names, from the S-expressions of a dune file of theories/ as dune 3 reads them: the deps and targets of
-        a rule that writes a .v file, the arguments of %{dep:...} and of run, a glob of glob_files_rec, which takes the
-        files of each directory below its own, a rule of a subdir, the files of copy_files, a source_tree, a file that
-        a shell action reads, a run in a chdir of the root, an (:include ...), and an included file with the files that
-        its own rules name. A name in a comment, a %{target} alone and a Markdown file that no rule names are none."""
-        dune = "\n".join((
-            "; (rule (deps commented.txt))",
-            "(rule",
-            " (targets Gen.v)",
-            " (deps gen.py (glob_files_rec %{project_root}/data/*.{tbl,csv}))",
-            ' (action (with-stdout-to %{target} (run python3 %{dep:tool/gen.py} --in "my table.txt"))))',
-            "(subdir sub (rule (target A.v) (action (copy %{project_root}/shared/A.v A.v))))",
-            "(copy_files (files ../vendor/*.ml))",
-            "(rule (alias runtest) (deps (source_tree %{project_root}/fixtures))",
-            " (action (chdir %{workspace_root} (run cat docs/input.txt))))",
-            '(rule (target b.v) (action (system "cat notes/a.txt > %{target}")))',
-            "(env (_ (rocq (flags (:include flags.sexp)))))",
-            "(include dune.inc)"))
-        texts = {"theories/dune.inc": "(rule (target Inc.v) (deps inc.txt) (action (echo \"x\\n\")))\n"}
+    def test_a_dune_file_that_the_job_cannot_read_anywhere_makes_each_markdown_file_count(self):
+        """R8 (v67): a dune file that the job cannot read, anywhere, makes each changed Markdown file count. A link in
+        the place of a dune file (theories/dune) and a submodule in the place of a dune-workspace file
+        (sub/dune-workspace) are such files: README.md and docs/a.md count by the first of them, and the section lists
+        both. A Markdown file below tests/, whose dune file holds .md, counts by tests/dune, the nearest one, and a file
+        that is not a Markdown file counts as it always does. With no changed Markdown file, the job reads no dune
+        file."""
+        d, head = self.repository({"tests/dune": "; notes.md\n", "docs/a.md": "a\n", "tools/x.py": "x\n"},
+                                  {"theories/dune": "../docs/a.md"})
+        for args in (("update-index", "--add", "--cacheinfo", f"160000,{head},sub/dune-workspace"),
+                     ("commit", "-q", "-m", "a submodule")):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
+                           capture_output=True)
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, check=True, capture_output=True,
+                              text=True).stdout.strip()
+        files = [{"filename": p, "previous_filename": None}
+                 for p in ("README.md", "docs/a.md", "tests/deep/y.md", "tools/x.py")]
+        facts = rules.proofs(head, files, len(files), cwd=d, main=head)
+        self.assertEqual(facts, {"whole": True, "unparsed": ["sub/dune-workspace", "theories/dune"], "files": [
+            {"path": "README.md", "why": "unread", "by": "sub/dune-workspace", "what": None, "at_head": False},
+            {"path": "docs/a.md", "why": "unread", "by": "sub/dune-workspace", "what": None, "at_head": True},
+            {"path": "tests/deep/y.md", "why": "named", "by": "tests/dune", "what": ".md", "at_head": False},
+            {"path": "tools/x.py", "why": "other", "by": None, "what": None, "at_head": True}]})
+        self.assertEqual(rules.proofs(head, files[3:], 1, cwd=d, main=head),
+                         {"whole": True, "unparsed": [], "files": [
+                             {"path": "tools/x.py", "why": "other", "by": None, "what": None, "at_head": True}]})
+        self.write("commits.txt", f"base {head}\nhead {head}\n")
+        self.write(rules.SOUNDNESS_FILE, json.dumps(facts))
+        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
+        got, section, _all = rules.soundness(self.review, output, "true", "true")
+        self.assertEqual(got["verdict"], "person")
+        self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", section)
+        self.assertIn("These changed files that are not `.v` files count:\n\n"
+                      "- `README.md`: the workflow could not read `sub/dune-workspace`.\n"
+                      "- `docs/a.md`: the workflow could not read `sub/dune-workspace`.\n"
+                      "- `tests/deep/y.md`: `tests/dune` holds `.md`.\n"
+                      "- `tools/x.py`\n\n", section)
+        self.assertIn("The workflow could not read these files, so it counts each changed Markdown file:\n\n"
+                      "- `sub/dune-workspace`\n- `theories/dune`", section)
 
-        def read(path):
-            if path not in texts:
-                raise ValueError(f"{path} is no file of the head")
-            return texts[path]
-        names = rules.Names()
-        for stanza in rules.dune_sexps(dune):
-            rules.dune_names(names, "theories/dune", stanza, "theories", ["theories"], read)
-        for path, by in (("theories/Gen.v", "theories/dune"), ("theories/gen.py", "theories/dune"),
-                         ("theories/tool/gen.py", "theories/dune"), ("theories/my table.txt", "theories/dune"),
-                         ("data/x.tbl", "theories/dune"), ("data/deep/y.csv", "theories/dune"),
-                         ("theories/sub/A.v", "theories/dune"), ("shared/A.v", "theories/dune"),
-                         ("vendor/m.ml", "theories/dune"), ("fixtures/a/b.txt", "theories/dune"),
-                         ("docs/input.txt", "theories/dune"), ("theories/notes/a.txt", "theories/dune"),
-                         ("theories/flags.sexp", "theories/dune"), ("theories/dune.inc", "theories/dune"),
-                         ("theories/inc.txt", "theories/dune.inc"), ("theories/Inc.v", "theories/dune.inc")):
-            with self.subTest(path=path):
-                self.assertEqual(names.of(path), by)
-        for path in ("theories/commented.txt", "data/x.md", "theories/README.md", "README.md", "docs/other.txt",
-                     "fixtures.md", "theories/x", "theories/%{target}"):
-            with self.subTest(path=path):
-                self.assertIsNone(names.of(path))
-        texts.clear()
-        with self.assertRaises(ValueError):
-            for stanza in rules.dune_sexps("(include dune.inc)"):
-                rules.dune_names(rules.Names(), "theories/dune", stanza, "theories", ["theories"], read)
-        for text in ("(rule (deps a)", "(rule) )", '(echo "no end)', '(echo "\\q")', '(echo\n "\\| block\n)'):
-            with self.subTest(text=text), self.assertRaises(ValueError):
-                rules.dune_sexps(text)
-        # dune 3 reads #| and #; as atoms, a ; as a comment also inside an atom, and a string's escapes.
-        self.assertEqual(rules.dune_sexps('(a #| b;c\n "d\\065\\x41\\\n   e" #;f\n g)'),
-                         [["a", "#|", "b", "dAAe", "#", "g"]])
-
-    def test_the_file_that_a_link_of_a_proof_points_to_counts_and_a_linked_dune_file_is_not_read(self):
-        """The build reads a file through a link to it: a .v file of the head that is a link to docs/evil.md makes a
-        change of docs/evil.md a change of a proof, and so does a chain of two links. A dune file that is a link is a
-        file of the build that the job does not read, and the file that it points to counts. A Markdown file that no
-        link reaches does not count."""
-        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
-            for directory in ("theories", "docs", "tests"):
-                os.makedirs(os.path.join(d, directory))
-            for name in ("evil.md", "deep.md", "other.md", "plain.md"):
-                with open(os.path.join(d, "docs", name), "w") as f:
-                    f.write("Lemma x : False.\n")
-            for link, to in (("theories/Foo.v", "../docs/evil.md"), ("theories/Bar.v", "../docs/link.md"),
-                             ("docs/link.md", "deep.md"), ("tests/dune", "../docs/other.md")):
-                os.symlink(to, os.path.join(d, link))
-            for args in (("init", "-q", "-b", "main"), ("add", "-A"), ("commit", "-q", "-m", "links")):
-                subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
-                               capture_output=True)
-            files = [{"filename": p, "previous_filename": None}
-                     for p in ("docs/evil.md", "docs/deep.md", "docs/link.md", "docs/other.md", "docs/plain.md")]
-            facts = rules.proofs("HEAD", files, len(files), cwd=d)
-        self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
-                         {"docs/evil.md": ("target", "theories/Foo.v"), "docs/link.md": ("target", "theories/Bar.v"),
-                          "docs/deep.md": ("target", "docs/link.md"), "docs/other.md": ("target", "tests/dune")})
-        self.assertEqual(facts["unparsed"], ["tests/dune"])
+    def test_a_word_a_glob_or_a_path_of_a_dune_file_anywhere_makes_each_markdown_file_count(self):
+        """R8 (v67), each text of a dune file anywhere that makes each changed Markdown file count, and each one that
+        does not: with lib/dune as the text, a change of docs/a.md, whose directories hold no dune file, counts by
+        lib/dune and the text in it, or does not count. The words are whole words of the text split at white space and
+        parentheses, after its comment lines go; a glob counts unless its pattern ends with one fixed extension other
+        than md; a word or a string counts when it holds .md and also .., %{project_root} or %{workspace_root}, or
+        starts with /."""
+        rule = '(rule (target o) (deps {}) (action (echo "")))\n'
+        for text, what in (
+                ("(include dune.inc)\n", "include"), ("(rule (deps (:include deps.sexp)))\n", ":include"),
+                ("(source_tree docs)\n", "source_tree"), ("( source_tree docs)\n", "source_tree"),
+                ("(copy_files (files ../shared/*.v))\n", "copy_files"), ("(copy_files# a/*.v)\n", "copy_files#"),
+                ("(include_subdirs qualified)\n", None), ("; theories/ would include theories/Examples and\n", None),
+                ("  ; include\n", None), (rule.format("a.v")[:-1] + " ; include\n", "include"),
+                (rule.format("(glob_files *.md)"), "glob_files *.md"),
+                (rule.format("(glob_files_rec *)"), "glob_files_rec *"),
+                (rule.format("(glob_files *.{v,md})"), "glob_files *.{v,md}"),
+                (rule.format("(glob_files *.[ch])"), "glob_files *.[ch]"),
+                (rule.format("(glob_files *.m?)"), "glob_files *.m?"),
+                (rule.format('(glob_files "*.MD")'), 'glob_files "*.MD"'),
+                (rule.format("(glob_files *.vo)"), None), (rule.format("(glob_files_rec %{project_root}/x/*.vo)"), None),
+                (rule.format("(glob_files *MemImage_seg_*.hex)"), None),
+                (rule.format('"../x.md"'), '"../x.md"'),
+                (rule.format('"%{project_root}/x.md"'), '"%{project_root}/x.md"'),
+                (rule.format("%{dep:../docs/x.md}"), "%{dep:../docs/x.md}"),
+                ('(rule (target o) (action (with-stdout-to o (echo %{read:../r.md}))))\n', "%{read:../r.md}"),
+                (rule.format("%{workspace_root}/docs/x.md"), "%{workspace_root}/docs/x.md"),
+                (rule.format("/docs/x.md"), "/docs/x.md"), (rule.format('"/docs/x.md"'), '"/docs/x.md"'),
+                (rule.format("notes.md"), None), (rule.format("../notes.v"), None)):
+            with self.subTest(text=text):
+                d, head = self.repository({"lib/dune": text, "README.md": "1\n"})
+                facts = rules.proofs(head, [{"filename": "docs/a.md", "previous_filename": None}], 1, cwd=d,
+                                     main=head)
+                self.assertEqual(facts["files"], [] if what is None else [
+                    {"path": "docs/a.md", "why": "named", "by": "lib/dune", "what": what, "at_head": False}])
 
     def test_a_file_that_a_dune_rule_reads_through_a_link_to_its_directory_counts(self):
         """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". dune
@@ -5398,71 +5472,60 @@ class SoundnessScanTest(unittest.TestCase):
                 facts = rules.proofs("HEAD", files, len(files), cwd=d, main="HEAD")
                 self.assertEqual([f["path"] for f in facts["files"]], ["inc/x.h"])
 
-    def test_the_dune_files_of_this_repository_parse_and_name_the_inputs_of_its_proofs_and_no_markdown_file(self):
-        """proofs on this repository's own head: each of its dune files parses, so that no pull request gets the person
-        verdict because the job could not read one. The files that its rules read or write count, wherever they are:
-        the generators under tools/, the logs of the placement replays, the .hex chunks of an example and of the
-        bridge, and the OCaml module of tests/extraction's executable. So do the opam files (R8, v56). Markdown files
-        and tools/check_one.py, which no dune file names, do not. main as the same commit changes nothing."""
-        counted = {"theories/A.v": "proof", "dune-project": "build", "theories/Examples/dune": "build",
-                   "rocq-linux-process-semantics-core.opam": "build",
-                   "tools/gen_checker.py": "named", "tools/gen_fd_lemmas.py": "named",
-                   "tools/placement_conformance/log_to_rocq.py": "named",
-                   "tests/placement/linux-6.18.46-defconfig.log": "named",
-                   "theories/LinuxProcessSem/Bridge/exit.hex": "named",
-                   "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "named",
-                   "tests/extraction/checked_input_smoke.ml": "module"}
-        others = ["README.md", "SCOPE.md", "theories/README.md", "reports/a4-start-state.md", "tools/check_one.py",
-                  "tools/placement_conformance/README.md"]
-        files = [{"filename": p, "previous_filename": None} for p in list(counted) + others]
+    def test_the_rule_on_this_repositorys_own_head_counts_each_file_but_a_markdown_file_that_no_dune_file_marks(self):
+        """proofs on this repository's own head: each changed file that is not a Markdown file counts, wherever it is,
+        a .v file as a proof, and the job reads each dune file. Of its dune files only theories/Examples/dune and
+        tests/dune hold .md, in comments, so a Markdown file below theories/Examples/ or tests/ counts by the nearest of
+        them, also below theories/Examples/vdso_clock/, whose own dune file holds no .md. No dune file holds a word, a
+        glob or a path that makes each Markdown file count: its (include_subdirs qualified), the comment line with the
+        word include in theories/Examples/dune, and its globs of *.vo, *.hex and *MemImage_seg_*.hex add nothing. So
+        README.md, SCOPE.md, theories/README.md, reports/a4-start-state.md and the others do not count. main as the
+        same commit changes nothing, and a list shorter than changed_files is not whole."""
+        counted = {"theories/A.v": "proof", "dune-project": "other", "theories/Examples/dune": "other",
+                   "rocq-linux-process-semantics-core.opam": "other", "tools/gen_checker.py": "other",
+                   "tests/placement/linux-6.18.46-defconfig.log": "other",
+                   "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "other",
+                   "tests/extraction/checked_input_smoke.ml": "other", "tools/check_one.py": "other",
+                   "theories/Examples/README.md": "named", "theories/Examples/vdso_clock/notes.md": "named",
+                   "tests/placement/README.md": "named"}
+        others = ["README.md", "SCOPE.md", "theories/README.md", "reports/a4-start-state.md",
+                  "tools/placement_conformance/README.md", "docs/guide.md"]
+        files = [{"filename": p, "previous_filename": None} for p in [*counted, *others]]
         facts = rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR))
         self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
         self.assertEqual({f["path"]: f["why"] for f in facts["files"]}, counted)
+        self.assertEqual({f["path"]: (f["by"], f["what"]) for f in facts["files"] if f["why"] == "named"},
+                         {"theories/Examples/README.md": ("theories/Examples/dune", ".md"),
+                          "theories/Examples/vdso_clock/notes.md": ("theories/Examples/dune", ".md"),
+                          "tests/placement/README.md": ("tests/dune", ".md")})
         self.assertEqual(rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR), main="HEAD"), facts)
         self.assertFalse(rules.proofs("HEAD", files, len(files) + 1, cwd=os.path.dirname(GITHUB_DIR))["whole"])
 
-    def test_the_dune_files_and_the_links_of_main_count_and_one_that_the_job_cannot_read_is_named(self):
-        """R8: a head from an older main merges into main, whose dune files build the merge where the head leaves them
-        as they were. With main's rule that reads logs/run.log, main's link theories/L.v to data/x.txt, and main's
-        broken/dune that does not parse, none of which the head has: a change of the log or of the link's file counts,
-        each by main's file, and broken/dune is a file of the build that the job could not read. Without main, the head
-        alone counts neither. An opam file counts in any directory, as opam or <package>.opam."""
-        with tempfile.TemporaryDirectory(prefix="review-test-") as d:
-            def git(*args):
-                return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d,
-                                      check=True, capture_output=True, text=True).stdout.strip()
-
-            def write(path, text):
-                os.makedirs(os.path.dirname(os.path.join(d, path)) or d, exist_ok=True)
-                with open(os.path.join(d, path), "w") as f:
-                    f.write(text)
-            git("init", "-q", "-b", "main")
-            for path in ("logs/run.log", "data/x.txt", "README.md"):
-                write(path, "1\n")
-            git("add", "-A")
-            git("commit", "-q", "-m", "base")
-            base = git("rev-parse", "HEAD")
-            write("tests/dune", "(rule (target R.v) (deps %{project_root}/logs/run.log) (action (echo \"x\\n\")))\n")
-            write("broken/dune", "(rule (deps a)\n")
-            os.makedirs(os.path.join(d, "theories"))
-            os.symlink("../data/x.txt", os.path.join(d, "theories", "L.v"))
-            git("add", "-A")
-            git("commit", "-q", "-m", "main moves on")
-            main = git("rev-parse", "HEAD")
-            git("checkout", "-q", "-b", "head", base)
-            for path in ("logs/run.log", "data/x.txt", "README.md"):
-                write(path, "2\n")
-            git("commit", "-q", "-am", "the pull request")
-            head = git("rev-parse", "HEAD")
-            changed = ["logs/run.log", "data/x.txt", "README.md", "opam", "pkg/rocq-x.opam"]
-            files = [{"filename": p, "previous_filename": None} for p in changed]
-            facts = rules.proofs(head, files, len(files), cwd=d, main=main)
-            alone = rules.proofs(head, files, len(files), cwd=d)
-        self.assertEqual({f["path"]: (f["why"], f["by"], f["at_head"]) for f in facts["files"]},
-                         {"logs/run.log": ("named", "tests/dune", True), "data/x.txt": ("target", "theories/L.v", True),
-                          "opam": ("build", None, False), "pkg/rocq-x.opam": ("build", None, False)})
-        self.assertEqual((facts["whole"], facts["unparsed"]), (True, ["broken/dune"]))
-        self.assertEqual(({f["path"] for f in alone["files"]}, alone["unparsed"]), ({"opam", "pkg/rocq-x.opam"}, []))
+    def test_the_dune_files_of_main_and_of_a_head_from_an_older_main_hold_the_names_that_count(self):
+        """R8 (v67): "any dune, dune-project or dune-workspace* file of main or of the head", in the directory of the
+        Markdown file or above it. A head starts from an older main whose tests/dune holds .md. main then drops .md from
+        it, and gets docs/dune-project and x/dune-workspace.ci, which hold .md. Each Markdown file below these
+        directories that the head changes counts, by the nearest such file of the head or of main, also the path that
+        a renamed file had. other.md, at the top, does not. Without main, the head alone counts the files below
+        tests/ alone."""
+        d, base = self.repository({"tests/dune": "(rule (deps old.md))\n", "README.md": "1\n"})
+        _d, main = self.repository({"tests/dune": "(rule (deps x))\n", "docs/dune-project": "; proj.md\n",
+                                    "x/dune-workspace.ci": "(lang dune 3.23)\n; ws.md\n", "README.md": "1\n"}, at=d)
+        subprocess.run(["git", "checkout", "-q", "-b", "head", base], cwd=d, check=True, capture_output=True)
+        _d, head = self.repository({"tests/dune": "(rule (deps old.md))\n", "README.md": "1\n", "tests/old.md": "o\n",
+                                    "docs/proj.md": "p\n", "x/sub/ws.md": "w\n", "other.md": "x\n", "tool.py": "t\n"},
+                                   at=d)
+        files = [{"filename": p, "previous_filename": None}
+                 for p in ("tests/old.md", "docs/proj.md", "x/sub/ws.md", "other.md")]
+        files.append({"filename": "tool.py", "previous_filename": "tests/notes/old.md"})
+        facts = rules.proofs(head, files, len(files), cwd=d, main=main)
+        self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]},
+                         {"tests/old.md": ("named", "tests/dune"), "docs/proj.md": ("named", "docs/dune-project"),
+                          "x/sub/ws.md": ("named", "x/dune-workspace.ci"), "tests/notes/old.md": ("named", "tests/dune"),
+                          "tool.py": ("other", None)})
+        self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
+        alone = rules.proofs(head, files, len(files), cwd=d)
+        self.assertEqual({f["path"] for f in alone["files"]}, {"tests/old.md", "tests/notes/old.md", "tool.py"})
 
     def test_a_new_file_below_a_directory_that_a_link_of_main_points_to_counts_for_a_head_of_an_older_main(self):
         """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". The merge
@@ -5533,50 +5596,6 @@ class SoundnessScanTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         facts = json.loads(r.stdout)
         self.assertTrue(facts["files"] or facts["unparsed"] or not facts["whole"], facts)
-
-    def test_a_dune_stanza_builds_the_ocaml_modules_that_its_modules_field_takes(self):
-        """R8: an executable, executables, library, test or tests stanza names modules, not files. A file of a module
-        (.ml, .mli, .mll, .mly) counts when the stanza takes it, as dune reads the modules field: every module with no
-        field or with :standard, the named ones, and not those that a \\ takes out. A module name matches with its first
-        letter in either case. An element that the job cannot read ((:include ...), a variable) takes every module,
-        and one more \\ takes nothing out. include_subdirs adds the directories below: by module name when unqualified,
-        every module when qualified. A stanza of ocamllex, ocamlyacc or menhir takes every module of its directory, and
-        a stanza with C stubs, or a foreign_library, each C file there. A file of another directory or of another
-        kind, and a module that the field leaves out, do not count."""
-        texts = {
-            "all/dune": "(library (name all))",
-            "some/dune": "(executable (name main) (modules main Util))",
-            "but/dune": "(executables (names a b) (modules :standard \\ gen (other)))",
-            "inc/dune": "(test (name t) (modules (:include mods.sexp)))",
-            "var/dune": "(tests (names t) (modules %{read-lines:mods}))",
-            "two/dune": "(library (name two) (modules :standard \\ a \\ b))",
-            "flat/dune": "(include_subdirs unqualified)\n(library (name flat) (modules :standard \\ skip))",
-            "deep/dune": "(include_subdirs qualified)\n(library (name deep) (modules :standard \\ skip))",
-            "lex/dune": "(ocamllex lexer)\n(menhir (modules parser))",
-            "stubs/dune": "(library (name stubs) (modules) (foreign_stubs (language c) (names s)))",
-            "clib/dune": "(foreign_library (archive_name c) (language c) (names c))",
-            "none/dune": "(rule (target x.ml) (action (echo \"\")))\n(rocq.theory (name T))"}
-        names = rules.Names()
-        for by, text in texts.items():
-            for stanza in rules.dune_sexps(text):
-                rules.dune_names(names, by, stanza, os.path.dirname(by), [os.path.dirname(by)], lambda p: "")
-        for path, by in (("all/x.ml", "all/dune"), ("all/x.mli", "all/dune"), ("all/l.mll", "all/dune"),
-                         ("all/p.mly", "all/dune"), ("some/main.ml", "some/dune"), ("some/util.ml", "some/dune"),
-                         ("some/Main.mli", "some/dune"), ("but/a.ml", "but/dune"), ("inc/any.ml", "inc/dune"),
-                         ("var/any.ml", "var/dune"), ("two/a.ml", "two/dune"), ("flat/sub/x.ml", "flat/dune"),
-                         ("deep/sub/skip.ml", "deep/dune"), ("lex/lexer.mll", "lex/dune"), ("lex/any.ml", "lex/dune"),
-                         ("stubs/s.c", "stubs/dune"), ("stubs/s.h", "stubs/dune"), ("clib/c.c", "clib/dune"),
-                         ("some/not-a-module.ml", "some/dune")):
-            with self.subTest(path=path):
-                self.assertEqual(names.built(path), by)
-        for path in ("some/other.ml", "but/gen.ml", "but/other.ml", "flat/skip.ml", "flat/sub/skip.ml",
-                     "deep/skip.ml", "stubs/x.ml", "all/x.c", "all/README.md", "all/sub/x.ml", "none/y.ml", "x.ml",
-                     "some/util.ml.orig"):
-            with self.subTest(path=path):
-                self.assertIsNone(names.built(path))
-        scope = {"v": False, "others": [("all/x.ml", "module", "all/dune")], "whole": True, "unparsed": [],
-                 "unread": []}
-        self.assertRegex(rules.section([], scope=scope), r"(?m)^- `all/x\.ml`: `all/dune` builds it\.$")
 
     def test_the_section_lists_at_most_listed_lines_and_says_how_many_more(self):
         line = re.compile(r"^- `theories/.+\.v:\d+`: `vm_compute`$", re.M)
@@ -5649,295 +5668,6 @@ class SoundnessScanTest(unittest.TestCase):
         git("commit", "-q", "--allow-empty", "-m", "a commit")
         return at, git("rev-parse", "HEAD")
 
-    def test_the_c_fields_of_a_stanza_name_the_files_that_they_read_and_one_that_the_job_cannot_read_is_refused(self):
-        """R8 (v56): a stanza with C stubs reads, beside its C files, each file below a directory of its include_dirs
-        (dune 3.23 depends on every file there, a README.md among them, and the directory can be outside the stanza's
-        own: ../include, %{project_root}/gen), the object x.o of (extra_objects x), the archives libx.a and dllx.so of
-        (foreign_archives x), and the header x.h of (install_c_headers x), each from the stanza's directory, as does
-        the include_dirs of a foreign_library. A field that the job cannot read for certain (a (lib ...) of
-        include_dirs, a variable, an (:include ...), an absolute path, a path outside the repository) is refused, so
-        that its dune file is a file of the build that the job could not read."""
-        texts = {
-            "stubs/dune": "(library (name stubs)\n (foreign_stubs (language c) (names s)"
-                          " (include_dirs ../include %{project_root}/gen))\n"
-                          " (extra_objects ../obj/foo :standard (bar))\n (foreign_archives ../lib/baz qux)\n"
-                          " (install_c_headers api))\n",
-            "clib/dune": "(foreign_library (archive_name c) (language c) (names c) (include_dirs ../h))\n"}
-        names = rules.Names()
-        for by, text in texts.items():
-            for stanza in rules.dune_sexps(text):
-                rules.dune_names(names, by, stanza, os.path.dirname(by), [os.path.dirname(by)], lambda p: "")
-        for path, by in (("include/h.h", "stubs/dune"), ("include/sub/deep.h", "stubs/dune"),
-                         ("include/README.md", "stubs/dune"), ("gen/g.h", "stubs/dune"), ("obj/foo.o", "stubs/dune"),
-                         ("stubs/bar.o", "stubs/dune"), ("lib/libbaz.a", "stubs/dune"), ("lib/dllbaz.so", "stubs/dune"),
-                         ("stubs/libqux.a", "stubs/dune"), ("stubs/dllqux.so", "stubs/dune"),
-                         ("stubs/api.h", "stubs/dune"), ("h/c.h", "clib/dune")):
-            with self.subTest(path=path):
-                self.assertEqual(names.of(path), by)
-        for path in ("include.md", "obj/foo.c", "stubs/foo.o", "lib/baz.a", "lib/README.md", "h.md"):
-            with self.subTest(path=path):
-                self.assertIsNone(names.of(path))
-        for field in ("(foreign_stubs (language c) (names s) (include_dirs (lib foo)))",
-                      "(foreign_stubs (language c) (names s) (include_dirs (lib_rec foo)))",
-                      "(foreign_stubs (language c) (names s) (include_dirs %{env:INC=inc}))",
-                      "(foreign_stubs (language c) (names s) (include_dirs /usr/include))",
-                      "(foreign_stubs (language c) (names s) (include_dirs ../../x))",
-                      "(extra_objects (:include objs.sexp))", "(extra_objects %{read-lines:objs})",
-                      "(foreign_archives %{env:A=a})"):
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                for stanza in rules.dune_sexps(f"(library (name stubs) {field})"):
-                    rules.dune_names(rules.Names(), "stubs/dune", stanza, "stubs", ["stubs"], lambda p: "")
-
-    def test_an_install_stanza_a_directory_target_and_a_path_that_leaves_build_name_each_file_below_them(self):
-        """R8, the other fields of a dune file that name a directory: an install stanza copies each file below a
-        directory of its source_trees or its dirs (dune 3.23 installs docs/a.md and docs/sub/b.md for (source_trees
-        docs)), and a rule with (targets (dir out)) writes the files below out. A program of a rule runs in the rule's
-        directory under _build/default, so a path that leaves the repository from there by those two directories reads
-        the source tree itself (gcc compiles with -I %{project_root}/../../include, with no dependency of dune on it):
-        that path counts, with each file below it, and so does each file below a chdir there. A file that no field
-        names does not."""
-        text = ("(install (section doc) (source_trees docs (manual as man)))\n"
-                "(install (section share) (dirs (gen as g)))\n"
-                "(rule (targets (dir out)) (action (system \"mkdir out\")))\n"
-                "(rule (target t) (action (system \"cat ../../../data/z.txt > t\")))\n"
-                "(rule (target u) (action (chdir %{project_root}/../../notes (run cat n.txt))))\n")
-        names = rules.Names()
-        for stanza in rules.dune_sexps(text):
-            rules.dune_names(names, "tests/dune", stanza, "tests", ["tests"], lambda p: "")
-        for path in ("tests/docs/a.md", "tests/docs/sub/b.md", "tests/manual/m.txt", "tests/gen/x", "tests/out/y",
-                     "data/z.txt", "data/z.txt/part", "notes/n.txt", "notes/other.txt"):
-            with self.subTest(path=path):
-                self.assertEqual(names.of(path), "tests/dune")
-        for path in ("README.md", "tests/README.md", "data/other.txt", "docs/a.md", "notes.md"):
-            with self.subTest(path=path):
-                self.assertIsNone(names.of(path))
-
-    def test_the_dune_files_and_the_files_behind_a_link_to_a_directory_count_and_so_does_the_link(self):
-        """R8: dune follows a link to a directory, in the head and in main. Main's t/ext points to ../vendor: the
-        (glob_files_rec *.hex) of t/dune reads vendor/x.hex, dune 3.23 reads vendor/dune as t/ext/dune, whose
-        ../secret.txt is t/secret.txt (and secret.txt as vendor/dune), and main's link theories/Foo.v, to
-        ../t/ext/y.txt, reads vendor/y.txt. The head points t/ext to ../other, so other/y.hex counts too. The link
-        t/ext counts, as the way to those files. A Markdown file in either directory, which nothing reads, does not.
-        The section names the link of each."""
-        files = {"t/dune": "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
-                           " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n",
-                 "vendor/x.hex": "00\n", "vendor/README.md": "# Vendor\n", "vendor/y.txt": "y\n",
-                 "vendor/dune": "(rule (target V.txt) (deps ../secret.txt) (action (copy ../secret.txt V.txt)))\n",
-                 "t/secret.txt": "s\n", "secret.txt": "s\n", "other/y.hex": "01\n", "other/README.md": "# Other\n"}
-        d, main = self.repository(files, {"t/ext": "../vendor", "theories/Foo.v": "../t/ext/y.txt"})
-        _d, head = self.repository(files, {"t/ext": "../other", "theories/Foo.v": "../t/ext/y.txt"}, at=d)
-        changed = ["vendor/x.hex", "vendor/README.md", "vendor/y.txt", "t/secret.txt", "secret.txt", "other/y.hex",
-                   "other/README.md", "t/ext"]
-        facts = rules.proofs(head, [{"filename": p, "previous_filename": None} for p in changed], len(changed), cwd=d,
-                             main=main)
-        got = {f["path"]: (f["why"], f["by"]) for f in facts["files"]}
-        self.assertEqual(got, {"vendor/x.hex": ("target", "t/ext"), "other/y.hex": ("target", "t/ext"),
-                               "vendor/y.txt": ("target", "theories/Foo.v"), "t/secret.txt": ("named", "t/ext/dune"),
-                               "secret.txt": ("named", "vendor/dune"), "t/ext": ("link", "t/ext/y.hex")})
-        self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
-        scope = {"v": False, "others": [(p, why, by) for p, (why, by) in got.items()], "whole": True, "unparsed": [],
-                 "unread": []}
-        shown = rules.section([], scope=scope)
-        self.assertRegex(shown, r"(?m)^- `vendor/x\.hex`: the build reads it through the link `t/ext`\.$")
-        self.assertRegex(shown, r"(?m)^- `t/ext`: the build reads `t/ext/y\.hex` through this link\.$")
-
-    def test_a_link_that_dune_cannot_follow_in_the_tree_is_a_link_of_its_own_list_with_why(self):
-        """R8: a link whose way leaves the tree (an absolute target, or one above the root), a loop (a link to a
-        directory on its own way, which dune 3.23 refuses: "Path . has already been scanned", or two links to each
-        other, whose way follows more than LINK_HOPS links), and a link whose target git holds in more than LINK_BYTES
-        bytes can lead anywhere: each goes on the list of the links that dune cannot follow, with why, so every outside
-        pull request gets the person verdict. It is no dune file that the job could not read. So are the links to
-        directories that would take dune's view of the tree over VIEW_PATHS paths: two links in each of 18 directories,
-        each to the next one, make 2^18 paths of the last file."""
-        d, _head = self.repository({"t/dune": "(rule (deps (glob_files_rec *.hex)) (action (echo \"\")))\n",
-                                    "vendor/x.hex": "00\n"},
-                                   {"t/up": "..", "t/self": ".", "t/abs": "/usr/include", "t/out": "../../x",
-                                    "loop/a": "b", "loop/b": "a", "t/ok": "../vendor"})
-        long = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=d, input="x/" * 2500, check=True,
-                              capture_output=True, text=True).stdout.strip()
-        for args in (("update-index", "--add", "--cacheinfo", f"120000,{long},t/long"), ("commit", "-q", "-m", "long")):
-            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@localhost", *args], cwd=d, check=True,
-                           capture_output=True)
-        files = [{"filename": "vendor/x.hex", "previous_filename": None}]
-        facts = rules.proofs("HEAD", files, 1, cwd=d)
-        self.assertEqual(facts["unparsed"], [])
-        self.assertEqual({f["path"]: f["why"] for f in facts["unfollowed"]},
-                         {"loop/a": "hops", "loop/b": "hops", "t/abs": "out", "t/long": "unread", "t/out": "out",
-                          "t/self": "loop", "t/up": "loop"})
-        self.assertEqual(facts["files"], [{"path": "vendor/x.hex", "why": "target", "by": "t/ok", "at_head": True}])
-        levels = 18
-        d, _head = self.repository({f"d{i}/f": "f\n" for i in range(levels + 1)},
-                                   {f"d{i}/{c}": f"../d{i + 1}" for i in range(levels) for c in "ab"})
-        unfollowed = rules.proofs("HEAD", [], 0, cwd=d)["unfollowed"]
-        self.assertTrue(unfollowed)
-        self.assertTrue(all(re.fullmatch(r"d[0-9]+/[ab]", f["path"]) and f["why"] == "many" for f in unfollowed),
-                        unfollowed)
-
-    def test_the_section_lists_the_links_that_dune_cannot_follow_apart_from_the_files_that_it_could_not_read(self):
-        """b7: a pull request that adds docs/manual, a link to /usr/share/doc that no dune file reads through, and
-        changes README.md gets the person verdict: the workflow cannot tell which files the build reads through the
-        link. The section says so in a list of its own, with why for each link, and does not call the link a file of
-        the build that the workflow could not read. A dune file that does not parse still gets that sentence."""
-        main_files = {"theories/dune": "(rocq.theory (name M))\n", "theories/A.v": "Lemma a : True.\n",
-                      "README.md": "hi\n"}
-        d, main = self.repository(main_files)
-        _d, head = self.repository(dict(main_files, **{"README.md": "hi again\n"}), {"docs/manual": "/usr/share/doc"},
-                                   at=d)
-        files = [{"filename": p, "previous_filename": None} for p in ("README.md", "docs/manual")]
-        facts = rules.proofs(head, files, len(files), cwd=d, main=main)
-        self.assertEqual((facts["files"], facts["unparsed"], facts["unfollowed"]),
-                         ([], [], [{"path": "docs/manual", "why": "out"}]))
-        self.write("commits.txt", f"base {main}\nhead {head}\n")
-        self.write(rules.SOUNDNESS_FILE, json.dumps(facts))
-        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
-        got, section, _all = rules.soundness(self.review, output, "true", "true")
-        self.assertEqual(got["verdict"], "person")
-        self.assertIn("The workflow cannot show that this pull request changes no Rocq proof.", section)
-        self.assertIn("The workflow cannot tell which files the build reads through these links:\n\n"
-                      "- `docs/manual`: it points out of the repository.", section)
-        self.assertNotIn("could not read", section)
-        scope = {"v": False, "others": [], "whole": True, "unparsed": ["broken/dune"], "unread": [],
-                 "unfollowed": [(f"l{i}", why) for i, why in enumerate(rules.UNFOLLOWED)]}
-        shown = rules.section([], scope=scope)
-        self.assertIn("The workflow could not read these files of the build:\n\n- `broken/dune`\n\n", shown)
-        self.assertEqual(re.findall(r"(?m)^- `(l[0-9]+)`: (.+)$", shown),
-                         [(f"l{i}", text) for i, text in enumerate(rules.UNFOLLOWED.values())])
-
-    def test_the_paths_of_the_c_flags_of_a_stanza_and_of_an_env_stanza_count_joined_or_apart(self):
-        """R8: a flag of the C compiler or of the linker reads a path, joined to it or apart: -L in c_library_flags,
-        -isystem, -iquote, and a path that -Wl,... passes to the linker. c_library_flags apply where an executable links
-        the library, and the C flags of an env stanza to each stanza below it: dune 3.23 compiles a stub of stubs/ in
-        _build/default/stubs, so the root's (env (_ (c_flags -I../../../inc))) reads inc/ from there. A variable or an
-        (:include ...) in C flags makes the dune file one that the job could not read for certain, but a variable of
-        a macro does not. A Markdown file of docs/, which no flag names, does not count."""
-        stub = "(foreign_stubs (language c) (names s)"
-        for files, path, by in (
-                ({"stubs/dune": f"(library (name s) {stub}) (c_library_flags (-L../../../vendor/lib -lz)))\n"},
-                 "vendor/lib/libz.a", "stubs/dune"),
-                ({"lib/dune": f"(library (name l) {stub}) (c_library_flags (-L ../../../../ext -lz)))\n",
-                  "bin/x/dune": "(executable (name main) (libraries l))\n"}, "ext/libz.a", "lib/dune"),
-                ({"dune": "(env (_ (c_flags (:standard -I../../../inc))))\n",
-                  "stubs/dune": f"(library (name s) {stub}))\n"}, "inc/x.h", "dune"),
-                ({"dune": "(env (dev (cxx_flags -isystem ../../../sys)) (_ (c_flags -O2)))\n",
-                  "stubs/dune": f"(library (name s) {stub}))\n"}, "sys/y.h", "dune"),
-                ({"stubs/dune": f"(library (name s) {stub} (flags :standard -iquote../../../q)))\n"}, "q/z.h",
-                 "stubs/dune"),
-                ({"stubs/dune": f"(library (name s) {stub}) (c_library_flags (-Wl,-L../../../wl,-lq)))\n"},
-                 "wl/libq.a", "stubs/dune"),
-                ({"clib/dune": "(foreign_library (archive_name c) (language c) (names c) (flags -I../../../h))\n"},
-                 "h/c.h", "clib/dune"),
-                ({"stubs/dune": f"(library (name s) {stub}) (c_flags (-DV=%{{version:s}} -I../../../inc)))\n"},
-                 "inc/x.h", "stubs/dune")):
-            with self.subTest(files=files):
-                d, _head = self.repository(dict(files, **{path: "x\n", "docs/README.md": "# Docs\n"}))
-                changed = [{"filename": p, "previous_filename": None} for p in (path, "docs/README.md")]
-                facts = rules.proofs("HEAD", changed, len(changed), cwd=d)
-                self.assertEqual(({f["path"]: (f["why"], f["by"]) for f in facts["files"]}, facts["unparsed"]),
-                                 ({path: ("named", by)}, []))
-        for files, unread in (
-                ({"stubs/dune": f"(library (name s) {stub}) (c_flags (:standard -I%{{env:INC=inc}})))\n"},
-                 "stubs/dune"),
-                ({"stubs/dune": f"(library (name s) {stub} (flags (:include flags.sexp))))\n"}, "stubs/dune"),
-                ({"dune": "(env (_ (c_library_flags (%{read-lines:libs}))))\n"}, "dune")):
-            with self.subTest(files=files):
-                d, _head = self.repository(dict(files, **{"docs/README.md": "# Docs\n"}))
-                changed = [{"filename": "docs/README.md", "previous_filename": None}]
-                self.assertEqual(rules.proofs("HEAD", changed, 1, cwd=d)["unparsed"], [unread])
-
-    def test_the_merge_counts_a_file_that_the_links_of_main_and_of_the_head_make_the_build_read(self):
-        """R8: the merge of a head from an older main builds with the head's changed paths and main's other files and
-        links. The head adds t/ext, a link to ../vendor, and changes t/secret.txt, and main gets vendor/dune, whose
-        rule reads ../secret.txt: in the merge, dune reads vendor/dune as t/ext/dune, and so t/secret.txt. And main
-        points the link t/ext of the start from ../vendor to ../vendor2, which the (glob_files_rec *.hex) of t/dune
-        then reads, while the head adds vendor2/new.hex: the merge reads it as t/ext/new.hex. The head alone reads
-        neither file."""
-        base = {"t/dune": "(rule (target H.txt) (deps (glob_files_rec *.hex))\n"
-                          " (action (with-stdout-to H.txt (system \"cat %{deps}\"))))\n",
-                "t/secret.txt": "s\n", "vendor/old.hex": "00\n", "vendor2/old.hex": "00\n"}
-        for links, main_links, main_files, head_links, head_files, path, why, by in (
-                ({}, {}, {"vendor/dune": "(rule (target V) (deps ../secret.txt) (action (copy ../secret.txt V)))\n"},
-                 {"t/ext": "../vendor"}, {"t/secret.txt": "t\n"}, "t/secret.txt", "named", "t/ext/dune"),
-                ({"t/ext": "../vendor"}, {"t/ext": "../vendor2"}, {}, {"t/ext": "../vendor"},
-                 {"vendor2/new.hex": "11\n"}, "vendor2/new.hex", "target", "t/ext")):
-            with self.subTest(path=path):
-                d, start = self.repository(base, links)
-                _d, main = self.repository(dict(base, **main_files), main_links, at=d)
-                subprocess.run(["git", "checkout", "-q", "-b", "head", start], cwd=d, check=True, capture_output=True)
-                _d, head = self.repository(dict(base, **head_files), head_links, at=d)
-                changed = sorted(set(head_files) | {p for p in head_links if links.get(p) != head_links[p]})
-                files = [{"filename": p, "previous_filename": None} for p in changed]
-                facts = rules.proofs(head, files, len(files), cwd=d, main=main)
-                self.assertEqual({f["path"]: (f["why"], f["by"]) for f in facts["files"]}.get(path), (why, by))
-                alone = rules.proofs(head, files, len(files), cwd=d)
-                self.assertNotIn(path, [f["path"] for f in alone["files"]])
-
-    def test_the_c_flags_of_the_env_of_a_dune_workspace_file_of_main_count_for_a_head_of_an_older_main(self):
-        """R8: a dune-workspace file sets the C and linker flags of each stanza of the tree, in an (env ...) at its top
-        or in a (context (default (env ...))). main gets such a file after the commit that the head starts from, and the
-        head changes only a file that the flags of that file name: inc/x.h, which the stub of stubs/ then reads through
-        -I../../../inc, or lib/libz.a through -L../../../lib. Each counts, by main's dune-workspace file, and the head
-        alone does not count it. A variable in such a field makes the dune-workspace file one that the job could not
-        read for certain."""
-        base = {"stubs/dune": "(library (name s) (foreign_stubs (language c) (names s)))\n", "stubs/s.c": "int s;\n",
-                "inc/x.h": "#define X 1\n", "lib/libz.a": "a\n", "README.md": "# Model\n"}
-        for workspace, path in (
-                ("(lang dune 3.23)\n(context (default (env (_ (c_flags (:standard -I../../../inc))))))\n", "inc/x.h"),
-                ("(lang dune 3.23)\n(env (_ (c_library_flags (-L../../../lib -lz))))\n", "lib/libz.a")):
-            with self.subTest(path=path):
-                d, start = self.repository(base)
-                _d, main = self.repository(dict(base, **{"dune-workspace": workspace}), at=d)
-                subprocess.run(["git", "checkout", "-q", "-b", "head", start], cwd=d, check=True, capture_output=True)
-                _d, head = self.repository(dict(base, **{path: "changed\n"}), at=d)
-                files = [{"filename": path, "previous_filename": None}]
-                facts = rules.proofs(head, files, 1, cwd=d, main=main)
-                self.assertEqual(([(f["path"], f["why"], f["by"]) for f in facts["files"]], facts["unparsed"]),
-                                 ([(path, "named", "dune-workspace")], []))
-                self.assertEqual(rules.proofs(head, files, 1, cwd=d)["files"], [])
-        d, _head = self.repository(dict(base, **{"dune-workspace": "(lang dune 3.23)\n"
-                                                                   "(env (_ (c_flags (%{env:CFLAGS=}))))\n"}))
-        self.assertEqual(rules.proofs("HEAD", [{"filename": "README.md", "previous_filename": None}], 1,
-                                      cwd=d)["unparsed"], ["dune-workspace"])
-
-    def test_facts_past_the_bound_of_work_count_the_pull_request_and_say_that_the_check_stopped(self):
-        """The work of the facts stops past WORK, well within the 20 minutes of the gather job: then proofs gives no
-        file and a list that is not whole, which gives the person verdict, and the section says that the check
-        stopped, not that GitHub cut the list."""
-        d, head = self.repository({"t/dune": "(rule (deps (glob_files_rec *.hex)) (action (echo \"\")))\n",
-                                   "README.md": "# Model\n"})
-        files = [{"filename": "README.md", "previous_filename": None}]
-        self.assertEqual(rules.proofs(head, files, 1, cwd=d, main=head),
-                         {"whole": True, "files": [], "unparsed": [], "unfollowed": [], "stopped": False})
-        self.addCleanup(setattr, rules, "WORK", rules.WORK)
-        rules.WORK = 10
-        facts = rules.proofs(head, files, 1, cwd=d, main=head)
-        self.assertEqual(facts, {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": True})
-        self.write("commits.txt", f"base {head}\nhead {head}\n")
-        self.write(rules.SOUNDNESS_FILE, json.dumps(facts))
-        output = {"comment": "c", "verdict": "pass", "will_fix": False, "items": []}
-        got, section, _all = rules.soundness(self.review, output, "true", "true")
-        self.assertEqual(got["verdict"], "person")
-        self.assertIn("The workflow stopped its check of the changed files at its limit of work, so it did not check "
-                      "each of them.", section)
-        self.assertNotIn("GitHub did not give", section)
-
-    def test_a_dune_file_that_nests_too_deep_to_read_is_a_file_of_the_build_that_the_job_could_not_read(self):
-        """R8: a dune file whose lists nest deeper than DUNE_DEPTH is one that the job does not read. A chain of
-        includes, each one nested less deep, can still nest deeper than Python reads (RecursionError, which is no
-        ValueError): its dune file is a file of the build that the job could not read too, and the job goes on."""
-        self.assertEqual(len(rules.dune_sexps("(" * rules.DUNE_DEPTH + ")" * rules.DUNE_DEPTH)), 1)
-        with self.assertRaises(ValueError):
-            rules.dune_sexps("(" * (rules.DUNE_DEPTH + 1) + ")" * (rules.DUNE_DEPTH + 1))
-        nested = rules.DUNE_DEPTH - 4
-        files = {"t/dune": "(include i0.inc)\n", f"t/i{rules.INCLUDES - 1}.inc": "(rule (deps x))\n"}
-        for k in range(rules.INCLUDES - 1):
-            files[f"t/i{k}.inc"] = "(a " * nested + f"(include i{k + 1}.inc)" + ")" * nested + "\n"
-        with self.assertRaises(RecursionError):
-            for stanza in rules.dune_sexps(files["t/dune"]):
-                rules.dune_names(rules.Names(), "t/dune", stanza, "t", ["t"], lambda p: files[p])
-        d, _head = self.repository(dict(files, **{"u/dune": "(rule " + "(" * 100 + ")" * 100 + ")\n"}))
-        facts = rules.proofs("HEAD", [{"filename": "t/x", "previous_filename": None}], 1, cwd=d)
-        self.assertEqual(facts["unparsed"], ["t/dune", "u/dune"])
-
     def test_the_commands_of_the_gather_job_and_of_the_comment_take_json_that_nests_too_deep_as_json_they_cannot_read(
             self):
         """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads. The
@@ -5956,7 +5686,7 @@ class SoundnessScanTest(unittest.TestCase):
         r = subprocess.run([sys.executable, RULES_PY, "proofs", head, head, os.path.join(self.review, "files.jsonl"),
                             "1"], cwd=d, capture_output=True, text=True)
         self.assertEqual((r.returncode, json.loads(r.stdout) if r.returncode == 0 else r.stderr),
-                         (0, {"whole": False, "files": [], "unparsed": [], "unfollowed": [], "stopped": False}))
+                         (0, {"whole": False, "files": [], "unparsed": []}))
 
     def test_a_file_of_the_lock_directory_of_dune_counts_as_a_file_of_the_build(self):
         """R8: "any other file that a dune rule of the repository reads or writes", wherever it is in the tree; an opam
@@ -12178,34 +11908,38 @@ class ImportCheckTest(ReaderRunner):
     def test_while_the_hold_lasts_a_change_that_is_not_markdown_alone_gets_no_check_run(self):
         """While SOUNDNESS_HOLD is "true", with a stand-in model that misses the soundness verdict (it passes each
         one), and soundness.json as the gather job writes it from this repository's own dune files (proofs): a .v
-        file, only tools/gen_checker.py (which a rule of theories/Examples/dune runs), only a dune file with an echo
-        rule, and only a .hex file under theories/Examples/ (which a glob of that dune file takes) each get the person
-        verdict of the soundness rule (R8); only tools/check_one.py, which no dune file names, keeps the model's pass,
-        and the Markdown-only rule of R12 stops it. No check run, and waits-on-theorem with the steps of R12 for the
-        variable's state: with no variable, each step that can follow; with the pair's import_paths, which take each
-        of these paths, Sami's approval of the head for the import."""
+        file, only tools/gen_checker.py, only a dune file with an echo rule, only a .hex file under theories/Examples/
+        and only tools/check_one.py each get the person verdict of the soundness rule (R8), which counts each file that
+        is not a Markdown file. A pass at such a head, as the model gave it, gets no check run either: the Markdown-only
+        rule of R12 reads the changed paths itself and stops it. No check run, and waits-on-theorem with the steps of
+        R12 for the variable's state: with no variable, each step that can follow; with the pair's import_paths, which
+        take each of these paths, Sami's approval of the head for the import."""
         self.assertEqual(WF["env"]["SOUNDNESS_HOLD"], "true")
         for path, text, verdict, decision in (
                 ("theories/Fd.v", "Lemma fd : True.\nProof. exact I. Qed.\n", "person", "person"),
                 ("tools/gen_checker.py", "print('checker')\n", "person", "person"),
                 ("dune", '(rule\n (alias runtest)\n (action (echo "checked\\n")))\n', "person", "person"),
                 ("theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex", "7f454c46\n", "person", "person"),
-                ("tools/check_one.py", "print('one')\n", "pass", "markdown")):
+                ("tools/check_one.py", "print('one')\n", "person", "person"),
+                ("tools/check_one.py", None, "pass", "markdown")):
             for value in (None, self.LPS):
-                with self.subTest(path=path, variable=value is not None):
+                with self.subTest(path=path, verdict=verdict, variable=value is not None):
                     self.tearDown()
                     self.setUp()
-                    full = os.path.join(self.work, ".review", "head", path)
-                    os.makedirs(os.path.dirname(full))
-                    with open(full, "w") as f:
-                        f.write(text)
-                    with open(os.path.join(self.work, ".review", "pr.json"), "w") as f:
-                        json.dump({"files": [{"path": path}]}, f)
-                    with open(os.path.join(self.work, ".review", rules.SOUNDNESS_FILE), "w") as f:
-                        json.dump(rules.proofs("HEAD", [{"filename": path, "previous_filename": None}], 1,
-                                               cwd=os.path.dirname(GITHUB_DIR)), f)
-                    rc, out, reviewed = self.post("No blocking finding.", [], "No blocking finding.", "pass")
-                    self.assertEqual((rc, reviewed["verdict"]), (0, verdict), out)
+                    if text is not None:
+                        full = os.path.join(self.work, ".review", "head", path)
+                        os.makedirs(os.path.dirname(full))
+                        with open(full, "w") as f:
+                            f.write(text)
+                        with open(os.path.join(self.work, ".review", "pr.json"), "w") as f:
+                            json.dump({"files": [{"path": path}]}, f)
+                        with open(os.path.join(self.work, ".review", rules.SOUNDNESS_FILE), "w") as f:
+                            json.dump(rules.proofs("HEAD", [{"filename": path, "previous_filename": None}], 1,
+                                                   cwd=os.path.dirname(GITHUB_DIR)), f)
+                        rc, out, reviewed = self.post("No blocking finding.", [], "No blocking finding.", "pass")
+                        self.assertEqual((rc, reviewed["verdict"]), (0, verdict), out)
+                    else:
+                        reviewed = {"verdict": verdict}
                     got = self.judge([path], reviewed["verdict"], value)
                     self.assertNotRecorded(got, decision)
                     step_line = self.PERSON if verdict == "person" else self.SOME if value is None else self.APPROVE
