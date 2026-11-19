@@ -5559,6 +5559,28 @@ class SoundnessScanTest(unittest.TestCase):
                 self.assertEqual(facts["files"], [] if what is None else [
                     {"path": "docs/a.md", "why": "named", "by": "lib/dune", "what": what, "at_head": False}])
 
+    def test_an_escaped_line_break_or_a_block_string_of_a_dune_file_hides_no_glob_and_no_string_that_counts(self):
+        """R8 (v68): a glob_files whose pattern, after its last ., is not one fixed extension other than md, and a
+        string that holds .md and .., make each Markdown file count. dune 3.23 reads "*.m\\<line break>   d" as the
+        pattern *.md, the escaped line break and the blanks after it dropped, and copies t/x.md for the rule: t/x.md
+        counts by that glob of t/dune, whose text holds no .md. dune 3.23 reads "a\\<line break>   b" as one string,
+        and "\\| hi as one string to the end of its line, with no closing quote; after either one, "../docs/a b.md" of
+        the same file is still a string that holds .md and .., and dune 3.23 copies docs/a b.md for the rule. So
+        docs/a b.md counts, as it does after a plain string."""
+        rule = '(rule (target G.v)\n (action (with-stdout-to G.v (progn {} (system "cat ../docs/*")))) (deps {}))\n'
+        glob = ('(rule (target G.v) (deps (glob_files "*.m\\\n   d"))'
+                ' (action (with-stdout-to G.v (system "cat *.m*"))))\n')
+        for text, path, what in (
+                (rule.format('(echo "hi")', '"../docs/a b.md"'), "docs/a b.md", '"../docs/a b.md"'),
+                (rule.format('(echo "a\\\n   b")', '"../docs/a b.md"'), "docs/a b.md", '"../docs/a b.md"'),
+                (rule.format('(echo "\\| hi\n )', '"../docs/a b.md"'), "docs/a b.md", '"../docs/a b.md"'),
+                (glob, "t/x.md", 'glob_files "*.m\\\n   d"')):
+            with self.subTest(text=text):
+                d, head = self.repository({"t/dune": text, path: "1\n"})
+                facts = rules.proofs(head, [{"filename": path, "previous_filename": None}], 1, cwd=d, main=head)
+                self.assertEqual(facts["files"], [{"path": path, "why": "named", "by": "t/dune", "what": what,
+                                                   "at_head": True}])
+
     def test_a_file_that_a_dune_rule_reads_through_a_link_to_its_directory_counts(self):
         """R8: "any other file that a dune rule of the repository reads or writes, wherever it is in the tree". dune
         follows a link to a directory: with t/ext a link to ../vendor, the (glob_files_rec *.hex) of t/dune reads
