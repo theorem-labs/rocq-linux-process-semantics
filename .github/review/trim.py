@@ -35,17 +35,24 @@ that text is what the reader reads and what the collapsed block holds. The comme
 parts, in this order:
 
     <head>                             the caller's fixed text, with its markers
-    the trimmed text
+    the trimmed text                   with the review's result line first (with_result)
     <section>                          the caller's fixed text (rules.py's soundness section)
     LEFT_OUT                           each listed item that is not optional and that the trimmed text lacks
     OPTIONAL                           each listed optional item that the trimmed text lacks
     ---  <foot>                        the caller's fixed text
     <details>                          the review, made inert, cut and closed, collapsed
 
+The first line of a pull request's review is its result (.github/review.md, "The comment"): a line that starts with
+one of RESULTS. A pull request's review is one whose head holds the marker <!-- review-head <commit> -->. When the
+first line of the review that is not empty starts with one of RESULTS, and the first such line of the trimmed text
+does not start with the same one, that line of the review goes back at the start of the trimmed text: the reader
+dropped it. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
+
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
 names no path and no line, is left to the reader, whose instruction says to keep each item. An item with no optional
-key is not optional. An item is added word for word. The trimmed text and each added item are made inert and closed.
+key is not optional. An item is added word for word. The trimmed text, a result line that goes back and each added
+item are made inert and closed.
 A closed text (closed) leaves nothing open that would take in the part after it, as GitHub renders it: no fenced code
 block, no HTML block that a blank line does not end and no element of HTML (a <details>, a <b>, an <a>), and it closes
 no element outside it (the collapsed block). So each fixed part keeps its place and its form, and the whole review
@@ -115,6 +122,11 @@ LEFT_OUT = "This review also has these items:"
 OPTIONAL = "This review also has these optional items:"
 WHOLE = "The review before Claude shortened it"
 CUT_WHOLE = "(The rest of this review is in the summary of this workflow run.)"
+# The forms of the first line of a pull request's review, its result, for the verdicts pass, blocking and person
+# (.github/review.md, "The comment"), and the marker of the head of a pull request's review, which names its head
+# commit. An issue's review has no fixed form, and its head has no such marker.
+RESULTS = ("No blocking finding.", "Blocking findings.", "Questions for Sami:")
+REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # A review, an answer, the summary of a fix and each why are cut at this many characters before the reader reads them.
 CUT = 20_000
 CUT_NOTE = "(The workflow cut the text here, at 20,000 characters.)"
@@ -1304,11 +1316,35 @@ def framed(parts, foot=""):
     return text
 
 
+def first_line(text):
+    """The first line of text that is not empty, or "" when there is none."""
+    return next((line for line in text.split("\n") if line.strip()), "")
+
+
+def result_of(line):
+    """The form of RESULTS that line starts with, with its Markdown formatting taken out (plain), or None."""
+    start = plain(line).lstrip()
+    return next((form for form in RESULTS if start.startswith(form)), None)
+
+
+def with_result(review, trimmed, head):
+    """trimmed, with the result line of review back at its start when the reader dropped it: in a pull request's review
+    (head holds REVIEW_HEAD), the first line of review that is not empty starts with a form of RESULTS, and the first
+    such line of trimmed does not start with the same form. The line goes back made inert and closed, as an added
+    item does. An issue's review, and a review whose first line has no such form, stay as the reader gave them."""
+    line = first_line(review)
+    form = result_of(line)
+    if not REVIEW_HEAD.search(head) or form is None or result_of(first_line(trimmed)) == form:
+        return trimmed
+    return f"{closed(inert(line.strip()))}\n\n{trimmed}"
+
+
 def comment(review, trimmed, items, head="", section="", foot=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
-    read, made inert, cut and closed; the trimmed text and the added items are made inert and closed here. The
-    collapsed copy loses its end when the comment would be over MAX_COMMENT characters."""
-    trimmed = closed(inert(trimmed))
+    read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result) and the
+    added items are made inert and closed here. The collapsed copy loses its end when the comment would be over
+    MAX_COMMENT characters."""
+    trimmed = with_result(review, closed(inert(trimmed)), head)
     extra = added(missing(items, trimmed))
 
     def build(whole):

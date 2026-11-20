@@ -194,6 +194,14 @@ head_marks() {
        any($b[]; startswith("<!-- review-label -->")
          and test("\n<!-- review-steering " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
 }
+# no_key_of <number> <head>: true when the label comment of github-actions[bot] on <number> holds
+# <!-- review-no-key <head> -->: the screen passed <head> while the environment post held no key of the Theorem
+# Verify App, so the post job approved no run of it, and a person at Theorem approves its runs.
+no_key_of() {
+  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+  comments "$1" | SHA=$2 jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
+    | startswith("<!-- review-label -->") and test("\n<!-- review-no-key " + $ENV.SHA + " -->(\n|$)")))'
+}
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
 gave_up() {
@@ -866,9 +874,10 @@ due_draft() {
 # newest approval run of the head. A post job that failed at a step that is not a sign-in counts a try of the
 # head; after REVIEW_TRIES of them, the head is not tried again (head_stopped). A hold of an approval that is
 # tried again leaves it to that hold (due_held). Never for a head that the label comment records as one that
-# changes a file under .github/ (head_marks, steered): the post job approves no run of such a head.
+# changes a file under .github/ (head_marks, steered), or as one that the screen passed while the environment
+# post held no key of the Theorem Verify App (no_key_of): the post job approved no run of such a head.
 due_approve() {
-  local list n last created ended run f screen post tries
+  local list n last created ended run f screen post tries keyless
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
   list=$(held_at "$head" "${pr_repo[$number]:-0}" "${pr_ref[$number]:--}") \
     || { echo "::error::the runs of $head could not be read."; return 1; }
@@ -880,6 +889,12 @@ due_approve() {
   if [ "$steered" = true ]; then
     echo "#$number: $head changes a file under .github/, as its label comment records, so a person at Theorem" \
       "approves its runs."
+    return 0
+  fi
+  keyless=$(no_key_of "$number" "$head") || { echo "::error::the comments of #$number could not be read."; return 1; }
+  if [ "$keyless" = true ]; then
+    echo "#$number: its label comment records that the environment post held no key of the Theorem Verify App when" \
+      "a run screened $head, so a person at Theorem approves its runs."
     return 0
   fi
   if [ -n "$(awk -v h="$head" -v last="$last" '$3 == "-" && $9 == h && $2 >= last' <<< "$hold")" ]; then

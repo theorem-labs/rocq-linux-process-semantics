@@ -109,10 +109,12 @@ jobs:
   #             not fail, or a hold that is not tried again names the head), once an hour. Never a head that its label
   #             comment records as one that changes a file under .github/ (<!-- review-steering <head> -->): the post
   #             job approves no run of such a head, and a person at Theorem approves them.
-  #   retry     the App's retry: a run of a head whose post job failed, at a sign-in (until the environment post holds
-  #             the App's key) or at a write of the App, gets an approval again for an approval, a relabel for a review
-  #             or a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an
-  #             hour.
+  #   retry     the App's retry: a run of a head whose post job failed, at a sign-in or at a write of the App, gets an
+  #             approval again for an approval, a relabel for a review or a relabel (it records the import check run
+  #             with no model), and a catch-up for a catch-up, once an hour. While the environment post holds the
+  #             App's key, a sign-in that GitHub refuses fails the post job. While it holds no key (until the LPS move
+  #             of dispatch://OSSV-321), the post job writes nothing with the App and ends with success, so no retry
+  #             follows.
   #   conflict  an outside pull request whose head has a merge conflict (mergeable_state dirty), for which GitHub starts
   #             no CI run, and whose label comment does not record that conflict yet (its line
   #             <!-- review-conflict-state <head> -->): the comment that asks the author to resolve it. When the line

@@ -89,6 +89,14 @@ MINT_B = "Sign in as the Theorem Verify App to approve"
 # review.yml, and its key, a secret of the environment post.
 VERIFY_CLIENT_ID = "${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}"
 VERIFY_KEY = "${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY }}"
+# The context of that key, which run_job fills in with a stand-in key when a test gives none: an empty one is the key
+# that the environment post does not hold yet (R10).
+APP_KEY = "secrets.THEOREM_VERIFY_APP_PRIVATE_KEY"
+# The post job's last step, which runs while the environment post holds no key of the App, and the line that it writes
+# to the run's summary.
+NO_KEY = "Say that the environment post holds no key of the Theorem Verify App"
+NO_KEY_LINE = ("The environment `post` holds no key of the Theorem Verify App. So this run approved no held run, "
+               "recorded or changed no check run `repo-pairs/import-approved`, and closed or reopened no pull request.")
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
 BOT = "github-actions[bot]"   # the account of this workflow's comments and reviews, and of the runs the pass starts
@@ -2684,16 +2692,24 @@ class LimitTest(Runner):
 
 class HoldingsTest(unittest.TestCase):
     """What each job holds: the screen job no write token and no secret; the comment, hold and post jobs no model; the
-    post job alone the App's key, in its sign-in steps alone."""
+    post job alone the App's key, in its sign-in steps alone, and whether the key is empty in its env."""
+
+    # The post job's env value that says whether the environment post holds the App's key: true or false (R10).
+    KEY_SET = "${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}"
 
     def test_only_the_post_job_reads_a_secret_and_only_the_apps_key_in_its_sign_in_steps(self):
+        """The key goes to the post job's two sign-in steps alone. The post job's env reads only whether it is empty,
+        as APP_KEY_SET, which is true or false and holds no text of the key."""
         with open(WORKFLOW) as f:
             text = f.read()
-        self.assertEqual(re.findall(r"\$\{\{[^}]*\bsecrets\b[^}]*\}\}", text), [VERIFY_KEY] * 2)
+        self.assertEqual(re.findall(r"\$\{\{[^}]*\bsecrets\b[^}]*\}\}", text), [self.KEY_SET] + [VERIFY_KEY] * 2)
         self.assertNotIn("secrets", json.dumps({k: v for k, v in WF.items() if k != "jobs"}))
         for name, job in JOBS.items():
             with self.subTest(job=name):
-                self.assertNotIn("secrets", json.dumps({k: v for k, v in job.items() if k != "steps"}))
+                rest = {k: v for k, v in job.items() if k != "steps"}
+                if name == "post":
+                    self.assertEqual(rest.pop("env"), {"APP_KEY_SET": self.KEY_SET})
+                self.assertNotIn("secrets", json.dumps(rest))
                 for s in job["steps"]:
                     self.assertEqual("secrets" in json.dumps(s), name == "post" and s.get("name") in (MINT_A, MINT_B),
                                      s.get("name"))
@@ -2801,7 +2817,8 @@ class HoldingsTest(unittest.TestCase):
 
     def test_the_app_signs_in_for_this_repository_alone_and_approves_only_after_a_passed_screen(self):
         """Token A: checks: write and pull-requests: write; token B: actions: write alone, minted only for the task
-        approve when the screen's verdict is clean and the step before it found held runs of the screened head."""
+        approve when the screen's verdict is clean and the step before it found held runs of the screened head. Each
+        is minted only while the environment post holds the App's key (APP_KEY_SET is true, R10)."""
         for name, rights in ((MINT_A, {"permission-checks": "write", "permission-pull-requests": "write"}),
                              (MINT_B, {"permission-actions": "write"})):
             with self.subTest(step=name):
@@ -2816,18 +2833,22 @@ class HoldingsTest(unittest.TestCase):
                                           ("approve", "", "61 62", False), ("approve", "clean", "", False),
                                           ("approve", "clean", None, False), ("review", "clean", "61 62", False),
                                           ("catchup", "clean", "61 62", False)):
-            with self.subTest(task=task, verdict=verdict, runs=runs):
-                self.assertEqual(bool(evaluate(b, {"needs.trust.outputs.task": task,
-                                                   "needs.screen.outputs.verdict": verdict,
-                                                   "steps.held.outputs.runs": runs})), want)
+            for key in ("true", "false"):
+                with self.subTest(task=task, verdict=verdict, runs=runs, key=key):
+                    self.assertEqual(bool(evaluate(b, {"needs.trust.outputs.task": task,
+                                                       "needs.screen.outputs.verdict": verdict,
+                                                       "steps.held.outputs.runs": runs, "env.APP_KEY_SET": key})),
+                                     want and key == "true")
         # Token A: for a catch-up, and for the import check run when the post job's decision is to record it.
         a = step("post", MINT_A)["if"]
         for task, decision, want in (("catchup", None, True), ("review", "record", True), ("rescreen", "record", True),
                                      ("relabel", "record", True), ("review", "markdown", False),
                                      ("relabel", "screen", False), ("review", None, False), ("approve", None, False)):
-            with self.subTest(task=task, decision=decision):
-                self.assertEqual(bool(evaluate(a, {"needs.trust.outputs.task": task,
-                                                   "steps.decide.outputs.decision": decision})), want)
+            for key in ("true", "false"):
+                with self.subTest(task=task, decision=decision, key=key):
+                    self.assertEqual(bool(evaluate(a, {"needs.trust.outputs.task": task,
+                                                       "steps.decide.outputs.decision": decision,
+                                                       "env.APP_KEY_SET": key})), want and key == "true")
 
     def test_the_gather_job_holds_no_model_and_writes_nothing(self):
         job = JOBS["gather"]
@@ -3678,15 +3699,19 @@ def run_post(test, ctx, tokens, mint=True):
 
 def run_job(test, job, ctx, tokens, mint=True):
     """The steps of job in the contexts ctx, as GitHub runs them: each step whose if holds, in order, and none after a
-    step that failed (GitHub's implicit success()). The checkout gives main's .github/ (test.checkout); a sign-in step
-    of the App gives its token of tokens, or fails when mint is False; each other step runs against the stand-in gh,
-    with its env as GitHub fills it in from ctx. Each step's outputs and outcome join ctx, and its log test.logs. The
-    outcome of each step, by its name."""
+    step that failed (GitHub's implicit success()). The job's env, which GitHub fills in from ctx when the job starts,
+    is the context env of each if. ctx gets a stand-in for the App's key (APP_KEY) when it holds none, so that the
+    environment post holds the key unless a test says otherwise. The checkout gives main's .github/ (test.checkout); a
+    sign-in step of the App gives its token of tokens, or fails when mint is False; each other step runs against the
+    stand-in gh, with its env as GitHub fills it in from ctx. Each step's outputs and outcome join ctx, and its log
+    test.logs. The outcome of each step, by its name."""
     outcomes, failed = {}, False
+    ctx.setdefault(APP_KEY, "stand-in-key")
+    started = {f"env.{k}": v for k, v in filled(JOBS[job].get("env", {}), ctx).items()}
     for s in JOBS[job]["steps"]:
         name = s.get("name") or "Run " + s["uses"].split("@")[0]
         test.assertIsNone(STATUS_FUNCTIONS.search(s.get("if", "")), name)
-        if failed or ("if" in s and not evaluate(s["if"], ctx)):
+        if failed or ("if" in s and not evaluate(s["if"], {**started, **ctx})):
             outcome = "skipped"
         elif s.get("uses") == CHECKOUT:
             test.assertEqual(s["with"], {"ref": "main", "persist-credentials": False, "sparse-checkout": ".github",
@@ -3768,15 +3793,15 @@ class ApproveTest(Holding):
         """The jobs that run after trust, with the screen's verdict and the results in kwargs (run_graph)."""
         return ran_jobs(run_graph(trust, github=self.DISPATCH, **kwargs))
 
-    def post(self, trust, verdict, mint=True):
+    def post(self, trust, verdict, mint=True, given=None):
         """The post job's steps after the trust job's outputs trust and a screen whose verdict is verdict (run_post),
-        with a stand-in token from each sign-in step (TOKENS), in a run by hand. The outcome of each step, by its name;
-        the contexts of the job, with its steps' outputs, stay in ctx."""
+        with a stand-in token from each sign-in step (TOKENS), in a run by hand, and the contexts given beside them.
+        The outcome of each step, by its name; the contexts of the job, with its steps' outputs, stay in ctx."""
         self.forget()
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"needs.trust.result": "success", "needs.screen.result": "success",
                     "needs.screen.outputs.verdict": verdict, "github.repository": REPO, "github.token": self.RUN_TOKEN,
-                    "github.event_name": "workflow_dispatch"})
+                    "github.event_name": "workflow_dispatch", **(given or {})})
         self.ctx = ctx
         return run_post(self, ctx, self.TOKENS, mint)
 
@@ -3887,6 +3912,53 @@ class ApproveTest(Holding):
             self.assertEqual(self.approvals(), self.APPROVED)
             self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["steering"], "")
 
+    def test_with_no_key_in_the_environment_post_a_screened_held_head_waits_on_a_person_at_theorem(self):
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        Verify App, so its secret is empty, and the post job's env value APP_KEY_SET is false. The screen passes a held
+        head that changes no file under .github/. The post job reads the pull request and the runs with this run's own
+        token, mints neither token, approves no run and writes nothing. It ends with success, its summary says that
+        the environment holds no key and that the run approved no held run, and its output no_key names the head. The
+        comment job gives the pull request waits-on-theorem, with a label comment that says that a person at Theorem
+        approves its checks, that the workflow cannot approve them yet, and that records the head. It says nothing of
+        .github/. With the key, the same head gets its approval."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        summary = os.path.join(self.dir, "summary.md")
+        self.env["GITHUB_STEP_SUMMARY"] = summary
+        self.serve(f"repos/{REPO}/issues/7/labels", [])
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
+        for empty in ({APP_KEY: ""}, {"env.APP_KEY_SET": "false"}):
+            with self.subTest(empty=empty):
+                open(summary, "w").close()
+                steps = self.post(trust, "clean", given=empty)
+                self.assertEqual([n for n, o in steps.items() if o != "skipped"],
+                                 ["Run actions/checkout", self.HELD, NO_KEY], self.logs)
+                self.assertEqual((self.approvals(), writes(self.api)), ([], []))
+                self.assertEqual(set(gh_tokens(self.api)), {self.RUN_TOKEN})
+                with open(summary, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), NO_KEY_LINE + "\n")
+                post = filled(JOBS["post"]["outputs"], self.ctx)
+                self.assertEqual((post["no_key"], post["steering"], post["recorded"]), (HEAD, "", "false"))
+                self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}, "post": post}),
+                                 {"trust", "gather", "screen", "post", "comment"})
+                steps = self.commented(trust)
+                self.assertEqual([n for n, o in steps.items() if o == "success"],
+                                 ["Run actions/checkout", self.STEERED])
+                self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+                (method, _endpoint, body), = label_comments(self.api)
+                self.assertEqual((method, body), ("POST", rules.label_comment("no-key", head=HEAD)))
+                self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** A person at Theorem approves "
+                                                "the checks of this pull request.\n\nThe workflow cannot approve the "
+                                                "checks of a pull request in this repository yet. You do not need to "
+                                                f"do anything.\n\n<!-- review-no-key {HEAD} -->\n"), body)
+                self.assertNotRegex(body, r"(?i)maintainer|decide|will look|\.github")
+        steps = self.post(trust, "clean")
+        self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE, NO_KEY)],
+                         ["success", "success", "success", "skipped"], self.logs)
+        self.assertEqual(self.approvals(), self.APPROVED)
+        self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["no_key"], "")
+
     def test_a_list_of_files_that_fails_or_is_not_whole_approves_nothing(self):
         """R10: the files of the head decide the approval, so the post job approves no run when it cannot read them,
         when GitHub lists fewer files than the pull request changes (it lists at most 3,000), or when the head moved
@@ -3966,10 +4038,10 @@ class ApproveTest(Holding):
         self.assertEqual(writes(self.api), [])
 
     def test_a_token_b_that_cannot_be_minted_holds_nothing_and_labels_nothing(self):
-        """D19: until the environment post holds the App's key, token B's step fails. The post job fails there and
-        approves nothing, and neither the hold job nor the comment job runs: no hold comment and no label. A hold job
-        that reads this attempt's jobs with that failed step holds nothing either, and says that the schedule takes
-        the item again."""
+        """D19: with the App's key in the environment post, a token B that GitHub does not mint (a key that it refuses)
+        fails its step. The post job fails there and approves nothing, and neither the hold job nor the comment job
+        runs: no hold comment and no label. A hold job that reads this attempt's jobs with that failed step holds
+        nothing either, and says that the schedule takes the item again."""
         self.runs(*self.RUNS)
         trust = self.by_hand()
         steps = self.post(trust, "clean", mint=False)
@@ -4782,13 +4854,15 @@ class ReaderRunner(Runner):
         return self.run_script(s["run"], **dict(ANTHROPIC, ANTHROPIC_URL=f"{self.url}/anthropic"))
 
     def post(self, review, items, trimmed="", verdict="blocking", will_fix=False, reader=None, result=None,
-             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED, route="", screen=""):
+             outside="true", hold=WF["env"]["SOUNDNESS_HOLD"], started=PostLabelTest.STARTED, route="", screen="",
+             kind="pr"):
         """The sign-in, then the comment step on the model's output, with a reader that answers trimmed (or reader, the
-        stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing).
-        When the test wrote no soundness.json, the step reads the one that the gather job writes for a whole list of
-        changed files of which none can change a proof. The step's env is the one that the workflow gives it, for the
-        gather job's outside, the trust job's started and route, and the screen's verdict screen, with SOUNDNESS_HOLD
-        hold (None: not set). The step's exit status, output and outputs."""
+        stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing), or
+        for an issue (kind issue), of which the gather job writes no commits.txt. When the test wrote no
+        soundness.json, the step reads the one that the gather job writes for a whole list of changed files of which
+        none can change a proof. The step's env is the one that the workflow gives it, for the gather job's outside,
+        the trust job's started and route, and the screen's verdict screen, with SOUNDNESS_HOLD hold (None: not set).
+        The step's exit status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
         with open(path, "w") as f:
@@ -4796,7 +4870,7 @@ class ReaderRunner(Runner):
                 "comment": review, "verdict": verdict, "will_fix": will_fix, "items": items}}], f)
         os.makedirs(os.path.join(self.work, ".review"), exist_ok=True)
         commits = os.path.join(self.work, ".review", "commits.txt")
-        if not os.path.exists(commits):
+        if kind == "pr" and not os.path.exists(commits):
             with open(commits, "w") as f:
                 f.write(f"base {OTHER_HEAD}\nhead {HEAD}\n")
         facts = os.path.join(self.work, ".review", rules.SOUNDNESS_FILE)
@@ -4915,7 +4989,8 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual((reading["authorization"], reading["version"]), (f"Bearer {self.TOKEN}", "2023-06-01"))
                 for fixed in ("<!-- review", "Automated review", self.FOOT):
                     self.assertNotIn(fixed, message["content"])
-                posted = trimmed.replace("<!", f"<{WJ}!")
+                # The reader dropped the review's result line, so the line goes back at the start (trim.with_result).
+                posted = "Blocking findings.\n\n" + trimmed.replace("<!", f"<{WJ}!")
                 self.assertEqual(got["body"], self.body(posted, whole=text, verdict=verdict, will_fix=will_fix))
                 self.assertEqual(MARKER.findall(got["body"]),
                                  ["<!-- review -->", f"<!-- review-head {HEAD} -->",
@@ -4980,6 +5055,50 @@ class FreshReaderTest(ReaderRunner):
             summary = f.read()
         self.assertIn(self.REVIEW_INERT, summary)
         self.assertIn(json.dumps(items, ensure_ascii=False, indent=2), summary)
+
+    def test_a_result_line_that_the_reader_drops_goes_back_at_the_start(self):
+        """.github/review.md ("The comment"): the first line of a pull request's review is its result. In live tries of
+        OSSV-612's twin workflow, the fresh reader dropped it in 2 of 8 trims. A trim that drops "No blocking
+        finding.", "Blocking findings." or "Questions for Sami:" with the subject of each question gets the review's
+        first line back at the start of the trimmed text, made inert and closed, as an added item is. A trim that keeps
+        that line, also in bold, posts as the reader gave it. The block holds the whole review in each case."""
+        question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
+        trimmed = "`theories/Fd.v:213` leaves the case open."
+        for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
+                              ("person", question)):
+            review = f"{line}\n\n1. {trimmed}\n\nIt is worth noting that the rest of the change is fine."
+            whole = review.replace("@octocat", f"@{WJ}octocat")
+            back = line.replace("@octocat", f"@{WJ}octocat")
+            for case, text, posted in (("drops the line", trimmed, f"{back}\n\n{trimmed}"),
+                                       ("keeps the line", f"{line}\n\n{trimmed}", f"{back}\n\n{trimmed}"),
+                                       ("keeps the line in bold", f"**{line}** {trimmed}", f"**{back}** {trimmed}")):
+                with self.subTest(verdict=verdict, trim=case):
+                    self.tearDown()
+                    self.setUp()
+                    rc, out, got = self.post(review, [], text, verdict)
+                    self.assertEqual(rc, 0, out)
+                    self.assertEqual(got["body"], self.body(posted, whole=whole, verdict=verdict))
+        # The line goes back made inert and closed: a mention notifies no one, and an element that it opens ends
+        # before the trimmed text.
+        line = "Blocking findings. <details>@octocat"
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        self.assertEqual(trim.with_result(f"{line}\n\nMore.", trimmed, head),
+                         f"Blocking findings. <details>@{WJ}octocat\n\n</details>\n\n{trimmed}")
+
+    def test_an_issues_review_keeps_the_trim_that_the_reader_gave(self):
+        """An issue's review has no fixed form: its first line says whether the report holds (.github/review.md, "The
+        comment"), and its head names no head commit. A trim that drops its first line posts as the reader gave it,
+        also when that line has the form of a pull request's result."""
+        trimmed = "`theories/Fd.v:213` returns `EBADF` there."
+        for line in ("The report holds.", "Questions for Sami: whether SCOPE.md:301 holds."):
+            with self.subTest(line=line):
+                self.tearDown()
+                self.setUp()
+                rc, out, got = self.post(f"{line}\n\n{trimmed}", [], trimmed, "person", kind="issue")
+                self.assertEqual((rc, "head" in got), (0, False), out)
+                self.assertTrue(got["body"].startswith(
+                    f"<!-- review -->\n<!-- review-read {PostLabelTest.STARTED} -->\n**Automated review** of this "
+                    f"issue\n\n{trimmed}\n\n---\n{self.FOOT}\n\n"), got["body"])
 
     def test_the_review_is_made_inert_then_cut_and_the_reader_reads_what_the_block_holds(self):
         review = "x" * 19995 + "@abcdefghij"
@@ -5063,7 +5182,7 @@ class FreshReaderTest(ReaderRunner):
                 rc, out, got = self.post(self.REVIEW, [], verdict="pass", reader=reader)
                 if posts:
                     self.assertEqual(rc, 0, out)
-                    self.assertEqual(got["body"], self.body("Trimmed.", verdict="pass"), out)
+                    self.assertEqual(got["body"], self.body("Blocking findings.\n\nTrimmed.", verdict="pass"), out)
                 else:
                     self.assertEqual(rc, 1, out)
                     self.assertIn("The fresh reader gave no trimmed text. Nothing posts.", out)
@@ -9451,6 +9570,57 @@ class ScheduleTest(Scheduled):
         self.assertIn(f"its label comment records that {HEAD} changes a file under .github/, so a person at Theorem "
                       "approves its runs.", out)
 
+    def test_with_no_key_a_screened_held_head_waits_on_a_person_and_gets_no_second_approve_run(self):
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        Verify App. The approve run that the pass starts for a held head passes the screen, and its post job approves
+        no run, writes nothing and ends with success. Its comment job records the head in the label comment and gives
+        waits-on-theorem. The next runs of the pass, with a number and with none, start no approve run of that head,
+        also for a held run made after that approve run, which would start one an hour after the approve run ended.
+        Without the line of the label comment, the pass starts that approve run."""
+        self.env["GITHUB_STEP_SUMMARY"] = os.path.join(self.dir, "summary.md")
+        self.item(kind="pr")
+        self.held_runs(made=300)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.serve_files(7, "README.md")
+        trust = self.dispatched("approve", account="mallory")
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                                 "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean",
+                                 APP_KEY: ""})
+        steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+        self.assertEqual([n for n, o in steps.items() if o != "skipped"], ["Run actions/checkout", self.HELD, NO_KEY],
+                         self.logs)
+        self.assertEqual(writes(self.api), [])
+        post = filled(JOBS["post"]["outputs"], ctx)
+        self.assertEqual(post["no_key"], HEAD)
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.post.result": "success",
+                                 **{f"needs.post.outputs.{k}": v for k, v in post.items()}})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        steps = run_job(self, "comment", ctx, {})
+        self.assertEqual(steps[ApproveTest.STEERED], "success", self.logs)
+        self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
+        (_method, _endpoint, body), = label_comments(self.api)
+        self.assertIn(f"\n<!-- review-no-key {HEAD} -->\n", body)
+        self.merge(7, "clean")
+        self.ran(10, f"approve #7 at {HEAD} of mallory", made=100, ended=90,
+                 jobs=[attempt_job("gather"), self.screened(),
+                       post_job({self.HELD: "success", NO_KEY: "success"}), attempt_job("comment")])
+        self.held_runs(made=5)
+        for label, number, want in ((body, None, []), (body, 7, []),
+                                    (rules.label_comment("working"), None, [("7", "approve", "mallory", HEAD, "")])):
+            with self.subTest(number=number, recorded=label == body):
+                self.comments(7, {"id": 40, "user": {"login": BOT}, "created_at": ago(80), "updated_at": ago(80),
+                                  "body": label})
+                rc, out, runs = self.started(number=number)
+                self.assertEqual((rc, runs), (0, want), out)
+                if not want:
+                    self.assertIn(f"#7: its label comment records that the environment post held no key of the "
+                                  f"Theorem Verify App when a run screened {HEAD}, so a person at Theorem approves its "
+                                  "runs.", out)
+
     def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
         """b8 (R10, D16 (a) and (f)): GitHub lists a run that it holds for a person's approval with status completed
         and conclusion action_required, not with status action_required, and its updated_at is its created_at (read on
@@ -9781,6 +9951,34 @@ class CatchUpScheduleTest(Scheduled):
         self.ran(80, f"catchup #7 at {HEAD}", made=8, ended=3,
                  jobs=[post_job({MINT_A: "success", CATCH_UP: "success"})])
         self.ci(status="in_progress", run=71)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+
+    def test_with_no_key_a_catch_up_closes_and_reopens_nothing_and_succeeds(self):
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        Verify App. The post job of a catchup run mints no token A, neither closes nor reopens the pull request, makes
+        no call of the API, ends with success, and says so in its summary. It names no head that it caught up, so the
+        comment job does not run, and the next run of the pass starts no second catch-up of the head while that run
+        names it."""
+        summary = os.path.join(self.dir, "summary.md")
+        self.env["GITHUB_STEP_SUMMARY"] = summary
+        self.item(kind="pr")
+        self.ci(ended=90)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+        trust = self.dispatched("catchup")
+        self.forget()
+        ctx = self.ctx(trust, **{APP_KEY: ""})
+        steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+        self.assertEqual([n for n, o in steps.items() if o != "skipped"], [NO_KEY], self.logs)
+        self.assertEqual((self.patches(), writes(self.api), self.calls()), ([], [], []))
+        with open(summary, encoding="utf-8") as f:
+            self.assertEqual(f.read(), NO_KEY_LINE + "\n")
+        caught = filled(JOBS["post"]["outputs"], ctx)["caught"]
+        self.assertEqual(caught, "")
+        ran = run_graph(trust, github={"github.event_name": "workflow_dispatch"}, outputs={"post": {"caught": caught}})
+        self.assertEqual(ran_jobs(ran), {"trust", "post"})
+        self.ran(80, f"catchup #7 at {HEAD}", made=8, ended=3, jobs=[post_job({NO_KEY: "success"})])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, []), out)
 
@@ -11911,6 +12109,10 @@ class LabelRuleTest(unittest.TestCase):
         ("a screen hold", {"screen_held": True}, "screen", THEOREM_LABEL),
         ("a held head that changes a file under .github/, whose runs a person approves", pr(steering=True),
          "steering", THEOREM_LABEL),
+        ("a held head that the screen passed while the environment post held no key of the App, whose runs a person "
+         "approves", pr(no_key=True), "no-key", THEOREM_LABEL),
+        ("a head that changes a file under .github/, before the lack of a key", pr(steering=True, no_key=True),
+         "steering", THEOREM_LABEL),
         ("the last try of the work", {"tries_used_up": True}, "stopped", THEOREM_LABEL),
         ("a catch-up left closed", {"left_closed": True, "conflict": True}, "reopen", THEOREM_LABEL),
         ("a conflict, before all else of its head", {"conflict": True, "tries_used_up": True, **pr(verdict="person")},
@@ -11962,10 +12164,11 @@ class LabelRuleTest(unittest.TestCase):
 
     def test_each_label_comment_names_the_next_step_and_who_takes_it(self):
         """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's (a person's at
-        Theorem, who approves the checks of a pull request that changes a file under .github/: R10 names no one) and
-        whose last line is the marker of Sami, for each state of the variable and each decision of the post job too;
-        each waits-on-author with one whose next step is the author's; no label, with one that names no one at
-        Theorem. No text says that anyone decides or will look at the item."""
+        Theorem, who approves the checks of a pull request that changes a file under .github/, or of one whose screen
+        passed while the environment post held no key of the App: R10 names no one) and whose last line is the marker
+        of Sami, for each state of the variable and each decision of the post job too; each waits-on-author with one
+        whose next step is the author's; no label, with one that names no one at Theorem. No text says that anyone
+        decides or will look at the item."""
         variants = [(state, None) for state in rules.STATES] + [
             (state, (value, decision)) for state in ("decide", "person") for value in (None, "README.md")
             for decision in rules.DECISIONS]
@@ -11978,7 +12181,7 @@ class LabelRuleTest(unittest.TestCase):
                 self.assertNotIn(";", body)
                 label = rules.label_of(state)
                 if label == THEOREM_LABEL:
-                    who = "A person at Theorem " if state == "steering" else "Sami "
+                    who = "A person at Theorem " if state in ("steering", "no-key") else "Sami "
                     self.assertTrue(step_line.startswith(f"**Next step:** {who}"), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
                 elif label == AUTHOR_LABEL:
@@ -12085,6 +12288,28 @@ class LabelRuleTest(unittest.TestCase):
         for head in ("", HEAD[:12]):
             with self.subTest(head=head), self.assertRaises(ValueError):
                 rules.label_comment("steering", head=head)
+
+    def test_the_no_key_state_records_its_head_and_every_later_state_keeps_it(self):
+        """R10 (spec v76): while the environment post holds no key of the Theorem Verify App, a held pull request whose
+        screen passed gets waits-on-theorem with a label comment that says that a person at Theorem approves its checks,
+        that the workflow cannot approve them in this repository yet, and that the author needs to do nothing. It says
+        nothing of a file under .github/, and it holds the line <!-- review-no-key <head> -->, which the rescreen pass
+        reads. Each later state keeps that line, beside a steering line, and the line of a newer such head takes its
+        place. The state needs its head."""
+        body = rules.label_comment("no-key", head=HEAD)
+        self.assertEqual(body, "<!-- review-label -->\n**Next step:** A person at Theorem approves the checks of this "
+                               "pull request.\n\nThe workflow cannot approve the checks of a pull request in this "
+                               "repository yet. You do not need to do anything.\n\n"
+                               f"<!-- review-no-key {HEAD} -->\n<!-- waits-on-theorem: Sami -->")
+        self.assertNotIn(".github", body)
+        later = rules.label_comment("steering", rules.label_comment("person", body), head=OTHER_HEAD).split("\n")
+        self.assertLessEqual({f"<!-- review-no-key {HEAD} -->", f"<!-- review-steering {OTHER_HEAD} -->"}, set(later))
+        newer = rules.label_comment("no-key", "\n".join(later), head=OTHER_HEAD).split("\n")
+        self.assertIn(f"<!-- review-no-key {OTHER_HEAD} -->", newer)
+        self.assertNotIn(f"<!-- review-no-key {HEAD} -->", newer)
+        for head in ("", HEAD[:12]):
+            with self.subTest(head=head), self.assertRaises(ValueError):
+                rules.label_comment("no-key", head=head)
 
     def test_the_labels_are_described_in_words_github_takes(self):
         """GitHub refuses a label description over 100 characters, which would leave the label with none."""
@@ -12407,14 +12632,15 @@ class ImportCheckTest(ReaderRunner):
 
     def judge(self, paths, verdict="pass", value=None, trust=None, screen="clean", mint=True, event="workflow_run",
               changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",), outside="true",
-              listed=()):
+              listed=(), key=True):
         """The post job, then the comment job's label step, each when its if holds, for a run whose trust job gave
         trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen (none for the route review)
         and whose review gave verdict, while the variable REPO_PAIRS_IMPORT_PATHS is value (None: not set, so GitHub
         gives an empty value). #7's head is now (then, when given, from its second read on), and its files are paths,
         each a path or (the path, the path before a rename), on pages of per_page files; its changed_files is changed,
         their count by default. comments and labels are #7's own, outside the gather job's outside, and listed the
-        check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False.
+        check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False,
+        and the environment post holds no key of the App when key is False (its secret is empty).
         What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
         it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
         and the label comments posted or edited."""
@@ -12441,7 +12667,8 @@ class ImportCheckTest(ReaderRunner):
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
                     "github.token": self.RUN_TOKEN, "vars.REPO_PAIRS_IMPORT_PATHS": "" if value is None else value,
-                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success"})
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success",
+                    **({} if key else {APP_KEY: ""})})
         if trust["task"] in ("review", "rescreen"):
             screened = trust.get("route") == "screen"
             passed = screen == "clean" or not screened
@@ -12491,7 +12718,8 @@ class ImportCheckTest(ReaderRunner):
         post job's only write, whose external_id (7:<head>) and output title name pull request #7 and head, and one
         marker line of value in its output text: recorded is true, the output imports gives the comment job value as
         JSON, and the job caught up no head (caught is empty) and names no head that changes a file under .github/
-        (steering is empty), so the comment job records neither."""
+        (steering is empty) and none whose held runs it did not approve for want of the App's key (no_key is empty),
+        so the comment job records none of them."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -12507,7 +12735,7 @@ class ImportCheckTest(ReaderRunner):
                          (f"7:{head}", f"Approved for the import: pull request #7 at {head[:12]}"))
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
-                         {"recorded": "true", "decision": "record", "caught": "", "steering": ""})
+                         {"recorded": "true", "decision": "record", "caught": "", "steering": "", "no_key": ""})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -12770,21 +12998,54 @@ class ImportCheckTest(ReaderRunner):
                 self.assertWaits(got, self.SOME, self.UNREAD, *words, value=value)
 
     def test_a_token_a_that_cannot_be_minted_records_nothing_and_leaves_recorded_false(self):
-        """D19: until the environment post holds the App's key, token A's step fails on a head whose rule holds. The
-        check run is not recorded, the post job fails, and the comment job reads recorded as false: waits-on-theorem,
-        with each step for the variable, since the decision of a failed job is not read. A check run that GitHub
-        refuses fails the job the same way. The schedule takes the head again (t12)."""
+        """D19: with the App's key in the environment post, a token A that GitHub does not mint (a key that it refuses)
+        fails its step on a head whose rule holds. The check run is not recorded, the post job fails, and the comment
+        job reads recorded as false: waits-on-theorem, with each step for the variable, since the decision of a failed
+        job is not read, and no text says that the workflow recorded the check. A check run that GitHub refuses fails
+        the job the same way. The schedule takes the head again (t12)."""
         got = self.judge(["README.md"], value=self.LPS, mint=False)
         self.assertEqual([got["steps"][n] for n in (self.DECIDE, MINT_A, self.RECORD)],
                          ["success", "failure", "skipped"])
         self.assertEqual((got["result"], got["post"]["recorded"]), ("failure", "false"))
         self.assertNotRecorded(got)
-        self.assertWaits(got, self.SOME, "if the import copies each path", self.COPY, value=self.LPS)
+        body = self.assertWaits(got, self.SOME, "if the import copies each path", self.COPY, value=self.LPS)
+        self.assertNotIn("repo-pairs/import-approved", body)
         self.refuse(f"repos/{REPO}/check-runs", 403, "Resource not accessible by integration")
         got = self.judge(["README.md"], value=self.LPS)
         self.assertEqual((got["steps"][self.RECORD], got["result"], got["post"]["recorded"]),
                          ("failure", "failure", "false"))
         self.assertEqual(got["labels"], [("+", THEOREM_LABEL)])
+        (body,) = got["comments"]
+        self.assertNotIn("repo-pairs/import-approved", body)
+
+    def test_with_no_key_in_the_environment_post_the_post_job_writes_nothing_and_succeeds(self):
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        Verify App. The review of a head whose rule holds: the post job decides with this run's token, mints no token
+        A, records no check run, ends with success, and says so in its summary. The comment job reads recorded as false
+        and the decision record: waits-on-theorem, with each step for the variable, and no text says that the workflow
+        recorded the check. A later review that asks a change of a head with the App's check run: the post job reads
+        no check run, mints no token and withdraws nothing. With the key, the same runs record and withdraw."""
+        got = self.judge(["README.md"], value=self.LPS, key=False)
+        self.assertEqual([n for n, o in got["steps"].items() if o != "skipped"],
+                         ["Run actions/checkout", self.DECIDE, NO_KEY], self.logs)
+        self.assertEqual((got["result"], got["post"]["recorded"], got["post"]["decision"]),
+                         ("success", "false", "record"))
+        self.assertNotRecorded(got)
+        self.assertEqual(got["read with"], {self.RUN_TOKEN})
+        with open(self.summary, encoding="utf-8") as f:
+            self.assertEqual(f.read(), NO_KEY_LINE + "\n")
+        body = self.assertWaits(got, self.SOME, "if the import copies each path", self.COPY, value=self.LPS)
+        self.assertNotIn("repo-pairs/import-approved", body)
+        listed, others = self.recorded()
+        got = self.judge(["README.md"], "blocking", self.LPS, listed=[listed, *others], key=False)
+        self.assertEqual([n for n, o in got["steps"].items() if o != "skipped"],
+                         ["Run actions/checkout", self.DECIDE, NO_KEY], self.logs)
+        self.assertEqual((got["result"], got["writes"], got["withdrawn"]), ("success", [], []))
+        self.assertNotIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
+        self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
+        self.assertRecorded(self.judge(["README.md"], value=self.LPS), self.LPS)
+        got = self.judge(["README.md"], "blocking", self.LPS, listed=[listed, *others])
+        self.assertEqual([(t, e) for t, e, _b in got["withdrawn"]], [("token-A", f"repos/{REPO}/check-runs/901")])
 
     def test_the_check_run_is_recorded_only_on_main_and_on_workflow_run_or_workflow_dispatch(self):
         """The post job runs no model and reads the App's key only on main: its if holds only on refs/heads/main, it

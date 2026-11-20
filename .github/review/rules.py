@@ -20,7 +20,7 @@ labels").
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
 FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
 waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in
-the state steering), and none while the workflow works on the item. Setting one label takes the other off.
+the states steering and no-key), and none while the workflow works on the item. Setting one label takes the other off.
 review-held, the mark of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the
 item, edited in place (label_comment). Its first line is <!-- review-label -->, its text names the next step and who
 takes it, and with a state label its last line is the marker <!-- waits-on-author --> or
@@ -28,12 +28,15 @@ takes it, and with a state label its last line is the marker <!-- waits-on-autho
 takes the place of that line. It holds <!-- review-conflict-state <head> --> while it gives the head waits-on-author
 for a merge conflict, and loses that line with any other state. The state steering (the fact steering=true, with
 head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the
-post job approves none of its runs, and the rescreen pass starts no approval of it. In a state with no state label
-(working, or import), an item that has a label comment gets the text of its state, and an item that has none gets
-none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or person, the text also
-names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths, the
-text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
-(DECISIONS). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+post job approves none of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact
+no_key=true, with head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head,
+but the environment post held no key of the Theorem Verify App, so the post job approved none of its runs, and the
+rescreen pass starts no approval of it. In a state with no state label (working, or import), an item that has a label
+comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
+kind=pr and outsider=true) in the state decide or person, the text also names the step of R12 for the import into the
+internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
+given only when it is set, and decision, the post job's decision (DECISIONS). GH_TOKEN and REPO come from the job's
+environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -155,7 +158,7 @@ import sys
 
 AUTHOR = "waits-on-author"
 THEOREM = "waits-on-theorem"
-# Who takes a step at Theorem: one person, Sami.
+# Who takes a step at Theorem: one person here, as this repository has no code owners.
 WHO = "Sami"
 
 # The labels that the workflow makes, with their colours and descriptions (at most 100 characters each).
@@ -195,6 +198,9 @@ FACTS = {
     # A held pull request whose head changes a file under .github/, so the post job approved none of its runs (R10):
     # a person at Theorem approves them.
     "steering": False,
+    # A held pull request whose head the screen passed, while the environment post held no key of the Theorem Verify
+    # App, so the post job approved none of its runs (R10): a person at Theorem approves them.
+    "no_key": False,
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
     "held": False,
@@ -299,6 +305,13 @@ STATES = {
         THEOREM, "A person at Theorem approves the checks of this pull request.",
         "This pull request changes a file under `.github/`, so the workflow does not approve its checks. You do not "
         "need to do anything."),
+    # A held pull request whose head the screen passed, while the environment post held no key of the Theorem Verify
+    # App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. The label comment
+    # records the head (no_key_line).
+    "no-key": (
+        THEOREM, "A person at Theorem approves the checks of this pull request.",
+        "The workflow cannot approve the checks of a pull request in this repository yet. You do not need to do "
+        "anything."),
     "will-fix": (
         THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
@@ -333,11 +346,12 @@ HEAD = re.compile(r"[0-9a-f]{40}")
 NUMBER = re.compile(r"[1-9][0-9]*")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
 # (R12), the stored draft of an issue's reply, the approved reply that posted, the head that a catch-up closed and
-# reopened the pull request at (D16 (a): once for each head), and the head whose runs the post job did not approve
-# because it changes a file under .github/ (R10: the rescreen pass starts no approval of it again).
+# reopened the pull request at (D16 (a): once for each head), and the head whose runs the post job did not approve,
+# because it changes a file under .github/ or because the environment post held no key of the Theorem Verify App
+# (R10: the rescreen pass starts no approval of it again).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
-                  r"|<!-- (review-steering) [0-9a-f]{40} -->")
+                  r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->")
 
 
 def marker_line(line):
@@ -348,7 +362,8 @@ def marker_line(line):
 
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
                 conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, steering=False,
-                held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None, decision=""):
+                no_key=False, held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
+                decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
     if kind not in ("", "pr", "issue"):
@@ -370,6 +385,8 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         return "screen"
     if steering:
         return "steering"
+    if no_key:
+        return "no-key"
     if held:
         return "working"
     if reply_posted:
@@ -405,8 +422,8 @@ def label_of(state):
 
 
 def marker_kind(line):
-    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted, review-catchup or
-    review-steering."""
+    """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted, review-catchup,
+    review-steering or review-no-key."""
     m = KEPT.fullmatch(line)
     if not m:
         raise ValueError(f"not a marker line that the label comment keeps: {line!r}")
@@ -460,20 +477,30 @@ def steering_line(head):
     return f"<!-- review-steering {head} -->"
 
 
+def no_key_line(head):
+    """The marker line of KEPT that records head as a head that the screen passed while the environment post held no
+    key of the Theorem Verify App (the state no-key): the post job approved none of its runs, and the rescreen pass
+    starts no approval of it again."""
+    return f"<!-- review-no-key {head} -->"
+
+
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
     or markers gives (a marker of markers takes the place of old's line of its kind), with the steering line of head
-    in the state steering, the conflict-state line of head for a conflict, and the marker of the state label. imports
-    is (value, decision) of import_steps for an outside pull request, and None for any other item. The state decide is
-    an outside pull request's alone, so there None reads as no variable and no decision."""
+    in the state steering and its no-key line in the state no-key, the conflict-state line of head for a conflict, and
+    the marker of the state label. imports is (value, decision) of import_steps for an outside pull request, and None
+    for any other item. The state decide is an outside pull request's alone, so there None reads as no variable and no
+    decision."""
     label, step, text = STATES[state]
     if state == "decide" or (state == "person" and imports is not None):
         step, text = import_steps(state, *(imports or (None, "")))
-    if state in ("conflict", "steering") and not HEAD.fullmatch(head):
+    if state in ("conflict", "steering", "no-key") and not HEAD.fullmatch(head):
         raise ValueError(f"the state {state} needs its head commit, not {head!r}")
     if state == "steering":
         markers = [*markers, steering_line(head)]
+    if state == "no-key":
+        markers = [*markers, no_key_line(head)]
     kept = {}
     for line in old.split("\n"):
         if KEPT.fullmatch(line):
@@ -904,7 +931,7 @@ def char_range(r):
 
 
 def steering(path):
-    """Whether path is a steering file: each file under .github/."""
+    """Whether path is a steering file: each file under .github/, as this repository has no CODEOWNERS."""
     return path.startswith(".github/")
 
 

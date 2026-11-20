@@ -113,9 +113,10 @@ The workflow, not the review, keeps one label on each outside item:
   makes the changes of a blocking finding, applies the suggested changes or
   resolves a merge conflict.
 - `waits-on-theorem`: the next step is Sami's, or, for the checks of a pull
-  request that changes a file under `.github/`, a person's at Theorem: the
-  workflow does not approve those checks. A comment of the workflow names
-  the step.
+  request that the workflow does not approve, a person's at Theorem. The
+  workflow does not approve the checks of a pull request that changes a
+  file under `.github/`. It cannot approve the checks of any pull request
+  in this repository yet. A comment of the workflow names the step.
 - No label while the workflow works on the item. When a cap holds the item,
   the hold comment gives the time when the cap frees it.
 

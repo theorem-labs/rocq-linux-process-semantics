@@ -187,7 +187,7 @@
 #           OSSV controller copies into its ask to Sami. No output, summary or log line of the run holds the draft,
 #           the refused draft or the reason. No job signs in to Google Cloud to store a draft, and a reply has no
 #           review job.
-#   post    runs in the environment post, which only main reaches and which holds the Theorem Verify App's key. It
+#   post    runs in the environment post, which only main reaches and which holds the App's key from the LPS move. It
 #           does the App's writes alone, each after a step of its own that mints a token for this repository alone:
 #           one with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
 #           whose screen passed. For the review of an outside pull request whose screen passed, and for a relabel, it
@@ -204,7 +204,9 @@
 #           GitHub holds of that head from the pull request's head repository and branch. For a catch-up, it closes and
 #           reopens the pull request with the first token, so that GitHub starts a CI run of its head, or only reopens
 #           one that a catch-up closed and could not reopen. It posts no comment and no label, holds no identity token
-#           and no model, and its own GitHub token can only read.
+#           and no model, and its own GitHub token can only read. Until the LPS move of dispatch://OSSV-321, the
+#           environment post holds no key: the job then skips each of these writes and their sign-ins, ends with
+#           success, and says so in its summary (R10).
 #   comment posts the review comment, or replaces the one it posted before, when POST_REVIEW says so, takes the label
 #           review-held off (unless a hold of other work of the item is still tried again), and sets the state label
 #           and the label comment (below); for a merge conflict, it posts the comment that asks the author to resolve
@@ -214,11 +216,12 @@
 #           it posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel,
 #           it sets the state label and the label comment of the head again, from what the workflow wrote of the head
 #           and what the post job decided. For a catch-up that reopened the pull request, it adds the line of the head
-#           to the label comment. For an approval whose head changes a file under .github/, it gives the item
-#           waits-on-theorem with a label comment that says that a person at Theorem approves its runs. For a stop of
-#           the rescreen pass, it gives the item waits-on-theorem and writes the hold comment that says that the work
-#           is not tried again. It never commits or pushes: its token can write no file of the repository. It uses this
-#           run's GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
+#           to the label comment. For an approval whose head changes a file under .github/, or whose held runs the post
+#           job did not approve as the environment post holds no key of the App, it gives the item waits-on-theorem
+#           with a label comment that says that a person at Theorem approves its runs. For a stop of the rescreen pass,
+#           it gives the item waits-on-theorem and writes the hold comment that says that the work is not tried again.
+#           It never commits or pushes: its token can write no file of the repository. It uses this run's GitHub
+#           token, so none of its comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in the hold comment of the work that it held (the
 #           review, the answer, the draft or the approval), and sets the state label and the label comment. It holds
 #           no model, and has no screen's reason to read: the screen job's one output is its verdict. It reads this
@@ -231,13 +234,14 @@
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
 # the next step is its author's, waits-on-theorem when the next step is Sami's (or a person's at Theorem, who approves
-# the checks of a pull request that changes a file under .github/), and none while the workflow works on it. The
-# comment and hold jobs set it in the run of the event that changes the state, by the one rule of
-# .github/review/rules.py, and setting one takes the other off. With it, the item gets one label comment of the
-# workflow, edited in place, which names the next step and who takes it. review-held, the mark of a hold, stays beside
-# the state label. Each write of an item's state label and label comment runs in one concurrency group of the item,
-# label-<n>, queued and never cancelled: the comment job and the hold job are in it, and the comment job writes the
-# label of a stop and of an approval whose head changes a file under .github/.
+# the checks of a pull request that changes a file under .github/, or of one whose screen passed while the environment
+# post holds no key of the App), and none while the workflow works on it. The comment and hold jobs set it in the run
+# of the event that changes the state, by the one rule of .github/review/rules.py, and setting one takes the other
+# off. With it, the item gets one label comment of the workflow, edited in place, which names the next step and who
+# takes it. review-held, the mark of a hold, stays beside the state label. Each write of an item's state label and
+# label comment runs in one concurrency group of the item, label-<n>, queued and never cancelled: the comment job and
+# the hold job are in it, and the comment job writes the label of a stop and of an approval whose held runs the post
+# job did not approve.
 #
 # No job runs code of a pull request. The gather job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
@@ -252,7 +256,7 @@
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
 # the runs that the rescreen pass starts by workflow_dispatch on main take the item again. Until the environment post
-# holds the App's key, the post job's sign-ins fail, and nothing else does.
+# holds the App's key, the post job skips its sign-ins and the App's writes, and ends with success.
 #
 # Never re-run this workflow with debug logging. A debug run prints the whole conversation with the model, with the
 # pull request's or the issue's text, in the run's log, and anyone can read the logs of a public repository.
@@ -339,8 +343,9 @@ env:
   # check run repo-pairs/import-approved takes only a check run of that App. THEOREM_VERIFY_APP_CLIENT_ID is its client
   # id, with which the post job mints its tokens. THEOREM_VERIFY_APP_LOGIN is its login: a closed pull request is
   # reopened only when its newest close is of that login. The App does not exist yet, so each value is a placeholder
-  # that no App has. Then no check run and no close matches it, and each sign-in fails. dispatch://INFRA-3395 gives the
-  # real values when the App is made. rescreen.yml holds the same id and login, and APPS (below) holds the login.
+  # that no App has. Then no check run and no close matches it, and a sign-in, which runs only while the environment
+  # post holds the App's key, fails. dispatch://INFRA-3395 gives the real values when the App is made. rescreen.yml
+  # holds the same id and login, and APPS (below) holds the login.
   THEOREM_VERIFY_APP_ID: "0"
   THEOREM_VERIFY_APP_CLIENT_ID: "PLACEHOLDER-theorem-verify-client-id"
   THEOREM_VERIFY_APP_LOGIN: "theorem-verify-placeholder[bot]"
@@ -2610,23 +2615,26 @@ jobs:
           { echo "review<<$delimiter"; cat "$work/review.json"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
   # The Theorem Verify App's writes, and nothing else: no comment and no label. In the environment post, which only
-  # main's runs reach and which holds the App's key (THEOREM_VERIFY_APP_PRIVATE_KEY). Each write comes after a step
-  # of its own that mints a token for this repository alone: token A, with checks: write and pull-requests: write,
-  # for the import check run of a review or a relabel and for the close and reopen of a catch-up; token B, with
-  # actions: write alone, for the approval of a head's held runs, minted only for the task approve when the screen
-  # passed, GitHub holds runs of the head that the screen read, and that head changes no file under .github/. A
-  # missing key fails these steps alone. Its own token can only read (actions: read lists a head's held runs, and
-  # checks: read the check runs of a head). It holds no identity token and no model. For the review of an outside
-  # pull request and for a relabel, it decides the import check run of R12 on the head (.github/review/rules.py
-  # import-check) and records repo-pairs/import-approved, with conclusion success, when the rule holds. When a later
-  # review of the head gives a blocking finding or the verdict person, or a later screen holds the head, it updates
-  # that check run to the conclusion neutral (R12). For an approval, it reads the files of the head too
-  # (.github/review/rules.py steering). It checks out main's .github/ for those, and runs nothing else from it. Its
-  # outputs: recorded, true when it recorded that check run at the head; decision, what it decided for that check
-  # run: record, or the first rule of R12 that does not hold; caught, the head of a pull request that a catch-up
-  # closed and reopened, or only reopened, which the comment job records in the label comment; and steering, the
-  # head of an approval that changes a file under .github/, whose runs it does not approve, which the comment job
-  # records in the label comment.
+  # main's runs reach and which holds the App's key (THEOREM_VERIFY_APP_PRIVATE_KEY) from the LPS move. Each write
+  # comes after a step of its own that mints a token for this repository alone: token A, with checks: write and
+  # pull-requests: write, for the import check run of a review or a relabel and for the close and reopen of a
+  # catch-up; token B, with actions: write alone, for the approval of a head's held runs, minted only for the task
+  # approve when the screen passed, GitHub holds runs of the head that the screen read, and that head changes no file
+  # under .github/. Until the LPS move of dispatch://OSSV-321, the environment post of this repository holds no key
+  # (R10): while the key is empty (APP_KEY_SET), the job skips the two sign-ins and each step that needs the App or
+  # that only finds work for it, ends with success, and says so in its summary. A key that GitHub refuses fails the
+  # sign-ins alone. Its own token can only read (actions: read lists a head's held runs, and checks: read the check
+  # runs of a head). It holds no identity token and no model. For the review of an outside pull request and for a
+  # relabel, it decides the import check run of R12 on the head (.github/review/rules.py import-check) and records
+  # repo-pairs/import-approved, with conclusion success, when the rule holds. When a later review of the head gives a
+  # blocking finding or the verdict person, or a later screen holds the head, it updates that check run to the
+  # conclusion neutral (R12). For an approval, it reads the files of the head too (.github/review/rules.py steering).
+  # It checks out main's .github/ for those, and runs nothing else from it. Its outputs: recorded, true when it
+  # recorded that check run at the head; decision, what it decided for that check run: record, or the first rule of
+  # R12 that does not hold; caught, the head of a pull request that a catch-up closed and reopened, or only reopened,
+  # which the comment job records in the label comment; steering, the head of an approval that changes a file under
+  # .github/, whose runs it does not approve; and no_key, the head of an approval whose held runs it found and did not
+  # approve, as the environment post holds no key. The comment job records each of the last two in the label comment.
   post:
     needs: [trust, gather, screen, review]
     # The review or the rescreen of a pull request whose review succeeded, when the screen passed it or its author is
@@ -2657,6 +2665,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {contents: read, pull-requests: read, actions: read, checks: read}
+    # Whether the environment post holds the key of the Theorem Verify App: true or false, never the key. Each step
+    # that needs the App, or that only finds work for it, runs only when it is true (R10).
+    env:
+      APP_KEY_SET: ${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}
     outputs:
       recorded: ${{ steps.record.outputs.recorded == 'true' && 'true' || 'false' }}
       decision: ${{ steps.decide.outputs.decision }}
@@ -2666,6 +2678,7 @@ jobs:
       imports: ${{ steps.decide.outputs.imports }}
       caught: ${{ steps.catchup.outputs.caught }}
       steering: ${{ steps.held.outputs.steering }}
+      no_key: ${{ steps.no_key.outputs.head }}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -2778,15 +2791,17 @@ jobs:
       # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
-      # withdrawn and no token is minted. A read that fails fails the job. After the review's verdict, the rescreen
-      # pass's retry of the App's writes (a relabel) withdraws the check run again. After a screen that held the head,
-      # that retry does not run: the hold comment, which is not tried again, names the head (held.sh, consider). Only a
-      # relabel after a recorded merge conflict of the head ends withdraws it then, as consider takes the merge conflict
-      # (due_conflict) before it checks for such a hold. So the error says so, and that a person re-runs this job.
+      # withdrawn and no token is minted. While the environment post holds no key (APP_KEY_SET), no step can withdraw
+      # what this step finds, so it does not run. A read that fails fails the job. After the review's verdict, the
+      # rescreen pass's retry of the App's writes (a relabel) withdraws the check run again. After a screen that held
+      # the head, that retry does not run: the hold comment, which is not tried again, names the head (held.sh,
+      # consider). Only a relabel after a recorded merge conflict of the head ends withdraws it then, as consider takes
+      # the merge conflict (due_conflict) before it checks for such a hold. So the error says so, and that a person
+      # re-runs this job.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
-          (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
+          env.APP_KEY_SET == 'true' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && (needs.review.result == 'success'
                    || (needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean')))
@@ -2849,12 +2864,13 @@ jobs:
           echo "#$NUMBER: a later step of this job withdraws the import check runs $ids of $head, because $because."
           { echo "checks=$ids"; echo "head=$head"; echo "why=$why"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
-      # and for the close and reopen of a catch-up.
+      # and for the close and reopen of a catch-up. Only while the environment post holds the App's key.
       - name: Sign in as the Theorem Verify App
         id: app
         if: >-
-          needs.trust.outputs.task == 'catchup' || steps.decide.outputs.decision == 'record'
-          || steps.withdraw.outputs.checks != ''
+          env.APP_KEY_SET == 'true'
+          && (needs.trust.outputs.task == 'catchup' || steps.decide.outputs.decision == 'record'
+              || steps.withdraw.outputs.checks != '')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
           client-id: ${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}
@@ -2868,10 +2884,11 @@ jobs:
       # external_id, <number>:<head>, and its output title name this pull request, and the import counts the check run
       # as the approval of that pull request alone. Its output text holds the marker line of the value of
       # REPO_PAIRS_IMPORT_PATHS that the decision read. A call that fails fails the job: recorded stays false, and the
-      # rescreen pass takes the head again. A token A that could not be minted skips this step for the same end.
+      # rescreen pass takes the head again. A token A that could not be minted skips this step for the same end. While
+      # the environment post holds no key, this step does not run: recorded stays false, and the job succeeds.
       - name: Record the import check of the head
         id: record
-        if: steps.decide.outputs.decision == 'record'
+        if: env.APP_KEY_SET == 'true' && steps.decide.outputs.decision == 'record'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
@@ -2893,7 +2910,7 @@ jobs:
       # head and the import check run. After a screen that held the head, the error also says when the rescreen pass
       # tries it again, and that a person re-runs this job (the comment of the step that found it says why).
       - name: Withdraw the import check runs of the head
-        if: steps.withdraw.outputs.checks != ''
+        if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.checks != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
@@ -2921,10 +2938,11 @@ jobs:
       # close is the App's own, so that a pull request that someone closed in between stays closed. The reopen is tried
       # 3 times, 10 seconds apart; then the step fails, and the rescreen pass tries the reopen again an hour later. Once
       # the pull request is open again, the output caught names its head: the comment job records it in the label
-      # comment, so that the rescreen pass catches up each head once.
+      # comment, so that the rescreen pass catches up each head once. While the environment post holds no key, this
+      # step does not run, and the pull request stays as it is.
       - name: Close and reopen the pull request
         id: catchup
-        if: needs.trust.outputs.task == 'catchup'
+        if: env.APP_KEY_SET == 'true' && needs.trust.outputs.task == 'catchup'
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
@@ -2987,7 +3005,8 @@ jobs:
       # rename (.github/review/rules.py steering). It reads them after the runs and before a second check of the head.
       # For such a head, the output steering names the head, and the comment job records it. A read that fails fails
       # this step, and so does a list that does not hold each changed file (GitHub lists at most 3,000): no run is
-      # approved.
+      # approved. While the environment post holds no key, this step still runs, and the last step of this job names
+      # the head whose held runs it found (no_key).
       - name: The held runs of the screened head
         id: held
         if: needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
@@ -3056,11 +3075,12 @@ jobs:
           listed=$(grep -c . "$files" || true)
           [ "$listed" = "$count" ] || refuse "GitHub lists $listed of the $count changed files of #$NUMBER."
           echo "runs=$ids" >> "$GITHUB_OUTPUT"
-      # Token B: for the approval of the runs that the step before found, only when the screen passed.
+      # Token B: for the approval of the runs that the step before found, only when the screen passed and the
+      # environment post holds the App's key.
       - name: Sign in as the Theorem Verify App to approve
         id: approver
         if: >-
-          needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+          env.APP_KEY_SET == 'true' && needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
           && steps.held.outputs.runs != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
@@ -3072,7 +3092,7 @@ jobs:
       # Each of those runs, approved with token B: GitHub then starts it. Every run is tried, and a call that fails
       # fails this step and the job: the App's write failed, and the rescreen pass takes the head again.
       - name: Approve the held runs of the screened head
-        if: steps.approver.outcome == 'success'
+        if: env.APP_KEY_SET == 'true' && steps.approver.outcome == 'success'
         env:
           GH_TOKEN: ${{ steps.approver.outputs.token }}
           REPO: ${{ github.repository }}
@@ -3092,6 +3112,28 @@ jobs:
             fi
           done
           exit "$failed"
+      # While the environment post holds no key of the Theorem Verify App (APP_KEY_SET; R10, until the LPS move of
+      # dispatch://OSSV-321), each step before that needs the App did not run. This step says so in the run's summary.
+      # For an approval whose held runs the step "The held runs of the screened head" found, the output head names
+      # the head that the screen read: the comment job gives the pull request waits-on-theorem, with a label comment
+      # that says that a person at Theorem approves its runs and that records the head, so that the rescreen pass
+      # starts no second approval of it.
+      - name: Say that the environment post holds no key of the Theorem Verify App
+        id: no_key
+        if: env.APP_KEY_SET != 'true'
+        env:
+          HEAD: ${{ needs.trust.outputs.head }}
+          RUNS: ${{ steps.held.outputs.runs }}
+        run: |
+          set -euo pipefail
+          echo "The environment \`post\` holds no key of the Theorem Verify App. So this run approved no held run," \
+            "recorded or changed no check run \`repo-pairs/import-approved\`, and closed or reopened no pull request." \
+            >> "$GITHUB_STEP_SUMMARY"
+          [ -n "${RUNS:-}" ] || exit 0
+          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the trust job gave no head commit: $HEAD"; exit 1; }
+          echo "::notice::GitHub holds the runs $RUNS of $HEAD. The environment post holds no key of the Theorem" \
+            "Verify App, so no run is approved: a person at Theorem approves its runs."
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
   # changes, the approved reply, or the comment that asks the author of a pull request with a merge conflict to resolve
@@ -3100,9 +3142,10 @@ jobs:
   # the state label and the label comment of its head. A catch-up that closed and reopened the pull request posts
   # nothing but the line of its head in the label comment, and keeps the state label and the text of that comment. A
   # stop of the rescreen pass posts the label and the hold comment of its work alone. An approval whose head changes a
-  # file under .github/ (the post job's output steering) posts its state label and its label comment alone. A review,
-  # an answer or a fix that the fresh reader refused posts nothing: the item gets waits-on-theorem and a label comment
-  # with Sami's next step.
+  # file under .github/ (the post job's output steering), or whose held runs the post job did not approve as the
+  # environment post holds no key of the Theorem Verify App (its output no_key), posts its state label and its label
+  # comment alone. A review, an answer or a fix that the fresh reader refused posts nothing: the item gets
+  # waits-on-theorem and a label comment with Sami's next step.
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed.
@@ -3111,7 +3154,7 @@ jobs:
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job. A reply
     # and a stop have no gather, screen or review job: they need the trust job alone. A catch-up needs a post job that
     # reopened the pull request (its output caught), and an approval one that approved no run of a head that changes a
-    # file under .github/ (its output steering).
+    # file under .github/ (its output steering) or no held run of a head for lack of the App's key (its output no_key).
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -3123,7 +3166,7 @@ jobs:
               || (needs.trust.outputs.task == 'catchup' && needs.post.result == 'success'
                   && needs.post.outputs.caught != '')
               || (needs.trust.outputs.task == 'approve' && needs.post.result == 'success'
-                  && needs.post.outputs.steering != '')) }}
+                  && (needs.post.outputs.steering != '' || needs.post.outputs.no_key != ''))) }}
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max). Every write of the
     # item's state label and label comment runs in this group, label-<n>: this job's, the hold job's, and a stop's, a
     # catch-up's and an approval's, which this job writes.
@@ -3574,22 +3617,29 @@ jobs:
       # job approved no run of it, so a person at Theorem approves its runs (R10). The item gets waits-on-theorem, and
       # its label comment says so and holds the line <!-- review-steering <head> --> (.github/review/rules.py), which
       # every later label comment keeps. The rescreen pass and the trust job read that line, so that no run of the
-      # pass screens that head again for its approval. Nothing is written when the pull request moved on from the head:
-      # the new head gets an approval of its own.
+      # pass screens that head again for its approval. An approval whose held runs the post job found while the
+      # environment post held no key of the Theorem Verify App (the post job's no_key, the head that the screen read)
+      # gets waits-on-theorem the same way, with a label comment that says that the workflow cannot approve the checks
+      # yet, and the line <!-- review-no-key <head> -->, which the rescreen pass reads (held.sh, due_approve). Nothing
+      # is written when the pull request moved on from the head: the new head gets an approval of its own.
       - name: Say that a person at Theorem approves the runs of the head
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task == 'approve'
         env:
           STEERING: ${{ needs.post.outputs.steering }}
+          NO_KEY: ${{ needs.post.outputs.no_key }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
-          [[ $STEERING =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::the post job names no head that changes a file under .github/: $STEERING"; exit 1; }
+          # The fact of the state, and the head that the post job read.
+          fact=steering head=$STEERING
+          [ -n "$STEERING" ] || fact=no_key head=$NO_KEY
+          [[ $head =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::the post job names no head whose held runs it did not approve: $head"; exit 1; }
           now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
-          [ "$now" = "$STEERING" ] \
-            || { echo "#$NUMBER moved from $STEERING to $now, so the workflow changes neither its labels nor its" \
+          [ "$now" = "$head" ] \
+            || { echo "#$NUMBER moved from $head to $now, so the workflow changes neither its labels nor its" \
                    "label comment."; exit 0; }
-          python3 .github/review/rules.py label "$NUMBER" steering=true head="$STEERING"
+          python3 .github/review/rules.py label "$NUMBER" "$fact=true" head="$head"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
