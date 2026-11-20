@@ -485,8 +485,9 @@ jobs:
       head: ${{ steps.trust.outputs.head }}
       # The head commit that the name of the run gives (run-name, and held.sh take): the head of a CI run, or the input
       # head of a run by hand, which this job checks against the head of the pull request. Empty when the name gives
-      # none. The rescreen pass tries the App's writes again only for a run whose name gives the head (held.sh,
-      # due_retry), so the post job's error of a withdrawal that fails promises that retry only then.
+      # none, and for a draft. The rescreen pass tries the App's writes again only for a run whose name gives the head
+      # (held.sh, due_retry), and takes no draft (held.sh, consider). So the post job's error of a withdrawal that
+      # fails promises that retry only when named is the head.
       named: ${{ steps.trust.outputs.named }}
       # The comment that an answer answers.
       comment: ${{ steps.trust.outputs.comment }}
@@ -774,7 +775,8 @@ jobs:
           # (reviewed). On every route of an item with an author, the output kind is the kind of the author
           # (kind_of_author), and the output outside is true for an outsider and false for a writer or unknown. A run
           # with no author (a measurement) gives both empty. The output named is HEAD when it is a head commit, for a
-          # run of an item: the name of a measurement gives no head.
+          # run of an item that is not a draft: the name of a measurement gives no head, and the rescreen pass takes no
+          # run of a draft again (held.sh, consider).
           route() {
             local outside="" named=""
             if [ -n "$AUTHOR" ]; then
@@ -782,7 +784,9 @@ jobs:
               outside=false
               [ "$author_kind" != outsider ] || outside=true
             fi
-            [ -z "$NUMBER" ] || [[ ! $HEAD =~ ^[0-9a-f]{40}$ ]] || named=$HEAD
+            if [ -n "$NUMBER" ] && [ "${is_draft:-false}" = false ] && [[ $HEAD =~ ^[0-9a-f]{40}$ ]]; then
+              named=$HEAD
+            fi
             echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
               echo "named=$named"; echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"
@@ -2775,9 +2779,14 @@ jobs:
       # (held), a later screen held the head: the decision is held, so that the label comment says so, and a later step
       # withdraws its check run. A review by hand with no screen (a review or a rescreen whose route is not screen)
       # records no check run, as no screen ran in its run. It reads the state of the head in the same way, and keeps
-      # its own verdict. For screened, the decision is hand, and the label comment says that the screen and the review
-      # passed the pull request. For held, the decision is held. Else it is screen, and the label comment says that no
-      # screen passed the head in a run that also reviewed it.
+      # its own verdict. For screened, the verdict of the newest review comment of the head (this run's has not posted
+      # yet) gives the decision. After a pass, it is hand: with the verdict pass, this run records and withdraws
+      # nothing, so the label step changes neither the state label nor the label comment (.github/review/rules.py
+      # label), and a check run that the screened run recorded stands. After a blocking finding or the verdict person,
+      # it is screened: that review withdrew any check run of the head and recorded none, so the state follows this
+      # run's verdict, and for a pass the label comment says that the screen and the review passed the pull request.
+      # For held, the decision is held, and a later step withdraws the check run, as for a relabel. Else it is screen,
+      # and the label comment says that no screen passed the head in a run that also reviewed it.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2835,18 +2844,29 @@ jobs:
             fi
           }
           # by_hand: for a review or a rescreen with no screen in this run (a review by hand), the state of the head
-          # that the review comments give (rules.py verdict), as relabeled reads it. The run keeps its own verdict, and
-          # records no check run. screened gives the decision hand, and held the decision held. For unscreened, the
-          # import check below gives the decision screen.
+          # that the review comments give (rules.py verdict), as relabeled reads it, and the verdict of the newest
+          # review comment of the head (earlier: this run's review has not posted yet). The run keeps its own verdict,
+          # and records no check run. screened gives the decision hand after an earlier pass, and screened after an
+          # earlier blocking finding or verdict person. held gives the decision held, and the output held, so that the
+          # step that withdraws an import check run withdraws it, as for a relabel. For unscreened, the import check
+          # below gives the decision screen.
           by_hand() {
-            local reviewed state why
+            local reviewed earlier state why
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r _ state <<< "$reviewed"
-            why="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
-            [ "$state" != screened ] || decided hand "$why"
-            why="a screen held $HEAD, and no review comment whose run screened it is newer"
-            [ "$state" != held ] || decided held "$why"
+            read -r earlier state <<< "$reviewed"
+            if [ "$state" = screened ] && [ "$earlier" = pass ]; then
+              why="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
+              decided hand "$why"
+            fi
+            if [ "$state" = screened ]; then
+              why="the newest review of $HEAD gives the verdict $earlier"
+              decided screened "$why, and a screen passed the head in an earlier run"
+            fi
+            if [ "$state" = held ]; then
+              echo "held=true" >> "$GITHUB_OUTPUT"
+              decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
+            fi
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
@@ -2882,10 +2902,11 @@ jobs:
       # external_id is <number>:<head>. A check run belongs to a commit, so one of another pull request of the same
       # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a review by
       # hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or this run's
-      # screen held the head, or a relabel found a hold comment of the screen that names the head and is newer than the
-      # newest review comment of the head with the marker <!-- review-screened <head> --> (the decision's held). The if
-      # of this step reads the screen's verdict: a review or a rescreen with no review job that succeeded, and an
-      # approval, run this step only when the screen held the head. The
+      # screen held the head, or a relabel or a review by hand with no screen found a hold comment of the screen that
+      # names the head and is newer than the newest review comment of the head with the marker
+      # <!-- review-screened <head> --> (the decision's held), whatever the verdict. The if of this step reads the
+      # screen's verdict: a review or a rescreen with no review job that succeeded, and an approval, run this step only
+      # when the screen held the head. The
       # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
@@ -2927,6 +2948,7 @@ jobs:
           REVIEW_HEAD: ${{ needs.review.outputs.head }}
           # The verdict of the review comment that a relabel reads (the decision's), or else of this run's review.
           VERDICT: ${{ steps.decide.outputs.verdict || needs.review.outputs.verdict }}
+          # true for the decision held: a relabel or a review by hand with no screen found a newer hold of the screen.
           HELD: ${{ steps.decide.outputs.held }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
@@ -2938,10 +2960,10 @@ jobs:
           head=$REVIEW_HEAD why=$VERDICT
           if [ "$TASK" = relabel ]; then
             head=$TRUST_HEAD
-            [ "${HELD:-}" != true ] || why=screen
           elif [ "$TASK" = approve ] || [ "$REVIEWED" != success ]; then
             head=$TRUST_HEAD why=screen
           fi
+          [ "${HELD:-}" != true ] || why=screen
           # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
           case $why in
             blocking) because="a later review asks for a change" ;;
@@ -3503,6 +3525,11 @@ jobs:
       # would then say that the screen and the review passed the head, also when no screen passed it or a later screen
       # held it. So it writes nothing, and the label and the label comment stay as the runs before it left them. After
       # a post job that failed, the rescreen pass's retry of the App's writes takes the head again (held.sh, due_retry).
+      # A passing review by hand with the post job's decision hand (a screen passed the head in the run of an earlier
+      # review, and the newest review of the head passed it) recorded and withdrew no check run, so the state that the
+      # earlier runs set holds: the state label and the label comment stay as they are, and a notice says why (rules.py
+      # UNCHANGED). review-held still comes off. With the decision screened (the newest review of the head gave a
+      # blocking finding or the verdict person), the state follows this run's verdict, as for any review.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
