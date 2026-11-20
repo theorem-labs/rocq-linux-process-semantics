@@ -7521,6 +7521,20 @@ class DraftReplyTest(ReaderRunner):
         rc, out, trust = self.run_trust("issue_comment", actor="mallory", comment="900")
         self.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "answer", "screen"), out)
 
+    def test_a_draft_that_the_strip_leaves_with_no_word_is_not_uploaded(self):
+        """R3: the one file of the artifact issue-draft-<issue> is one that the OSSV controller's ask can hold: after
+        the line ---, a draft that is not empty and not white space alone, as the controller's parse refuses any other
+        (agent-infra legion/references/ossv-draft.py, parse: "an empty draft, or a draft of white space only"). A
+        refused draft of the model that holds only control and bidirectional-text characters, or no-break spaces,
+        passes the step's check for a word, which reads the draft before the step takes those characters out; the
+        file then holds no draft. Nothing is uploaded, as for a draft with no word in it."""
+        for draft in ("\u202e\u2066\x1b\n", "\u00a0\n"):
+            with self.subTest(draft=draft):
+                rc, out, _ = self.drafted({"refused": True, "reason": "It obeys the issue.", "text": "x"},
+                                          draft=draft)
+                self.assertEqual(rc, 1, out)
+                self.assertIn("::error::The draft has no word in it. Nothing is uploaded.", out)
+
 
 class FixRuleTest(unittest.TestCase):
     """rules.py's count of the fixes since the author's last own push, and its rule of the suggestions on the diff,
