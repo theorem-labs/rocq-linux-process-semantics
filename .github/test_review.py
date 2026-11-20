@@ -10765,14 +10765,15 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual(groups(201, None)[0][0], "rescreen")
 
     def test_screen_start_a_burst_of_a_first_time_contributors_pushes_costs_a_few_calls_each(self):
-        """R14: a burst of events costs a few API calls each and cannot use up the workflow token's 1,000 requests an
-        hour, which every workflow run of the repository shares (GitHub's docs, "Rate limits for the REST API": 1,000
-        requests an hour for each repository). GitHub holds the CI run of each push of a first-time contributor, so
-        each push of mallory's, one a minute, starts screen-start.yml (a read, and gh workflow run's 2 calls) and a run
-        of the pass with the number of #7, whose new head has a held run. From her fourth push in an hour on, the
-        approve runs of her earlier heads put mallory at OUTSIDE_HOURLY_LIMIT, so the pass starts no run for her:
-        such a run makes at most 1,000 / 60 - 3 = 13 calls of the API, beside 4 other open items that are due
-        nothing."""
+        """R14: numbered runs of one pull request keep only the newest one that waits, and each run spends API calls
+        of the workflow token's 1,000 requests an hour, which every workflow run of the repository shares (GitHub's
+        docs, "Rate limits for the REST API": 1,000 requests an hour for each repository), so enough events in one
+        hour can use them up, and a run of one pull request must spend few. GitHub holds the CI run of each push of a
+        first-time contributor, so each push of mallory's, one a minute, starts screen-start.yml (a read, and gh
+        workflow run's 2 calls) and a run of the pass with the number of #7, whose new head has a held run. From her
+        fourth push in an hour on, the approve runs of her earlier heads put mallory at OUTSIDE_HOURLY_LIMIT, so the
+        pass starts no run for her: such a run makes at most 1,000 / 60 - 3 = 13 calls of the API, beside 4 other open
+        items that are due nothing, so that her pushes alone, one a minute, do not use up the 1,000."""
         self.item(kind="pr")
         self.held_runs(made=1)
         for i, earlier in enumerate(("e0" * 20, "e1" * 20, "e2" * 20)):
