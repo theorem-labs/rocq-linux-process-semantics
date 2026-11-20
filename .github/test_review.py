@@ -14085,15 +14085,14 @@ class ImportCheckTest(ReaderRunner):
         """Fresh reader round 11 (N-M1 on its last path, and the case that it did not count): Sami reviews a pull
         request by hand with no screen, as the label comment of a stopped review asks. The trust job asks GitHub
         nothing of the author, so its outsider and its outside are empty, and the label step reads no outside path.
-        For alice's #7 (a writer's) and for mallory's #7 (an outside one), each with that label comment, the label step
-        writes the state reviewed in its place: the review names the next step, and a push starts the review again.
-        Never that the workflow tries again. It sets no state label, and takes waits-on-theorem off mallory's #7, as
-        the state working did."""
+        For alice's #7 (a writer's), with that label comment, the label step writes the state reviewed in its place:
+        the review names the next step, and a push starts the review again. Never that the workflow tries again. It
+        sets no state label. An outside pull request reviewed by hand keeps one state label (OSSV-221's architect,
+        2026-11-20 14:00Z): test_an_outside_pull_request_that_a_person_reviews_by_hand_keeps_one_state_label."""
         self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
         old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("stopped")}
         for author, outside, labels, taken in (
-                ("alice", "false", ("review-held",), []),
-                ("mallory", "true", ("review-held", THEOREM_LABEL), [("-", THEOREM_LABEL)])):
+                ("alice", "false", ("review-held",), []),):
             self.serve_item(7, author, kind="pr", head=HEAD)
             rc, out, trust = self.run_trust("workflow_dispatch", actor="alice")
             self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"), trust.get("outside")),
@@ -14106,6 +14105,28 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual(got["labels"], taken, got["log"])
                     self.assertEqual(got["comments"], [rules.label_comment("reviewed", old["body"])], got["log"])
                     self.assertNotIn("tries again", got["comments"][0])
+
+    def test_an_outside_pull_request_that_a_person_reviews_by_hand_keeps_one_state_label(self):
+        """R5: the workflow keeps one label on each open outside item, waits-on-author when the next step is the
+        author's and waits-on-theorem when it is a person's at Theorem, and sets it in the run of the event that changes
+        the state. The review of the CI run of mallory's #7 passed the screen at HEAD, and its label comment (waits-on-
+        theorem, the steps of R12) holds the marker line of HEAD. Then Sami reviews HEAD by hand with no screen, as a
+        label comment can ask: the trust job asks GitHub nothing of mallory, so its outsider and its outside are empty.
+        After the comment job's label step, #7 has one state label: waits-on-author for a blocking finding, and
+        waits-on-theorem for the verdict person or pass. (At the head it has none: the state reviewed takes
+        waits-on-theorem off. The rescreen pass does not relabel it either: its label comment keeps the marker line of
+        HEAD with the value of now, so due_variable finds nothing to do.)"""
+        first = self.judge(["README.md"])
+        (body,) = first["comments"]
+        old = {"id": 40, "user": {"login": BOT}, "body": body}
+        for verdict, want in (("blocking", {AUTHOR_LABEL}), ("person", {THEOREM_LABEL}), ("pass", {THEOREM_LABEL})):
+            with self.subTest(verdict=verdict):
+                got = self.judge(["README.md"], verdict, trust=dict(self.BY_HAND, outside=""),
+                                 event="workflow_dispatch", comments=[old], labels=("review-held", THEOREM_LABEL))
+                have = {THEOREM_LABEL}
+                for change, name in got["labels"]:
+                    (have.add if change == "+" else have.discard)(name)
+                self.assertEqual(have, want, got["log"])
 
     def test_a_writers_pull_request_reads_no_import_check_run_to_withdraw(self):
         """Fresh reader round 11 (R11-M2): the workflow records the import check run for an outside pull request
