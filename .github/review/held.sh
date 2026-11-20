@@ -208,7 +208,8 @@ no_key_of() {
 # has no marker of a hold that is tried again) is newer than each review comment of <head> whose run screened it
 # (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state held. Else
 # blocking or person, when the newest review comment of <head> gives that verdict. Else -: then a relabel of
-# <head> withdraws nothing, and can record an import check run. A relabel that withdraws records none.
+# <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
+# marker and passes (rules.py verdict, screened). A relabel that withdraws records none.
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")

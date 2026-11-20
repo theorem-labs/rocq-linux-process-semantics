@@ -28,15 +28,11 @@ task of the run, one of TASKS, and the trust job's outputs outside, outsider and
 The answer label of the author-kind table (answers) tells what this does. For an outside author (outside_author: the
 trust job's outside is true) it gives the item the state label of its state. For an author whose write access GitHub
 did not give (author=unknown) it changes nothing: no state label goes on or off, the label comment stays as it is, and
-a notice says why. A review by hand with the decision hand and the verdict pass changes nothing in the same way, while
-an earlier run of its head set the state, as it recorded and withdrew no check run (UNCHANGED). With the decision
-screened, the state follows the verdict, as for any review. For any other author, the item gets no state label and
-loses each one that it has, but its label comment is the one of its state, with the marker of the state's label. The
-state label is
-waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in
-the states steering and no-key), and none while the workflow works on the item. Setting one label takes the other
-off. review-held, the mark of a hold, stays beside them. The label comment is one comment of github-actions[bot] on
-the item, edited in place
+a notice says why. For any other author, the item gets no state label and loses each one that it has, but its label
+comment is the one of its state, with the marker of the state's label. The state label is waits-on-author when the
+next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in the states steering and
+no-key), and none while the workflow works on the item. Setting one label takes the other off. review-held, the mark
+of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the item, edited in place
 (label_comment). Its first line is <!-- review-label -->, its text names the next step and who takes it, and with a
 state label its last line is the marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps each
 marker line of KEPT that it holds, and a marker=<line> of the same kind takes the place of that line. It holds
@@ -146,15 +142,16 @@ so that the line holds no line break and no --> before its end.
 verdict: "<verdict> <state>" on standard output for <head> of the pull request <number> (review_verdict), from the
 comments of github-actions[bot]: <verdict> is the verdict of the marker
 <!-- review-verdict <head> <verdict>[ will-fix] --> of the newest review comment that names <head>, or - when none
-does. <state> is screened when a review comment of <head> holds <!-- review-screened <head> --> as the next marker
-line, so that the screen passed <head> in the run of that review, and no hold comment of the screen that names <head>
-is newer than the newest such review comment. It is held when such a hold comment is newer than that review comment,
-or when no review comment of <head> holds the marker and such a hold comment exists: a later screen held <head>. Else
-it is unscreened (a writer's review by hand runs no screen). A relabel records the import check run only for
-screened, and withdraws it for held. A review by hand with no screen records none. The post job's decision is hand
-for screened when <verdict> is pass, and screened when <verdict> is blocking or person: the review of this run has
-not posted yet. It is held for held (and the run withdraws the check run, as a relabel does), and screen for
-unscreened.
+does. A review comment of <head> is screened when it holds <!-- review-screened <head> --> as the next marker line, so
+that the screen passed <head> in the run of that review. <state> is held when a hold comment of the screen that names
+<head> is newer than the newest screened review comment, or when no review comment of <head> is screened and such a
+hold comment exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is
+screened, earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). A relabel
+records the import check run only for screened, and withdraws it for held. For earlier with the verdict pass, its
+decision is hand. A review by hand with no screen records none. The post job's decision is hand for screened or
+earlier when <verdict> is pass, and screened when <verdict> is blocking or person: the review of this run has not
+posted yet. It is held for held (and the run withdraws the check run, as a relabel does), and screen for unscreened.
+For the decision hand, the label step counts an import check run of <head> that still stands as recorded.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a later review of <head>, or screen, a later
@@ -259,11 +256,13 @@ REFUSALS = ("", "review", "answer", "fix")
 # by hand with no screen read the review comments of the head (review_verdict). The decision is held when a hold
 # comment of the screen is newer than each review comment whose run screened the head. For a review by hand, a run
 # with no screen that records no check run, the decision is hand or screened when the run of an earlier review
-# screened the head and no hold comment of the screen is newer. It is hand when the newest review comment of the head
-# gives the verdict pass: with the verdict pass, the label step then changes nothing (set_state), while an earlier run
-# of the head set the state. It is screened when that comment gives a blocking finding or the verdict person: no check
-# run of the head stands after that review, and this run withdraws each one that still does. So the state follows the
-# verdict of this run, and a pass gets PASSED. Empty when the job gave none.
+# screened the head and no hold comment of the screen is newer (the states screened and earlier). It is hand when the
+# newest review comment of the head gives the verdict pass, and so is a relabel's in the state earlier with that
+# verdict. For the decision hand, the label step counts an import check run of the head that still stands as recorded
+# (the post job's standing), so its state is import or decide as that check run gives. It is screened when that
+# comment gives a blocking finding or the verdict person: no check run of the head stands after that review, and this
+# run withdraws each one that still does. So the state follows the verdict of this run, and a pass gets PASSED. Empty
+# when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened")
 
@@ -275,7 +274,7 @@ PASSED = "The automated screen and the automated review passed this pull request
 # The decision screen of an outside pull request whose review passed: no screen passed its head in the run of a review.
 # A review by hand with no screen and a relabel run none, and no review comment of the head holds the marker of a
 # screen that passed it (review_verdict). So the text says so in the place of PASSED. After such a review comment, a
-# review by hand gets the decision hand or screened (DECISIONS).
+# review by hand gets the decision hand or screened, and a relabel's pass the decision hand (DECISIONS).
 UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit in a run that "
               "also reviewed it, so the workflow did not record the check `repo-pairs/import-approved`.")
 # The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
@@ -484,11 +483,10 @@ def import_steps(state, value, decision):
     changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
     MERGE_STEPS. For the decision screen, the text says that no screen passed the head in the run of a review
     (UNSCREENED), and for the decision held that a screen held the head after each screened review
-    (SCREEN_HELD_AFTER), in the place of PASSED. The decisions hand and screened (a review by hand with no screen,
-    after a review whose run screened the head) give PASSED, and do not say which step: they compared no path. The
-    label step writes a label comment of the state decide for the decision hand only when a run of another head set
-    the state last (set_state). The decision screened follows a newest review of the head with a blocking finding or
-    the verdict person."""
+    (SCREEN_HELD_AFTER), in the place of PASSED. The decisions hand and screened (a review by hand with no screen, or
+    a relabel, after a review whose run screened the head) give PASSED, and do not say which step: they compared no
+    path. The decision hand gives the state decide only when no import check run of the head stands (the post job's
+    standing): one that stands gives the state import while the variable is set."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -834,52 +832,20 @@ def answers(task, outside, outsider, kind=""):
     return dict(zip(ANSWERS, TABLE[(task, author_class(outside, kind))]))
 
 
-# Why the label step changes neither the state label nor the label comment of an item (set_state): unknown, the label
-# answer unchanged of the author-kind table; hand, a review by hand with no screen whose decision is hand and whose
-# state is decide (the verdict pass), while the label comment holds the marker line of R12 of its head (of_head). The
-# decision hand says that the newest review of the head passed it, in a run that screened it or after one. Such a run
-# recorded and withdrew no check run, so the state that the earlier runs of the head set still holds, also the state
-# import of a check run that a screened run recorded (OSSV-221's architect, 2026-11-20 20:01Z). When the label comment
-# holds no such line, a run of another head set the state last (a push, then a push back to the head), and the state
-# follows the verdict of this run. The decision screened is not one of these: its state follows the verdict of the run.
-UNCHANGED = {
-    "unknown": "GitHub did not say whether its author has write access, so the workflow changes neither its state "
-               "label nor its label comment.",
-    "hand": "a review by hand with no screen passed its head, and so did the newest review of the head before it. "
-            "This run recorded and withdrew no check run, so the state label and the label comment that the earlier "
-            "runs of this head set stay.",
-}
-
-
-def of_head(body, head):
-    """Whether the label comment body holds the marker line of R12 for head (import_marker), which the label step of
-    each run of head writes in the label comment of an outside pull request: then a run of head set its state last."""
-    start = f"<!-- repo-pairs-import-paths {head}: "
-    return bool(HEAD.fullmatch(head)) and any(line.startswith(start) and KEPT.fullmatch(line)
-                                               for line in body.split("\n"))
-
-
 def set_state(number, run, facts, markers=(), head="", labels=None):
     """Gives the item number the state that facts give (label_state), as the label answer of the author-kind table for
-    run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice
-    (UNCHANGED). A review by hand whose decision is hand and whose state is decide is unchanged too, while its label
-    comment holds the marker line of R12 of head (of_head): a blocking or person verdict with that decision sets its
-    state, and so does each verdict with the decision screened. label_state's outsider is outside_author of the trust
-    job's outside. For an outside pull request, the label comment names the steps of R12 for the import, and holds the
-    marker line of R12 for head when head is given (import_marker). The label comment is made once before any write,
-    so that a marker or a head that it refuses changes nothing on GitHub."""
+    run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice.
+    label_state's outsider is outside_author of the trust job's outside. For an outside pull request, the label comment
+    names the steps of R12 for the import, and holds the marker line of R12 for head when head is given (import_marker).
+    The label comment is made once before any write, so that a marker or a head that it refuses changes nothing on
+    GitHub."""
     label = answers(run["task"], run["outside"], run["outsider"], run["author"])["label"]
-    outsider = outside_author(run["outside"])
-    state = None if label == "unchanged" else label_state(outsider=outsider, **facts)
-    kept = "unknown" if label == "unchanged" else ""
-    if state == "decide" and facts.get("decision") == "hand":
-        if labels is None:
-            labels = read_labels(number)
-        if labels and of_head(labels[-1]["body"], head):
-            kept = "hand"
-    if kept:
-        print(f"::notice::#{number}: {UNCHANGED[kept]}")
+    if label == "unchanged":
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so the workflow changes "
+              "neither its state label nor its label comment.")
         return
+    outsider = outside_author(run["outside"])
+    state = label_state(outsider=outsider, **facts)
     imports = None
     if facts.get("kind") == "pr" and outsider:
         imports = (facts.get("import_paths"), facts.get("decision", ""))
@@ -1286,24 +1252,25 @@ def withdrawal(number, head, why, text):
 def review_verdict(comments, head):
     """(verdict, state) of head, from comments, the item's comments as the API lists them (issues/<n>/comments, with
     updated_at). verdict is the verdict of the review comment of BOT that names head, the last one when more name it
-    ("" when none names head). state is screened when a review comment of head holds the marker
-    <!-- review-screened <head> --> after its verdict, so that the screen passed head in the run of that review (R12),
-    and no hold comment of BOT of the screen (hold_fact screen_held) that names head is newer than the newest such
-    review comment. state is held when such a hold comment is newer than the newest screened review comment, or when no
-    review comment of head is screened and such a hold comment exists: a later screen held the head. Else it is
-    unscreened (a writer's review by hand runs no screen). So a writer's review by hand after a screened review leaves
-    the state screened, and gives the verdict. Only the markers at the start of a review comment count: no marker of
-    the model's or the reader's text reaches a comment (trim.py inert). The marker of a hold comment is the workflow's
-    own: its text is fixed."""
-    verdict, screened, held = "", None, ""
+    ("" when none names head). A review comment of head is screened when it holds the marker
+    <!-- review-screened <head> --> after its verdict, so that the screen passed head in the run of that review (R12).
+    state is held when a hold comment of BOT of the screen (hold_fact screen_held) that names head is newer than the
+    newest screened review comment of head, or when no review comment of head is screened and such a hold comment
+    exists: a later screen held the head. Else it is screened when the newest review comment of head is screened,
+    earlier when an older one is screened but the newest is not (a review by hand runs no screen), and unscreened when
+    none is. So a review by hand after a screened review gives the state earlier, and its verdict: a relabel records
+    the import check run only for screened (OSSV-221's architect, 2026-11-20 21:33Z). Only the markers at the start of
+    a review comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert). The
+    marker of a hold comment is the workflow's own: its text is fixed."""
+    verdict, screened, held, newest = "", None, "", False
     for c in comments:
         if not of_bot(c):
             continue
         body, at = c.get("body") or "", c.get("updated_at") or ""
         m = REVIEWED.match(body)
         if m and m.group(1) == head:
-            verdict = m.group(2)
-            if m.group(4):
+            verdict, newest = m.group(2), bool(m.group(4))
+            if newest:
                 screened = max(screened or "", at)
         elif body.startswith("<!-- review-held -->"):
             m = HELD_HEAD.search(body)
@@ -1311,7 +1278,9 @@ def review_verdict(comments, head):
                 held = max(held, at)
     if held and (screened is None or held > screened):
         return verdict, "held"
-    return verdict, "unscreened" if screened is None else "screened"
+    if screened is None:
+        return verdict, "unscreened"
+    return verdict, "screened" if newest else "earlier"
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
