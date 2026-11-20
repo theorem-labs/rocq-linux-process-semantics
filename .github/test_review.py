@@ -1596,6 +1596,51 @@ class ClosedTest(unittest.TestCase):
             self.assertEqual(states[i], (False, 0), lines[i])   # in no code block and no <details>
         self.assertEqual(end, (False, 0))
 
+    def test_a_one_line_text_that_opens_a_construct_leaves_each_fixed_part_its_own_text(self):
+        """Review round 1, part I (e): the fixed parts keep their places and forms whatever one line of the model or
+        the reader opens: an HTML comment, a <details>, a <pre>, a fence, an HTML block, a footnote, a link reference
+        definition, a setext underline, a table row, a link, or a hard line break. The line goes in each place of a
+        text of the model or the reader: the trimmed text, the collapsed review, an added item, the result line that
+        goes back, the answer, and the summary, a why and a sentence off the diff of a fix. Each fixed part (the
+        section on soundness, the lines before the added items, the footer, the collapsed review, a sentence off the
+        diff and a suggestion block) comes after a blank line, once. trim.py's own block reader (closed) reads nothing
+        open before it, and nothing open at the end. markup_layout puts its first line in no code block and no
+        <details>."""
+        def check(body, parts):
+            self.assertEqual(trim.closed(body), body)
+            states, end = markup_layout(body)
+            for part in parts:
+                self.assertEqual(body.count("\n\n" + part), 1, body)
+                before = body[:body.index("\n\n" + part)]
+                self.assertEqual(trim.closed(before), before, part)
+                self.assertEqual(states[before.count("\n") + 2], (False, 0), part)
+            self.assertEqual(end, (False, 0))
+
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->\n**Automated review** of commit {HEAD[:12]}"
+        section, foot = "**Soundness of the proofs.** Sami answers.", "Claude wrote this text."
+        off = "A suggestion on `b.v:3` is off the diff."
+        items = [{"kind": "change", "ref": "theories/X.v:1", "optional": False, "text": "Fix the case."},
+                 {"kind": "change", "ref": "theories/Y.v:2", "optional": True, "text": "Name the case."}]
+        for line in ("<!-- hidden", "<details>", "<pre>", "```", "~~~", "<div>", "<span>", "[^x]: note", "[x]: <",
+                     "===", "---", "| a | b |", "[x](", "two spaces  ", "backslash\\"):
+            review = trim.closed(trim.inert(f"Blocking findings.\n\n{line}"))
+            places = {"trimmed": (review, line, items), "whole": (trim.closed(trim.inert(line)), "Trimmed.", items),
+                      "item": (review, "Trimmed.", [dict(items[0], text=line), items[1]]),
+                      "result": (trim.closed(trim.inert(f"Blocking findings. {line}\n\nMore.")), "Trimmed.", items)}
+            for place, (whole, trimmed, listed) in places.items():
+                with self.subTest(line=line, place=place):
+                    check(trim.comment(whole, trimmed, listed, head, section, foot),
+                          [section, trim.LEFT_OUT, trim.OPTIONAL, f"---\n{foot}",
+                           f"<details>\n<summary>{trim.WHOLE}</summary>"])
+            with self.subTest(line=line, place="answer"):
+                check(trim.answer_comment(line, "HEAD", foot), [f"---\n{foot}"])
+            with self.subTest(line=line, place="fix"):
+                suggested = {"path": "a.v", "start_line": 1, "line": 1, "replacement": "x\n"}
+                fix = {"summary": "", "suggestions": [suggested], "off": [{"sentence": off, "why": line}]}
+                got = trim.fix_review(fix, line, [line], HEAD, "HEAD", foot)
+                check(got["body"], [off, f"---\n{foot}"])
+                check(got["comments"][0]["body"], ["```suggestion\nx\n```"])
+
 
 class ReachTest(Runner):
     """What the Review step lets Claude read, and what it runs."""
@@ -4769,18 +4814,16 @@ class ReviewSignInTest(Runner):
              "workspace_id": review["anthropic_workspace_id"]}))
 
     def test_a_refused_exchange_fails_the_step_before_the_model(self):
-        """Anthropic's refusal (its rule does not admit this run's event yet, say), shown with its HTTP status and its
-        error code alone (OAuth's error field, or the type of Anthropic's error object), never Anthropic's text, as the
-        log of a public repository is public; a body with no plain error code shows none. An answer with no token, and
-        a job with no identity token: each fails the step too."""
+        """Anthropic's refusal (its rule does not admit this run's event yet, say), shown with its HTTP status alone,
+        never a part of Anthropic's answer, not even an error code that Anthropic chose, as the log of a public
+        repository is public. An answer with no token, and a job with no identity token: each fails the step too."""
         words = "the rule admits no workflow_run event"
         refusals = {
-            "oauth": ((403, {"error": "invalid_grant", "error_description": words}),
-                      "HTTP 403 from Anthropic, error code invalid_grant."),
+            "oauth": ((403, {"error": "invalid_grant", "error_description": words}), "HTTP 403 from Anthropic."),
             "anthropic": ((403, {"type": "error", "error": {"type": "permission_error", "message": words}}),
-                          "HTTP 403 from Anthropic, error code permission_error."),
-            "no plain code": ((401, {"error": words}), "HTTP 401 from Anthropic, no error code."),
-            "not an object": ((400, words), "HTTP 400 from Anthropic, no error code.")}
+                          "HTTP 403 from Anthropic."),
+            "no plain code": ((401, {"error": words}), "HTTP 401 from Anthropic."),
+            "not an object": ((400, words), "HTTP 400 from Anthropic.")}
         for case, (answer, shown) in list(refusals.items()) + [("no token", ((200, {"token_type": "Bearer"}), None)),
                                                                  ("empty token", ((200, {"access_token": ""}), None))]:
             with self.subTest(case=case):
@@ -4790,6 +4833,8 @@ class ReviewSignInTest(Runner):
                 self.assertIn("The sign-in to Anthropic failed", out)
                 self.assertNoToken(out, got)
                 self.assertNotIn(words, out)
+                for code in ("invalid_grant", "permission_error", "error code"):
+                    self.assertNotIn(code, out)
                 if shown:
                     self.assertIn(f"The sign-in to Anthropic failed: {shown} No model ran.", out)
         self.requests.clear()
@@ -5064,6 +5109,9 @@ class FreshReaderTest(ReaderRunner):
         that line, also in bold, posts as the reader gave it. The block holds the whole review in each case."""
         question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
         trimmed = "`theories/Fd.v:213` leaves the case open."
+        # The verdict blocking needs a blocking finding in the list (rules.py blocking), which the trimmed text names.
+        change = {"kind": "change", "ref": "theories/Fd.v:213", "optional": False,
+                  "text": "Close the case at `theories/Fd.v:213`."}
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
                               ("person", question)):
             review = f"{line}\n\n1. {trimmed}\n\nIt is worth noting that the rest of the change is fine."
@@ -5075,7 +5123,7 @@ class FreshReaderTest(ReaderRunner):
                 with self.subTest(verdict=verdict, trim=case):
                     self.tearDown()
                     self.setUp()
-                    rc, out, got = self.post(review, [], text, verdict)
+                    rc, out, got = self.post(review, [change] if verdict == "blocking" else [], text, verdict)
                     self.assertEqual(rc, 0, out)
                     self.assertEqual(got["body"], self.body(posted, whole=whole, verdict=verdict))
         # The line goes back made inert and closed: a mention notifies no one, and an element that it opens ends
@@ -5230,23 +5278,19 @@ class FreshReaderTest(ReaderRunner):
         rc, out, got = self.run_script(s["run"], **dict(s["env"], RESULT=os.path.join(self.dir, "none.json")))
         self.assertEqual((rc, got), (1, {}), out)
         self.assertFalse(os.path.exists(self.token_file))
-        # Anthropic refuses: the step fails and writes no file. The log gets the HTTP status and the error code, OAuth's
-        # error field or the type of Anthropic's error object, and never Anthropic's text; a body with no plain error
-        # code shows none.
-        for answer, code in (
-                ({"error": "invalid_grant", "error_description": "the rule admits no issue_comment event"},
-                 "error code invalid_grant"),
-                ({"type": "error", "error": {"type": "permission_error", "message": "the rule admits no issue_comment "
-                                                                                    "event"}},
-                 "error code permission_error"),
-                ({"error": "the rule admits no issue_comment event"}, "no error code")):
+        # Anthropic refuses: the step fails and writes no file. The log gets the HTTP status and the host alone, never
+        # a part of Anthropic's answer, not even OAuth's error field or the type of Anthropic's error object.
+        for answer in ({"error": "invalid_grant", "error_description": "the rule admits no issue_comment event"},
+                       {"type": "error", "error": {"type": "permission_error", "message": "the rule admits no "
+                                                                                         "issue_comment event"}},
+                       {"error": "the rule admits no issue_comment event"}):
             with self.subTest(answer=answer):
                 self.exchange = (403, answer)
                 rc, out, got = self.sign_in()
                 self.assertEqual((rc, got), (1, {}), out)
-                self.assertIn("the sign-in failed: HTTP 403 from 127.0.0.1:", out)
-                self.assertIn(f", {code}", out)
-                self.assertNotIn("the rule admits no issue_comment event", out)
+                self.assertRegex(out, r"trim\.py: the sign-in failed: HTTP 403 from 127\.0\.0\.1:[0-9]+\n")
+                for code in ("invalid_grant", "permission_error", "error code", "the rule admits"):
+                    self.assertNotIn(code, out)
                 self.assertFalse(os.path.exists(self.token_file))
 
     def test_a_sign_in_answer_with_no_http_status_line_logs_none_of_its_text_and_no_traceback(self):
@@ -5277,9 +5321,9 @@ class FreshReaderTest(ReaderRunner):
 
     def test_an_answer_or_a_file_that_nests_too_deep_to_read_fails_the_reader_with_one_line_and_no_traceback(self):
         """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads, and
-        trim.py takes such JSON as JSON that it cannot read. A sign-in exchange that answers it, or refuses with it (no
-        error code), a reader's answer whose text nests too deep, and a list or a fix of the model that nests too deep
-        each fail with the one line of the log, with no traceback and none of the text, and nothing posts."""
+        trim.py takes such JSON as JSON that it cannot read. A sign-in exchange that answers it, or refuses with it, a
+        reader's answer whose text nests too deep, and a list or a fix of the model that nests too deep each fail with
+        the one line of the log, with no traceback and none of the text, and nothing posts."""
         deep = "[" * 100_000 + '"x"' + "]" * 100_000
 
         class Deep(BaseHTTPRequestHandler):
@@ -5302,7 +5346,7 @@ class FreshReaderTest(ReaderRunner):
         host = f"127.0.0.1:{server.server_port}"
         s = step("review", self.SIGN_IN)
         for status, shown in ((200, f"an answer from {host} that is not JSON, or that nests too deep to read"),
-                              (403, f"HTTP 403 from {host}, no error code")):
+                              (403, f"HTTP 403 from {host}\n")):
             with self.subTest(status=status):
                 Deep.status = status
                 rc, out, got = self.run_script(s["run"], **dict(ANTHROPIC, ANTHROPIC_URL=f"http://{host}"))
@@ -6792,6 +6836,40 @@ class AnswerFixTest(ReaderRunner):
         for name, job in JOBS.items():
             with self.subTest(job=name):
                 self.assertIn(job.get("permissions", {}).get("contents"), (None, "read"))
+
+    def test_a_blocking_verdict_whose_list_holds_no_blocking_finding_is_the_person_verdict_and_starts_no_fix(self):
+        """.github/review.md ("The verdict"): the verdict blocking needs a blocking finding, a change item whose
+        optional is false. A review of an outside pull request that gives the verdict blocking with only a question,
+        only an optional change, or no item, and that the soundness rule leaves as it is (no file of it can change a
+        proof): the comment step gives the verdict person (rules.py blocking), in its output and its marker. No fix
+        runs, and the label step gives waits-on-theorem with Sami's step, never waits-on-author. A list with a blocking
+        finding keeps the verdict blocking, and the fix runs."""
+        question = {"kind": "question", "ref": "theories/A.v:3", "optional": False,
+                    "text": "Does `theories/A.v:3` need `exact I`?"}
+        optional = {"kind": "change", "ref": "theories/A.v:3", "optional": True, "text": "End the proof with exact I."}
+        change = dict(optional, optional=False)
+        for case, items, verdict, fix in (("a question alone", [question], "person", "false"),
+                                          ("an optional change alone", [optional], "person", "false"),
+                                          ("no item", [], "person", "false"),
+                                          ("a blocking finding", [change, question], "blocking", "true")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.write("pr.diff", self.DIFF)
+                rc, out, result = self.post("Blocking findings.\n\n1. `theories/A.v:3` ends with `trivial`.", items,
+                                            "Blocking findings.\n\n1. `theories/A.v:3`.", verdict="blocking")
+                self.assertEqual((rc, result.get("verdict")), (0, verdict), out)
+                self.assertIn(f"\n<!-- review-verdict {HEAD} {verdict} -->\n", result["body"])
+                self.assertEqual("the verdict is person" in out, verdict == "person", out)
+                rc, out, fixable = self.fixable("review", result)
+                self.assertEqual((rc, fixable.get("fix")), (0, fix), out)
+                if verdict == "person":
+                    person = rules.label_comment("person", markers=[rules.import_marker(HEAD, None)],
+                                                 imports=(None, ""))
+                    self.assertEqual(self.label("review", {"head": HEAD, "verdict": result["verdict"],
+                                                           "will_fix": fixable["will_fix"],
+                                                           "fix_stop": fixable["fix_stop"]}),
+                                     ([("+", THEOREM_LABEL)], [person], True))
 
     def test_will_fix_and_a_third_fix_start_no_fix_and_the_item_waits_on_theorem(self):
         """b1 (R2, D4): no fix runs when the author said they will make the change (the will_fix of the answer, of
@@ -12635,12 +12713,13 @@ class ImportCheckTest(ReaderRunner):
               listed=(), key=True):
         """The post job, then the comment job's label step, each when its if holds, for a run whose trust job gave
         trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen (none for the route review)
-        and whose review gave verdict, while the variable REPO_PAIRS_IMPORT_PATHS is value (None: not set, so GitHub
-        gives an empty value). #7's head is now (then, when given, from its second read on), and its files are paths,
-        each a path or (the path, the path before a rename), on pages of per_page files; its changed_files is changed,
-        their count by default. comments and labels are #7's own, outside the gather job's outside, and listed the
-        check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False,
-        and the environment post holds no key of the App when key is False (its secret is empty).
+        and whose review gave verdict (an approval has no review job), while the variable REPO_PAIRS_IMPORT_PATHS is
+        value (None: not set, so GitHub gives an empty value). #7's head is now (then, when given, from its second read
+        on), and its files are paths, each a path or (the path, the path before a rename), on pages of per_page files;
+        its changed_files is changed, their count by default. comments and labels are #7's own, outside the gather
+        job's outside, and listed the check runs of the trust job's head as GitHub lists them. A sign-in step of the
+        App fails when mint is False, and the environment post holds no key of the App when key is False (its secret
+        is empty).
         What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
         it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
         and the label comments posted or edited."""
@@ -12669,9 +12748,9 @@ class ImportCheckTest(ReaderRunner):
                     "github.token": self.RUN_TOKEN, "vars.REPO_PAIRS_IMPORT_PATHS": "" if value is None else value,
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "needs.trust.result": "success",
                     **({} if key else {APP_KEY: ""})})
-        if trust["task"] in ("review", "rescreen"):
+        if trust["task"] in ("review", "rescreen", "approve"):
             screened = trust.get("route") == "screen"
-            passed = screen == "clean" or not screened
+            passed = (screen == "clean" or not screened) and trust["task"] != "approve"
             ctx.update({"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
                         "needs.gather.outputs.outside": outside,
                         "needs.screen.result": "success" if screened else "skipped",
@@ -13404,6 +13483,29 @@ class ImportCheckTest(ReaderRunner):
                 self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because "
                               f"{logged}.", logs)
                 self.assertIn(f"Withdrew the import check run 901 of {HEAD}: its conclusion is now neutral.", logs)
+
+    def test_a_held_screen_of_a_review_a_rescreen_or_an_approval_withdraws_the_check_run_of_its_head(self):
+        """R12 (review round 1, part I): the review of HEAD recorded the check run with conclusion success. A later
+        screen of HEAD that holds it, in the run of each task that screens a pull request: a review (of a CI run, or by
+        hand), a rescreen and an approval (workflow_dispatch). The post job runs with no review job, while the
+        environment post holds the App's key. Its decision does not run, as no screen passed, and its step "Find the
+        import check runs that a later review or screen withdraws" finds the check run of #7. The next steps mint
+        token A and withdraw it, and no other step of the job stops them."""
+        listed, others = self.recorded()
+        find = "Find the import check runs that a later review or screen withdraws"
+        for task, event in (("review", "workflow_run"), ("review", "workflow_dispatch"),
+                            ("rescreen", "workflow_dispatch"), ("approve", "workflow_dispatch")):
+            with self.subTest(task=task, event=event):
+                got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, task=task), screen="held",
+                                 event=event, listed=[listed, *others])
+                self.assertEqual(got["result"], "success", self.logs[-3:])
+                self.assertEqual((got["steps"][self.DECIDE], got["steps"][find], got["steps"][MINT_A]),
+                                 ("skipped", "success", "success"))
+                (token, endpoint, body), = got["withdrawn"]
+                self.assertEqual((token, endpoint, body["conclusion"], body["output"]["title"]),
+                                 ("token-A", f"repos/{REPO}/check-runs/901", "neutral",
+                                  f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later "
+                                  "screen held it"))
 
     def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
         """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only

@@ -1685,9 +1685,9 @@ jobs:
       # Both tokens go to a file under the runner's temporary directory that only the runner's account can read, and
       # that the Screen or Measure step deletes as it reads it; never to this log or an output. An exchange that fails,
       # or that has not answered after the sign-in's own 120 seconds, fails this job before the screen, with no
-      # verdict, and the hold job holds nothing for it. This log then gets the HTTP status and the error code of a
-      # refused exchange alone: the service's text goes to the reason object in REASON_BUCKET, with the Google token
-      # of the step before, and is lost when that object cannot be written.
+      # verdict, and the hold job holds nothing for it. This log then gets the HTTP status and the host of a refused
+      # exchange alone: the service's answer goes to the reason object in REASON_BUCKET, with the Google token of the
+      # step before, and is lost when that object cannot be written.
       - name: Sign in to Anthropic and Azure
         env:
           GOOGLE_ACCESS_TOKEN: ${{ steps.google.outputs.access_token }}
@@ -1745,7 +1745,8 @@ jobs:
     permissions: {contents: read, pull-requests: read, issues: read, checks: read, statuses: read, actions: read, id-token: write}
     outputs:
       head: ${{ steps.result.outputs.head || steps.answered.outputs.head }}
-      # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD), for the state label.
+      # The review's verdict (pass, blocking or person), after the soundness rule (SOUNDNESS_HOLD) and the rule of the
+      # verdict blocking, for the state label.
       verdict: ${{ steps.result.outputs.verdict }}
       # The facts of the two stops of the fix, for the state label: will_fix (true or false), when the author said they
       # will make the change, and fix_stop, when 2 fix reviews since the author's last own push did not make the
@@ -1810,14 +1811,9 @@ jobs:
           jwt=""
           status=${answer##*$'\n'}
           answer=${answer%$'\n'*}
-          # An answer that is not 2xx holds no token. This log gets its HTTP status and its error code alone (OAuth's
-          # error field, or the type of Anthropic's error object), never Anthropic's text: the log of a public
-          # repository is public, and no private store is there for the text.
-          if [[ $status != 2[0-9][0-9] ]]; then
-            code=$(jq -r '.error | if type == "object" then .type else . end | strings
-              | select(test("^[A-Za-z0-9_.:-]{1,64}$"))' <<< "$answer" 2> /dev/null) || code=""
-            fail "HTTP $status from Anthropic, ${code:+error code }${code:-no error code}."
-          fi
+          # An answer that is not 2xx holds no token. This log gets its HTTP status alone, never a part of Anthropic's
+          # answer: the log of a public repository is public, and no private store is there for the answer.
+          [[ $status == 2[0-9][0-9] ]] || fail "HTTP $status from Anthropic."
           jq -e '.access_token | strings | length > 0' <<< "$answer" > /dev/null 2>&1 \
             || fail "Anthropic gave no access token."
           answer=""
@@ -2210,7 +2206,10 @@ jobs:
       # could not read (unparsed) makes each changed Markdown file count. The section lists, as facts, the rule with
       # those files but the .v files, the files that the job could not read, the lines of the changed .v files at
       # the head that use the VM, the native compiler or a primitive array, and each changed .v file at the head that
-      # the gather job did not keep whole.
+      # the gather job did not keep whole. Then comes the rule of the verdict blocking (.github/review/rules.py
+      # blocking): a review whose verdict is blocking and whose list holds no blocking finding (a change item whose
+      # optional is false) gets the verdict person. So an outside pull request waits on Sami, not on its author, and no
+      # fix runs.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
@@ -2257,6 +2256,7 @@ jobs:
             || { echo "::error::The review gave no comment, verdict, will_fix and list. Nothing posts."; exit 1; }
           python3 .github/review/rules.py soundness .review "$work/output.json" "${SOUNDNESS_HOLD:-}" "$OUTSIDE" \
             "$work/section.md" "$work/section-all.md"
+          python3 .github/review/rules.py blocking "$work/output.json"
           jq -j .comment "$work/output.json" > "$work/review.md"
           jq .items "$work/output.json" > "$work/items.json"
           verdict=$(jq -r .verdict "$work/output.json")
@@ -2418,15 +2418,15 @@ jobs:
         if: needs.trust.outputs.task == 'draft'
         with: {name: "issue-draft-${{ needs.trust.outputs.number }}", path: "${{ runner.temp }}/issue-draft", if-no-files-found: error, retention-days: 90, overwrite: true}
 
-      # Whether the fix runs (.github/review-answer.md, "The fix"): for a blocking finding of the review, after the
-      # soundness rule, or for an answer whose action is fix, of an outside pull request. The two stops: no fix runs
-      # when the author said they will make the change (the will_fix of the review or of the answer, or for a review
-      # an earlier answer at this head whose marker says will-fix), nor when 2 fix reviews since the author's last own
-      # push did not make the review pass (rules.py fixes, from the head's history and the pull request's reviews, as
-      # the API gives them). The outputs will_fix and fix_stop give the comment job the facts of the state label. When
-      # the fix runs, this step writes what it is for into .review/fix.json, which the Fix step reads: the review's
-      # output, or the comments of the author and the answer. A draft has no fix, and neither has a review or an
-      # answer that the fresh reader refused: it gives no verdict and no action.
+      # Whether the fix runs (.github/review-answer.md, "The fix"): for the verdict blocking of the review, after the
+      # soundness rule and the rule of the verdict blocking, or for an answer whose action is fix, of an outside pull
+      # request. The two stops: no fix runs when the author said they will make the change (the will_fix of the review
+      # or of the answer, or for a review an earlier answer at this head whose marker says will-fix), nor when 2 fix
+      # reviews since the author's last own push did not make the review pass (rules.py fixes, from the head's history
+      # and the pull request's reviews, as the API gives them). The outputs will_fix and fix_stop give the comment job
+      # the facts of the state label. When the fix runs, this step writes what it is for into .review/fix.json, which
+      # the Fix step reads: the review's output, or the comments of the author and the answer. A draft has no fix, and
+      # neither has a review or an answer that the fresh reader refused: it gives no verdict and no action.
       - name: Whether a fix runs
         id: fixable
         if: needs.trust.outputs.task != 'draft'

@@ -4,8 +4,8 @@
 The three services (Model Armor, Prompt Shields with Microsoft Entra's token endpoint, and Anthropic with its token
 exchange), GitHub's identity token endpoint and Cloud Storage are stand-ins served on 127.0.0.1, which record each
 request. What is tested: the sign-in (--sign-in makes the two exchanges and writes their tokens to a file that the
-screen reads and deletes; a failed exchange writes no file and no verdict, logs the HTTP status and the error code
-alone, and puts its reason in the bucket), the verdict for each answer and each failure, that the
+screen reads and deletes; a failed exchange writes no file and no verdict, logs the HTTP status and the host alone,
+and puts its reason in the bucket), the verdict for each answer and each failure, that the
 reason, with the sentences the model quoted and its why, reaches the bucket and nothing else (no output, no log line),
 what is sent (only the outside author's text; the model gets no tool, no temperature and a schema of its word, its
 quotes and its why), and the size limits of the screen and of each service.
@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -466,8 +467,8 @@ class ScreenTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.dir, screen.TOKENS_FILE)))
 
     def test_a_measurement_that_a_service_refuses_logs_its_status_and_none_of_its_text(self):
-        """Decision 8: the measurement's log gets the HTTP status and the error code of a request that a service
-        refused, or the kind of an answer that is no whole HTTP answer, never the service's text: when the bucket
+        """Decision 8: the measurement's log gets the HTTP status and the host of a request that a service refused, or
+        the kind of an answer that is no whole HTTP answer, never a part of the service's answer: when the bucket
         refuses the labelled set, and when it answers the store of the words with a line that is not an HTTP status
         line."""
         labelled = {"items": [{"name": "ordinary", "label": "ordinary", "parts": [["body", "A fine report."]]}]}
@@ -496,7 +497,7 @@ class ScreenTest(unittest.TestCase):
         host = f"127.0.0.1:{server.server_port}"
         self.env.update(MEASURE_SET="measure/set-v1.json", MEASURE_OBJECT="measure/runs/acme/model/1-1.json",
                         MEASURE_REPEATS="1")
-        for refuse, shown in ((True, f"The measurement failed: CheckError: HTTP 403 from {host}, no error code\n"),
+        for refuse, shown in ((True, f"The measurement failed: CheckError: HTTP 403 from {host}\n"),
                               (False, f"The measurement failed: CheckError: BadStatusLine from {host}\n")):
             with self.subTest(refused="the set" if refuse else "the store"):
                 Bucket.refuse = refuse
@@ -1004,18 +1005,19 @@ class ScreenTest(unittest.TestCase):
                 for token in ("azure-not-a-secret", "anthropic-not-a-secret", "github-jwt"):
                     self.assertNotIn(token, r.stdout + r.stderr + json.dumps(reason))
 
-    def test_a_refused_exchange_logs_its_status_and_error_code_and_stores_its_text(self):
-        """R10 (decision 8): the log of a failed sign-in gets the HTTP status and the error code of the exchange that a
-        service refused, never the service's text: the text goes to the reason object in the private bucket. Entra's
-        OAuth error, and an Anthropic error object that every retry got, each give their code. When the reason cannot
-        be stored, the text is lost, never printed, and the log says so."""
+    def test_a_refused_exchange_logs_its_status_and_host_alone_and_stores_its_text(self):
+        """R10 (decision 8): the log of a failed sign-in gets the HTTP status and the host of the exchange that a
+        service refused, never a part of the service's answer, not even an error code that the service chose: the
+        answer goes to the reason object in the private bucket. Entra's OAuth error, and an Anthropic error object that
+        every retry got, each give their status alone. When the reason cannot be stored, the answer is lost, never
+        printed, and the log says so."""
         entra = "/entra/tenant/oauth2/v2.0/token"
         refused = (401, {"error": "invalid_client", "error_description": MARK})
-        for case, path, answer, shown in (
-                ("entra refuses", entra, refused, "HTTP 401 from {}, error code invalid_client."),
+        for case, path, answer, code, shown in (
+                ("entra refuses", entra, refused, "invalid_client", "HTTP 401 from {}."),
                 ("anthropic stays overloaded", "/v1/oauth/token",
                  (503, {"type": "error", "error": {"type": "overloaded_error", "message": MARK}}),
-                 "HTTP 503 from {}, error code overloaded_error.")):
+                 "overloaded_error", "HTTP 503 from {}.")):
             with self.subTest(case=case):
                 self.fresh()
                 host = urllib.parse.urlsplit(self.services.url).netloc
@@ -1025,6 +1027,7 @@ class ScreenTest(unittest.TestCase):
                 self.assertIn(f"The sign-in failed: CheckError: {shown.format(host)} Its reason is in the private "
                               "bucket, as acme/model/1-1.json.", printed)
                 self.assertNotIn(MARK, printed)
+                self.assertNotIn(code, printed)
                 self.assertIn(MARK, self.services.objects["acme/model/1-1.json"]["sign_in"])
         self.fresh()
         host = urllib.parse.urlsplit(self.services.url).netloc
@@ -1032,9 +1035,9 @@ class ScreenTest(unittest.TestCase):
         self.env["STORAGE_URL"] = "http://127.0.0.1:9"
         rc, printed = self.call("--sign-in")
         self.assertEqual(rc, 1, printed)
-        self.assertIn(f"The sign-in failed: CheckError: HTTP 401 from {host}, error code invalid_client. Its reason "
-                      "could not be stored.", printed)
+        self.assertIn(f"The sign-in failed: CheckError: HTTP 401 from {host}. Its reason could not be stored.", printed)
         self.assertNotIn(MARK, printed)
+        self.assertNotIn("invalid_client", printed)
 
     def test_an_exchange_that_answers_no_http_status_line_logs_none_of_its_text(self):
         """R10 (decision 8): the log of a failed sign-in gets the HTTP status and the error code alone, never the
@@ -1061,11 +1064,11 @@ class ScreenTest(unittest.TestCase):
     def test_an_answer_that_nests_too_deep_to_read_is_a_failed_exchange_and_the_log_holds_none_of_its_text(self):
         """json.loads raises RecursionError, which is no ValueError, for JSON that nests deeper than Python reads. Such
         an answer is an answer that the screen cannot read: a refused exchange whose body nests too deep gives the HTTP
-        status and no error code, a token exchange that answers it fails the sign-in, each with the one line of the log
-        and none of the answer's text, and a model whose text nests too deep gives no word, so the item is held."""
+        status and the host, a token exchange that answers it fails the sign-in, each with the one line of the log and
+        none of the answer's text, and a model whose text nests too deep gives no word, so the item is held."""
         deep = b"[" * 100_000 + b"]" * 100_000
         for case, path, answer, shown in (
-                ("entra refuses", "/entra/tenant/oauth2/v2.0/token", (401, deep), "HTTP 401 from {}, no error code."),
+                ("entra refuses", "/entra/tenant/oauth2/v2.0/token", (401, deep), "HTTP 401 from {}."),
                 ("anthropic answers", "/v1/oauth/token", (200, deep),
                  "an answer from {} that is not JSON, or that nests too deep to read.")):
             with self.subTest(case=case):
@@ -1112,6 +1115,18 @@ class ScreenTest(unittest.TestCase):
         "a non-joiner between emoji": ("\U0001F468\u200C\U0001F469", "U+200C"),
         "a word joiner": ("Ask @\u2060octocat.", "U+2060"),
         "a byte order mark inside a body": ("Fine.\uFEFFhidden", "U+FEFF"),
+        "a soft hyphen in a word": ("ig\u00ADnore", "U+00AD"),
+        "an invisible times": ("ig\u2062nore", "U+2062"),
+        "a left-to-right mark": ("Fine.\u200Ex", "U+200E"),
+        "an interlinear annotation": ("Fine.\uFFF9x\uFFFAy\uFFFB", "U+FFF9"),
+        "a variation selector in a word": ("ig\uFE00nore", "U+FE00"),
+        "a text variation selector after an emoji": ("\u2764\uFE0E", "U+FE0E"),
+        "a variation selector of plane 14": ("ig\U000E0100nore", "U+E0100"),
+        "a combining grapheme joiner": ("ig\u034Fnore", "U+034F"),
+        "a Hangul choseong filler": ("ig\u115Fnore", "U+115F"),
+        "a Hangul jungseong filler": ("ig\u1160nore", "U+1160"),
+        "a Hangul filler": ("ig\u3164nore", "U+3164"),
+        "a halfwidth Hangul filler": ("ig\uFFA0nore", "U+FFA0"),
     }
     # Text where those characters do ordinary work.
     ALLOWED = {
@@ -1120,6 +1135,8 @@ class ScreenTest(unittest.TestCase):
         "a Malayalam non-joiner": "\u0D15\u0D4D\u200C\u0D15",
         "an emoji family": "\U0001F468\u200D\U0001F469\u200D\U0001F467",
         "an emoji with a variation selector and skin tone": "\U0001F3F3\uFE0F\u200D\U0001F308 \U0001F44B\U0001F3FD\u200D\u2642",
+        "an emoji's variation selector U+FE0F": "\u2764\uFE0F and \u263A\uFE0F",
+        "a variation selector U+FE0F after a letter": "x\uFE0F",
     }
 
     def test_text_that_hides_text_is_held_unscreened(self):
@@ -1138,6 +1155,21 @@ class ScreenTest(unittest.TestCase):
                 self.fresh()
                 self.item(body=f"{body} is how it is written.")
                 self.assertEqual(self.verdict()[0], "clean")
+
+    def test_each_format_character_variation_selector_and_filler_is_held_and_u_fe0f_passes(self):
+        """Each format character (Unicode's category Cf, of this Python's Unicode data) that does no ordinary work
+        where it stands, each variation selector but U+FE0F, U+034F and each Hangul filler holds the item, and the
+        reason names it. U+FE0F passes anywhere: after an emoji, after a letter, and alone."""
+        held = [c for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf"]
+        held += map(chr, [*range(0xFE00, 0xFE0F), *range(0xE0100, 0xE01F0), 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0])
+        self.assertIn("\u00AD", held)
+        self.assertIn("\u2062", held)
+        for c in held:
+            with self.subTest(char=f"U+{ord(c):04X}"):
+                self.assertEqual(screen.hiding(f"ig{c}nore"), f"U+{ord(c):04X}")
+        for text in ("\u2764\uFE0F", "\U0001F600\uFE0F", "x\uFE0Fy", "\uFE0F"):
+            with self.subTest(text=text):
+                self.assertIsNone(screen.hiding(text))
 
     def test_a_byte_order_mark_passes_only_as_a_files_first_character(self):
         new_file = ("diff --git a/n.v b/n.v\nnew file mode 100644\n--- /dev/null\n+++ b/n.v\n@@ -0,0 +1,2 @@\n"

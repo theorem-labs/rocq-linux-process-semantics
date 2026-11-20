@@ -36,10 +36,11 @@ the job's environment review-screen alone can exchange for them. Google Cloud's 
 Google Cloud". The tokens of Prompt Shields (Microsoft Entra's) and of the model (Anthropic's) come from --sign-in, the
 step "Sign in to Anthropic and Azure", which writes them to a file under RUNNER_TEMP that only the runner's account
 can read; the screen reads the file and deletes it. A sign-in that fails fails its step, and writes no verdict and no
-output. Its log gives the HTTP status and the error code of an exchange that a service refused, or the kind of an
-answer that is no whole HTTP answer, and never the service's text: that text goes to the reason, in REASON_BUCKET, with
-the Google token of the step "Sign in to Google Cloud", and is lost when the reason cannot be stored. The sign-in has
-SIGN_IN_SECONDS of its own, and the screen DEADLINE_SECONDS, so that the two fit in the job's 15 minutes.
+output. Its log gives the HTTP status and the host of an exchange that a service refused, or the kind of an answer
+that is no whole HTTP answer, and never a part of the service's answer: that answer goes to the reason, in
+REASON_BUCKET, with the Google token of the step "Sign in to Google Cloud", and is lost when the reason cannot be
+stored. The sign-in has SIGN_IN_SECONDS of its own, and the screen DEADLINE_SECONDS, so that the two fit in the job's
+15 minutes.
 
 --measure, the step "Measure", runs every listed check MEASURE_REPEATS times on each text of the labelled set
 MEASURE_SET in the private bucket, and gives the counts of each rule of RULES (measure).
@@ -121,9 +122,9 @@ SCHEMA = {"type": "object", "additionalProperties": False, "required": ["verdict
 
 class CheckError(Exception):
     """A check that could not answer. Its message goes to the reason only. public is what a public log (the sign-in's,
-    the measurement's) may show of it: for a request that a service refused, the HTTP status and the error code, and
-    for an answer that is no whole HTTP answer its kind, never the service's text. found is what the check found
-    before it could not answer, which the reason keeps beside the error."""
+    the measurement's) may show of it: for a request that a service refused, the HTTP status and the host, and for an
+    answer that is no whole HTTP answer its kind and the host, never a part of the service's answer. found is what the
+    check found before it could not answer, which the reason keeps beside the error."""
 
     def __init__(self, message, public=None, found=None):
         super().__init__(message)
@@ -165,10 +166,17 @@ def read_text(path):
 
 # git's line for a binary change; it quotes a name that is not plain ASCII ("b/\303\251.v").
 BINARY_DIFF = re.compile(r"^Binary files (.*) and (.*) differ$", re.M)
+# Every format character (Unicode's category Cf) of this Python's Unicode data: the bidirectional marks, overrides and
+# isolates, the zero-width characters (space, non-joiner, joiner, word joiner, byte order mark), the soft hyphen, the
+# invisible operators and the tag characters among them.
+FORMAT = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf")
 # Characters used to hide text from a person, or to split a word so that a check misses it while a model reads
-# through it: the bidirectional overrides and isolates, the tag characters, and the zero-width characters (space,
-# non-joiner, joiner, word joiner, byte order mark). Two kinds of them do ordinary work, and hiding() lets those pass.
-HIDING = re.compile("[\u202A-\u202E\u2066-\u2069\U000E0000-\U000E007F\u200B-\u200D\u2060\uFEFF]")
+# through it: the format characters, the tag characters that Unicode has not assigned yet, the variation selectors
+# but U+FE0F, the combining grapheme joiner U+034F, and the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0. Two
+# kinds of them do ordinary work, and hiding() lets those pass. U+FE0F, which asks for the emoji form of the character
+# before it, is not of HIDING and passes anywhere.
+HIDING = re.compile("[" + FORMAT + "\U000E0000-\U000E007F\uFE00-\uFE0E\U000E0100-\U000E01EF"
+                    "\u034F\u115F\u1160\u3164\uFFA0]")
 # The scripts whose words use the zero-width non-joiner and joiner between their letters (Persian among the Arabic
 # script's languages, and the Indic scripts), by the first word of each character's Unicode name.
 JOINER_SCRIPTS = frozenset("ARABIC SYRIAC NKO THAANA MONGOLIAN DEVANAGARI BENGALI GURMUKHI GUJARATI ORIYA TAMIL TELUGU "
@@ -224,7 +232,8 @@ def first_of_file(text, k, whole_file, diff):
 def hiding(text, whole_file=False, diff=False):
     """The first character of text that hides text, as U+XXXX, or None. A non-joiner or joiner passes between two
     letters of a script that uses joiners, and a joiner inside an emoji sequence; a byte order mark passes as the very
-    first character of a file. Anything else of HIDING, a run of joiners among them, holds the item."""
+    first character of a file. Anything else of HIDING holds the item: a run of joiners, any other format character,
+    a variation selector but U+FE0F, U+034F and a Hangul filler."""
     for m in HIDING.finditer(text):
         c, k = m.group(), m.start()
         if c in "\u200C\u200D" and 0 < k < len(text) - 1:
@@ -328,27 +337,12 @@ def loads(text):
         raise ValueError("JSON that nests too deep to read") from None
 
 
-def error_code(body):
-    """What the public log may show of the answer body of a request that a service refused: its error code, OAuth's
-    error field ({"error": "invalid_client"}) or the type of Anthropic's error object ({"error": {"type": ...}}), when
-    it is one plain word. Never the service's text, its description or message of the error."""
-    try:
-        error = loads(body).get("error")
-    except (ValueError, AttributeError):
-        return "no error code"
-    if isinstance(error, dict):
-        error = error.get("type")
-    if isinstance(error, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", error):
-        return f"error code {error}"
-    return "no error code"
-
-
 def http(method, url, body=None, headers=None, form=False, attempts=4):
     """The JSON answer of one request. Retries a 429 or a 5xx, a connection that fails, and an answer that is no whole
     HTTP answer (with no HTTP status line, or cut short); any other answer that is not 2xx, an answer that is not JSON
     or that nests too deep to read, and a request after DEADLINE, is a CheckError. The error of an answer that is not
-    2xx or no whole HTTP answer holds the service's text, and its public form the HTTP status and the error code, or
-    the kind of answer, alone."""
+    2xx or no whole HTTP answer holds the service's text, and its public form the HTTP status and the host, or the kind
+    of answer and the host, alone: never a part of the answer."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -373,10 +367,10 @@ def http(method, url, body=None, headers=None, form=False, attempts=4):
         except urllib.error.HTTPError as e:
             try:
                 answer = e.read()
-            except (OSError, HTTPException):   # an answer cut short has no error code to give
+            except (OSError, HTTPException):   # an answer cut short: the reason gets no text of it
                 answer = b""
             last = f"HTTP {e.code} from {host}: {answer[:2000].decode('utf-8', 'replace')}"
-            public = f"HTTP {e.code} from {host}, {error_code(answer)}"
+            public = f"HTTP {e.code} from {host}"
             if e.code == 429 or e.code >= 500:
                 retry = e.headers.get("Retry-After", "")
                 if retry.isdigit():
@@ -459,8 +453,8 @@ def sign_in():
     """The step "Sign in to Anthropic and Azure": the token of each check that SCREEN_CHECKS lists, that needs one and
     whose identity is set up, written to TOKENS_FILE under RUNNER_TEMP, which only this account can read. When an
     exchange fails, the step fails and writes no file, no verdict and nothing to GITHUB_OUTPUT. Why it failed goes to
-    the reason in the private bucket (store), and the log gets the HTTP status and the error code of a refused
-    exchange alone, and whether the reason was stored. No token is printed."""
+    the reason in the private bucket (store), and the log gets the HTTP status and the host of a refused exchange
+    alone, and whether the reason was stored. No token is printed."""
     names = os.environ.get("SCREEN_CHECKS", "").split(",")
     tokens = {}
     try:

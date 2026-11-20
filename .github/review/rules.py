@@ -7,6 +7,7 @@ labels").
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
+    python3 .github/review/rules.py blocking <output.json>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
     python3 .github/review/rules.py import-check <files.jsonl> <changed files> <number> <head> <screen> <verdict>
@@ -81,6 +82,12 @@ through make with no array literal, so a search of the text cannot rule a forger
 LISTED lines in at most LISTED_CHARACTERS characters, and says how many more there are. <all> gets the section with
 every line, for the run's summary. When the rule does not hold, <output.json> stays as it is and the two files are
 empty.
+
+blocking: the rule of the verdict blocking (.github/review.md, "The verdict"), which code applies whatever the model
+wrote, after the soundness rule. A blocking finding is a change item whose optional is false. When <output.json>, the
+review's output, gives the verdict blocking and its list holds no blocking finding (questions alone, optional changes
+alone, or no item), the file gets the verdict person (settled). So Sami reads the review: the item does not wait on
+its author, and no fix runs. Any other output stays as it is.
 
 fixes: the count of the fix reviews since the author's last own push (.github/review-answer.md, "The two stops"), on
 standard output. <commits.jsonl> is the history of <head> as the API gives it (repos/<repo>/commits?sha=<head>), and
@@ -1495,6 +1502,20 @@ def forced(output):
     return dict(output, verdict="person", items=items)
 
 
+def blocking_finding(item):
+    """Whether item of the review's list is a blocking finding: a change item whose optional is false. An item with no
+    optional key is not optional, as for trim.py."""
+    return isinstance(item, dict) and item.get("kind") == "change" and not item.get("optional")
+
+
+def settled(output):
+    """The review's output after the rule of the verdict blocking: the verdict person when the output gives the verdict
+    blocking and its list holds no blocking finding, else output as it is."""
+    if output.get("verdict") == "blocking" and not any(blocking_finding(i) for i in output.get("items") or ()):
+        return dict(output, verdict="person")
+    return output
+
+
 def soundness(review, output, hold, outside):
     """(output, section, all): the review's output after the soundness rule, the section of the comment, and the
     section with every line for the run's summary. The rule holds while hold is true, for an outside pull request
@@ -1776,7 +1797,19 @@ def main(argv):
                 with open(name, "w", encoding="utf-8") as f:
                     f.write(part + "\n" if part else "")
             print("The soundness rule holds: the verdict is person, and the comment gets the section on soundness."
-                  if text else "The soundness rule does not hold: the verdict is the review's own.")
+                  if text else "The soundness rule does not hold, so it leaves the review's verdict as it is.")
+            return 0
+        if len(argv) == 2 and argv[0] == "blocking":
+            with open(argv[1], encoding="utf-8") as f:
+                output = loads(f.read())
+            if not isinstance(output, dict):
+                raise ValueError(f"{argv[1]} holds no output of the review")
+            after = settled(output)
+            if after is not output:
+                with open(argv[1], "w", encoding="utf-8") as f:
+                    json.dump(after, f, ensure_ascii=False)
+                print("The review gives the verdict blocking, but its list holds no blocking finding: the verdict is "
+                      "person.")
             return 0
         if len(argv) == 4 and argv[0] == "fixes" and HEAD.fullmatch(argv[3]):
             print(fixes(json_lines(argv[1]), json_lines(argv[2]), argv[3]))

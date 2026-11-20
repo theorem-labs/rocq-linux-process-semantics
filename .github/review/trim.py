@@ -25,9 +25,9 @@ identity token (the job's id-token: write, audience https://api.anthropic.com) a
 the federation rule ANTHROPIC_FEDERATION_RULE_ID, for ANTHROPIC_ORGANIZATION_ID, ANTHROPIC_SERVICE_ACCOUNT_ID and
 ANTHROPIC_WORKSPACE_ID: the review's own. The token goes to TOKEN_FILE under RUNNER_TEMP, which only the runner's
 account can read. The other commands read that file and delete it before they do anything else. A sign-in that fails
-exits with status 1 and writes no file. Its message gives the HTTP status and the error code of a request that a
-service refused, or the kind of an answer that is no whole HTTP answer, and never the service's text: the log of a
-public repository is public, and no private store is there for the text.
+exits with status 1 and writes no file. Its message gives the HTTP status and the host of a request that a service
+refused, or the kind of an answer that is no whole HTTP answer, and never a part of the service's answer: the log of a
+public repository is public, and no private store is there for the answer.
 
 review: <file> of --review is the comment of the model's review, and <file> of --items the list of its output
 (.github/review.md, "What the review gives"), as JSON. The review is made inert, cut at CUT characters and closed:
@@ -86,8 +86,9 @@ reason, as an artifact of its run, and the run's summary holds none of it.
 
 A request that fails, an answer in a form this script does not know, and a list that is not one, end the script with
 status 1 and nothing on standard output, so that nothing posts untrimmed. The message names a setting, a service or a
-file, and for a request that a service refused its HTTP status and its error code alone (ReaderError's public form),
-never the service's text. The script prints no token. It uses the standard library of Python 3 alone.
+file, never the service's text. For a request of the reader that a service refused, it gives the HTTP status, the host
+and the error code alone (ReaderError's public form). The script prints no token. It uses the standard library of
+Python 3 alone.
 """
 
 import argparse
@@ -245,7 +246,8 @@ TOKEN = ""
 
 class ReaderError(Exception):
     """The reader gave no text: the caller posts nothing. public is what a public log may show of it: for a request
-    that a service refused, the HTTP status and the error code, never the service's text."""
+    that a service refused, the HTTP status and the host, with the error code for a request of the reader (http), never
+    the service's text."""
 
     def __init__(self, message, public=None):
         super().__init__(message)
@@ -282,9 +284,9 @@ def loads(text):
 
 
 def error_code(body):
-    """What a public log may show of the answer body of a request that a service refused: its error code, OAuth's error
-    field ({"error": "invalid_grant"}) or the type of Anthropic's error object ({"error": {"type": ...}}), when it is
-    one plain word. Never the service's text, its description or message of the error."""
+    """What a public log may show of the answer body of a request of the reader that a service refused: its error
+    code, OAuth's error field ({"error": "invalid_grant"}) or the type of Anthropic's error object ({"error": {"type":
+    ...}}), when it is one plain word. Never the service's text, its description or message of the error."""
     try:
         error = loads(body).get("error")
     except (ValueError, AttributeError):
@@ -296,12 +298,13 @@ def error_code(body):
     return "no error code"
 
 
-def http(method, url, body=None, headers=None):
+def http(method, url, body=None, headers=None, code=False):
     """The JSON answer of one request. A 429, a 5xx, a connection that fails and an answer that is no whole HTTP answer
     (with no HTTP status line, or cut short) are tried again, up to ATTEMPTS times; any other answer that is not 2xx,
     and an answer that is not JSON or that nests too deep to read, is a ReaderError. The error of an answer that is not
-    2xx or no whole HTTP answer holds the service's text, and its public form the HTTP status and the error code, or
-    the kind of answer, alone."""
+    2xx or no whole HTTP answer holds the service's text. Its public form holds the HTTP status and the host, or the
+    kind of answer and the host, and nothing more. With code (the reader's own request), it also holds the error code
+    of an answer that is not 2xx. So the log of a failed sign-in holds no part of the service's answer."""
     data = None
     headers = dict(headers or {})
     if body is not None:
@@ -322,7 +325,7 @@ def http(method, url, body=None, headers=None):
             except (OSError, HTTPException):   # an answer cut short has no error code to give
                 answer = b""
             last = f"HTTP {e.code} from {host}: {answer[:500].decode('utf-8', 'replace')}"
-            public = f"HTTP {e.code} from {host}, {error_code(answer)}"
+            public = f"HTTP {e.code} from {host}" + (f", {error_code(answer)}" if code else "")
             if e.code == 429 or e.code >= 500:
                 continue
             raise ReaderError(last, public) from None
@@ -434,7 +437,7 @@ def read(kind, text, items=(), rules=()):
         raise ReaderError("no token from trim.py sign-in")
     answer = http("POST", env("ANTHROPIC_URL", "https://api.anthropic.com") + "/v1/messages",
                   request(kind, text, items, rules),
-                  {"Authorization": "Bearer " + TOKEN, "anthropic-version": ANTHROPIC_VERSION})
+                  {"Authorization": "Bearer " + TOKEN, "anthropic-version": ANTHROPIC_VERSION}, code=True)
     try:
         got = loads(answer_text(answer))
     except ValueError:
@@ -1471,7 +1474,7 @@ def main(argv):
     if args.kind == "sign-in":
         try:
             sign_in()
-        except ReaderError as e:   # the HTTP status and the error code of a refused request, never the service's text
+        except ReaderError as e:   # the HTTP status and the host of a refused request, never a part of the answer
             print(f"trim.py: the sign-in failed: {e.public}", file=sys.stderr)
             return 1
         except OSError as e:   # the message names the file, and holds no token
