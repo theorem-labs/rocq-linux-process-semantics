@@ -313,8 +313,9 @@ on:
         default: ""
       account:
         description: >-
-          The account whose hourly limit the run counts on. The rescreen pass sets it. A rescreen by hand needs the
-          account that the hold names.
+          The account whose hourly limit this run counts toward. The rescreen pass sets it. A rescreen by hand needs
+          the account of the held event: the item's author, or the account of its latest event. With another account,
+          the run stops, and its notice names the right one.
         type: string
         default: ""
       comment:
@@ -455,10 +456,10 @@ jobs:
       # run of the last hour that could count on it (earlier), which the hold says; else empty.
       uncounted: ${{ steps.trust.outputs.uncounted }}
       outsider: ${{ steps.trust.outputs.outsider }}
-      # For a review or a rescreen whose route is screen, and for a relabel: true when the item's author has no write
-      # access and is not one of the APPS (an outside item), as GitHub gives it now, else false (empty for any other
-      # run). The account of outsider can be another one: the pusher of a writer's pull request. The import check run
-      # of R12 is for an outside pull request alone.
+      # True when the item's author has no write access and is not one of the APPS (an outside item), as GitHub gives
+      # it now, else false; empty when the trust job does not know it with no call of the API (route, below). The
+      # account of outsider can be another one: the pusher of a writer's pull request. The import check run of R12 is
+      # for an outside pull request alone.
       outside: ${{ steps.trust.outputs.outside }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on (an account with write access has none), which the
       # name of the screen job gives: earlier and held_account read it back from there.
@@ -734,15 +735,24 @@ jobs:
           task="" head="" comment="" of="" tries=0 origin=$RUN_ID account=$ACTOR uncounted=""
           # route <route> <outsider>: the outputs, and the end of this step. Its notice names the item, so that the
           # rescreen pass tells which pull request a CI run reviewed when more than one into main has its head
-          # (reviewed). For a review or a rescreen that the screen reads first, and for a relabel, the output outside
-          # is true when the item's author has no write access (trusted, which asks GitHub at most once for each login
-          # in this step), and false when it has, or when GitHub could not say: the import check run of R12 needs an
-          # author that GitHub names outside.
+          # (reviewed). The output outside is true when the item's author has no write access and is not one of the
+          # APPS (trusted, which asks GitHub at most once for each login in this step), and false when it has. For a
+          # review or a rescreen that the screen reads first, and for a relabel, the step asks GitHub when it did not
+          # yet, and outside is false also when GitHub could not say: the import check run of R12 needs an author that
+          # GitHub names outside. On any other route, outside is given only when trusted answers for the author with no
+          # call of the API (an App, or a login that this step asked of already), and else it is empty: a writer's run
+          # by hand asks GitHub nothing of the author.
           route() {
             local outside=""
             case $task:$1 in
               review:screen|rescreen:screen|relabel:*)
                 outside=false; trusted "$AUTHOR" || [ $? != 1 ] || outside=true ;;
+              *)
+                if [ -n "$AUTHOR" ]; then
+                  if [[ -n ${permission_of[$AUTHOR]+set} || $AUTHOR == *'[bot]' ]]; then
+                    outside=false; trusted "$AUTHOR" || outside=true
+                  fi
+                fi ;;
             esac
             echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
@@ -1084,7 +1094,7 @@ jobs:
                 approve|catchup|conflict|relabel) [ "$kind" = pr ] || stop "it is not a pull request." ;;
               esac
               # The rescreen pass's name for the task, from what the API says now: the item, its head, and its author
-              # when the author has no write access (a rescreen names the account its hold names, checked below, and
+              # when the author has no write access (a rescreen names the account of its held event, checked below, and
               # the head of a pull request). The review of a writer's pull request names the account that the
               # inputs give: the task review below checks it against the CI runs of the head. The account a name gives
               # is the one whose limit the run counts on; a run by hand of a person or an App counts on none. Each
@@ -1130,7 +1140,7 @@ jobs:
                   [ "$ACTOR" != 'github-actions[bot]' ] || again rescreen
                   account=$(held_account "$origin" "$AUTHOR") || fail "run $origin could not be read."
                   [ -n "$account" ] || stop "its hold names no run whose account this workflow can tell."
-                  [ "$ACCOUNT" = "$account" ] || stop "the account its hold names is $account, not ${ACCOUNT:-none}."
+                  [ "$ACCOUNT" = "$account" ] || stop "the account of its held event is $account, not ${ACCOUNT:-none}."
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   # A writer's item whose hold names a writer's run (at the cap, or a review that did not finish) is
                   # reviewed without the screen.
@@ -1164,7 +1174,7 @@ jobs:
                     [ -z "$pushed" ] || known "$pushed" || b=$?
                     (( b != 0 )) || pushed=""
                     starter="${pushed:-no account without write access}${pushed:+, an account without write access,}"
-                    why="$starter started the newest CI run of $pr_head, but the run names ${ACCOUNT:-no account}."
+                    why="$starter started the newest CI run of $pr_head, but this run names ${ACCOUNT:-no account}."
                     [ "$ACCOUNT" = "$pushed" ] || stop "$why"
                     [ -z "$pushed" ] || screened "$AUTHOR" "$pushed"
                     route review ""
@@ -2211,9 +2221,10 @@ jobs:
       # the gather job did not keep whole. Then comes the rule of the verdict blocking (.github/review/rules.py
       # blocking): a review whose verdict is blocking, and whose list holds a question item and no blocking finding (a
       # change item whose optional is false), gets the verdict person. So an outside pull request waits on Sami, not on
-      # its author, and no fix runs. Its result line is then "Questions for Sami:" with one bullet for the text of each
-      # question, in place of the model's "Blocking findings." (trim.py's with_result, which reads the verdict after
-      # both rules). A verdict blocking whose list holds no question stays blocking.
+      # its author, and no fix runs. The posted result line takes the form of the verdict after both rules (trim.py's
+      # with_result): for person, "Questions for Sami:" with one bullet for the text of each question, in the place of
+      # the model's "Blocking findings." or "No blocking finding.". A verdict blocking whose list holds no question
+      # stays blocking.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
@@ -2804,10 +2815,12 @@ jobs:
       # withdrawn and no token is minted. While the environment post holds no key (APP_KEY_SET), no step can withdraw
       # what this step finds, so it does not run. A read that fails fails the job. The rescreen pass's retry of the
       # App's writes (a relabel, held.sh due_retry) withdraws the check run again, an hour or more after this run ends.
-      # After a screen that held the head, that relabel is the one App write that the pass tries again for the head
-      # (held.sh, consider), and it reads the held state: it records no check run. After REVIEW_TRIES failed tries,
-      # the head is not tried again, and the label comment names the next step for Sami (held.sh, head_stopped). So
-      # the error says so.
+      # After a hold that is not tried again names the head, that relabel is the one App write that the pass tries
+      # again for the head, and only when the relabel withdraws: a screen held the head after each review that
+      # screened it, or the newest review of the head gives a blocking finding or the verdict person (held.sh,
+      # consider). Such a relabel records no check run. After REVIEW_TRIES failed tries, this run among them, the head
+      # is not tried again, and the label comment names the next step for Sami (held.sh, head_stopped). So the error
+      # says so.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -2849,7 +2862,8 @@ jobs:
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
           again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-          again+=" run ends. After $REVIEW_TRIES failed tries, the label comment names the next step for Sami."
+          again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next step"
+          again+=" for Sami."
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
@@ -2926,7 +2940,8 @@ jobs:
         run: |
           set -euo pipefail
           again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-          again+=" run ends. After $REVIEW_TRIES failed tries, the label comment names the next step for Sami."
+          again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next step"
+          again+=" for Sami."
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
             [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not the id of an import check run: $id"; exit 1; }
@@ -3058,7 +3073,7 @@ jobs:
           fi
           echo "#$NUMBER: GitHub holds the runs $ids of $HEAD."
           # refuse <why>: the end of this step with a failure, and no run approved.
-          refuse() { echo "::error::$1 The workflow approves no run of it."; exit 1; }
+          refuse() { echo "::error::$1 The workflow approves no run of #$NUMBER."; exit 1; }
           [[ $count =~ ^[0-9]+$ ]] || refuse "#$NUMBER gives no count of changed files."
           files=$RUNNER_TEMP/files.jsonl
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
@@ -3385,9 +3400,9 @@ jobs:
           POSTED: ${{ needs.post.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
-          # The trust job's outside: false when the author has write access, for a review or a rescreen whose route is
-          # screen and for a relabel; empty for any other run. A writer's pull request whose head an outsider pushed is
-          # no outside item, so it gets no outside state (R5).
+          # The trust job's outside: false when the author has write access, true when the author has none, and empty
+          # when the trust job does not know it with no call of the API (a writer's run by hand). A writer's pull
+          # request, also one whose head an outsider pushed, is no outside item, so it gets no outside state (R5).
           OUTSIDE: ${{ needs.trust.outputs.outside }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
@@ -3500,7 +3515,7 @@ jobs:
             fi
           fi
           # An outside item whose run took an outsider's path. Not a writer's pull request whose head an outsider
-          # pushed (OUTSIDE is false): it gets the state of a writer's item, as for its author's own push.
+          # pushed (OUTSIDE is false): it is no outside item, so it gets no outside state.
           outsider=false
           [ -z "$OUTSIDER" ] || [ "${OUTSIDE:-}" = false ] || outsider=true
           # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
@@ -3523,7 +3538,8 @@ jobs:
               || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
             markers+=("marker=$marker")
           fi
-          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5).
+          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5). With the
+          # review's verdict, its pull request gets the state reviewed (rules.py): the workflow takes no further step.
           writer=false
           [ "${OUTSIDE:-}" != false ] || writer=true
           if [ "${TASK:-}" = relabel ]; then
@@ -3719,8 +3735,8 @@ jobs:
       TASK: ${{ needs.trust.outputs.task }}
       ROUTE: ${{ needs.trust.outputs.route }}
       OUTSIDER: ${{ needs.trust.outputs.outsider }}
-      # The trust job's outside: for a review or a rescreen whose route is screen, false when the item's author has
-      # write access, else true; empty for a run of any other task or route.
+      # The trust job's outside: false when the item's author has write access, true when the author has none, and
+      # empty when the trust job does not know it with no call of the API.
       OUTSIDE: ${{ needs.trust.outputs.outside }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on, which a hold at the limit names: the item's author,
       # or the account of the latest event.

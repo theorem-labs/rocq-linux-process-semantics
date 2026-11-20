@@ -54,8 +54,9 @@ on:
         description: >-
           Optional. With no number, the run takes each item that waits. With the number of a pull request, it takes
           that pull request alone. Then it starts the run for a merge conflict, or the screen and the approval of the
-          held runs of its head, or nothing. After REVIEW_TRIES approvals of the head that did not finish, it starts
-          the stop of that approval instead. screen-start.yml gives the number.
+          held runs of its head, or nothing. After 3 approvals (REVIEW_TRIES) of the head that did not finish, it
+          starts the run that stops the approval. That run gives the pull request waits-on-theorem and a hold comment
+          that says that the workflow does not try to start the checks again. screen-start.yml gives the number.
         required: false
         type: number
 
@@ -112,12 +113,14 @@ jobs:
   #             job approves no run of such a head, and a person at Theorem approves them.
   #   retry     the App's retry: a run of a head whose post job failed, at a sign-in or at a write of the App, gets an
   #             approval again for an approval, a relabel for a review or a relabel (it records the import check run
-  #             with no model), and a catch-up for a catch-up, once an hour. A head whose hold comment of the screen
-  #             names it, and is newer than each review that screened it, gets no other App write again: a review, a
-  #             rescreen, a relabel or an approval of it whose post job failed gets a relabel, which only withdraws
-  #             its import check run. While the environment post holds the App's key, a sign-in that GitHub refuses
-  #             fails the post job. While it holds no key (until the LPS move of dispatch://OSSV-321), the post job
-  #             writes nothing with the App and ends with success, so no retry follows.
+  #             with no model), and a catch-up for a catch-up, once an hour. A head that a hold comment names, when the
+  #             workflow does not try the work of that hold again, gets no other App write again. While a relabel of
+  #             the head withdraws its import check run (a screen held the head after each review that screened it, or
+  #             the newest review of the head gives a blocking finding or the verdict person), a review, a rescreen, a
+  #             relabel or an approval of it whose post job failed gets a relabel, which only withdraws that check run.
+  #             While the environment post holds the App's key, a sign-in that GitHub refuses fails the post job. While
+  #             it holds no key (until the LPS move of dispatch://OSSV-321), the post job writes nothing with the App
+  #             and ends with success, so no retry follows.
   #   conflict  an outside pull request whose head has a merge conflict (mergeable_state dirty), for which GitHub starts
   #             no CI run, and whose label comment does not record that conflict yet (its line
   #             <!-- review-conflict-state <head> -->): the comment that asks the author to resolve it. When the line

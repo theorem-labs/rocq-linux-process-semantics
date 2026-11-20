@@ -43,18 +43,17 @@ parts, in this order:
     <details>                          the review, made inert, cut and closed, collapsed
 
 The first line of a pull request's review is its result (.github/review.md, "The comment"): a line that starts with
-one of RESULTS. A pull request's review is one whose head holds the marker <!-- review-head <commit> -->. When the
-first line of the review that is not empty starts with one of RESULTS, and the first such line of the trimmed text
-starts with none of them, that line of the review goes back at the start of the trimmed text: the reader dropped it.
-A trimmed text whose first line starts with one of RESULTS keeps it as the reader wrote it, with no second result
-line. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
-
---verdict is the review's verdict after the rules of code (rules.py soundness and blocking). When it is person, the
-review's first line is "Blocking findings.", and the list holds no blocking finding (a change item that is not
-optional) and one question item or more, the result line is "Questions for Sami:", with one bullet for the text of
-each question item after it, in place of the review's line. The trimmed text then loses "Blocking findings." at the
-start of its first line, when the reader kept it. So such a review never starts with "Blocking findings.", as its
-list holds no blocking finding.
+the form of RESULTS for its verdict. A pull request's review is one whose head holds the marker
+<!-- review-head <commit> -->. --verdict is the review's verdict after the rules of code (rules.py soundness and
+blocking), and the posted first line takes its form: "No blocking finding." for pass, "Blocking findings." for
+blocking, and "Questions for Sami:" for person. A trimmed text whose first line starts with that form posts as the
+reader gave it. Else a result line goes at the start of the trimmed text. It is the first line of the review when
+that line starts with the form: the reader dropped it. Else it is the form, for person with one bullet for the text
+of each question item after it. The trimmed text then loses its first line when that line starts with another form:
+the whole line goes, with any text after the form on it, so that no part of another result line posts. So the posted
+result never says another verdict than the one of code. For example, a review that the soundness rule made person
+never starts with "No blocking finding.". With no --verdict, the form is the one that the review's first line starts
+with. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -132,9 +131,10 @@ OPTIONAL = "This review also has these optional items:"
 WHOLE = "The review before Claude shortened it"
 CUT_WHOLE = "(The rest of this review is in the summary of this workflow run.)"
 # The forms of the first line of a pull request's review, its result, for the verdicts pass, blocking and person
-# (.github/review.md, "The comment"), and the marker of the head of a pull request's review, which names its head
-# commit. An issue's review has no fixed form, and its head has no such marker.
+# (.github/review.md, "The comment"), the form of each verdict (FORMS), and the marker of the head of a pull request's
+# review, which names its head commit. An issue's review has no fixed form, and its head has no such marker.
 RESULTS = ("No blocking finding.", "Blocking findings.", "Questions for Sami:")
+FORMS = dict(zip(("pass", "blocking", "person"), RESULTS))
 REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # A review, an answer, the summary of a fix and each why are cut at this many characters before the reader reads them.
 CUT = 20_000
@@ -1338,41 +1338,36 @@ def result_of(line):
     return next((form for form in RESULTS if start.startswith(form)), None)
 
 
-def without_blocking(text):
-    """text with "Blocking findings." taken off the start of its first line that is not empty, also in bold or in
-    emphasis, and closed again. The whole line goes when nothing else is on it, or when the form is in another
-    Markdown form (plain reads it)."""
+def without_result(text):
+    """text with its first line that is not empty taken off when that line starts with a form of RESULTS (result_of,
+    also in bold or in emphasis), whatever else the line holds, and closed again: no part of that result line stays.
+    A text whose first line starts with no form stays as it is."""
     lines = text.split("\n")
     k = next((n for n, line in enumerate(lines) if line.strip()), None)
-    if k is None or result_of(lines[k]) != RESULTS[1]:
+    if k is None or result_of(lines[k]) is None:
         return text
-    m = re.match(r"[ \t]*([*_]*)" + re.escape(RESULTS[1]) + r"\1[ \t]*", lines[k])
-    rest = lines[k][m.end():] if m else ""
-    return closed("\n".join(([rest] if rest.strip() else []) + lines[k + 1:]).strip("\n"))
+    return closed("\n".join(lines[k + 1:]).strip("\n"))
 
 
 def with_result(review, trimmed, head, verdict="", items=()):
-    """trimmed, with the result line of review back at its start when the reader dropped it: in a pull request's review
-    (head holds REVIEW_HEAD), the first line of review that is not empty starts with a form of RESULTS, and the first
-    such line of trimmed starts with no form of RESULTS. The line goes back made inert and closed, as an added item
-    does. A trimmed text whose first line starts with a form of RESULTS, the same one or another, is the reader's
-    rewrite of the result line, and gets no second one. An issue's review, and a review whose first line has no such
-    form, stay as the reader gave them.
-    When verdict, the verdict after the rules of code, is person, review's line is "Blocking findings.", and items
-    holds no blocking finding and one question item or more, the result line is "Questions for Sami:" and then one
-    bullet for the text of each question item, and trimmed loses "Blocking findings." (without_blocking)."""
+    """trimmed, whose first line that is not empty starts with the form of RESULTS for verdict (FORMS), the verdict
+    after the rules of code, in a pull request's review (head holds REVIEW_HEAD). A trimmed text whose first line
+    starts with that form stays as the reader gave it. Else the result line goes first, made inert and closed, as an
+    added item does: the first line of review that is not empty when it starts with that form (the reader dropped it),
+    else the form, for person with one bullet for the text of each question item of items after it. trimmed then
+    loses its first line, whole, when that line starts with another form of RESULTS (without_result). With no
+    verdict, the form is the one that the first line of review starts with. An issue's review, and a review with no
+    verdict whose first line has no such form, stay as the reader gave them."""
     line = first_line(review)
-    form = result_of(line)
+    form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
         return trimmed
-    questions = [" ".join(i["text"].split()) for i in items if i.get("kind") == "question"]
-    if (verdict == "person" and form == RESULTS[1] and questions
-            and not any(i.get("kind") == "change" and not i.get("optional") for i in items)):
-        line = "\n".join([RESULTS[2], "", *(f"- {q}" for q in questions)])
-        trimmed = without_blocking(trimmed)
-    if result_of(first_line(trimmed)) is not None:
+    if result_of(first_line(trimmed)) == form:
         return trimmed
-    return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
+    if result_of(line) != form:
+        questions = [" ".join(i["text"].split()) for i in items if i.get("kind") == "question"]
+        line = "\n".join([form, "", *(f"- {q}" for q in questions)]) if form == RESULTS[2] and questions else form
+    return "\n\n".join(p for p in (closed(inert(line.strip())), without_result(trimmed)) if p)
 
 
 def comment(review, trimmed, items, head="", section="", foot="", verdict=""):

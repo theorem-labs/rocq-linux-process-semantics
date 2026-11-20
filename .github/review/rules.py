@@ -32,14 +32,15 @@ head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head
 post job approves none of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact
 no_key=true, with head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head,
 but the environment post held no key of the OSS Verify App, so the post job approved none of its runs, and the
-rescreen pass starts no approval of it. In a state with no state label (working, or import), an item that has a label
-comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
+rescreen pass starts no approval of it. In a state with no state label (working, reviewed or import), an item that has
+a label comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
 kind=pr and outsider=true) in the state decide or person, the text also names the step of R12 for the import into the
 internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
 given only when it is set, and decision, the post job's decision (DECISIONS). A writer's item (the fact writer=true:
 its author has write access) gets no state label and loses each one that it has, but its label comment is the one of
-its state, with the marker of the state's label. GH_TOKEN and REPO come from the job's environment, as for gh in the
-workflow.
+its state, with the marker of the state's label. A writer's pull request with a verdict is in the state reviewed: the
+workflow posted its review, and it takes no further step for its head. GH_TOKEN and REPO come from the job's
+environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -227,8 +228,9 @@ FACTS = {
     # The post job's decision on the import check run at the head, one of DECISIONS.
     "decision": "",
     # The item's author has write access (the trust job's outside is false): it is no outside item, so it gets no
-    # state label (R5). This fact changes no state (label_state does not read it): the label comment still names the
-    # next step, with the marker of the state's label, so that Theorem's view lists an item that waits on Sami.
+    # state label (R5). Its label comment still names the next step, with the marker of the state's label, so that
+    # Theorem's view lists an item that waits on Sami. With a verdict, a writer's pull request is in the state
+    # reviewed, not working: the workflow posted its review, and the rescreen pass takes no other work of its head.
     "writer": False,
 }
 VERDICTS = ("", "pass", "blocking", "person")
@@ -347,6 +349,10 @@ STATES = {
     "working": (
         None, "The workflow tries again.",
         "You do not need to do anything. When a hold comment gives a time, the workflow tries again from that time."),
+    # A writer's pull request whose review posted (the fact writer, with a verdict): its author has write access, so no
+    # fix runs and no step of the import follows, and the rescreen pass takes no other work of its head.
+    "reviewed": (
+        None, "The workflow takes no further step.", "The workflow posted its automated review of the head commit."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -371,7 +377,7 @@ def marker_line(line):
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
                 conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, steering=False,
                 no_key=False, held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
-                decision=""):
+                decision="", writer=False):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
     holds gives it."""
     if kind not in ("", "pr", "issue"):
@@ -421,6 +427,10 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         # post job recorded the import check run at its head, which it does only when the import takes each path.
         if kind == "pr" and verdict == "pass":
             return "import" if recorded and import_paths is not None else "decide"
+    # A writer's pull request whose review posted: nothing follows it, so the text does not say that the workflow
+    # tries again.
+    if writer and kind == "pr" and verdict:
+        return "reviewed"
     return "working"
 
 
@@ -677,10 +687,10 @@ def mark(number, line):
 def set_state(number, facts, markers=(), head="", labels=None):
     """Gives the item number the state that facts give (label_state), with its state label and its label comment
     (apply, with labels): for an outside pull request, with the steps of R12 for the import. The fact writer keeps the
-    state label off (apply). The label comment is made once before any write, so that a marker or a head that it
-    refuses changes nothing on GitHub."""
-    facts = dict(facts)
-    writer = facts.pop("writer", False)
+    state label off (apply), and with a verdict gives a writer's pull request the state reviewed (label_state). The
+    label comment is made once before any write, so that a marker or a head that it refuses changes nothing on
+    GitHub."""
+    writer = facts.get("writer", False)
     state = label_state(**facts)
     imports = None
     if facts.get("kind") == "pr" and facts.get("outsider"):
@@ -1180,8 +1190,8 @@ CUT = re.compile(r"(.+): cut at 2 MiB of its [0-9]+ bytes")
 # A question on soundness in the review's list, and the question that the rule adds when the list has none.
 ON_SOUNDNESS = re.compile(r"(?i)sound")
 QUESTION = {"kind": "question", "ref": None, "optional": False,
-            "text": "Sami answers whether the proofs are sound after the changes of this pull request. When the CI "
-                    "checks pass on stock Rocq, they do not show that the proofs are sound."}
+            "text": "Are the proofs sound after the changes of this pull request? When the CI checks pass on stock "
+                    "Rocq, they do not show that the proofs are sound."}
 
 
 def head_proofs(review):
