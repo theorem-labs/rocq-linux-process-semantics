@@ -13930,6 +13930,37 @@ class ImportCheckTest(ReaderRunner):
                                   f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later "
                                   "screen held it"))
 
+    def test_a_later_screen_or_review_of_an_outside_pull_request_whose_authors_access_github_cannot_say_withdraws(self):
+        """Ruling (1) of OSSV-221's architect (2026-11-20 13:26Z) and R12: an item whose author's write access GitHub
+        cannot say gets no outside label, but stays an outsider's for the import check run. The review of mallory's #7
+        at HEAD recorded the check run with conclusion success. Then alice reviews #7 by hand with the screen first,
+        while GitHub's permission API does not answer for mallory: the trust job gives the route screen with no
+        outsider, and its outside is false. The screen holds HEAD, or it passes and the review gives a blocking finding:
+        as when GitHub says that mallory has no write access (outside true), the post job reads the check runs of HEAD
+        and withdraws the check run of #7, with token A, to the conclusion neutral."""
+        listed, others = self.recorded()
+        find = "Find the import check runs that a later review or screen withdraws"
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        for case, permission, outside in (("GitHub does not say", None, "false"), ("no write access", "read", "true")):
+            if permission:
+                self.permissions(mallory=permission)
+            self.serve_item(7, "mallory", kind="pr", head=HEAD)
+            rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", screen="true")
+            self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"), trust.get("outside")),
+                             (0, "review", "screen", "", outside), out)
+            trust = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
+            for screen, verdict, why in (("held", "pass", "because a later screen held it"),
+                                         ("clean", "blocking", "because a later review asks for a change")):
+                with self.subTest(case=case, screen=screen, verdict=verdict):
+                    got = self.judge(["README.md"], verdict, self.LPS, trust=trust, screen=screen,
+                                     event="workflow_dispatch", listed=[listed, *others])
+                    self.assertEqual((got["result"], got["steps"].get(find, "skipped")), ("success", "success"),
+                                     self.logs[-3:])
+                    (token, endpoint, body), = got["withdrawn"]
+                    self.assertEqual((token, endpoint, body["conclusion"], body["output"]["title"]),
+                                     ("token-A", f"repos/{REPO}/check-runs/901", "neutral",
+                                      f"Not approved for the import: pull request #7 at {HEAD[:12]}, {why}"))
+
     def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
         """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only
         the others of the commit): the post job reads the check runs of the head, mints no token A and sends no
