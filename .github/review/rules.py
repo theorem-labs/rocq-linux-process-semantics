@@ -28,10 +28,11 @@ task of the run, one of TASKS, and the trust job's outputs outside, outsider and
 The answer label of the author-kind table (answers) tells what this does. For an outside author (outside_author: the
 trust job's outside is true) it gives the item the state label of its state. For an author whose write access GitHub
 did not give (author=unknown) it changes nothing: no state label goes on or off, the label comment stays as it is, and
-a notice says why. A review by hand with the decision hand and the verdict pass changes nothing in the same way, as it
-recorded and withdrew no check run (UNCHANGED). With the decision screened, the state follows the verdict, as for any
-review. For any other author, the item gets no state label and loses each one that it has, but its label comment is
-the one of its state, with the marker of the state's label. The state label is
+a notice says why. A review by hand with the decision hand and the verdict pass changes nothing in the same way, while
+an earlier run of its head set the state, as it recorded and withdrew no check run (UNCHANGED). With the decision
+screened, the state follows the verdict, as for any review. For any other author, the item gets no state label and
+loses each one that it has, but its label comment is the one of its state, with the marker of the state's label. The
+state label is
 waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in
 the states steering and no-key), and none while the workflow works on the item. Setting one label takes the other
 off. review-held, the mark of a hold, stays beside them. The label comment is one comment of github-actions[bot] on
@@ -259,9 +260,10 @@ REFUSALS = ("", "review", "answer", "fix")
 # comment of the screen is newer than each review comment whose run screened the head. For a review by hand, a run
 # with no screen that records no check run, the decision is hand or screened when the run of an earlier review
 # screened the head and no hold comment of the screen is newer. It is hand when the newest review comment of the head
-# gives the verdict pass: with the verdict pass, the label step then changes nothing (set_state). It is screened when
-# that comment gives a blocking finding or the verdict person: that review withdrew any check run of the head, so the
-# state follows the verdict of this run, and a pass gets PASSED. Empty when the job gave none.
+# gives the verdict pass: with the verdict pass, the label step then changes nothing (set_state), while an earlier run
+# of the head set the state. It is screened when that comment gives a blocking finding or the verdict person: no check
+# run of the head stands after that review, and this run withdraws each one that still does. So the state follows the
+# verdict of this run, and a pass gets PASSED. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened")
 
@@ -484,8 +486,9 @@ def import_steps(state, value, decision):
     (UNSCREENED), and for the decision held that a screen held the head after each screened review
     (SCREEN_HELD_AFTER), in the place of PASSED. The decisions hand and screened (a review by hand with no screen,
     after a review whose run screened the head) give PASSED, and do not say which step: they compared no path. The
-    label step writes no label comment of the state decide for the decision hand (set_state): only the decision
-    screened reaches it, after a newest review of the head with a blocking finding or the verdict person."""
+    label step writes a label comment of the state decide for the decision hand only when a run of another head set
+    the state last (set_state). The decision screened follows a newest review of the head with a blocking finding or
+    the verdict person."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -833,33 +836,47 @@ def answers(task, outside, outsider, kind=""):
 
 # Why the label step changes neither the state label nor the label comment of an item (set_state): unknown, the label
 # answer unchanged of the author-kind table; hand, a review by hand with no screen whose decision is hand and whose
-# state is decide (the verdict pass). The decision hand says that the newest review of the head passed it, in a run
-# that screened it or after one. Such a run recorded and withdrew no check run, so the state that the earlier runs of
-# the head set still holds, also the state import of a check run that a screened run recorded (OSSV-221's architect,
-# 2026-11-20 20:01Z). The decision screened is not one of these: its state follows the verdict of the run.
+# state is decide (the verdict pass), while the label comment holds the marker line of R12 of its head (of_head). The
+# decision hand says that the newest review of the head passed it, in a run that screened it or after one. Such a run
+# recorded and withdrew no check run, so the state that the earlier runs of the head set still holds, also the state
+# import of a check run that a screened run recorded (OSSV-221's architect, 2026-11-20 20:01Z). When the label comment
+# holds no such line, a run of another head set the state last (a push, then a push back to the head), and the state
+# follows the verdict of this run. The decision screened is not one of these: its state follows the verdict of the run.
 UNCHANGED = {
     "unknown": "GitHub did not say whether its author has write access, so the workflow changes neither its state "
                "label nor its label comment.",
-    "hand": "a review by hand with no screen passed its head after a review whose run screened it. This run recorded "
-            "and withdrew no check run, so the workflow changes neither its state label nor its label comment.",
+    "hand": "a review by hand with no screen passed its head, and so did the newest review of the head before it. "
+            "This run recorded and withdrew no check run, so the state label and the label comment that the earlier "
+            "runs of this head set stay.",
 }
+
+
+def of_head(body, head):
+    """Whether the label comment body holds the marker line of R12 for head (import_marker), which the label step of
+    each run of head writes in the label comment of an outside pull request: then a run of head set its state last."""
+    start = f"<!-- repo-pairs-import-paths {head}: "
+    return bool(HEAD.fullmatch(head)) and any(line.startswith(start) and KEPT.fullmatch(line)
+                                               for line in body.split("\n"))
 
 
 def set_state(number, run, facts, markers=(), head="", labels=None):
     """Gives the item number the state that facts give (label_state), as the label answer of the author-kind table for
     run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice
-    (UNCHANGED). A review by hand whose decision is hand and whose state is decide is unchanged too: a blocking or
-    person verdict with that decision sets its state, and so does each verdict with the decision screened.
-    label_state's outsider is outside_author of the trust job's outside. For an outside pull request, the label comment
-    names the steps of R12 for the import, and holds the marker line of R12 for head when head is given
-    (import_marker). The label comment is made once before any write, so that a marker or a head that it refuses
-    changes nothing on GitHub."""
+    (UNCHANGED). A review by hand whose decision is hand and whose state is decide is unchanged too, while its label
+    comment holds the marker line of R12 of head (of_head): a blocking or person verdict with that decision sets its
+    state, and so does each verdict with the decision screened. label_state's outsider is outside_author of the trust
+    job's outside. For an outside pull request, the label comment names the steps of R12 for the import, and holds the
+    marker line of R12 for head when head is given (import_marker). The label comment is made once before any write,
+    so that a marker or a head that it refuses changes nothing on GitHub."""
     label = answers(run["task"], run["outside"], run["outsider"], run["author"])["label"]
     outsider = outside_author(run["outside"])
     state = None if label == "unchanged" else label_state(outsider=outsider, **facts)
     kept = "unknown" if label == "unchanged" else ""
     if state == "decide" and facts.get("decision") == "hand":
-        kept = "hand"
+        if labels is None:
+            labels = read_labels(number)
+        if labels and of_head(labels[-1]["body"], head):
+            kept = "hand"
     if kept:
         print(f"::notice::#{number}: {UNCHANGED[kept]}")
         return

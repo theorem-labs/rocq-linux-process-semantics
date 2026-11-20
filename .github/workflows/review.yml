@@ -2781,12 +2781,13 @@ jobs:
       # records no check run, as no screen ran in its run. It reads the state of the head in the same way, and keeps
       # its own verdict. For screened, the verdict of the newest review comment of the head (this run's has not posted
       # yet) gives the decision. After a pass, it is hand: with the verdict pass, this run records and withdraws
-      # nothing, so the label step changes neither the state label nor the label comment (.github/review/rules.py
-      # label), and a check run that the screened run recorded stands. After a blocking finding or the verdict person,
-      # it is screened: that review withdrew any check run of the head and recorded none, so the state follows this
-      # run's verdict, and for a pass the label comment says that the screen and the review passed the pull request.
-      # For held, the decision is held, and a later step withdraws the check run, as for a relabel. Else it is screen,
-      # and the label comment says that no screen passed the head in a run that also reviewed it.
+      # nothing, so the label step changes neither the state label nor the label comment while an earlier run of the
+      # head set them (.github/review/rules.py label), and a check run that the screened run recorded stands. After a
+      # blocking finding or the verdict person, it is screened: no check run of the head stands after that review, and
+      # a later step withdraws each one that still does (output earlier), for that review's reason. The state follows
+      # this run's verdict, and for a pass the label comment says that the screen and the review passed the pull
+      # request. For held, the decision is held, and a later step withdraws the check run, as for a relabel. Else it is
+      # screen, and the label comment says that no screen passed the head in a run that also reviewed it.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2847,9 +2848,10 @@ jobs:
           # that the review comments give (rules.py verdict), as relabeled reads it, and the verdict of the newest
           # review comment of the head (earlier: this run's review has not posted yet). The run keeps its own verdict,
           # and records no check run. screened gives the decision hand after an earlier pass, and screened after an
-          # earlier blocking finding or verdict person. held gives the decision held, and the output held, so that the
-          # step that withdraws an import check run withdraws it, as for a relabel. For unscreened, the import check
-          # below gives the decision screen.
+          # earlier blocking finding or verdict person, with that verdict as the output earlier, so that the step that
+          # withdraws an import check run withdraws each one that still stands. held gives the decision held, and the
+          # output held, so that the same step withdraws it, as for a relabel. For unscreened, the import check below
+          # gives the decision screen.
           by_hand() {
             local reviewed earlier state why
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
@@ -2860,6 +2862,7 @@ jobs:
               decided hand "$why"
             fi
             if [ "$state" = screened ]; then
+              echo "earlier=$earlier" >> "$GITHUB_OUTPUT"
               why="the newest review of $HEAD gives the verdict $earlier"
               decided screened "$why, and a screen passed the head in an earlier run"
             fi
@@ -2904,9 +2907,11 @@ jobs:
       # hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or this run's
       # screen held the head, or a relabel or a review by hand with no screen found a hold comment of the screen that
       # names the head and is newer than the newest review comment of the head with the marker
-      # <!-- review-screened <head> --> (the decision's held), whatever the verdict. The if of this step reads the
-      # screen's verdict: a review or a rescreen with no review job that succeeded, and an approval, run this step only
-      # when the screen held the head. The
+      # <!-- review-screened <head> --> (the decision's held), whatever the verdict. A review by hand whose decision is
+      # screened withdraws each check run that still stands for the reason of the newest earlier review of the head
+      # (the decision's earlier: a blocking finding or the verdict person), when its own verdict gives none. The if of
+      # this step reads the screen's verdict: a review or a rescreen with no review job that succeeded, and an approval,
+      # run this step only when the screen held the head. The
       # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
@@ -2950,6 +2955,8 @@ jobs:
           VERDICT: ${{ steps.decide.outputs.verdict || needs.review.outputs.verdict }}
           # true for the decision held: a relabel or a review by hand with no screen found a newer hold of the screen.
           HELD: ${{ steps.decide.outputs.held }}
+          # For the decision screened, the verdict of the newest earlier review of the head: blocking or person.
+          EARLIER: ${{ steps.decide.outputs.earlier }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
           # The head that the name of this run gives (the trust job's named), or empty.
@@ -2964,6 +2971,7 @@ jobs:
             head=$TRUST_HEAD why=screen
           fi
           [ "${HELD:-}" != true ] || why=screen
+          if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ]; then why=$EARLIER; fi
           # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
           case $why in
             blocking) because="a later review asks for a change" ;;
@@ -3526,10 +3534,11 @@ jobs:
       # held it. So it writes nothing, and the label and the label comment stay as the runs before it left them. After
       # a post job that failed, the rescreen pass's retry of the App's writes takes the head again (held.sh, due_retry).
       # A passing review by hand with the post job's decision hand (a screen passed the head in the run of an earlier
-      # review, and the newest review of the head passed it) recorded and withdrew no check run, so the state that the
-      # earlier runs set holds: the state label and the label comment stay as they are, and a notice says why (rules.py
-      # UNCHANGED). review-held still comes off. With the decision screened (the newest review of the head gave a
-      # blocking finding or the verdict person), the state follows this run's verdict, as for any review.
+      # review, and the newest review of the head passed it) recorded and withdrew no check run. While the label comment
+      # holds the marker line of R12 of the head, so that an earlier run of the head set the state, the state label and
+      # the label comment stay as they are, and a notice says why (rules.py UNCHANGED). review-held still comes off.
+      # Else, and with the decision screened (the newest review of the head gave a blocking finding or the verdict
+      # person), the state follows this run's verdict, as for any review.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'

@@ -14620,38 +14620,48 @@ class ImportCheckTest(ReaderRunner):
         post job reads the state of the head from the review comments, as a relabel does (rules.py verdict). A screen
         passed HEAD in the run of a review whose verdict is pass, so the decision is hand, and the run records no check
         run, as no screen ran in it. A pass withdraws nothing either: the check run stands, the post job makes no write,
-        and the label step changes neither the state label nor the label comment, and says why. review-held still comes
-        off. A blocking finding or the verdict person, with the same decision, withdraws the check run and sets the
-        state of the verdict. When the screened review gave a blocking finding instead (#7 waits on its author, and that
-        review withdrew the check run), a pass by hand gets the decision screened: it records nothing, and #7 waits on
-        Sami, with a label comment that says that the screen and the review passed it. With no review comment of HEAD
-        whose run screened it, a pass gets the decision screen, and the label comment says that no screen passed the
-        head."""
+        and the label step changes neither the state label nor the label comment, and says why: the label comment holds
+        the marker line of R12 of HEAD, so a run of HEAD set it. review-held still comes off. A blocking finding or the
+        verdict person, with the same decision, withdraws the check run and sets the state of the verdict. After a push
+        of OTHER_HEAD whose review gave a blocking finding, and a push back to HEAD, the label comment is OTHER_HEAD's:
+        a pass by hand at HEAD, with the decision hand, sets the state of its own verdict. When the screened review of
+        HEAD gave a blocking finding instead (#7 waits on its author), a pass by hand gets the decision screened: it
+        records nothing, withdraws for that blocking finding a check run of HEAD that still stands (its withdrawal
+        failed, say), and #7 waits on Sami, with a label comment that says that the screen and the review passed it.
+        With no review comment of HEAD whose run screened it, a pass gets the decision screen, and the label comment
+        says that no screen passed the head."""
         listed, _others = self.recorded()
         marker = rules.import_marker(HEAD, self.LPS)
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
                "body": rules.label_comment("import", "", [marker])}
         screened = review_of(HEAD, at=ago(90))
-        notice = ("::notice::#7: a review by hand with no screen passed its head after a review whose run screened it. "
-                  "This run recorded and withdrew no check run, so the workflow changes neither its state label nor "
-                  "its label comment.")
+        notice = ("::notice::#7: a review by hand with no screen passed its head, and so did the newest review of the "
+                  "head before it. This run recorded and withdrew no check run, so the state label and the label "
+                  "comment that the earlier runs of this head set stay.")
         title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later review "
         changed = dict(old, body=rules.label_comment("change", "", [marker]))
-        held = ("review-held",)
-        for case, verdict, comments, before, decision, withdrawn, labels, state in (
-                ("a pass after a screened review", "pass", [screened, old], held, "hand", [], [], None),
-                ("a blocking finding after a screened review", "blocking", [screened, old], held, "hand",
+        pushed = [review_of(HEAD, at=ago(120)), review_of(OTHER_HEAD, "blocking", at=ago(90), id_=31),
+                  dict(old, body=rules.label_comment("change", "", [rules.import_marker(OTHER_HEAD, self.LPS)]))]
+        blocked = [review_of(HEAD, "blocking", at=ago(90)), changed]
+        held, author = ("review-held",), ("review-held", AUTHOR_LABEL)
+        moved = [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)]
+        stands, neutral = [listed], [dict(listed, conclusion="neutral")]
+        for case, verdict, comments, before, checks, decision, withdrawn, labels, state in (
+                ("a pass after a screened review", "pass", [screened, old], held, stands, "hand", [], [], None),
+                ("a blocking finding after a screened review", "blocking", [screened, old], held, stands, "hand",
                  [title + "asks for a change"], [("+", AUTHOR_LABEL)], "change"),
-                ("the verdict person after a screened review", "person", [screened, old], held, "hand",
+                ("the verdict person after a screened review", "person", [screened, old], held, stands, "hand",
                  [title + "has questions for Sami"], [("+", THEOREM_LABEL)], "person"),
-                ("a pass after a screened review with a blocking finding", "pass",
-                 [review_of(HEAD, "blocking", at=ago(90)), changed], held + (AUTHOR_LABEL,), "screened", [],
-                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], "decide"),
+                ("a pass after a push of another head and a push back", "pass", pushed, author, stands, "hand", [],
+                 moved, "decide"),
+                ("a pass after a screened review with a blocking finding", "pass", blocked, author, neutral,
+                 "screened", [], moved, "decide"),
+                ("a pass after a screened review with a blocking finding whose withdrawal failed", "pass", blocked,
+                 author, stands, "screened", [title + "asks for a change"], moved, "decide"),
                 ("a pass with no screened review", "pass", [review_of(HEAD, at=ago(90), screened=False), old], held,
-                 "screen", [], [("+", THEOREM_LABEL)], "decide")):
+                 stands, "screen", [], [("+", THEOREM_LABEL)], "decide")):
             with self.subTest(case=case):
                 start = len(self.logs)
-                checks = [dict(listed, conclusion="neutral")] if decision == "screened" else [listed]
                 got = self.judge(["README.md"], verdict, self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
                                  event="workflow_dispatch", comments=comments, listed=checks, labels=before)
                 self.assertEqual((got["result"], got["post"]["decision"], got["post"]["recorded"],
