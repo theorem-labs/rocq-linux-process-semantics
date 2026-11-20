@@ -235,12 +235,13 @@ UNSCREENED = ("The automated review passed this pull request. No automated scree
 # write access pushed. The import check run is for an outside pull request alone, so the text says so in the place of
 # PASSED.
 WRITER = (f"{PASSED} Its author has write access, so the workflow did not record the check "
-          "`repo-pairs/import-approved`: that check is for a pull request whose author has no write access.")
+          "`repo-pairs/import-approved`. The workflow records that check only for a pull request whose author has no "
+          "write access.")
 # The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
 # of PASSED.
-SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit, and no "
-                     "run of the automated review screened it again after that. So the workflow did not record the "
-                     "check `repo-pairs/import-approved`.")
+SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit. After "
+                     "that, no automated screen passed it in a run that also reviewed it. So the workflow did not "
+                     "record the check `repo-pairs/import-approved`.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -1423,10 +1424,10 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
                      "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a "
                      "pattern. The pattern counts unless its part after the last `.` is one fixed extension other "
                      "than `md`, `MD`, `Md` or `mD`. A fixed extension has only letters, digits and `_`. So `*.vo` "
-                     "does not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. When a comment stands "
-                     "between `glob_files` and its pattern, the case holds whatever the pattern is.\n"
-                     "- A `dune` file anywhere, also in a comment, holds a word or a quoted string that has `.md` in "
-                     "it. The case holds only when that word or string also holds `..`, `%{project_root}` or "
+                     "does not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. When a comment is "
+                     "between `glob_files` and its pattern, the case applies whatever the pattern is.\n"
+                     "- A `dune` file anywhere holds a word or a quoted string that holds `.md`, also in a comment. "
+                     "The case applies only when that word or string also holds `..`, `%{project_root}` or "
                      "`%{workspace_root}`, or starts with `/`. For example: `%{dep:../docs/x.md}`.\n"
                      "- The workflow cannot read one of the `dune` files, in any directory.")
         parts.append(f"{rule}\n\nThe workflow counts these changed files, other than `.v` files, as changes of the "

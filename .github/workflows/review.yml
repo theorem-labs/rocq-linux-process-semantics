@@ -660,7 +660,7 @@ jobs:
                 [[ -n $cut || $runs =~ [0-9] ]] || return 0
                 if ! open_pulls; then
                   echo "::notice::The open pull requests could not be read, so the CI runs that can count toward the" \
-                    "limit of $1 are not known. So the workflow counts $1 as at the limit."
+                    "limit of $1 are not known. So the workflow treats $1 as at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -673,7 +673,7 @@ jobs:
               if [ -n "$cut" ]; then
                 echo "::notice::GitHub lists at most 1,000 runs of this workflow with $cut since $from, and more" \
                   "of them match. The runs that it does not list can count toward the limit of $1, so the workflow" \
-                  "counts $1 as at the limit."
+                  "treats $1 as at the limit."
                 count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                 return 0
               fi
@@ -694,7 +694,7 @@ jobs:
                 if [ "$own" = 2 ] && trusted "$actor"; then continue; fi
                 if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
                   echo "::notice::This run read the jobs of $reads runs that can count toward the limit of $1. More" \
-                    "such runs of the last hour are left, so the workflow counts $1 as at the limit."
+                    "such runs of the last hour are left, so the workflow treats $1 as at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -2753,7 +2753,7 @@ jobs:
             echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
             if [ "$state" = held ]; then
               echo "held=true" >> "$GITHUB_OUTPUT"
-              decided held "a hold comment of the screen is newer than each review comment whose run screened $HEAD"
+              decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
           fi
           # The import check run is for an outside pull request alone, which the screen passed before its review: its
@@ -2781,9 +2781,8 @@ jobs:
       # withdrawn and no token is minted. A read that fails fails the job. After the review's verdict, the rescreen
       # pass's retry of the App's writes (a relabel) withdraws the check run again. After a screen that held the head,
       # that retry does not run: the hold comment, which is not tried again, names the head (held.sh, consider). Only a
-      # relabel after a recorded merge conflict of the head goes away withdraws it then, as consider takes the merge
-      # conflict (due_conflict) before it checks for such a hold. So the error says so, and that a person re-runs this
-      # job.
+      # relabel after a recorded merge conflict of the head ends withdraws it then, as consider takes the merge conflict
+      # (due_conflict) before it checks for such a hold. So the error says so, and that a person re-runs this job.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -2816,17 +2815,18 @@ jobs:
           elif [ "$TASK" = approve ] || [ "$REVIEWED" != success ]; then
             head=$TRUST_HEAD why=screen
           fi
+          # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
           case $why in
-            blocking) reason="because a later review asks for a change" ;;
-            person) reason="because a later review has questions for Sami" ;;
-            screen) reason="after a later screen held it" ;;
+            blocking) because="a later review asks for a change" ;;
+            person) because="a later review has questions for Sami" ;;
+            screen) because="a later screen held $head" ;;
             *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
           # After a screen that held the head, the rescreen pass tries a failed withdrawal again only in a relabel after
-          # a recorded merge conflict of the head goes away (held.sh, consider).
-          again=" The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of"
-          again+=" this head goes away. To try again, a person re-runs this job."
+          # a recorded merge conflict of the head ends (held.sh, consider).
+          again=" The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict"
+          again+=" of this head ends. To try again, a person re-runs this job."
           [ "$why" = screen ] || again=""
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
@@ -2843,10 +2843,10 @@ jobs:
           ids=$(tr '\n' ' ' <<< "$ids")
           ids=${ids% }
           if [ -z "$ids" ]; then
-            echo "#$NUMBER: no import check run of $head to withdraw $reason."
+            echo "#$NUMBER: $because, but $head has no import check run to withdraw."
             exit 0
           fi
-          echo "#$NUMBER: the next step withdraws the import check runs $ids of $head $reason."
+          echo "#$NUMBER: a later step of this job withdraws the import check runs $ids of $head, because $because."
           { echo "checks=$ids"; echo "head=$head"; echo "why=$why"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
       # and for the close and reopen of a catch-up.
@@ -2891,7 +2891,7 @@ jobs:
       # withdraws" found, with token A, each with its request: the conclusion neutral, so that the import no longer
       # reads it as the approval of the pull request. A call that fails fails the job, with an error that names the
       # head and the import check run. After a screen that held the head, the error also says when the rescreen pass
-      # tries it again, and that a person re-runs this job (the step before says why).
+      # tries it again, and that a person re-runs this job (the comment of the step that found it says why).
       - name: Withdraw the import check runs of the head
         if: steps.withdraw.outputs.checks != ''
         env:
@@ -2902,8 +2902,8 @@ jobs:
           WHY: ${{ steps.withdraw.outputs.why }}
         run: |
           set -euo pipefail
-          again=" The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of"
-          again+=" this head goes away. To try again, a person re-runs this job."
+          again=" The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict"
+          again+=" of this head ends. To try again, a person re-runs this job."
           [ "$WHY" = screen ] || again=""
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
@@ -3316,7 +3316,11 @@ jobs:
       # of R12, with the value of REPO_PAIRS_IMPORT_PATHS that the post job's decision at the head read (this step's own
       # read when that job gave no decision), and its text names the step for the import by that value. So the rescreen
       # pass reads the value that the state rested on, and relabels the head when the variable changed since. An answer
-      # that another run answered first (Post the answer) leaves the labels as that run set them.
+      # that another run answered first (Post the answer) leaves the labels as that run set them. A relabel whose post
+      # job ran and failed or was cancelled gave no decision on the import check run of its head. Its label comment
+      # would then say that the screen and the review passed the head, also when no screen passed it or a later screen
+      # held it. So it writes nothing, and the label and the label comment stay as the runs before it left them. After
+      # a post job that failed, the rescreen pass's retry of the App's writes takes the head again (held.sh, due_retry).
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
@@ -3327,6 +3331,8 @@ jobs:
           # The head that the review read, or the head of a relabel, which the trust job read.
           HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
           STARTED: ${{ needs.trust.outputs.started }}
+          # The post job's result: success, failure, cancelled, or skipped when it did not run.
+          POSTED: ${{ needs.post.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
           VERDICT: ${{ needs.review.outputs.verdict }}
@@ -3344,6 +3350,11 @@ jobs:
           set -uo pipefail
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
             || { echo "::error::no start time of this run"; exit 1; }
+          if [ "${TASK:-}" = relabel ] && { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; }; then
+            echo "#$NUMBER: the post job of this relabel failed or was cancelled, so the workflow changes neither its" \
+              "labels nor its label comment."
+            exit 0
+          fi
           # The stored draft and the posted reply, each with the marker line that the label comment keeps.
           draft_stored=false reply_posted=false markers=()
           case ${TASK:-} in
@@ -3839,7 +3850,7 @@ jobs:
             # its limit (UNCOUNTED): the account can have had fewer screens, so the comment does not say that it had
             # that many.
             if [ "${UNCOUNTED:-}" = true ]; then
-              why+=" The workflow did not read all of its runs of the last hour that can count toward the limit of $whose. So the workflow counts $who as at that limit."
+              why+=" The workflow did not read all of its runs of the last hour that can count toward the limit of $whose. So the workflow treats $who as at that limit."
             else
               why+=" ${who^} is at that limit."
             fi

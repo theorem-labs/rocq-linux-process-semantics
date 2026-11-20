@@ -3140,17 +3140,17 @@ class HoldTest(Holding):
         for outsider, account, words, who in (
                 ("mallory", "mallory", "The author of this pull request has an account without write access to this "
                                        f"repository. {limit} The workflow did not read all of its runs of the last "
-                                       "hour that can count toward the limit of this account. So the workflow counts "
+                                       "hour that can count toward the limit of this account. So the workflow treats "
                                        "this account as at that limit.", "this account"),
                 ("eve", "mallory", "The latest event of this pull request comes from an account without write access "
                                    "to this repository. For this event, the workflow uses the limit of the author of "
                                    "this pull request, who also has an account without write access. "
                                    f"{limit} The workflow did not read all of its runs of the last hour that can count "
-                                   "toward the limit of the author. So the workflow counts the account of the author "
+                                   "toward the limit of the author. So the workflow treats the account of the author "
                                    "as at that limit.", "the account of the author"),
                 ("eve", "eve", "The latest event of this pull request comes from an account without write access to "
                                f"this repository. {limit} The workflow did not read all of its runs of the last hour "
-                               "that can count toward the limit of this account. So the workflow counts this "
+                               "that can count toward the limit of this account. So the workflow treats this "
                                "account as at that limit.", "this account")):
             with self.subTest(outsider=outsider, account=account):
                 self.tearDown()
@@ -13109,16 +13109,16 @@ class ImportCheckTest(ReaderRunner):
         listed, others = self.recorded()
         person = ("because a later review has questions for Sami",
                   "A later automated review of this head commit has questions for Sami.",
-                  "because a later review has questions for Sami")
+                  "a later review has questions for Sami")
         for case, verdict, trust, screen, comments, (why, said, logged) in (
                 ("a review by hand with the verdict person", "person", self.BY_HAND, "", (), person),
                 ("a screened review with a blocking finding", "blocking", None, "clean", (),
                  ("because a later review asks for a change",
                   "A later automated review of this head commit asks for a change.",
-                  "because a later review asks for a change")),
+                  "a later review asks for a change")),
                 ("a screen that held the head", "pass", None, "held", (),
                  ("because a later screen held it", "A later automated screen held this head commit.",
-                  "after a later screen held it")),
+                  f"a later screen held {HEAD}")),
                 ("a relabel of a review with the verdict person", "", self.RELABEL, "", (review_of(HEAD, "person"),),
                  person)):
             with self.subTest(case=case):
@@ -13140,22 +13140,27 @@ class ImportCheckTest(ReaderRunner):
                                                   ".conclusion"]])
                 self.assertEqual(got["read with"], {self.RUN_TOKEN})
                 logs = "\n".join(self.logs[start:])
-                self.assertIn(f"#7: the next step withdraws the import check runs 901 of {HEAD} {logged}.", logs)
+                self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because "
+                              f"{logged}.", logs)
                 self.assertIn(f"Withdrew the import check run 901 of {HEAD}: its conclusion is now neutral.", logs)
 
     def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
         """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only
         the others of the commit): the post job reads the check runs of the head, mints no token A and sends no
-        PATCH. A later review of the head that meets the rule leaves the check run with conclusion success: the post
-        job records a new one, and withdraws none."""
+        PATCH, and its log says that the head has no import check run to withdraw. A later review of the head that
+        meets the rule leaves the check run with conclusion success: the post job records a new one, and withdraws
+        none."""
         listed, others = self.recorded()
         for case, checks in (("no check run", []), ("only the others", others)):
             with self.subTest(case=case):
+                start = len(self.logs)
                 got = self.judge(["README.md"], "person", self.LPS, trust=self.BY_HAND, event="workflow_dispatch",
                                  listed=checks)
                 self.assertEqual((got["result"], got["withdrawn"], got["writes"]), ("success", [], []), self.logs)
                 self.assertEqual(got["steps"][MINT_A], "skipped")
                 self.assertIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
+                self.assertIn(f"#7: a later review has questions for Sami, but {HEAD} has no import check run to "
+                              "withdraw.", "\n".join(self.logs[start:]))
         got = self.judge(["README.md"], value=self.LPS, listed=[listed, *others])
         self.assertRecorded(got, self.LPS)
         self.assertEqual(got["withdrawn"], [])
@@ -13185,8 +13190,8 @@ class ImportCheckTest(ReaderRunner):
                     body = self.assertWaits(got, self.SOME, rules.WRITER, value=self.LPS)
                     self.assertIn("The automated screen and the automated review passed this pull request. Its "
                                   "author has write access, so the workflow did not record the check "
-                                  "`repo-pairs/import-approved`: that check is for a pull request whose author has no "
-                                  "write access.", body)
+                                  "`repo-pairs/import-approved`. The workflow records that check only for a pull "
+                                  "request whose author has no write access.", body)
                     self.assertNotIn("No automated screen", body)
 
     def test_a_relabel_reads_each_screened_review_comment_of_the_head_and_the_screen_holds_after_it(self):
@@ -13223,8 +13228,10 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual((got["result"], got["checks"]), ("success", []), self.logs)
                     body = self.assertWaits(got, self.SOME, rules.SCREEN_HELD_AFTER, value=self.LPS)
                     self.assertIn("The automated review passed this pull request. An automated screen held its head "
-                                  "commit, and no run of the automated review screened it again after that. So the "
-                                  "workflow did not record the check `repo-pairs/import-approved`.", body)
+                                  "commit. After that, no automated screen passed it in a run that also reviewed it. "
+                                  "So the workflow did not record the check `repo-pairs/import-approved`.", body)
+                    self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD}, and "
+                                  "no review comment whose run screened it is newer).", "\n".join(self.logs))
                     self.assertNotIn("No automated screen", body)
 
     def test_a_relabel_after_a_later_screen_hold_of_the_head_records_nothing_and_withdraws_the_check_run(self):
@@ -13257,16 +13264,54 @@ class ImportCheckTest(ReaderRunner):
                          comments=[dict(hold, updated_at=ago(90)), review])
         self.assertRecorded(got, self.LPS)
 
+    def test_a_relabel_whose_post_job_failed_or_was_cancelled_writes_no_label_and_no_label_comment(self):
+        """alice's review by hand passed mallory's #7 with no screen. A relabel of the head whose post job fails before
+        its decision (here, at the read of the files of #7) gives the comment job no decision, and the label comment
+        would then say that the screen and the review passed the head. So the label step of a relabel whose post job
+        failed or was cancelled writes no label and no label comment, and its log says so. The same relabel whose post
+        job succeeded gets the decision screen, and the label comment says that no screen passed the head. A skipped
+        post job (HeadScheduleTest's stand-in for a relabel; in a run, the post job of a relabel runs whenever its
+        comment job does) leaves the label step as it was: it writes the label comment."""
+        review = review_of(HEAD, screened=False)
+        said = ("#7: the post job of this relabel failed or was cancelled, so the workflow changes neither its labels "
+                "nor its label comment.")
+        self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")
+        got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
+                         comments=[review])
+        self.assertEqual((got["result"], got["steps"][self.DECIDE]), ("failure", "failure"), self.logs)
+        self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+        self.assertIn(said, got["log"])
+        s = step("comment", self.LABEL)
+        for result, wrote in (("cancelled", False), ("skipped", True)):
+            with self.subTest(post=result):
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in self.RELABEL.items()}
+                ctx.update({"needs.trust.result": "success", "needs.post.result": result,
+                            "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                            "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS, "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+                self.forget()
+                env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+                rc, out, _ = self.run_script(s["run"],
+                                             **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                self.assertEqual((rc, bool(label_comments(self.api)), said in out), (0, wrote, not wrote), out)
+                if not wrote:
+                    self.assertEqual(writes(self.api), [], out)
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_7_files.fail"))
+        got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
+                         comments=[review])
+        self.assertNotRecorded(got, "screen")
+        self.assertWaits(got, self.SOME, rules.UNSCREENED, value=self.LPS)
+        self.assertNotIn(said, got["log"])
+
     def test_a_withdrawal_that_github_refuses_fails_the_job_and_names_the_head_and_the_check_run(self):
         """A PATCH of the check run that GitHub refuses fails the post job, with an error that names the head and the
         import check run. So does a read of the check runs of the head that GitHub refuses. After a screen that held
-        the head, each error also says that the rescreen pass tries it again only in a relabel after a merge conflict
-        of the head goes away, and that a person re-runs the job: the hold comment of the screen names the head, so the
-        pass makes no other App write of it (held.sh, consider). After a blocking finding, the pass's retry of the
-        App's writes (a relabel) withdraws it again."""
+        the head, each error also says that the rescreen pass tries it again only in a relabel run after a merge
+        conflict of the head ends, and that a person re-runs the job: the hold comment of the screen names the head,
+        so the pass makes no other App write of it (held.sh, consider). After a blocking finding, the pass's retry of
+        the App's writes (a relabel) withdraws it again."""
         listed, _others = self.recorded()
-        again = ("The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of "
-                 "this head goes away. To try again, a person re-runs this job.")
+        again = ("The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict "
+                 "of this head ends. To try again, a person re-runs this job.")
         cases = (("a screen that held the head", "pass", "held", True),
                  ("a review with a blocking finding", "blocking", "clean", False))
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
