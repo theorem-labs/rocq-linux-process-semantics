@@ -4821,18 +4821,13 @@ Definition localtime_absentb (fs : Fs.Fs) : bool :=
 
 Definition localtime_absent (fs : Fs.Fs) : Prop := localtime_absentb fs = true.
 
-(** "/proc" and "/sys" as keys: the root's children named [Fs.proc_comp]
-    and [Fs.sys_comp], the two names [Fs.at_outside] declines at the
-    root. *)
-Definition proc_key : Fs.path := Fs.child_key Fs.root Fs.proc_comp.
-Definition sys_key : Fs.path := Fs.child_key Fs.root Fs.sys_comp.
-
-(** THE KEY IS OUTSIDE /proc AND /sys: no key on its chain
-    ([Fs.key_chain], the root first and the key itself last) is
-    [proc_key] or [sys_key], so the key is neither folder and lies below
-    neither.  It is decided COMPONENT BY COMPONENT, as
-    [Fs.in_dev_subtree] is, so "/process" and "/system" are ordinary
-    keys.  [valid_image] asks it of the working folder.
+(** THE KEY IS OUTSIDE /proc AND /sys: it is not [Fs.in_proc_sys_subtree],
+    so no key on its chain ([Fs.key_chain], the root first and the key
+    itself last) is [Fs.proc_key] or [Fs.sys_key], and the key is neither
+    folder and lies below neither.  It is decided COMPONENT BY COMPONENT,
+    as [Fs.in_dev_subtree] is, so "/process" and "/system" are ordinary
+    keys.  [valid_image] asks it of the working folder, and the
+    folder-row clause [Fs.dir_rows_okb] reads the same test.
 
     WHY THE WORKING FOLDER NEEDS IT.  The walk declines "proc" and "sys"
     only when it looks them up STANDING ON THE ROOT ([Fs.at_outside],
@@ -4864,8 +4859,7 @@ Definition sys_key : Fs.path := Fs.child_key Fs.root Fs.sys_comp.
     THE BOOLEAN IS THE STATEMENT, as for [devices_in_dev_subtreeb], so a
     fixture decides it by computation. *)
 Definition outside_proc_sysb (k : Fs.path) : bool :=
-  negb (existsb (fun a => Fs.path_eqb a proc_key || Fs.path_eqb a sys_key)
-                (Fs.key_chain k)).
+  negb (Fs.in_proc_sys_subtree k).
 
 (** THE FILE-SYSTEM CLAUSES every validity variant carries, named once
     so the variants below say the same thing and a reader can see that
@@ -4924,28 +4918,45 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
       [valid_image_files_capped];
     - every row of the image's FOLDER TABLE holds counts a kernel gives
       ([Fs.dir_rows_okb]): it names a folder of the tree, its counting
-      count is at least the two plus one per subfolder that the tree
-      implies, and its fixed count is 1.  On tmpfs and ramfs a folder
-      starts at 2 ([inode_init_always_gfp], fs/inode.c:242, then
-      [inc_nlink] in [__shmem_get_inode], mm/shmem.c:3133-3134, or in
-      [ramfs_get_inode], fs/ramfs/inode.c:77-82, Linux v6.18.46), each
-      subfolder adds one ([shmem_mkdir], mm/shmem.c:3952;
-      [ramfs_mkdir], fs/ramfs/inode.c:122-127), and a name the image
-      leaves out can only add more; [generic_fillattr] reports the count
-      (fs/stat.c:91).  Without the clause a row could give an empty
-      folder the counts 0 and 0, and [stat] of it would answer an
-      [st_nlink] of 0, which no kernel gives a folder.  Like the size
-      clause it reads every row, also two kinds no lookup reaches: a
-      later row for a key an earlier row already has ([Fs.dtab_find]
-      returns the first), and a row at a key that is no folder
-      ([Fs.fs_mkdir] drops it before it makes a folder there).  So it
-      refuses an image with a hidden row outside these counts, or with
-      any row at a key that is no folder, although no lookup reaches
-      either.  It is the last clause, after the size
-      clause: a proof that names the first eight clauses by position is
-      unchanged, and one that took the size clause as the last component
-      now gets that clause and this one as a pair.  A proof that wants it
-      uses [valid_image_dir_rows] or [valid_image_dir_links].
+      count is the one the image implies ([Fs.fs_tree_count]: two, plus
+      one per subfolder the tree shows, plus at the root one for each of
+      /proc and /sys that the tree does not hold as a folder; at or below
+      /proc and /sys, at least that), and its fixed count is 1.  On tmpfs
+      and ramfs a folder starts at 2 ([inode_init_always_gfp],
+      fs/inode.c:242, then [inc_nlink] in [__shmem_get_inode],
+      mm/shmem.c:3133-3134, or in [ramfs_get_inode],
+      fs/ramfs/inode.c:77-82, Linux v6.18.46), each subfolder adds one
+      ([shmem_mkdir], mm/shmem.c:3952; [ramfs_mkdir],
+      fs/ramfs/inode.c:122-127), and [generic_fillattr] reports the count
+      (fs/stat.c:91).  Every name of a folder outside /proc and /sys is
+      in the image but /proc and /sys themselves, which under the launch
+      premises (procfs at /proc, and a folder /sys) are folders of the
+      root file system whatever the image holds at their keys
+      ([Fs.root_unheld_dirs] says why): so the root's count is the
+      tree's plus one for each of the two the tree does not hold as a
+      folder, and every other such folder's count is the tree's.  The
+      folders procfs and sysfs count are names an image may leave out,
+      and they can only add more ([Fs.dir_row_okb] says why).  A folder
+      with no row has the implied count ([Fs.fs_dir_links]).  Without the
+      clause a row could give an
+      empty folder the counts 0 and 0, and [stat] of it would answer an
+      [st_nlink] of 0, which no kernel gives a folder; or the count 3,
+      and [stat] of it would answer 3 before [rmdir] removed it, where
+      Linux answers -ENOTEMPTY for a folder that counts a subfolder.
+      Refusing a row a lookup reaches, whose count no kernel gives the
+      folder, narrows no launch a supported kernel makes: it removes
+      images no launch has.  Like the size clause it reads every row,
+      and the narrowing is in two kinds no lookup reaches: a later row
+      for a key an earlier row already has ([Fs.dtab_find] returns the
+      first), and a row at a key that is no folder ([Fs.fs_mkdir] drops
+      it before it makes a folder there).  So it refuses an image with a
+      hidden row outside these counts, or with any row at a key that is
+      no folder, although no lookup reaches either.  It is the last
+      clause, after the size clause: a proof that names the first eight
+      clauses by position is unchanged, and one that took the size
+      clause as the last component now gets that clause and this one as
+      a pair.  A proof that wants it uses [valid_image_dir_rows] or
+      [valid_image_dir_links].
 
     THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER, "/" and /dev
     included: a process really can be started there, and the walk
@@ -4998,8 +5009,9 @@ Proof.
 Qed.
 
 (** The folder-row clause, read back by name, and what it gives: at
-    every key, a counting count at least the tree's and a fixed count
-    of 1. *)
+    every key, a counting count at least the one the image implies
+    ([Fs.fs_tree_count]), exactly that one outside /proc and /sys, the
+    root included, and a fixed count of 1. *)
 Lemma valid_image_dir_rows : forall inp,
   valid_image inp -> Fs.dir_rows_okb (in_fs inp) = true.
 Proof.
@@ -5010,7 +5022,9 @@ Qed.
 
 Lemma valid_image_dir_links : forall inp k,
   valid_image inp ->
-  (2 + Fs.fs_nsubdirs (in_fs inp) k <= Fs.dl_counting (Fs.fs_dir_links (in_fs inp) k))%nat
+  (Fs.fs_tree_count (in_fs inp) k <= Fs.dl_counting (Fs.fs_dir_links (in_fs inp) k))%nat
+  /\ (Fs.in_proc_sys_subtree k = false ->
+      Fs.dl_counting (Fs.fs_dir_links (in_fs inp) k) = Fs.fs_tree_count (in_fs inp) k)%nat
   /\ Fs.dl_fixed (Fs.fs_dir_links (in_fs inp) k) = 1%nat.
 Proof.
   intros inp k Hv. exact (Fs.dir_rows_okb_links _ k (valid_image_dir_rows _ Hv)).

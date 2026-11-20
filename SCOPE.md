@@ -945,20 +945,36 @@ not apply.
   (`fs/ramfs/inode.c:267`, Linux v6.18.46).
 - Every row of the launch image's folder table holds link counts a kernel
   gives (`Fs.dir_rows_okb`, the last clause of `Run.valid_image`): the row
-  names a folder of the tree, its counting count is at least two plus one
-  per subfolder the tree shows, and its fixed count is 1. On tmpfs and
+  names a folder of the tree, its counting count is the one the image
+  implies (`Fs.fs_tree_count`), and its fixed count is 1. On tmpfs and
   ramfs a folder starts at 2, the 1 of `inode_init_always_gfp`
   (`fs/inode.c:242`, Linux v6.18.46) and the `inc_nlink` of
   `__shmem_get_inode` (`mm/shmem.c:3133-3134`, Linux v6.18.46) or of
   `ramfs_get_inode` (`fs/ramfs/inode.c:77-82`, Linux v6.18.46), and each
   subfolder adds one (`shmem_mkdir`, `mm/shmem.c:3952`, and `ramfs_mkdir`,
-  `fs/ramfs/inode.c:122-127`, Linux v6.18.46); a name the image leaves
-  out can only add more. `generic_fillattr` reports the count
-  (`fs/stat.c:91`, Linux v6.18.46). Without the clause a row could give
+  `fs/ramfs/inode.c:122-127`, Linux v6.18.46). `generic_fillattr` reports
+  the count (`fs/stat.c:91`, Linux v6.18.46). The image holds every name
+  of a folder outside `/proc` and `/sys` but `/proc` and `/sys`
+  themselves, which are folders of the root file system under the
+  premises below (procfs is mounted at `/proc`, and the root file system
+  holds a folder `/sys`). So the root's count is two, plus one per
+  subfolder the tree shows, plus one for each of `/proc` and `/sys` that
+  the tree does not hold as a folder (`Fs.root_unheld_dirs`), and every
+  other folder's count outside `/proc` and `/sys` is two plus one per
+  subfolder the tree shows: a larger one would count a subfolder that
+  `rmdir` does not see, where Linux answers `-ENOTEMPTY` (`simple_rmdir`,
+  `fs/libfs.c:799-807`, and `shmem_rmdir`, `mm/shmem.c:4032-4035`, Linux
+  v6.18.46). A folder with no row has that count too
+  (`Fs.fs_dir_links`). At or below `/proc` and `/sys`
+  (`Fs.in_proc_sys_subtree`) the count is at least that: procfs and sysfs
+  count folders of their own that an image need not hold, and no modeled
+  call reads or changes a row there. Without the clause a row could give
   an empty folder the counts 0 and 0, and `stat` of it would answer an
-  `st_nlink` of 0. The clause narrows the statement in two cases, both
-  rows no lookup reaches: a later row for a key an earlier row already
-  has, and a row at a key that is no folder.
+  `st_nlink` of 0. Refusing a row a lookup reaches, whose count no kernel
+  gives the folder, narrows no launch a supported kernel makes: it
+  removes images no launch has. The clause narrows the statement in two
+  cases, both rows no lookup reaches: a later row for a key an earlier
+  row already has, and a row at a key that is no folder.
 - The image describes `/dev` completely at launch, and no device node is
   made during the run. A name under `/dev` that the image does not hold
   is therefore `-ENOENT`. In Linux v6.18.46 devtmpfs makes a node when a
@@ -1073,6 +1089,56 @@ not apply.
   streams, so a stream that the write changed in Linux is still one of
   the launches the statements cover.
 - No tracer (`ptrace`) or other outside agent changes the process.
+- No device cgroup refuses the process an open of `/dev/null` or
+  `/dev/urandom`: the process runs in no cgroup whose BPF device
+  programs or v1 devices controller answer such an open with anything
+  but 0. The model opens either node with no answer beside the
+  descriptor but `Fs.Open.openat_errnos` (`Fs.Open.open_devnull`,
+  `Fs.Open.open_urandom`), and Linux v6.18.46 asks the device cgroup on
+  every open of a device node but an `O_PATH` one, which the model never
+  answers: `may_open` (`fs/namei.c:3527-3567`)
+  asks `inode_permission` (`fs/namei.c:568-602`), which asks
+  `devcgroup_inode_permission` at `:597`
+  (`include/linux/device_cgroup.h:17-39`), which asks
+  `devcgroup_check_permission` (`security/device_cgroup.c:860-865`).
+  That returns the answer of the cgroup BPF device programs
+  (`__cgroup_bpf_check_dev_permission`, `kernel/bpf/cgroup.c:1774`):
+  `-EPERM` from a program that refuses (`:110`), or any value a
+  program sets through `bpf_set_retval` (`:1839-1846`). Only when that
+  answer is 0 does it ask the v1 devices controller
+  (`devcgroup_legacy_check_permission`,
+  `security/device_cgroup.c:832-854`), which answers `-EPERM` for a
+  device its list does not allow. The configuration of record builds
+  both: its `config` asset sets `CONFIG_CGROUP_DEVICE=y`,
+  `CONFIG_CGROUP_BPF=y` and `CONFIG_BPF_SYSCALL=y`, as
+  `arch/riscv/configs/defconfig` does (lines 17, 20 and 5 at v6.18.46),
+  and `testing/vm/kernel.fragment` names none of the three. The launch
+  of the agreement checks meets the premise. It mounts no cgroup file
+  system: the tracer mounts procfs, sysfs and devtmpfs at boot and
+  tmpfs for each case (`testing/vm/tracer.c:2312-2314`, `:935-936`,
+  `:979`, `:1287`; the premise on file systems above lists them), and
+  nothing else. So the process stays in the root cgroup, where the
+  first process starts (`cgroup_init_subsys`,
+  `kernel/cgroup/cgroup.c:6315-6319`): moving a process to another
+  cgroup, attaching a device program and changing a v1 list each need
+  a cgroup folder or a file in one, and only a mounted cgroup file
+  system has them (an attach takes a descriptor of a cgroup folder,
+  `cgroup_get_from_fd` in `kernel/bpf/cgroup.c:1370`, and
+  `css_tryget_online_from_dir` refuses any other,
+  `kernel/cgroup/cgroup.c:7134-7137`). No device program is attached
+  anywhere, so `BPF_CGROUP_RUN_PROG_DEVICE_CGROUP` answers 0 without
+  running one (`include/linux/bpf-cgroup.h:354-363`; only an attach
+  turns its key on, `kernel/bpf/cgroup.c:905`). And the root's v1 list
+  allows every device: `devcgroup_online` gives a cgroup with no
+  parent the default `DEVCG_DEFAULT_ALLOW`
+  (`security/device_cgroup.c:196-197`), and `devcgroup_css_alloc`
+  gives it an empty list of exceptions (`:229`), so
+  `match_exception_partial` finds none and the access is allowed
+  (`:840-843`). The model answers no `mount` and no `bpf`, so no run
+  inside the statements changes this. The premise is about opens: an
+  `F_OK` `faccessat` of a device asks the same hook for an empty access
+  set, which a device program can refuse alone while it lets every open
+  through, and the model declines it (`Fs.Open.faccessat_errnos`).
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
   carry a PIE. The model needs this twice. For a static PIE (`ET_DYN` with
@@ -1131,7 +1197,27 @@ not apply.
   `/proc/self` names this process. The model answers
   `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
   (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
-  `-ENOENT` where the model opens the file again.
+  `-ENOENT` where the model opens the file again. The mount stands on a
+  folder of the root file system: `graft_tree` refuses to put a file
+  system whose root is a folder on anything else (`-ENOTDIR`,
+  `fs/namespace.c:2816-2818`, Linux v6.18.46). So the root's link count
+  counts a folder `/proc` whatever the image holds there
+  (`Fs.root_unheld_dirs`). The launch of the agreement checks makes it:
+  the initramfs holds `proc` (`testing/vm/mkinitramfs.py:19`) and the
+  tracer mounts procfs on it (`testing/vm/tracer.c:2312`).
+- The root file system holds a folder `/sys`, and the root's link count
+  counts it whatever the image holds there (`Fs.root_unheld_dirs`). The
+  model never walks into `/sys` (`Fs.at_outside`), so the folder matters
+  only to the root's count: `stat` of `/` answers two, plus one per
+  subfolder the image shows, plus one for each of `/proc` and `/sys` the
+  image does not hold as a folder. The launch of the agreement checks
+  meets it: the initramfs holds `sys` (`testing/vm/mkinitramfs.py:19`)
+  and the tracer mounts sysfs on it (`testing/vm/tracer.c:2313`), and
+  every image the harness declares holds `/proc` and `/sys` as folders
+  (`guest_root_folders`, `testing/syscall-check/main.ml:1293`). A run
+  whose root file system has no folder `/sys` makes this assumption
+  false: there Linux answers `stat` of `/` with one link fewer than the
+  model.
 - A hard link of a regular file that the image does not show, a name in
   a folder of the same file system that only another mount of it
   reaches, still counts in the file's link count, and the image says

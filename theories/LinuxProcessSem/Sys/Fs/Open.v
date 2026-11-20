@@ -1844,7 +1844,7 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       re-resolved once with LOOKUP_REVAL and failed again.  It needs a
       [d_revalidate] or a [d_weak_revalidate] that refuses, and tmpfs
       and ramfs install neither.
-    - A DEVICE CGROUP, WHICH CAN ANSWER ANY ERRNO.
+    - A DEVICE CGROUP, WHICH CAN ANSWER ANY ERRNO FOR F_OK.
       [devcgroup_inode_permission] (include/linux/device_cgroup.h:17-39)
       returns early only for a non-device inode; on a block or character
       node it calls [devcgroup_check_permission], which returns what the
@@ -1862,14 +1862,33 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       security/device_cgroup.c:832-854), all Linux v6.18.46.  The
       configuration of record builds both (CONFIG_CGROUP_DEVICE=y,
       CONFIG_CGROUP_BPF=y and CONFIG_BPF_SYSCALL=y in
-      arch/riscv/configs/defconfig), and no premise in SCOPE.md excludes
-      a device cgroup that denies the process /dev/null or /dev/urandom,
-      or a program that picks another value.  So F_OK of a device can
-      answer any errno, no list could hold the answer, and
-      [faccessat_body_spec] declines the [Fs.EDev] row.  The opens of
-      the two nodes have the same gap ([open_devnull], [open_urandom]):
+      arch/riscv/configs/defconfig).
+      SCOPE.md's premise on device cgroups excludes a cgroup whose BPF
+      device programs or v1 controller refuse the process an open of
+      /dev/null or /dev/urandom, and that premise is what makes the
+      opens of the two nodes sound ([open_devnull], [open_urandom]):
       [may_open] reaches the same hook through [inode_permission]
-      (fs/namei.c).
+      (fs/namei.c), and those arms admit nothing beside the descriptor
+      but [openat_errnos].
+      The premise does not fix F_OK's answer, and so this arm keeps its
+      decline.  An open asks the hook for read or write access or both
+      ([devcgroup_inode_permission] turns MAY_READ and MAY_WRITE into
+      DEVCG_ACC_READ and DEVCG_ACC_WRITE,
+      include/linux/device_cgroup.h:32-35); F_OK asks it for an empty
+      access set.  A BPF device program reads the access set
+      ([access_type], kernel/bpf/cgroup.c:1779), so it can refuse the
+      empty set alone, with any value, while it lets every open through.
+      The v1 controller cannot: it refuses the empty set only where it
+      refuses the opens too.  Under its default of allow no exception
+      matches an empty set ([match_exception_partial],
+      security/device_cgroup.c:388-389), and under deny the exception
+      that lets an open through matches the empty set as well
+      ([match_exception], :342-343).  So F_OK of a device can still
+      answer any errno, no list could hold the answer, and
+      [faccessat_body_spec] declines the [Fs.EDev] row: a sound decline,
+      which costs precision only.  At the launch of the agreement checks
+      no device program is attached, and F_OK of /dev/null answers 0
+      (testing/syscall-check/tests/faccessat_spec.c, dev-null).
 
     ETXTBSY is not in either list because [do_faccessat] has no path to
     it at all: nothing in its body calls [get_write_access] or tests
@@ -2006,8 +2025,10 @@ Definition access_exists_spec : Sys SyscallEffect := ret_only (Z_to_bv 64 0).
 
     SO EXISTENCE IS RESOLUTION, BUT FOR A DEVICE.  [Fs.RFound] of a
     file, a directory or a link is 0 — each exists, and F_OK asks
-    nothing else.  [Fs.RFound] of either device DECLINES: a device
-    cgroup can answer any errno for it (the device-cgroup paragraph of
+    nothing else.  [Fs.RFound] of either device DECLINES: a cgroup BPF
+    device program can answer any errno for F_OK of it, and SCOPE.md's
+    premise on device cgroups covers the opens of the two nodes, not
+    F_OK's empty access set (the device-cgroup paragraph of
     [faccessat_errnos]), so no list of answers would be sound.
     [Fs.RMissing] and [Fs.RAbsent] are -ENOENT,
     [Fs.RNotDir] is -ENOTDIR, [Fs.RLoop] is -ELOOP, and [Fs.ROutside]

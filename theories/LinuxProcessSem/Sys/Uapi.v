@@ -1410,9 +1410,20 @@ Definition stat_mode_killed (in_group : bool) (m : Z) : Z :=
     group or outside it.  Those three are every mode a run of the
     modeled syscalls can leave: any number of those calls leaves one of
     them, the model has no [chmod] that could set a bit again, and only
-    a regular file's bits are cleared.  The model knows neither the
-    caller's capabilities nor its supplementary groups, so it admits
-    all three. *)
+    a regular file's bits are cleared.  Which one Linux leaves turns on
+    two things: a caller with CAP_FSETID clears neither bit
+    ([setattr_should_drop_suidgid], fs/attr.c:63-79), and one without
+    it keeps S_ISGID (with S_IXGRP clear) only when the FILE's group is
+    its fsgid or one of its supplementary groups ([in_group_or_capable],
+    fs/inode.c:2910-2918; [in_group_p], kernel/groups.c:227-235).  The
+    model holds the caller's side of the group test: its fsgid follows
+    the effective gid ([State.cr_egid]), and its supplementary groups
+    are [State.cr_groups].  It holds neither of the other two inputs:
+    not the file's group, since [Fs] holds no owner and a stat's
+    [st_gid] is chosen at the identity's first stat and then held
+    ([stat_stable_eqb]), and not CAP_FSETID, since it carries no
+    capability set ([State.creds_privileged] stands in for CAP_SETUID
+    and CAP_SETGID only).  So it admits all three. *)
 Definition stat_mode_stable (m1 m2 : Z) : bool :=
   (Z.eqb m1 m2
    || (Z.eqb (Z.land m2 S_IFMT) S_IFREG

@@ -1573,6 +1573,25 @@ Proof.
   - now apply in_map.
 Qed.
 
+(** "/proc" and "/sys" as keys: the root's children named [proc_comp]
+    and [sys_comp], the two names [at_outside] declines at the root. *)
+Definition proc_key : path := child_key root proc_comp.
+Definition sys_key : path := child_key root sys_comp.
+
+(** IS THIS KEY /proc OR /sys, OR BELOW EITHER?  Some key on its chain
+    ([key_chain], the root first and the key itself last) is [proc_key]
+    or [sys_key].  It is decided COMPONENT BY COMPONENT, as
+    [in_dev_subtree] is, so "/process" and "/system" are ordinary keys.
+    An image may hold such keys, but no walk reaches one: a walk from the
+    root or from a working folder outside both enters /proc or /sys only
+    by looking "proc" or "sys" up at the root, which [at_outside]
+    declines, and [Run.outside_proc_sysb], the negation of this test,
+    keeps the working folder outside both.  [dir_row_okb] reads it too,
+    since procfs and sysfs count folders of their own that an image need
+    not hold. *)
+Definition in_proc_sys_subtree (k : path) : bool :=
+  existsb (fun a => path_eqb a proc_key || path_eqb a sys_key) (key_chain k).
+
 (* -------------------------------------------------------------------------
    Well-formedness
    ------------------------------------------------------------------------- *)
@@ -1700,20 +1719,64 @@ Definition fs_nsubdirs (fs : Fs) (k : path) : nat :=
                        end)
             (fs_tree fs)).
 
+(** THE ROOT'S SUBFOLDERS AN IMAGE MAY LEAVE OUT: /proc and /sys, one
+    for each that the tree does not hold as a folder.  Both are folders
+    of the root file system under two launch premises (SCOPE.md): procfs
+    is mounted at /proc, and a file system whose root is a folder is
+    mounted only on a folder ([graft_tree]'s -ENOTDIR,
+    fs/namespace.c:2816-2818, Linux v6.18.46); and the root file system
+    holds a folder /sys.  So the root counts both whatever the image
+    holds at their keys: a file or a link there is not what the root
+    file system holds, and [fs_nsubdirs] does not count it.  No run
+    changes either entry: a walk that looks "proc" or "sys" up at the
+    root ends at [ROutside] ([at_outside]), which every arm declines. *)
+Definition root_unheld_dirs (fs : Fs) : nat :=
+  ((match fs_lookup fs proc_key with Some EDir => 0 | _ => 1 end)
+   + (match fs_lookup fs sys_key with Some EDir => 0 | _ => 1 end))%nat.
+
+(** THE COUNTING COUNT THE IMAGE IMPLIES for the folder [k]: two, plus
+    one per subfolder the tree shows ([fs_nsubdirs]), plus at the root
+    one for each of /proc and /sys that the tree does not hold as a
+    folder ([root_unheld_dirs]).  On tmpfs and ramfs a folder starts at
+    2, the 1 [inode_init_always_gfp] sets (fs/inode.c:242, Linux
+    v6.18.46) and the [inc_nlink] of [__shmem_get_inode]
+    (mm/shmem.c:3133-3134) or of [ramfs_get_inode]
+    (fs/ramfs/inode.c:77-82), and each subfolder adds one
+    ([shmem_mkdir], mm/shmem.c:3952; [ramfs_mkdir],
+    fs/ramfs/inode.c:122-127); [generic_fillattr] reports that count
+    (fs/stat.c:91).  Every other name of a folder outside /proc and /sys
+    is in the image (the header's NO CONCURRENT WRITER: the image is the
+    whole truth about the run's file system), so this is the count a
+    kernel gives every folder outside them, the root included. *)
+Definition fs_tree_count (fs : Fs) (k : path) : nat :=
+  (2 + fs_nsubdirs fs k + (if path_eqb k root then root_unheld_dirs fs else 0))%nat.
+
+Lemma fs_tree_count_root : forall fs,
+  fs_tree_count fs root = (2 + fs_nsubdirs fs root + root_unheld_dirs fs)%nat.
+Proof. intros fs. unfold fs_tree_count. now rewrite path_eqb_refl. Qed.
+
+Lemma fs_tree_count_below : forall fs k,
+  k <> root -> fs_tree_count fs k = (2 + fs_nsubdirs fs k)%nat.
+Proof.
+  intros fs k Hk. unfold fs_tree_count.
+  destruct (path_eqb k root) eqn:E; [apply path_eqb_eq in E; contradiction | lia].
+Qed.
+
 (** A FOLDER'S COUNT UNDER EACH RULE.  A folder the image gives a row
-    has the counts the row holds; a folder with none has the count a
-    counting file system gives a folder whose subfolders are all in the
-    image (two, plus one per subfolder: the [inc_nlink]s cited at
-    [DirLinks]), and 1 under the fixed rule.  So an image says nothing
-    of a folder whose counts are the ones its own tree implies, and a
-    folder whose count also reflects names the image leaves out -- the
-    root, whose [/proc] and [/sys] mountpoints are folders of the root
-    file system -- takes a row, which [Run.valid_image] holds to counts a
-    kernel gives ([dir_rows_okb]). *)
+    has the counts the row holds; a folder with none has the count the
+    image implies under the counting rule ([fs_tree_count]: two, plus
+    one per subfolder, the [inc_nlink]s cited at [DirLinks], plus at the
+    root /proc and /sys), and 1 under the fixed rule.  So an image says
+    nothing of a folder whose counts are the ones it implies, the root
+    included, and a folder at or below /proc or /sys, whose names
+    procfs and sysfs give and the image need not hold, may take a row
+    above them, which [Run.valid_image] holds to counts a kernel gives
+    ([dir_rows_okb]).  A row at any other folder holds the implied
+    count. *)
 Definition fs_dir_links (fs : Fs) (k : path) : DirLinks :=
   match dtab_find (fs_dirs fs) k with
   | Some d => d
-  | None => mkDirLinks (2 + fs_nsubdirs fs k)%nat 1
+  | None => mkDirLinks (fs_tree_count fs k) 1
   end.
 
 Lemma dtab_find_in : forall t k d, dtab_find t k = Some d -> In (k, d) t.
@@ -1731,17 +1794,23 @@ Qed.
 
     - name a FOLDER of the tree: a row at any other key is no folder's
       count;
-    - hold a counting count of at least the one the tree implies,
-      [2 + fs_nsubdirs fs k].  On tmpfs and ramfs a folder starts at 2,
-      the 1 [inode_init_always_gfp] sets (fs/inode.c:242, Linux
-      v6.18.46) and the [inc_nlink] of [__shmem_get_inode]
-      (mm/shmem.c:3133-3134) or of [ramfs_get_inode]
-      (fs/ramfs/inode.c:77-82), and each subfolder adds one
-      ([shmem_mkdir], mm/shmem.c:3952; [ramfs_mkdir],
-      fs/ramfs/inode.c:122-127); [generic_fillattr] reports that count
-      (fs/stat.c:91).  A row exists for a folder whose count also
-      reflects names the image leaves out ([fs_dir_links]), and those
-      can only add subfolders, so the count is never below the tree's;
+    - hold a counting count of EXACTLY the one the image implies,
+      [fs_tree_count fs k], at every key outside /proc and /sys, the root
+      included; [fs_tree_count] says why a kernel gives that count and no
+      other.  A count below it would leave out a subfolder the tree
+      shows.  A count above it would count a subfolder the image does not
+      hold, so a stat would answer a count no launch gives; and below the
+      root [Sys.Fs.Namei.rmdir_spec], which asks the tree alone
+      ([fs_dir_empty]), would then remove a folder that a stat had just
+      counted a subfolder in, where Linux answers -ENOTEMPTY
+      ([simple_empty], fs/libfs.c:766-784, from [simple_rmdir] at
+      fs/libfs.c:799-807 and [shmem_rmdir] at mm/shmem.c:4032-4035,
+      Linux v6.18.46);
+    - hold a counting count of AT LEAST the implied one at a key at or
+      below /proc or /sys ([in_proc_sys_subtree]): procfs and sysfs count
+      folders of their own that the image need not hold, and names left
+      out can only add subfolders.  No arm reads or changes such a row
+      ([at_outside] declines every walk that would reach one);
     - hold a fixed count of exactly 1, the only count the fixed rule
       gives ([DirLinks]).
 
@@ -1754,7 +1823,9 @@ Qed.
 Definition dir_row_okb (fs : Fs) (kd : path * DirLinks) : bool :=
   match fs_lookup fs (fst kd) with
   | Some EDir =>
-      Nat.leb (2 + fs_nsubdirs fs (fst kd))%nat (dl_counting (snd kd))
+      (if in_proc_sys_subtree (fst kd)
+       then Nat.leb (fs_tree_count fs (fst kd)) (dl_counting (snd kd))
+       else Nat.eqb (dl_counting (snd kd)) (fs_tree_count fs (fst kd)))
       && Nat.eqb (dl_fixed (snd kd)) 1
   | _ => false
   end.
@@ -1763,10 +1834,14 @@ Definition dir_rows_okb (fs : Fs) : bool :=
   forallb (dir_row_okb fs) (fs_dirs fs).
 
 (** What the clause gives at EVERY key, a row or none: the counting
-    count is at least the tree's, and the fixed count is 1. *)
+    count is at least the one the image implies, it is exactly that one
+    at a key outside /proc and /sys, the root included, and the fixed
+    count is 1. *)
 Lemma dir_rows_okb_links : forall fs k,
   dir_rows_okb fs = true ->
-  (2 + fs_nsubdirs fs k <= dl_counting (fs_dir_links fs k))%nat
+  (fs_tree_count fs k <= dl_counting (fs_dir_links fs k))%nat
+  /\ (in_proc_sys_subtree k = false ->
+      dl_counting (fs_dir_links fs k) = fs_tree_count fs k)%nat
   /\ dl_fixed (fs_dir_links fs k) = 1%nat.
 Proof.
   intros fs k H. unfold fs_dir_links.
@@ -1776,8 +1851,14 @@ Proof.
     unfold dir_row_okb in H. cbn [fst snd] in H.
     destruct (fs_lookup fs k) as [[e| |e|e]|]; try discriminate.
     apply andb_true_iff in H. destruct H as [H1 H2].
-    split; [apply Nat.leb_le; exact H1 | apply Nat.eqb_eq; exact H2].
-  - cbn [dl_counting dl_fixed]. split; [apply Nat.le_refl | reflexivity].
+    apply Nat.eqb_eq in H2.
+    destruct (in_proc_sys_subtree k) eqn:Hx; cbv beta iota in H1.
+    + apply Nat.leb_le in H1.
+      split; [exact H1|]. split; [intros Hp; discriminate Hp | exact H2].
+    + apply Nat.eqb_eq in H1.
+      split; [lia|]. split; [intros _; exact H1 | exact H2].
+  - cbn [dl_counting dl_fixed].
+    split; [apply Nat.le_refl|]. split; [intros _; reflexivity | reflexivity].
 Qed.
 
 (** The count past which the model declines the [mkdirat] that would take

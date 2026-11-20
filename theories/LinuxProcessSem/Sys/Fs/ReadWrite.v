@@ -1209,12 +1209,19 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     interruption included.
 
     A regular file is weaker, but still not the channel rule: a buffered
-    write returns short only after a partial copy, and only on -EINTR
-    from [fatal_signal_pending] (mm/filemap.c:4049) or on an error out
-    of [write_begin]/[write_end] (:4056, :4071) — ENOSPC, EIO, ENOMEM,
-    EDQUOT.  An ordinary catchable signal does not truncate it, and
-    RLIMIT_FSIZE is not a short-return path at all: it clamps the count
-    before the write, or returns -EFBIG (fs/read_write.c:1745-1750).
+    write ([generic_perform_write], mm/filemap.c:4244-4335, Linux
+    v6.18.46) returns short only after a partial copy, and only when the
+    source stops being readable partway (the fault-in that fails at
+    :4321-4324, after which the bytes already written are returned,
+    :4331-4334), on -EINTR from [fatal_signal_pending] (:4267-4270), or
+    on an error out of [write_begin]/[write_end] (:4272-4275,
+    :4293-4298) — ENOSPC, EIO, ENOMEM, EDQUOT.  Before the copy the
+    count is clamped at [MAX_RW_COUNT] (fs/read_write.c:680-681), and
+    [generic_write_check_limits] cuts a write that would cross
+    RLIMIT_FSIZE or the file system's [s_maxbytes] to end at the limit
+    (:1720, :1729): each is a short return too.  Only a write that starts
+    at or past one of those limits fails, with -EFBIG (:1716-1718,
+    :1726-1727).  An ordinary catchable signal does not truncate it.
 
     The model cannot tell these cases apart — it classifies fds 1 and 2
     as [FdChannel] unconditionally, without knowing whether the far end
@@ -1229,15 +1236,24 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     HAS a reader.  Linux kills the process there rather than answering
     a count, and this arm answers a success.
 
-    File: fully deterministic — the whole readable prefix lands in the
-    interpreted file system at the fd's offset (zero-filling any gap
-    past end-of-file); the offset advances by the delivered length; no
-    events.  (Short writes are a channel behavior: a regular-file write
-    falls short only under the conditions listed above — a fatal signal,
-    or ENOSPC/EIO/ENOMEM/EDQUOT out of the page-cache write — none of
-    which the model has, so admitting them here would be a new rule with
-    no kernel behavior behind it.  The ENOSPC half is a real short
-    return that this arm therefore REJECTS.)
+    File: fully deterministic — the readable prefix of the source lands
+    in the interpreted file system at the fd's offset (zero-filling any
+    gap past end-of-file); the offset advances by the delivered length;
+    no events.  The arm has every short return it can decide from what
+    the model holds, each the one certain answer: a count clamped at
+    [MAX_RW_COUNT] ([State.rw_count_clamp]), a source readable at its
+    first byte but not throughout, of which the readable prefix lands
+    ([Uaccess.write_source]), and an append that would cross
+    [s_maxbytes], cut to end there ([append_count]).  RLIMIT_FSIZE is
+    infinite by the harness premise [Open.ftruncate_spec] states, so its
+    cut never arises.  The arm admits none of the other short returns a
+    regular file can give: a fatal signal's, whose task never sees the
+    count, and one after ENOSPC/EIO/ENOMEM/EDQUOT out of the page-cache
+    write, which the model has no state to decide; admitting those here
+    would admit a short return on a file system with room, which Linux
+    does not give.
+    The ENOSPC half is a real short return that this arm therefore
+    REJECTS.
 
     Nonexistent fd, or an fd not open for writing (stdin, a read-only
     file): -EBADF (checked before the source buffer, as Linux checks
@@ -2557,9 +2573,12 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
     - a regular file opened for writing, AT ANY COUNT: the readable
       prefix of the CLAMPED range lands at [pos], zero-filling any hole
       past end-of-file ([Fs.file_write]), and the return is that
-      prefix's length.  DETERMINISTIC — a regular-file write falls short
-      only under conditions the model does not have, the argument
-      [write_spec] spells out.  The descriptor's offset does not move.
+      prefix's length.  DETERMINISTIC — the short returns a regular-file
+      write gives that the model can decide are the ones it gives (the
+      readable prefix, the [MAX_RW_COUNT] clamp below, and an append's
+      cut at the file-size limit, [append_count]); the others rest on
+      conditions the model does not have, as [write_spec] spells out.
+      The descriptor's offset does not move.
 
     THE COUNT IS NOT CAPPED AT [Uaccess.rw_bytes_max], and this arm
     has no count gate at all: the -EFAULT test two statements

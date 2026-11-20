@@ -1258,8 +1258,9 @@ Proof. split_conj; check_eq. Qed.
     [inode_permission] reaches [devcgroup_inode_permission] for a
     character node (fs/namei.c:597-599, Linux v6.18.46), where a cgroup
     BPF device program answers whatever value it set through
-    [bpf_set_retval] (kernel/bpf/cgroup.c:84-115, :1839-1846) and the v1
-    devices controller answers -EPERM (security/device_cgroup.c:832-854):
+    [bpf_set_retval] (kernel/bpf/cgroup.c:84-115, :1839-1846).  SCOPE.md's
+    premise on device cgroups covers the opens of the two nodes, not
+    F_OK's empty access set, which such a program can refuse alone:
     [Fs.Open.faccessat_errnos]'s device-cgroup paragraph.  So F_OK of
     /dev/null or /dev/urandom is [CheckUnmodeled] beside 0 and beside
     -EPERM alike, through [faccessat] and through [faccessat2] with

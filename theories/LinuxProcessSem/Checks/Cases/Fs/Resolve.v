@@ -1250,21 +1250,140 @@ Example valid_image_admits_the_folder_without_a_row :
   valid_image (dir_row_input []).
 Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
 
-(** A ROOT ROW ABOVE THE TREE'S COUNT STAYS VALID.  The tree implies 5
-    for the root (two, and /dev, /tmp and /work), and the root's count
-    also counts /proc and /sys, folders of the root file system that the
-    image does not hold, so its row may say 7. *)
+(** A ROW ABOVE THE TREE'S COUNT BELOW THE ROOT IS REFUSED.  /work/d is
+    empty in the tree, and the image holds every name of a folder below
+    the root and outside /proc and /sys, so its count is 2.  With the
+    row 3, [newfstatat] of /work/d answered an [st_nlink] of 3, a count
+    with a subfolder in it, and [unlinkat(AT_FDCWD, "/work/d",
+    AT_REMOVEDIR)] then removed the folder, since
+    [Sys.Fs.Namei.rmdir_spec] asks the tree alone; Linux answers
+    -ENOTEMPTY for a folder with a subfolder ([simple_empty],
+    fs/libfs.c:766-784, from [simple_rmdir] at fs/libfs.c:799-807 and
+    [shmem_rmdir] at mm/shmem.c:4032-4035, Linux v6.18.46).  The row at
+    the tree's own count stays valid. *)
+Example valid_image_refuses_a_folder_row_above_the_tree_below_the_root :
+  ~ valid_image (dir_row_input [(work_d, Fs.mkDirLinks 3 1)]).
+Proof.
+  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  vm_compute in Hrows. discriminate.
+Qed.
+
+Example valid_image_admits_a_folder_row_at_the_tree :
+  valid_image (dir_row_input [(work_d, Fs.mkDirLinks 2 1)]).
+Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+
+(** ...and so NO VALID IMAGE has a folder below the root and outside
+    /proc and /sys whose count is above its tree's: a [stat] that counts
+    a subfolder the tree does not show, followed by an [rmdir] that finds
+    the folder empty, starts from no launch. *)
+Example valid_image_no_folder_below_the_root_counts_above_its_tree : forall inp k,
+  valid_image inp -> k <> Fs.root -> Fs.in_proc_sys_subtree k = false ->
+  ~ (2 + Fs.fs_nsubdirs (in_fs inp) k < Fs.dl_counting (Fs.fs_dir_links (in_fs inp) k))%nat.
+Proof.
+  intros inp k Hv Hk Hp Hlt.
+  destruct (valid_image_dir_links inp k Hv) as [_ [Heq _]].
+  rewrite (Heq Hp), (Fs.fs_tree_count_below _ _ Hk) in Hlt. exact (Nat.lt_irrefl _ Hlt).
+Qed.
+
+(** THE ROOT'S COUNT IS THE TREE'S PLUS /proc AND /sys.  The tree implies
+    5 for the root (two, and /dev, /tmp and /work), and the root's count
+    also counts /proc and /sys: folders of the root file system under the
+    launch premises (procfs is mounted at /proc, which needs a folder
+    there, [graft_tree] at fs/namespace.c:2816-2818, Linux v6.18.46; and
+    the root file system holds a folder /sys), which this image does not
+    hold.  So its row must say 7, as a kernel gives ([ramfs_mkdir],
+    fs/ramfs/inode.c:122-127, and [shmem_mkdir], mm/shmem.c:3952, raise
+    the root's count once for each; [generic_fillattr] reports it,
+    fs/stat.c:91, Linux v6.18.46). *)
 Example valid_image_admits_a_root_row_above_the_tree :
   valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 7 1)]).
 Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
 
-(** The clause row by row: the tree's own count and any above it pass
-    with a fixed count of 1; a count one below the tree's, a fixed count
-    other than 1, and a row at a key that is no folder fail.  With no
-    row, /work/d has the counts 2 and 1 and the root 5 and 1. *)
+(** ...and a root row above that is refused: with the row 8,
+    [newfstatat(AT_FDCWD, "/")] answered an [st_nlink] of 8, where a root
+    holding /dev, /tmp, /work, /proc and /sys counts 7.  The row passed
+    before the root's count had an upper bound. *)
+Example valid_image_refuses_a_root_row_above_proc_and_sys :
+  ~ valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 8 1)]).
+Proof.
+  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  vm_compute in Hrows. discriminate.
+Qed.
+
+(** ...and so is a root row of the tree's count alone: with the row 5,
+    [newfstatat] of "/" answered 5, a root without the /proc folder that
+    procfs is mounted on.  The row passed before the root's count counted
+    /proc and /sys. *)
+Example valid_image_refuses_a_root_row_without_proc_and_sys :
+  ~ valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 5 1)]).
+Proof.
+  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  vm_compute in Hrows. discriminate.
+Qed.
+
+(** WITH NO ROW THE ROOT HAS THE SAME COUNT: the standard root (/dev,
+    /tmp, /work) gives 7, not the tree's 5.  A tree that holds /proc and
+    /sys as folders counts them as subfolders and adds nothing more:
+    [proc_sys_image] holds /dev, /proc, /sys, /tmp and /work, so its
+    root counts 7 and a root row there may say 7 and not 8.  A file or a
+    link at /proc is not a folder of the tree, and the root still counts
+    the folder procfs is mounted on. *)
+Example the_root_counts_proc_and_sys_once :
+  Fs.fs_dir_links (Fs.standard_root Fs.default_cwd) Fs.root = Fs.mkDirLinks 7 1
+  /\ Fs.fs_nsubdirs (Fs.standard_root Fs.default_cwd) Fs.root = 3%nat
+  /\ Fs.root_unheld_dirs (Fs.standard_root Fs.default_cwd) = 2%nat
+  /\ Fs.fs_dir_links proc_sys_image Fs.root = Fs.mkDirLinks 7 1
+  /\ Fs.fs_nsubdirs proc_sys_image Fs.root = 5%nat
+  /\ Fs.root_unheld_dirs proc_sys_image = 0%nat
+  /\ Fs.dir_rows_okb (Fs.fs_with_dirs proc_sys_image [(Fs.root, Fs.mkDirLinks 7 1)]) = true
+  /\ Fs.dir_rows_okb (Fs.fs_with_dirs proc_sys_image [(Fs.root, Fs.mkDirLinks 8 1)]) = false
+  /\ Fs.fs_dir_links (Fs.fs_set (Fs.standard_root Fs.default_cwd) Fs.proc_key
+                        (Fs.ELink (rp [119;111;114;107])))
+       Fs.root
+     = Fs.mkDirLinks 7 1.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** ...and so IN EVERY VALID IMAGE the root's count is two, plus one per
+    subfolder the tree shows, plus one for each of /proc and /sys that
+    the tree does not hold as a folder: a [stat] of "/" answers the count
+    a kernel gives the launch, a row or none. *)
+Example valid_image_root_counts_its_tree_and_proc_and_sys : forall inp,
+  valid_image inp ->
+  Fs.dl_counting (Fs.fs_dir_links (in_fs inp) Fs.root)
+  = (2 + Fs.fs_nsubdirs (in_fs inp) Fs.root + Fs.root_unheld_dirs (in_fs inp))%nat.
+Proof.
+  intros inp Hv.
+  destruct (valid_image_dir_links inp Fs.root Hv) as [_ [Heq _]].
+  rewrite (Heq ltac:(vm_compute; reflexivity)). apply Fs.fs_tree_count_root.
+Qed.
+
+(** A ROW AT /proc, OR BELOW /sys, ABOVE THE TREE'S COUNT STAYS VALID:
+    procfs and sysfs count folders of their own that an image need not
+    hold, and no walk reaches such a row ([Fs.at_outside]).
+    [proc_sys_image] holds /proc, /sys and /sys/kernel and no folder
+    under /proc or /sys/kernel, so the tree implies 2 for both; the rows
+    say 9 and 4, and the same rows at /work/d would be refused. *)
+Definition proc_sys_row_input (r : list (Fs.path * Fs.DirLinks)) : ProcInput :=
+  mkProcInput_full [[]] [] (Fs.fs_with_dirs proc_sys_image r) Fs.default_cwd IEof
+                   demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false
+                   Sv48 default_urandom default_kernel default_execfn
+                   true true false.
+
+Example valid_image_admits_proc_and_sys_rows_above_the_tree :
+  valid_image (proc_sys_row_input [(proc_cwd, Fs.mkDirLinks 9 1);
+                                   (sys_kernel_cwd, Fs.mkDirLinks 4 1)]).
+Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+
+(** The clause row by row: below the root and outside /proc and /sys the
+    tree's own count passes with a fixed count of 1 and a count above it
+    fails; a count one below the tree's, a fixed count other than 1, and
+    a row at a key that is no folder fail.  With no row, /work/d has the
+    counts 2 and 1 and the root 7 and 1 (/dev, /tmp and /work, and
+    /proc and /sys). *)
 Example dir_rows_okb_decides_each_row :
   Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 1)]) = true
-  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 9 1)]) = true
+  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 9 1)]) = false
   /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 1 1)]) = false
   /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 2)]) = false
   /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 0)]) = false
@@ -1272,7 +1391,7 @@ Example dir_rows_okb_decides_each_row :
   /\ Fs.dir_rows_okb (dir_row_image [(rp [47;119;111;114;107;47;101], Fs.mkDirLinks 2 1)])
      = false
   /\ Fs.fs_dir_links (dir_row_image []) work_d = Fs.mkDirLinks 2 1
-  /\ Fs.fs_dir_links (dir_row_image []) Fs.root = Fs.mkDirLinks 5 1.
+  /\ Fs.fs_dir_links (dir_row_image []) Fs.root = Fs.mkDirLinks 7 1.
 Proof. split_conj; vm_compute; reflexivity. Qed.
 
 (* =========================================================================

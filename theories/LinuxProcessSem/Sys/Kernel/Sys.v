@@ -379,20 +379,37 @@ Definition rlim64_wf (bs : list byte) : bool :=
       [RLIM_INFINITY] instead would deny an allocation failure the model
       really does force.
 
-    - [RLIMIT_FSIZE] caps a write, and this model raises no -EFBIG at
-      it.  Its one -EFBIG is the size limit of an append write, at
-      [s_maxbytes], taken as [Fs.MAX_LFS_FILESIZE]
-      ([ReadWrite.append_room]; [generic_write_check_limits]'s
-      [s_maxbytes] arm, fs/read_write.c:1726-1729, Linux v6.18.46), and
-      that arm sends no signal.  RLIMIT_FSIZE itself is a premise of the
-      run: RLIM_INFINITY at exec, and no run can lower it, since this
-      arm declines the resource and [setrlimit] has no arm
-      ([Open.ftruncate_spec]; SCOPE.md).  The transfer bound the
-      write/writev specs enforce is [Uaccess.rw_bytes_max], Linux's own
-      [MAX_RW_COUNT], which is a different limit with a different
-      failure.  An arm reporting a file-size limit would promise an
-      enforcement at that limit, the -EFBIG and the SIGXFSZ of
-      fs/read_write.c:1715-1721, that no spec performs.
+    - [RLIMIT_FSIZE] bounds how far a write may take a file, and this
+      model does not hold it.  [generic_write_check_limits]
+      (fs/read_write.c:1709-1732, Linux v6.18.46) answers -EFBIG, with
+      SIGXFSZ, for a write that starts at or past the limit (:1716-1718),
+      and CUTS a write that would cross it to end there (:1720), a short
+      transfer and no failure.  RLIMIT_FSIZE is a premise of the run:
+      RLIM_INFINITY at exec, and no run can lower it, since this arm
+      declines the resource and [setrlimit] has no arm
+      ([Open.ftruncate_spec]; SCOPE.md), so neither answer arises.  The
+      same function does the same at the file system's size limit
+      [s_maxbytes], without the signal: -EFBIG for a write that starts at
+      or past it (:1726-1727), and the count cut for one that would cross
+      it (:1729).  The model takes that limit as [Fs.MAX_LFS_FILESIZE]
+      ([ReadWrite.append_room]), and only an append write reaches it:
+      the append arms answer the -EFBIG ([ReadWrite.append_efbigb]) and
+      the cut ([ReadWrite.append_count] for write and pwrite64; the room
+      [ReadWrite.writev_file_arm] is handed for writev and pwritev2).
+      Every write is also CLAMPED at Linux's own [MAX_RW_COUNT], INT_MAX
+      & PAGE_MASK (include/linux/fs.h:2838, Linux v6.18.46): [vfs_write]
+      clamps a write's count to it (fs/read_write.c:680-681,
+      [State.rw_count_clamp]) and [__import_iovec] a writev's total
+      (lib/iov_iter.c:1387-1388, [State.cap_iovecs]), so a longer request
+      is a partial transfer, not a failure.  [Uaccess.rw_bytes_max]
+      (131072) is no transfer bound: no write arm caps its count there.
+      It is where the write gate starts asking Linux's own range test
+      ([Uaccess.modeled_rw_range]), and the largest hole past end-of-file
+      a file write may open before the model declines
+      ([ReadWrite.modeled_file_gap]).  An arm reporting RLIMIT_FSIZE
+      would promise an enforcement at that limit, the -EFBIG, the
+      SIGXFSZ and the cut of fs/read_write.c:1715-1721, that no spec
+      performs.
     - [RLIMIT_NOFILE] is the one the model HOLDS —
       [State.limst_nofile], the SOFT limit, an input of the run seeded by
       [State.init_model] and read by [Fs.File.dup3_spec] — and it is

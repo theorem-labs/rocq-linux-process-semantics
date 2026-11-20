@@ -586,7 +586,11 @@ Definition dir_pin_after (k : Fs.path) (d : Fs.DirLinks) (sp : StatPin)
     stat whose [st_nlink] tells the two counts apart ([dir_rule_after])
     and kept in the pin ([State.StatPin]), so every later stat must
     follow it.  Before the counts differ either rule gives the same
-    answer.
+    answer.  A folder with no row of the image's folder table counts as
+    the image implies ([Fs.fs_dir_links], [Fs.fs_tree_count]): two, plus
+    one per subfolder, and at the root also /proc and /sys, folders of
+    the root file system under the launch premises whatever the image
+    holds at their keys ([Fs.root_unheld_dirs]).
 
     THE STABLE MEMBERS ARE CHOSEN ONCE AND HELD, as for a file
     ([Uapi.stat_stable_eqb]): the device, inode, mode, ids, [st_rdev]
