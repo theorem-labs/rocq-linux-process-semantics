@@ -309,7 +309,7 @@ read_pulls() {
 row='def row: "\(.id) \(.created_at // "-") \(if .status == "completed"
   then (.updated_at // .created_at // "-") else "-" end) \(.status // "-") \(.conclusion // "-") \(.event) \(
   .run_started_at // .created_at // "-") \(.run_attempt // 1) \(.display_title // "" | gsub("[\r\n]"; " "))";'
-# by_hand <day>: the runs by hand of <day>, as rows.
+# by_hand <day>: the workflow_dispatch runs of <day>, as rows.
 by_hand() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   DAY=$1 runs_in workflow_dispatch "$1" "$row$pages"'(.workflow_runs[]
@@ -402,7 +402,8 @@ take() {
   done < "$1"
 }
 # read_runs: review.yml's runs of the last 8 days that name an item, by their names, into $seen/runs (take):
-# the runs by hand one day at a time, and the runs of each event in one list from the first of those days.
+# the workflow_dispatch runs one day at a time, and the runs of each event in one list from the first of those
+# days.
 # GitHub gives at most 1,000 runs for one list with created: a list that it cut is read again one day, then
 # one hour, at a time, and a list of one hour that it cut fails this read (runs_in).
 read_runs() {
@@ -421,8 +422,8 @@ read_runs() {
   : > "$seen/runs"
   take "$seen/listed"
 }
-# reach <day>: the runs by hand of each day from <day> to the day before the first of the 8 days, each day
-# listed once, into $seen/runs: a catch-up left closed reads back to the day before its close.
+# reach <day>: the workflow_dispatch runs of each day from <day> to the day before the first of the 8 days, each
+# day listed once, into $seen/runs: a catch-up left closed reads back to the day before its close.
 reach() {
   local day=$1
   while [[ $day < $first ]]; do
@@ -785,7 +786,7 @@ answer_stopped() {
 }
 # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
 # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
-# of its own event (issue_comment) or by hand, took it, but one that its trust job stopped or that left its
+# of its own event (issue_comment) or of workflow_dispatch, took it, but one that its trust job stopped or that left its
 # answer to a later run (another run answered a comment of it first), and but one that posted nothing of its
 # own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub error on the post, say,
 # for which no hold job runs), or its hold job held it. Once for each comment, then
@@ -1127,8 +1128,8 @@ due_old() {
 # could not sign in (rerun), else a new run. Not when the post job of that newest run failed: the App's retry
 # takes it. A CI run that its trust job stopped reviewed nothing, and can be the run of another pull request
 # of the head (one into another branch): it is never that newest run, so it holds back no re-run and no
-# review. After REVIEW_TRIES review runs by hand of the head that ended with no failed sign-in and gave no
-# conflict, the head is not tried again (head_stopped). The review of an outsider's pull request counts on its
+# review. After REVIEW_TRIES workflow_dispatch review runs of the head that ended with no failed sign-in and gave
+# no conflict, the head is not tried again (head_stopped). The review of an outsider's pull request counts on its
 # author. The review of a writer's pull request counts on the account that started the newest CI run of the
 # head (pusher), when that account has no write access and is not one of the APPS: the run's name then ends
 # with " of <login>", and its trust job screens it first, on the limit of that account, as the trust job of
@@ -1317,8 +1318,8 @@ consider() {
 # consider_closed: a catch-up left closed, the one closed item that this pass takes: #number, a pull request
 # of an outside author that is not merged, whose newest close (at and by, of the list of the closed pull
 # requests) is oss-verify[bot]'s and falls between the start and the end of a catchup run of it whose post job
-# failed or was cancelled (the closing run), as the trust job tells it (left_closed). Its runs by hand are
-# read back to the day before the close. It is due a catchup run, which only reopens it, once an hour after
+# failed or was cancelled (the closing run), as the trust job tells it (left_closed). Its workflow_dispatch runs
+# are read back to the day before the close. It is due a catchup run, which only reopens it, once an hour after
 # the newest catchup run of it ended. Each catchup run since the closing run counts, whatever its outcome, but
 # one that failed at a sign-in: after REVIEW_TRIES of them it is not tried again (left_stopped), and nothing
 # more of it is read (gave_up).

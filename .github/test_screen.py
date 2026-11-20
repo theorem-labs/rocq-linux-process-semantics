@@ -301,6 +301,32 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual(v, "held")
                 self.assertIn("error", {c["word"] for c in reason["checks"].values()})
 
+    def test_a_thinking_block_before_the_text_is_skipped(self):
+        """With thinking disabled, the model gateway can still give an empty thinking block before the text. A
+        thinking or redacted_thinking block holds no text: the screen skips it and reads the one text block. An answer
+        with no text block, or with a block of another type beside the text, is no answer, and holds the item."""
+        thinking = {"type": "thinking", "thinking": "", "signature": "c2lnbmF0dXJl"}
+        redacted = {"type": "redacted_thinking", "data": "ZGF0YQ=="}
+        for block in (thinking, redacted):
+            for word, verdict in (("clean", "clean"), ("suspicious", "held")):
+                with self.subTest(block=block["type"], word=word):
+                    self.fresh()
+                    self.item()
+                    self.services.answers["/v1/messages"] = lambda _b, block=block, word=word: message(content=[
+                        block, {"type": "text", "text": json.dumps({"verdict": word, "quotes": [], "why": ""})}])
+                    v, reason = self.verdict()
+                    self.assertEqual((v, reason["checks"]["claude"]["word"]), (verdict, word))
+        for name, content in (("thinking alone", [thinking]),
+                              ("a tool beside the text", [{"type": "text", "text": '{"verdict": "clean"}'},
+                                                          {"type": "tool_use", "id": "t", "name": "x", "input": {}}]),
+                              ("no block", [])):
+            with self.subTest(case=name):
+                self.fresh()
+                self.item()
+                self.services.answers["/v1/messages"] = lambda _b, content=content: message(content=content)
+                v, reason = self.verdict()
+                self.assertEqual((v, reason["checks"]["claude"]["word"]), ("held", "error"))
+
     # Model Armor's answers as the live service gave them on 2026-11-02 (template review-screen's settings, us), verbatim.
     LIVE_INSPECT_ONLY = {"sanitizationResult": {"invocationResult": "SUCCESS"}}
     LIVE_NO_MATCH = {"sanitizationResult": {"filterMatchState": "NO_MATCH_FOUND", "filterResults": {

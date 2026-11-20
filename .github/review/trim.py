@@ -102,6 +102,8 @@ ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 16_000
 TIMEOUT = 600
 ATTEMPTS = 4
+# The blocks of an answer that hold the model's thinking and no text: answer_text skips them.
+THINKING = ("thinking", "redacted_thinking")
 # GitHub takes a comment of at most 65,536 characters.
 MAX_COMMENT = 60_000
 # The file under RUNNER_TEMP that sign-in writes the token to, and that the other commands read and delete.
@@ -388,21 +390,27 @@ def request(kind, text, items=(), rules=()):
         "system": INSTRUCTIONS[kind],
         "messages": [{"role": "user", "content": "\n\n".join(f"The {name}:\n{marker}\n{part}\n{marker}"
                                                              for name, part in parts)}],
-        # No thinking: the whole of max_tokens is for the text.
+        # No thinking: the whole of max_tokens is for the text. The model gateway can still give an empty thinking
+        # block before the text (claude-opus-5-5 gave one in 1 of 3 tries of this request on 2026-11-20), and
+        # answer_text skips it.
         "thinking": {"type": "disabled"},
         "output_config": {"format": {"type": "json_schema", "schema": SCHEMA}},
     }
 
 
 def answer_text(answer):
-    """The text of the reader's answer: it must end of itself and hold text blocks only, with a word in them."""
+    """The text of the reader's answer: it must end of itself and hold one text block or more, with a word in them. A
+    thinking or redacted_thinking block holds no text, and is skipped. A block of any other type (tool_use, say), or no
+    text block, fails it."""
     if not isinstance(answer, dict) or answer.get("stop_reason") != "end_turn":
         raise ReaderError(f"the reader stopped with {answer.get('stop_reason') if isinstance(answer, dict) else None!r}")
     content = answer.get("content")
-    if not isinstance(content, list) or not content or not all(
-            isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) for b in content):
+    blocks = [b for b in content if not (isinstance(b, dict) and b.get("type") in THINKING)] \
+        if isinstance(content, list) else []
+    if not blocks or not all(
+            isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) for b in blocks):
         raise ReaderError("the reader's answer is not text")
-    text = "".join(b["text"] for b in content).strip()
+    text = "".join(b["text"] for b in blocks).strip()
     if not re.search(r"\w", text):
         raise ReaderError("the reader's answer has no word in it")
     return text

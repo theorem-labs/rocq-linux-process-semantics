@@ -1,8 +1,8 @@
 # screen-start.yml: at each event of a pull request from a fork on which CI runs (opened, synchronize and reopened,
 # below), it starts the rescreen pass (.github/workflows/rescreen.yml) on main with the number of the pull request, and
-# writes nothing else. That run of the pass does the work of that pull request alone, by the rules of the pass
-# (rescreen.yml): the conflict run when the pull request has a merge conflict, else the screen and the approval of the
-# runs of its head that GitHub holds, else nothing.
+# writes nothing else. By the rules of the pass (rescreen.yml), that run of the pass takes only the conflict run of that
+# pull request when it has a merge conflict, else the screen and the approval of the runs of its head that GitHub
+# holds, else nothing.
 #
 # Why pull_request_target: GitHub holds the CI run (pull_request) of a first-time contributor's pull request for a
 # person's approval, and a run that GitHub holds starts no workflow_run. Without this file, such a pull request waits
@@ -42,8 +42,14 @@
 # With a held run, it reads the runs of review.yml of the last hour, and starts no approval, with no more reads, when
 # the author is at OUTSIDE_HOURLY_LIMIT or a run of the pull request has not finished. The runs of the pass with the
 # number of one pull request share a group of their own, in which a newer run takes the place of the one that waits.
-# So a burst costs a few calls of the API for each event, and cannot use up the token's 1,000 requests an hour. The
-# runs of the pass with no number queue in another group, and none of them is cancelled.
+# The runs of the pass with no number queue in another group, and none of them is cancelled.
+#
+# The cost of an event: the wait reads the API at most 13 times, at its start and then every 10 seconds for 2 minutes.
+# Then the step starts at most one run of the pass, with the number of the pull request. That start and that run cost
+# a few calls of the API for that one pull request. GitHub's limit for github.token is 1,000 requests an hour for the
+# repository (GitHub's docs, "Rate limits for the REST API"), and the tokens of all its workflow runs count toward it.
+# So the events of several pull requests, or many comments, in one hour can reach that limit. Then the later calls of
+# the API in that hour fail, and the pass takes the items again at a later event.
 #
 # No loop: review.yml's jobs write their labels, comments and reviews with github.token, and an event that
 # github.token makes starts no run of this file (GitHub's docs, "Events that trigger workflows": its workflow_dispatch

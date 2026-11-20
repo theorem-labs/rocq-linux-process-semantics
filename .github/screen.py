@@ -71,6 +71,8 @@ CLAUDE_PIECE = 150_000
 # room for them in CLAUDE_MAX_TOKENS; an answer that the model stops there is no answer.
 CLAUDE_QUOTES, CLAUDE_QUOTE_CHARS, CLAUDE_WHY_CHARS = 10, 500, 500
 CLAUDE_MAX_TOKENS = 2048
+# The blocks of an answer that hold the model's thinking and no text: claude_answer skips them.
+CLAUDE_THINKING = ("thinking", "redacted_thinking")
 SHIELD_API_VERSION = "2024-09-01"
 # The user prompt Prompt Shields requires beside the documents: ours, and never an attack.
 SHIELD_PROMPT = "Review the pull request or issue in the documents."
@@ -592,24 +594,28 @@ def claude_request(text, marker):
         "messages": [{"role": "user", "content": f"{marker}\n{text}\n{marker}"}],
         "output_config": {"format": {"type": "json_schema", "schema": SCHEMA}},
         # No thinking: an empty thinking block can use up max_tokens before the word (measured, 1 answer in 6 with
-        # claude-haiku-5-5), and such an answer holds the item for nothing.
+        # claude-haiku-5-5), and such an answer holds the item for nothing. The model gateway can still give an empty
+        # thinking block before the text, and claude_answer skips it.
         "thinking": {"type": "disabled"},
     }
 
 
 def claude_answer(answer):
-    """The model's word and its own reason, as (word, quotes, why), or a CheckError: the answer must end of itself,
-    hold one text block and nothing else, and that text must be an object of the schema's keys with one of the two
-    words. The word alone counts. Quotes that are not a list of strings, or a why that is not a string, are missing
-    (None), and no error; the rest is cut to what the reason keeps."""
+    """The model's word and its own reason, as (word, quotes, why), or a CheckError: the answer must end of itself and
+    hold one text block. Beside it, it can hold thinking or redacted_thinking blocks, which hold no text and are
+    skipped, and no block of another type. The text must be an object of the schema's keys with one of the two words.
+    The word alone counts. Quotes that are not a list of strings, or a why that is not a string, are missing (None),
+    and no error; the rest is cut to what the reason keeps."""
     if not isinstance(answer, dict) or answer.get("stop_reason") != "end_turn":
         raise CheckError(f"the model stopped with {answer.get('stop_reason') if isinstance(answer, dict) else None!r}")
     content = answer.get("content")
-    if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict) \
-            or content[0].get("type") != "text" or not isinstance(content[0].get("text"), str):
+    blocks = [b for b in content if not (isinstance(b, dict) and b.get("type") in CLAUDE_THINKING)] \
+        if isinstance(content, list) else []
+    if len(blocks) != 1 or not isinstance(blocks[0], dict) \
+            or blocks[0].get("type") != "text" or not isinstance(blocks[0].get("text"), str):
         raise CheckError("the model's answer is not one text block")
     try:
-        verdict = loads(content[0]["text"])
+        verdict = loads(blocks[0]["text"])
     except ValueError:
         raise CheckError("the model's answer is not JSON, or it nests too deep to read") from None
     if not isinstance(verdict, dict) or not set(verdict) <= set(SCHEMA["properties"]) \

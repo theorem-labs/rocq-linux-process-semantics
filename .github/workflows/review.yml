@@ -19,8 +19,8 @@
 # those runs. Each event of a pull request from a fork on which CI runs (opened, synchronize and reopened) starts it
 # too, through .github/workflows/screen-start.yml, the one workflow of this repository that runs on
 # pull_request_target: it holds actions: write alone, and only starts the pass with the number of that pull request.
-# That run of the pass does the work of that pull request alone: its merge conflict, or the screen and the approval of
-# the runs of its head that GitHub holds.
+# That run of the pass takes only the conflict run of that pull request, or the screen and the approval of the runs of
+# its head that GitHub holds.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -67,8 +67,9 @@
 #   again later with no person (below). An event's run counts on the account that started it, but a CI run of a pull
 #   request whose author and pusher both have no write access counts on the author, never on the pusher: anyone can
 #   open a pull request whose head is another account's fork branch. Toward the author's limit, the trust job counts
-#   the author's own runs, the runs by hand whose names end with the author, and the CI runs that another account's
-#   pushes start for the author's pull request (their names give the pusher, and their screen jobs give the author).
+#   the author's own runs, the workflow_dispatch runs whose names end with the author, and the CI runs that another
+#   account's pushes start for the author's pull request (their names give the pusher, and their screen jobs give the
+#   author).
 #   A CI run of another account can count on the author only when that account owns the head repository of an open
 #   pull request of the author: the trust job reads the jobs of no other account's CI run, and of at most
 #   2 * OUTSIDE_HOURLY_LIMIT runs, the author's own first. When runs that could count are left past those
@@ -182,9 +183,10 @@
 #           The answer and the fix run in this job, so the hourly caps count them with the review. For a draft, Claude
 #           writes the reply to a new issue of an outside author (.github/review-answer.md, "An issue draft"), and the
 #           fresh reader trims it or refuses it, with the rules of the draft in its request. This job uploads the draft,
-#           or the refused draft with the reader's reason, as the artifact issue-draft-<n> of its run, which the OSSV
-#           controller copies into its ask to Sami. No output, summary or log line of the run holds the draft, the
-#           refused draft or the reason. No job signs in to Google Cloud for a draft, and a reply has no review job.
+#           or the refused draft with the reader's reason, as the artifact issue-draft-<n> of its run, which the
+#           OSSV controller copies into its ask to Sami. No output, summary or log line of the run holds the draft,
+#           the refused draft or the reason. No job signs in to Google Cloud to store a draft, and a reply has no
+#           review job.
 #   post    runs in the environment post, which only main reaches and which holds the OSS Verify App's key. It does
 #           the App's writes alone, each after a step of its own that mints a token for this repository alone: one
 #           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
@@ -306,7 +308,7 @@ on:
         type: string
         default: ""
       account:
-        description: The account whose hourly limit the run counts on (the rescreen pass sets it)
+        description: The account toward whose hourly limit the run counts (the rescreen pass sets it)
         type: string
         default: ""
       comment:
@@ -552,8 +554,8 @@ jobs:
           # " of <login>" (the trust job of a run that github-actions[bot] started checks that name, and a writer's run
           # by hand names the account that the writer gives); and each CI run (workflow_run) that another account's push
           # started and whose screen job names <login>, the author of its pull request (the top of this file). Three
-          # lists give those runs: the runs of <login> (actor); the runs by hand (workflow_dispatch), which only writers
-          # and the rescreen pass start; and the CI runs (workflow_run). So the runs of other accounts' comments and
+          # lists give those runs: the runs of <login> (actor); the workflow_dispatch runs, which only writers and the
+          # rescreen pass start; and the CI runs (workflow_run). So the runs of other accounts' comments and
           # issues, which anyone can start on any item, are in none of them. A run that GitHub skipped, with each of
           # its jobs, does not count. A run that has not finished counts with no read of its jobs, but a CI run, whose
           # screen job can name another account. The jobs of a run show whether it counts. A run of <login>'s event
@@ -602,8 +604,8 @@ jobs:
             local -A once=()
             count=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
-            # Two rounds: the runs of <login>'s events and the runs by hand that name it, then the CI runs of other
-            # accounts.
+            # Two rounds: the runs of <login>'s events and the workflow_dispatch runs that name it, then the CI runs of
+            # other accounts.
             for round in own other; do
               if [ "$round" = own ]; then
                 lists=("actor=$1" event=workflow_dispatch)
@@ -613,8 +615,8 @@ jobs:
               fi
               runs="" unread=() cut=""
               # Each run of a list on one line: "<id> <state> <own> <actor>", state count for a run that counts with no
-              # read of its jobs, else read, own 1 for a run of <login>'s event, 0 for a run by hand, 2 for a CI run of
-              # another account, and actor the account that started it ("-" for none).
+              # read of its jobs, else read, own 1 for a run of <login>'s event, 0 for a workflow_dispatch run, 2 for a
+              # CI run of another account, and actor the account that started it ("-" for none).
               for list in "${lists[@]}"; do
                 # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
                 out=$(LOGIN=$1 LIST=$list TITLED=$titled gh api --method GET --paginate \
@@ -644,8 +646,8 @@ jobs:
                 # their CI runs can count on <login>. No CI run of another account listed: none can count.
                 [[ -n $cut || $runs =~ [0-9] ]] || return 0
                 if ! open_pulls; then
-                  echo "::notice::The open pull requests could not be read, so the CI runs that can count on $1 are" \
-                    "not known, and $1 is held at the limit."
+                  echo "::notice::The open pull requests could not be read, so the CI runs that can count toward the" \
+                    "limit of $1 are not known. So $1 is held at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -657,7 +659,8 @@ jobs:
               fi
               if [ -n "$cut" ]; then
                 echo "::notice::GitHub lists at most 1,000 runs of this workflow with $cut since $from, and more" \
-                  "of them match. The runs that it does not list can count on $1, so $1 is held at the limit."
+                  "of them match. The runs that it does not list can count toward the limit of $1, so $1 is held at" \
+                  "the limit."
                 count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                 return 0
               fi
@@ -677,8 +680,8 @@ jobs:
                 # When GitHub does not say whether the account has write access, the run could count: it is read.
                 if [ "$own" = 2 ] && trusted "$actor"; then continue; fi
                 if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
-                  echo "::notice::This run read the jobs of $reads runs that could count on $1, and more such runs of" \
-                    "the last hour are left, so $1 is held at the limit."
+                  echo "::notice::This run read the jobs of $reads runs that can count toward the limit of $1. More" \
+                    "such runs of the last hour are left, so $1 is held at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -1199,8 +1202,8 @@ jobs:
                 # can read #NUMBER before either starts a run, and each then starts an approve run of the head. Without
                 # this check, the later run screens the head a second time and counts a second screen on the author's
                 # limit (a screen that the group screen-approve-<n> cancels counts too). The check costs one more read
-                # of the API: the runs by hand of review.yml from the start of the day before (runs_in, which reads a
-                # list that GitHub cut again one day, then one hour, at a time). The later run finds the earlier one
+                # of the API: the workflow_dispatch runs of review.yml since 00:00 UTC yesterday (runs_in, which reads
+                # a list that GitHub cut again one day, then one hour, at a time). The later run finds the earlier one
                 # there, unfinished, and stops. The earlier run finds no such run, as it reads only the runs before its
                 # own. A conflict needs no such check: its run screens nothing and counts toward no limit, and the
                 # comment job, one run at a time in the group label-<n>, posts the comment of a head only when it is not
@@ -1220,7 +1223,7 @@ jobs:
                     unended=$(WANT=$want runs_in workflow_dispatch ">=$(date -u -d '-1 day' +%Y-%m-%d)T00:00:00Z" \
                       "$pages"'(.workflow_runs[] | select(.event == "workflow_dispatch" and .status != "completed"
                         and .id < ($ENV.RUN_ID | tonumber) and (.display_title // "") == $ENV.WANT) | .id)') \
-                      || fail "the runs by hand of review.yml since the start of the day before could not be read."
+                      || fail "the workflow_dispatch runs of review.yml since 00:00 UTC yesterday could not be read."
                     [ -z "$unended" ] \
                       || stop "approve run ${unended%%$'\n'*} of $pr_head, made before this run, has not finished."
                   fi
@@ -3758,12 +3761,13 @@ jobs:
           [ "$item" = pr ] || what="this issue"
           # The rescreen pass (rescreen.yml) takes a hold with a marker once its comment is an hour old, at its first
           # run after that, which an event starts. Such a hold says that first, then that the author does not need to do
-          # anything, then why. A limit hold ends with what happens if the account is still at its limit; the other
-          # holds end with only that a new hold replaces this comment, since a rescreen can be held for another cause
-          # than theirs. The events are those on which the pass takes the open items (the top of rescreen.yml). The hold
-          # of an approval has one more: a push to its own pull request, or a reopen, on which CI runs, starts
-          # screen-start.yml. Its run of the pass, with the number of that pull request, takes the hold of that
-          # approval when GitHub holds a run of the head. That run takes no other hold, and no other item.
+          # anything, then why. A limit hold ends with a paragraph of its own: what happens if the account is still at
+          # its limit at the first of the events that the hold lists. The other holds end with only that a new hold
+          # replaces this comment, since a rescreen can be held for another cause than theirs. The events are those on
+          # which the pass takes the open items (the top of rescreen.yml). The hold of an approval has one more: a push
+          # to its own pull request, or a reopen, on which CI runs, starts screen-start.yml. Its run of the pass, with
+          # the number of that pull request, takes the hold of that approval when GitHub holds a run of the head. That
+          # run takes no other hold, and no other item.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
           events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."
           [ "$TASK" != approve ] \
@@ -3800,7 +3804,7 @@ jobs:
             else
               why+=" ${who^} is at that limit."
             fi
-            why="$again$why If $who is still at the limit at that event, the workflow holds $what again. This comment then gives the new time."
+            why="$again$why"$'\n\n'"If $who is still at the limit at the first of those events, the workflow holds $what again. This comment then gives the new time."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then

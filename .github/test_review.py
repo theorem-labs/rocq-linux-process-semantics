@@ -87,7 +87,7 @@ MINT_A = "Sign in as the OSS Verify App"
 MINT_B = "Sign in as the OSS Verify App to approve"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
-BOT = "github-actions[bot]"   # the account of this workflow's comments, reviews and runs by hand
+BOT = "github-actions[bot]"   # the account of this workflow's comments and reviews, and of the runs the pass starts
 
 # gh api <endpoint> [--paginate] [--jq <filter>] [--method M] [-f|-F k=v] [--input <file>], answered from
 # $FAKE_GH/<endpoint>.json (the endpoint's slashes as underscores, its query dropped) through jq, as gh applies --jq; an
@@ -2189,10 +2189,10 @@ class LimitTest(Runner):
 
     def test_the_runs_of_other_accounts_never_cut_the_list_of_an_account(self):
         """Each comment of anyone on any item starts a run of this file. The trust job never reads the list of every
-        run: it lists the runs of the account (actor=<login>), the runs by hand (event=workflow_dispatch), which only
-        writers and the rescreen job start, and the CI runs (event=workflow_run). 1,000 newer runs of eve's comments,
-        which cut the list of every run, are in none of those lists, and leave mallory judged by her own runs and the
-        rescreen job's runs of her. (A cut list of CI runs puts her at her limit: spec v61 R1, below.)"""
+        run: it lists the runs of the account (actor=<login>), the workflow_dispatch runs, which only writers and the
+        rescreen job start, and the CI runs (event=workflow_run). 1,000 newer runs of eve's comments, which cut the list
+        of every run, are in none of those lists, and leave mallory judged by her own runs and the rescreen job's runs
+        of her. (A cut list of CI runs puts her at her limit: spec v61 R1, below.)"""
         eve = [{"id": 5000 - i, "actor": {"login": "eve"}, "event": "issue_comment", "status": "completed",
                 "conclusion": "skipped", "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
         endpoint = os.path.join(self.api, f"repos/{REPO}/actions/workflows/review.yml/runs".replace("/", "_"))
@@ -2479,11 +2479,12 @@ class LimitTest(Runner):
                 self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", "limit"), out)
 
     def test_a_ci_run_of_another_account_counts_on_the_author_as_a_run_of_her_own_does(self):
-        """Ruling 1: a CI run of bob's push counts on eve when its screen job names eve, whether its screen ran or
-        the run was held at her limit (a held run of her own counts too). It does not count on eve when its trust job
-        stopped it, when its screen could not sign in, or when its screen job names another account or no account
-        (GitHub can list a skipped job with its name not filled in): such a run does not show that its trust job
-        counted it on eve."""
+        """Ruling 1: a CI run of bob's push counts on eve when its screen job names eve: its screen ran. It does not
+        count on eve when its trust job stopped it, when its screen could not sign in, or when its screen job names
+        another account or no account: such a run does not show that its trust job counted it on eve. GitHub lists a
+        skipped job with its name not filled in, so a run that the trust job held at eve's limit names no account,
+        and does not count on her, though a held run of her own does (a residual that OSSV-221's architect ruled on
+        2026-11-19)."""
         self.permissions(bob="read")
         self.serve_prs((20, "eve", HEAD))
         trust = {"name": "trust", "status": "completed", "conclusion": "success"}
@@ -2494,15 +2495,14 @@ class LimitTest(Runner):
         for case, jobs, want in (
                 ("screened for eve", [attempt_job("screen", name="screen eve"),
                                       attempt_job("review", name="review (screened)")], "limit"),
-                ("held at eve's limit", skipped("gather", "screen eve", "review") + [attempt_job("hold")], "limit"),
+                ("held at eve's limit: its screen job names no account",
+                 skipped("gather", JOBS["screen"]["name"], "review") + [attempt_job("hold")], "screen"),
                 ("stopped by its trust job", skipped("gather", "screen", "review", "post", "comment", "hold"),
                  "screen"),
                 ("its screen could not sign in", [attempt_job("screen", "Sign in to Google Cloud", name="screen eve")],
                  "screen"),
                 ("screened for mallory", [attempt_job("screen", name="screen mallory"),
-                                          attempt_job("review", name="review (screened)")], "screen"),
-                ("its screen job names no account", skipped("gather", JOBS["screen"]["name"], "review")
-                 + [attempt_job("hold")], "screen")):
+                                          attempt_job("review", name="review (screened)")], "screen")):
             with self.subTest(case=case):
                 self.runs(*pushes, jobs={r[0]: jobs for r in pushes})
                 for r in pushes:
@@ -3001,12 +3001,12 @@ class HoldTest(Holding):
              r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:\n\n- A CI run in this repository ends\.\n"
              r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n\n"
              r"You do not need to do anything\.\n\n[^\n]* ")
-    # A limit hold ends with what happens while the account stays at its limit; a cap or transient hold, whose rescreen
-    # can be held for another reason, ends with only that a new hold says why. The marker follows, and nothing asks
-    # anyone to start a run.
-    AGAIN_LIMIT = AGAIN + (r"If (this account|the account of the author) is still at the limit at that event, the "
-                           r"workflow holds this (pull request|issue) again\. This comment then gives the new time\.\n\n"
-                           r"<!-- ")
+    # A limit hold ends with a paragraph of its own: what happens while the account stays at its limit at the first of
+    # the events that it lists. A cap or transient hold, whose rescreen can be held for another reason, ends with only
+    # that a new hold says why. The marker follows, and nothing asks anyone to start a run.
+    AGAIN_LIMIT = AGAIN + (r"[^\n]*\n\nIf (this account|the account of the author) is still at the limit at the "
+                           r"first of those events, the workflow holds this (pull request|issue) again\. This comment "
+                           r"then gives the new time\.\n\n<!-- ")
     AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
     # The limit as a limit hold gives it: the count at which the workflow holds, and no promise of how many screens an
     # hour an account had (a trust job that did not read every run that could count on it holds it at the limit too).
@@ -3066,8 +3066,8 @@ class HoldTest(Holding):
                 self.setUp()
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory")
                 self.assertRegex(body, self.AGAIN_LIMIT)
-                self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit at that "
-                              "event, the workflow holds this pull request again.", body)
+                self.assertIn(f"You do not need to do anything.\n\n{words}\n\nIf {who} is still at the limit at the "
+                              "first of those events, the workflow holds this pull request again.", body)
                 self.assertNotIn("no write access", body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
@@ -3099,8 +3099,8 @@ class HoldTest(Holding):
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory",
                                                 unread=True)
                 self.assertRegex(body, self.AGAIN_LIMIT)
-                self.assertIn(f"You do not need to do anything.\n\n{words} If {who} is still at the limit at that "
-                              "event, the workflow holds this pull request again.", body)
+                self.assertIn(f"You do not need to do anything.\n\n{words}\n\nIf {who} is still at the limit at the "
+                              "first of those events, the workflow holds this pull request again.", body)
                 self.assertNotIn("is at that limit", body)
                 self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 -->"), body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
@@ -4981,6 +4981,34 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual({k: got[k] for k in got if k != "head"}, {})
                 self.assertEqual(os.path.getsize(self.summary), 0)
                 self.assertFalse(os.path.exists(self.token_file))
+
+    def test_a_thinking_block_before_the_text_is_skipped(self):
+        """With thinking disabled, the model gateway can still give an empty thinking block before the text
+        (claude-opus-5-5, 1 answer in 3 on 2026-11-20). A thinking or redacted_thinking block holds no text: the reader
+        skips it and reads the text, and the trimmed text posts. An answer with no text block, or with a block of
+        another type beside the text, fails the step, and nothing posts."""
+        text = self.answer("Trimmed.")["content"]
+        for name, content, posts in (
+                ("an empty thinking block, then the text", [{"type": "thinking", "thinking": "", "signature": "c2ln"}]
+                 + text, True),
+                ("a redacted_thinking block, then the text", [{"type": "redacted_thinking", "data": "ZGF0YQ=="}]
+                 + text, True),
+                ("a thinking block alone", [{"type": "thinking", "thinking": "", "signature": "c2ln"}], False),
+                ("the text, then a tool", text + [{"type": "tool_use", "id": "t", "name": "x", "input": {}}], False),
+                ("no block", [], False)):
+            with self.subTest(answer=name):
+                self.tearDown()
+                self.setUp()
+                reader = (200, {"id": "msg_1", "type": "message", "role": "assistant", "stop_reason": "end_turn",
+                                "content": content})
+                rc, out, got = self.post(self.REVIEW, [], verdict="pass", reader=reader)
+                if posts:
+                    self.assertEqual(rc, 0, out)
+                    self.assertEqual(got["body"], self.body("Trimmed.", verdict="pass"), out)
+                else:
+                    self.assertEqual(rc, 1, out)
+                    self.assertIn("The fresh reader gave no trimmed text. Nothing posts.", out)
+                    self.assertEqual({k: got[k] for k in got if k != "head"}, {})
 
     def test_a_reader_request_that_anthropic_refuses_logs_its_status_and_error_code_alone(self):
         """trim.py's ReaderError: what a public log may show of a request that a service refused is its HTTP status
@@ -9593,9 +9621,9 @@ class ScheduleTest(Scheduled):
             self.assertIn(f"#{number} waits: mallory had {limit} runs that screen in the last hour", out)
 
     def test_the_runs_are_read_by_hand_one_day_at_a_time_and_of_each_event_once(self):
-        """D16: the runs by hand of the last 8 days, one list for each day (a list with created gives at most 1,000
-        runs), and the runs of workflow_run, issue_comment and issues, one list each from the first of those days;
-        never the scheduled runs, and no list of every event."""
+        """D16: the workflow_dispatch runs of the last 8 days, one list for each day (a list with created gives at most
+        1,000 runs), and the runs of workflow_run, issue_comment and issues, one list each from the first of those
+        days; never the scheduled runs, and no list of every event."""
         self.item()
         self.started()
         lists = [{c[i + 1].split("=", 1)[0]: c[i + 1].split("=", 1)[1] for i, a in enumerate(c) if a == "-f"}
@@ -9609,9 +9637,10 @@ class ScheduleTest(Scheduled):
 
     def test_a_list_of_runs_that_github_cuts_at_1000_is_read_again_an_hour_at_a_time_or_starts_nothing(self):
         """GitHub gives at most 1,000 runs for one list with created, and total_count then says that more match. A list
-        of the runs by hand of a day that GitHub cuts is read again for each hour of that day, and the schedule goes on
-        with what those lists give: here the catch-up of a head that no run met. When GitHub cuts the list of an hour
-        too, the schedule cannot tell which runs met an item: it starts nothing, writes nothing, and fails."""
+        of the workflow_dispatch runs of a day that GitHub cuts is read again for each hour of that day, and the
+        schedule goes on with what those lists give: here the catch-up of a head that no run met. When GitHub cuts the
+        list of an hour too, the schedule cannot tell which runs met an item: it starts nothing, writes nothing, and
+        fails."""
         day = str(datetime.datetime.now(datetime.timezone.utc).date() - datetime.timedelta(days=7))
         hours = [f"{day}T{h:02d}:00:00Z..{day}T{h:02d}:59:59Z" for h in range(24)]
         runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
@@ -10022,10 +10051,10 @@ class LeftClosedTest(Scheduled):
                 self.dispatched("catchup", want=False)
 
     def test_a_catch_up_left_closed_9_days_ago_with_only_sign_in_failures_since_is_reopened(self):
-        """The closing run is older than the 8 days of the runs by hand that the schedule reads: it reads back one day
-        at a time, each day once, to the day before the close. The catchup runs since then could not sign in, which
-        counts no try: the next catchup is started an hour after the newest ended, its trust job takes it, and its
-        post job reopens the pull request."""
+        """The closing run is older than the 8 days of the workflow_dispatch runs that the schedule reads: it reads back
+        one day at a time, each day once, to the day before the close. The catchup runs since then could not sign in,
+        which counts no try: the next catchup is started an hour after the newest ended, its trust job takes it, and
+        its post job reopens the pull request."""
         day = 24 * 60
         self.closing(ago(9 * day))
         self.ran(60, self.TITLE, made=9 * day + 5, ended=9 * day - 5, jobs=[self.FAILED])
@@ -10249,11 +10278,11 @@ class RescreenEventsTest(Scheduled):
                                                   ("7", "rescreen", "mallory", HEAD, "")]), out)
 
     def test_screen_start_a_pass_with_a_number_decides_the_approval_from_the_runs_of_8_days(self):
-        """A run with a number first reads the runs by hand of the last hour. When they give the approval of a held
-        head, for an account under its limit, the run reads the runs of the 8 days and decides again, as a run with no
-        number does. So REVIEW_TRIES approve runs of the head over an hour old, whose post job failed at the approval,
-        give the stop head-approve and no approve run. An answer run of #7 that started an hour and a half ago and has
-        not finished gives no run."""
+        """A run with a number first reads the workflow_dispatch runs of the last hour. When they give the approval of a
+        held head, for an account under its limit, the run reads the runs of the 8 days and decides again, as a run
+        with no number does. So REVIEW_TRIES approve runs of the head over an hour old, whose post job failed at the
+        approval, give the stop head-approve and no approve run. An answer run of #7 that started an hour and a half ago
+        and has not finished gives no run."""
         self.approval_tried(self.TRIES)
         rc, out, runs, _wrote, _calls = self.numbered(7)
         self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
