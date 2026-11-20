@@ -1209,6 +1209,27 @@ class ScreenTest(unittest.TestCase):
             f.write("\uFEFFa.png: not a regular file\n")
         self.assertEqual(self.verdict()[0], "clean")
 
+    def test_the_word_joiners_of_the_workflows_own_review_hold_no_answer(self):
+        """R1: when the author of an outside item writes a new comment, the workflow answers it within 3 hours. The
+        screen of that answer reads the workflow's own comments of the item, which the gather step keeps for an answer
+        (own): its review among them. trim.py made that review inert, with a word joiner (U+2060) after each @ and
+        between each # and the number after it, as in rocq-prover/rocq#22651, which review.md tells the review of a
+        proof to name. Those word joiners are the workflow's own, so the item is screened, and is clean. The same text
+        in a comment of the author still holds the item."""
+        head = "0" * 40
+        review = (f"<!-- review -->\n<!-- review-head {head} -->\n<!-- review-verdict {head} person -->\n"
+                  f"<!-- review-screened {head} -->\n<!-- review-read 2026-11-01T00:00:00Z -->\n"
+                  "**Automated review** of commit 000000000000\n\nQuestions for Sami: Are the proofs sound?\n\n"
+                  "A pass of the CI checks on stock Rocq does not show the proof sound: stock Rocq accepts three public "
+                  "proofs of `False`, rocq-prover/rocq#\u206022651, #\u206022760 and #\u206022772. Ask @\u2060octocat.")
+        self.item(kind="pr", diff="+Lemma x.\n", comments=[("github-actions[bot]", review), ("mallory", "Fixed now.")])
+        v, reason = self.verdict()
+        self.assertEqual((v, reason["unscreenable"]), ("clean", []))
+        self.fresh()
+        self.item(kind="pr", diff="+Lemma x.\n", comments=[("mallory", review)])
+        v, reason = self.verdict()
+        self.assertEqual((v, reason["unscreenable"]), ("held", ["comments 1 holds U+2060, a character that hides text"]))
+
     def test_too_much_text_is_held_unscreened(self):
         """b9: an item of 400,001 characters is held, and no check reads it; one of 400,000 is screened."""
         self.item_of(400_001)
