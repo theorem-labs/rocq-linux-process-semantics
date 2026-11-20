@@ -7,8 +7,9 @@
 - the draft of a reply to a new issue of an outside author
 
 An outside item is a pull request or an issue whose author has no write
-access to this repository and is not a GitHub App. The workflow uses the
-copy of this file on `main`.
+access to this repository and is not one of the GitHub Apps that the
+workflow's `APPS` list names. Any other GitHub App is an outside author too.
+The workflow uses the copy of this file on `main`.
 
 The rules of `.github/review.md` hold for these texts too, except where this
 file gives other rules.

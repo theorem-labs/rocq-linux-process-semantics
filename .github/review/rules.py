@@ -7,7 +7,8 @@ labels").
     python3 .github/review/rules.py mark <number> <line>
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
-    python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <section> <all>
+    python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <kind> <section>
+        <all>
     python3 .github/review/rules.py blocking <output.json>
     python3 .github/review/rules.py fixes <commits.jsonl> <reviews.jsonl> <head>
     python3 .github/review/rules.py suggestions <fix.json> <pr.diff>
@@ -80,11 +81,12 @@ dune file that the job cannot read goes on the list of such files.
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
 on stock Rocq, as the checks that the import's copy must pass do. So a pass of the checks does not show a proof sound.
-The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the trust job's outside,
-is not false) that changes a path that soundness.json counts or a .v file under head/, or whose list of changed paths
-is not whole: the job cannot show then that no proof changed. Then <output.json>, the review's output {comment,
-verdict, will_fix, items}, gets the verdict person whatever the model gave, and QUESTION when its list has no question
-on soundness (forced). <section> gets the fixed section on soundness, which trim.py puts after the trimmed text, where
+The rule holds while <hold> (SOUNDNESS_HOLD) is true, for a pull request whose author the rule treats as outside
+(holds_back: <outside>, the trust job's outside, is not false, or <kind>, the trust job's kind, is unknown) that
+changes a path that soundness.json counts or a .v file under head/, or whose list of changed paths is not whole: the
+job cannot show then that no proof changed. Then <output.json>, the review's output {comment, verdict, will_fix,
+items}, gets the verdict person whatever the model gave, and QUESTION when its list has no question on soundness
+(forced). <section> gets the fixed section on soundness, which trim.py puts after the trimmed text, where
 the reader never sees it: it says why the rule holds, and lists, as facts for Sami, the rule with each changed file
 other than a .v file that it counts, each dune file that the job could not read, each line of the changed .v files at
 the head that uses one of USES, an array literal or make of the array module (uses), and each changed .v file at the
@@ -699,7 +701,11 @@ def mark(number, line):
 # What the workflow does for the item of a run, by the kind of its author. The trust job decides the kind once
 # (trusted): its output outside is true for an outside author, and its output kind is writer, outsider or unknown
 # (GitHub did not say whether the author has write access). Each step of review.yml reads its answer here (answers):
-# the post job's steps read approve, record, withdraw and retry, and the label steps read label.
+# the post job's steps read approve, record, withdraw and retry, and the label steps read label. A rule that grants
+# (approve, record, the import's pass, a state label, a fix) reads outside alone (outside_author). A rule that holds
+# back or asks a person treats an author whose write access GitHub did not say as outside, as OSSV-221's architect
+# ruled on 2026-11-20 at 16:22Z: the soundness rule reads holds_back, the review's prompt in review.yml has the same
+# form, and a withdrawal runs for every author.
 #
 # - label: set gives the item the state label of its state. off takes each state label off, and the label comment is
 #   the state's all the same. unchanged writes nothing of the state: no state label goes on or off, and the label
@@ -782,6 +788,14 @@ def author_class(outside, kind=""):
     if outside_author(outside):
         return "outside"
     return "unknown" if kind == "unknown" else "other"
+
+
+def holds_back(outside, kind=""):
+    """Whether a rule that holds back or asks a person applies to the item's author, from the trust job's outputs
+    outside and kind: unless outside is false, and also when kind is unknown (GitHub did not say whether the author
+    has write access). It fails closed: an empty, missing or other value of outside counts as outside. An empty or
+    missing kind is not unknown. A rule that grants reads outside_author instead."""
+    return outside != "false" or kind == "unknown"
 
 
 def answers(task, outside, outsider, kind=""):
@@ -1665,12 +1679,13 @@ def settled(output):
     return output
 
 
-def soundness(review, output, hold, outside):
+def soundness(review, output, hold, outside, kind=""):
     """(output, section, all): the review's output after the soundness rule, the section of the comment, and the
-    section with every line for the run's summary. The rule holds while hold is true, for an outside pull request
-    (outside is not false) that changes a path that the facts of review count (facts_of) or a .v file under head/, or
-    whose list of changed paths is not whole. When it does not hold: output as it is, and no section."""
-    if hold != "true" or outside == "false":
+    section with every line for the run's summary. The rule holds while hold is true, for a pull request of an author
+    that the rule treats as outside (holds_back of the trust job's outside and kind) that changes a path that the
+    facts of review count (facts_of) or a .v file under head/, or whose list of changed paths is not whole. When it
+    does not hold: output as it is, and no section."""
+    if hold != "true" or not holds_back(outside, kind):
         return output, "", ""
     facts = facts_of(review) or {"whole": True, "files": [], "unparsed": []}
     read = set(head_proofs(review))
@@ -1938,11 +1953,11 @@ def main(argv):
                 files, count = [], None
             print(json.dumps(proofs(argv[1], files, count, main=argv[2])))
             return 0
-        if len(argv) == 7 and argv[0] == "soundness":
-            review, path, hold, outside, section_path, all_path = argv[1:]
+        if len(argv) == 8 and argv[0] == "soundness":
+            review, path, hold, outside, kind, section_path, all_path = argv[1:]
             with open(path, encoding="utf-8") as f:
                 output = loads(f.read())
-            output, text, every = soundness(review, output, hold, outside)
+            output, text, every = soundness(review, output, hold, outside, kind)
             if text:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(output, f, ensure_ascii=False)

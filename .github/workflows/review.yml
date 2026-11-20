@@ -163,8 +163,9 @@
 #           After the model, a step signs in again for the fresh reader: a second Claude request, with no tools, that
 #           shortens the comment (.github/review/trim.py). Code adds each listed item that the shortened review omits,
 #           and the whole review in a collapsed block. While SOUNDNESS_HOLD is true, code also gives the verdict person
-#           to the review of an outside pull request that changes a file that is not a Markdown file (.md), or a
-#           Markdown file that a dune, dune-project or dune-workspace* file of the head or of main makes count: one in
+#           to the review of an outside pull request, or of one whose author's write access GitHub did not say, that
+#           changes a file that is not a Markdown file (.md), or a Markdown file that a dune, dune-project or
+#           dune-workspace* file of the head or of main makes count: one in
 #           its directory or above it that holds .md, or one anywhere that holds a word such as include or source_tree,
 #           a glob whose pattern does not end with one fixed extension other than md, or a word with .md and also ..,
 #           %{project_root}, %{workspace_root} or a leading /, or that the job cannot read (the gather job reads the
@@ -418,10 +419,10 @@ env:
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
   # in theorem-labs/rocq-linux-process-semantics-internal, run stock Rocq, as this repository's CI lanes do. While this
-  # is "true", code gives the review of an outside pull request that can change a proof (any changed file that is
-  # not a Markdown file, or a Markdown file that a dune, dune-project or dune-workspace* file of the head or of main
-  # makes count, as .github/review.md says) the verdict person and a section on soundness, whatever the
-  # model wrote (.github/review/rules.py soundness). The hold lasts
+  # is "true", code gives the review of an outside pull request that can change a proof, also of one whose author's
+  # write access GitHub did not say (any changed file that is not a Markdown file, or a Markdown file that a dune,
+  # dune-project or dune-workspace* file of the head or of main makes count, as .github/review.md says) the verdict
+  # person and a section on soundness, whatever the model wrote (.github/review/rules.py soundness). The hold lasts
   # until those checks run a Rocq with the fixes for the three issues: only then set another value. Another value also
   # ends R12's Markdown-only rule: while the hold lasts, the post job records the import's check run only for a pull
   # request whose changed files are all Markdown files.
@@ -465,12 +466,15 @@ jobs:
       outsider: ${{ steps.trust.outputs.outsider }}
       # The kind of the item's author, which the trust job decides once (route, from trusted): writer (write access, or
       # one of the APPS), outsider (no write access, an App that the APPS list does not name, or no GitHub login) or
-      # unknown (GitHub did not say). Only the label steps read it (.github/review/rules.py label): for unknown they
-      # change no state label and no label comment. Empty only for a run with no item (a measurement).
+      # unknown (GitHub did not say). The label steps read it (.github/review/rules.py label): for unknown they change
+      # no state label and no label comment. The rules that hold back read it beside outside, and treat unknown as
+      # outside (.github/review/rules.py holds_back): the soundness rule and the review's prompt. Empty only for a run
+      # with no item (a measurement).
       kind: ${{ steps.trust.outputs.kind }}
       # true when kind is outsider (an outside item, R5), false when it is writer or unknown; empty only with no item.
-      # The author-kind table reads it (.github/review/rules.py answers): only an outside author's item gets a state
-      # label, an approval of its held runs and the import check run of R12. The label answer also reads kind.
+      # The rules that grant read it alone, as true or not: the author-kind table (.github/review/rules.py answers) and
+      # the step "Whether a fix runs". Only an outside author's item gets a state label, an approval of its held runs,
+      # the import check run of R12 and a fix.
       outside: ${{ steps.trust.outputs.outside }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on (an account with write access has none), which the
       # name of the screen job gives: earlier and held_account read it back from there.
@@ -2088,8 +2092,10 @@ jobs:
             "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
           # The first two of the three steps of .github/review.md: the repository's rules, and the whole copies of the
           # two skills to write by, with their reference and example files. The third, the fresh reader, is the step
-          # after the next. The prompt says whether the workflow treats the author as an outside author (the trust job's
-          # outside), and the schema is the same for every item.
+          # after the next. The prompt says whether the workflow treats the author as an outside author, and why. It is
+          # a rule that holds back, so it reads the trust job's kind and outside in the form of rules.py holds_back: an
+          # author whose write access GitHub did not say counts as outside, and so does an empty outside. The schema is
+          # the same for every item.
           prompt: >-
             Read .github/review.md: it is the rules of this review. Before you write, read the whole of the two skill
             copies that it names, with their reference and example files. These are
@@ -2099,12 +2105,14 @@ jobs:
             .github/review/skills/ce-noslop/references/terminology.md. Review
             ${{ needs.gather.outputs.kind == 'pr' && 'pull request' || 'issue' }} #${{ needs.gather.outputs.number }}
             of this repository as .github/review.md says, from what .review/ holds.
-            ${{ needs.trust.outputs.outside == 'false' && 'The workflow does not treat its author as an outside author:
-            the author has write access to this repository, is one of the GitHub Apps that the workflow''s APPS list
-            names, or GitHub did not say.' || 'The workflow treats its author as an outside author: the author has no
-            write access to this repository, or is a GitHub App that the workflow''s APPS list does not name.' }} Give
-            the comment, the verdict, will_fix and the list of items as the structured output (.github/review.md, "What
-            the review gives").
+            ${{ needs.trust.outputs.kind == 'unknown' && 'GitHub did not say whether its author has write access to this
+            repository, so the workflow treats its author as an outside author.'
+            || needs.trust.outputs.outside == 'false' && 'The workflow does not treat its author as an outside author:
+            the author has write access to this repository, or is one of the GitHub Apps that the workflow''s APPS list
+            names.' || 'The workflow treats its author as an outside author: the author has no write access to this
+            repository, or is a GitHub App that the workflow''s APPS list does not name.' }} Give the comment, the
+            verdict, will_fix and the list of items as the structured output (.github/review.md, "What the review
+            gives").
           claude_args: >-
             --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 300
             --json-schema '{"type": "object", "additionalProperties": false,
@@ -2224,9 +2232,10 @@ jobs:
 
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
       # comment, its verdict, will_fix and its list. First comes the soundness rule of R8, whatever the model wrote
-      # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
-      # trust job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
-      # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths
+      # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of a pull request whose author the
+      # rule treats as outside (rules.py holds_back, from the trust job's outside and kind: also an author whose write
+      # access GitHub did not say) that can change a proof gets the verdict person, a question on soundness in its list
+      # when the list has none, and the section on soundness. The gather job's soundness.json says which changed paths
       # count (a .v file, any other file that is not a Markdown file, or a Markdown file that a dune, dune-project or
       # dune-workspace* file of the head or of main makes count, by the rule of .github/review.md), from every page of
       # the pull request's files. A list that is not whole counts as such a change too, and a dune file that the job
@@ -2269,7 +2278,9 @@ jobs:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # The trust job's outputs as they are: rules.py soundness reads both (holds_back).
           OUTSIDE: ${{ needs.trust.outputs.outside }}
+          AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
           STARTED: ${{ needs.trust.outputs.started }}
           ROUTE: ${{ needs.trust.outputs.route }}
           SCREENED: ${{ needs.screen.outputs.verdict }}
@@ -2286,7 +2297,7 @@ jobs:
                      and (.will_fix | type) == "boolean" and (.items | type) == "array")' "$RESULT" > "$work/output.json" \
             || { echo "::error::The review gave no comment, verdict, will_fix and list. Nothing posts."; exit 1; }
           python3 .github/review/rules.py soundness .review "$work/output.json" "${SOUNDNESS_HOLD:-}" "$OUTSIDE" \
-            "$work/section.md" "$work/section-all.md"
+            "${AUTHOR_KIND:-}" "$work/section.md" "$work/section-all.md"
           python3 .github/review/rules.py blocking "$work/output.json"
           jq -j .comment "$work/output.json" > "$work/review.md"
           jq .items "$work/output.json" > "$work/items.json"
