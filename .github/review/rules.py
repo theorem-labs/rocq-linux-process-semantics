@@ -147,7 +147,8 @@ line, so that the screen passed <head> in the run of that review, and no hold co
 is newer than the newest such review comment. It is held when such a hold comment is newer than that review comment,
 or when no review comment of <head> holds the marker and such a hold comment exists: a later screen held <head>. Else
 it is unscreened (a writer's review by hand runs no screen). A relabel records the import check run only for
-screened, and withdraws it for held.
+screened, and withdraws it for held. A review by hand with no screen records none: the post job's decision is hand
+for screened, held for held, and screen for unscreened.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a later review of <head>, or screen, a later
@@ -248,19 +249,23 @@ VERDICTS = ("", "pass", "blocking", "person")
 REFUSALS = ("", "review", "answer", "fix")
 # The post job's decisions on the import check run at a head: record, or the first rule of R12 that does not hold
 # (import_decision), or moved when the pull request moved on from the head, or writer when its author is no outside
-# author (it has write access, or GitHub did not say: the author-kind table's record is false), or held when a relabel
-# finds a hold comment of the screen that is newer than each review comment whose run screened the head
-# (review_verdict). Empty when the job gave none.
+# author (it has write access, or GitHub did not say: the author-kind table's record is false). A relabel and a review
+# by hand with no screen read the review comments of the head (review_verdict). The decision is held when a hold
+# comment of the screen is newer than each review comment whose run screened the head. For a review by hand, it is
+# hand when the run of an earlier review screened the head and no hold comment of the screen is newer: the screen and
+# the review passed the head, but a run with no screen records no check run. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
-             "writer", "held")
+             "writer", "held", "hand")
 
 # The texts of R12 for an outside pull request that the screen and the review passed (import_steps). With no variable
 # REPO_PAIRS_IMPORT_PATHS, the workflow cannot tell whether the import does not run yet, a move is under way or the
 # import is paused, so the comment names each step that can come next. With the variable, it names the step for the
 # paths that the pull request changes.
 PASSED = "The automated screen and the automated review passed this pull request."
-# The decision screen of an outside pull request whose review passed: no screen passed its head in the run of a review
-# (a review by hand with no screen runs none), so the text says so in the place of PASSED.
+# The decision screen of an outside pull request whose review passed: no screen passed its head in the run of a review.
+# A review by hand with no screen and a relabel run none, and no review comment of the head holds the marker of a
+# screen that passed it (review_verdict). So the text says so in the place of PASSED. After such a review comment, a
+# review by hand gets the decision hand, and PASSED.
 UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit in a run that "
               "also reviewed it, so the workflow did not record the check `repo-pairs/import-approved`.")
 # The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
@@ -469,7 +474,8 @@ def import_steps(state, value, decision):
     changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
     MERGE_STEPS. For the decision screen, the text says that no screen passed the head in the run of a review
     (UNSCREENED), and for the decision held that a screen held the head after each screened review
-    (SCREEN_HELD_AFTER), in the place of PASSED."""
+    (SCREEN_HELD_AFTER), in the place of PASSED. The decision hand (a review by hand with no screen, after a review
+    whose run screened the head) gives PASSED, and does not say which step: it compared no path."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -716,8 +722,10 @@ def mark(number, line):
 #   the head with a blocking finding or the verdict person, a screen that held the head, or a relabel that finds such
 #   a review or a later hold of the screen.
 # - retry: the error of a withdrawal that GitHub refused, or that could not be read, says that the rescreen pass tries
-#   it again. The pass tries no App write of the item of another author again (held.sh, consider and access_of), so
-#   for such an author the error says "Re-run this run." instead.
+#   it again, but only when the name of the run gives the head too (review.yml): the pass tries no other run again
+#   (held.sh, take and due_retry). The pass tries no App write of the item of another author again (held.sh, consider
+#   and access_of). So for such an author, and for a run whose name gives no head, the error says "Re-run this run."
+#   instead.
 #
 # The tasks are the trust job's (the top of review.yml), and hold is the hold job. The hold job makes no App write: in
 # the same run, the post job withdraws the import check runs of a head that the screen held, by the row of the task.

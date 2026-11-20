@@ -483,6 +483,11 @@ jobs:
       number: ${{ steps.trust.outputs.number }}
       # The head commit of a pull request, as the API gave it to the trust job.
       head: ${{ steps.trust.outputs.head }}
+      # The head commit that the name of the run gives (run-name, and held.sh take): the head of a CI run, or the input
+      # head of a run by hand, which this job checks against the head of the pull request. Empty when the name gives
+      # none. The rescreen pass tries the App's writes again only for a run whose name gives the head (held.sh,
+      # due_retry), so the post job's error of a withdrawal that fails promises that retry only then.
+      named: ${{ steps.trust.outputs.named }}
       # The comment that an answer answers.
       comment: ${{ steps.trust.outputs.comment }}
       # The run whose event this item's hold names (a hold that is tried again), and the screened reviews of the item
@@ -768,18 +773,20 @@ jobs:
           # rescreen pass tells which pull request a CI run reviewed when more than one into main has its head
           # (reviewed). On every route of an item with an author, the output kind is the kind of the author
           # (kind_of_author), and the output outside is true for an outsider and false for a writer or unknown. A run
-          # with no author (a measurement) gives both empty.
+          # with no author (a measurement) gives both empty. The output named is HEAD when it is a head commit, for a
+          # run of an item: the name of a measurement gives no head.
           route() {
-            local outside=""
+            local outside="" named=""
             if [ -n "$AUTHOR" ]; then
               kind_of_author
               outside=false
               [ "$author_kind" != outsider ] || outside=true
             fi
+            [ -z "$NUMBER" ] || [[ ! $HEAD =~ ^[0-9a-f]{40}$ ]] || named=$HEAD
             echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
-              echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"; echo "tries=$tries"
-              echo "uncounted=$uncounted"; echo "kind=$author_kind"; echo "outside=$outside"
+              echo "named=$named"; echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"
+              echo "tries=$tries"; echo "uncounted=$uncounted"; echo "kind=$author_kind"; echo "outside=$outside"
               echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
@@ -2093,7 +2100,7 @@ jobs:
             "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
           # The first two of the three steps of .github/review.md: the repository's rules, and the whole copies of the
           # two skills to write by, with their reference and example files. The third, the fresh reader, is the step
-          # after the next. The prompt says whether the workflow treats the author as an outside author, and why. It is
+          # after the next. The prompt says whether this review treats the author as an outside author, and why. It is
           # a rule that holds back, so it reads the trust job's kind and outside in the form of rules.py holds_back: an
           # author whose write access GitHub did not say counts as outside, and so does an empty outside. The schema is
           # the same for every item.
@@ -2107,7 +2114,7 @@ jobs:
             ${{ needs.gather.outputs.kind == 'pr' && 'pull request' || 'issue' }} #${{ needs.gather.outputs.number }}
             of this repository as .github/review.md says, from what .review/ holds.
             ${{ needs.trust.outputs.kind == 'unknown' && 'GitHub did not say whether its author has write access to this
-            repository, so the workflow treats its author as an outside author.'
+            repository. So this review treats its author as an outside author.'
             || needs.trust.outputs.outside == 'false' && 'The workflow does not treat its author as an outside author:
             the author has write access to this repository, or is one of the GitHub Apps that the workflow''s APPS list
             names.' || 'The workflow treats its author as an outside author: the author has no write access to this
@@ -2680,12 +2687,13 @@ jobs:
   # conclusion success, when the rule holds. When a later review of the head gives a blocking finding or the verdict
   # person, or a later screen holds the head, it updates that check run to the conclusion neutral (R12), whoever the
   # author is. For an approval, it reads the files of the head too (.github/review/rules.py steering). It checks out
-  # main's .github/ for those, and runs nothing else from it. Its outputs: recorded, true when it
-  # recorded that check run at the head; decision, what it decided for that check run: record, or the first rule of
-  # R12 that does not hold; caught, the head of a pull request that a catch-up closed and reopened, or only reopened,
-  # which the comment job records in the label comment; steering, the head of an approval that changes a file under
-  # .github/, whose runs it does not approve; and no_key, the head of an approval whose held runs it found and did not
-  # approve, as the environment post holds no key. The comment job records each of the last two in the label comment.
+  # main's .github/ for those, and runs nothing else from it. Its outputs: recorded, true when it recorded that check
+  # run at the head; decision, what it decided for that check run: record, or why it records none
+  # (.github/review/rules.py DECISIONS); caught, the head of a pull request that a catch-up closed and reopened, or
+  # only reopened, which the comment job records in the label comment; steering, the head of an approval that changes
+  # a file under .github/, whose runs it does not approve; and no_key, the head of an approval whose held runs it found
+  # and did not approve, as the environment post holds no key. The comment job records each of the last two in the
+  # label comment.
   post:
     needs: [trust, gather, screen, review]
     # The review or the rescreen of a pull request whose review succeeded, whoever its author is and whatever the route
@@ -2734,9 +2742,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
       # The answers of the author-kind table for the task of this run and the trust job's outside alone
-      # (.github/review/rules.py answers): approve, record, withdraw and retry, which the steps below read. The author
-      # is outside when that outside is true, and only then: the trust job's outsider is read for no answer, and its
-      # kind only by the label steps of the comment and hold jobs.
+      # (.github/review/rules.py answers): approve, record, withdraw and retry, which the steps below read. The step
+      # writes and logs only these four. No step of this job reads the answer label: the label steps of the comment and
+      # hold jobs decide it, with the trust job's kind. The author is outside when that outside is true, and only then:
+      # the trust job's outsider is read for no answer.
       - name: Read the author-kind table
         id: answers
         env:
@@ -2748,6 +2757,7 @@ jobs:
           set -euo pipefail
           answers=$(python3 .github/review/rules.py answers "$TASK" "$OUTSIDE" "$OUTSIDER") \
             || { echo "::error::the author-kind table gives no answers for the task $TASK."; exit 1; }
+          answers=$(grep -E '^(approve|record|withdraw|retry)=' <<< "$answers")
           echo "#$NUMBER: the author-kind table gives, for the task $TASK and outside=$OUTSIDE:" \
             "$(tr '\n' ' ' <<< "$answers")"
           printf '%s\n' "$answers" >> "$GITHUB_OUTPUT"
@@ -2756,14 +2766,18 @@ jobs:
       # after the soundness rule, and for a relabel, which runs no model. The check run is for an outside author's pull
       # request alone (the author-kind table's record): for any other author, the decision is writer, with no read of
       # the files, and the comment job gives the item no outside label (R5). A review or a rescreen records the check
-      # run only when the screen of this run passed the head, also in a run by hand that asked for the screen; a review
-      # by hand with no screen gives the decision screen. A relabel takes the verdict from the markers of the newest
-      # review comment that names the head, also for another author, as the step that withdraws a check run reads it.
-      # It records a check run only when the screen passed the head in the run of a review (rules.py verdict,
-      # screened): a review comment of the head holds the marker <!-- review-screened <head> -->, and no hold comment of
-      # the screen that names the head is newer than the newest such review comment. A review by hand with no screen
-      # writes no such marker. When such a hold comment is newer (held), a later screen held the head: the decision is
-      # held, so that the label comment says so, and a later step withdraws its check run.
+      # run only when the screen of this run passed the head, also in a run by hand that asked for the screen. A
+      # relabel takes the verdict from the markers of the newest review comment that names the head, also for another
+      # author, as the step that withdraws a check run reads it. It records a check run only when the screen passed the
+      # head in the run of a review (rules.py verdict, screened): a review comment of the head holds the marker
+      # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer than the newest
+      # such review comment. A review by hand with no screen writes no such marker. When such a hold comment is newer
+      # (held), a later screen held the head: the decision is held, so that the label comment says so, and a later step
+      # withdraws its check run. A review by hand with no screen (a review or a rescreen whose route is not screen)
+      # records no check run, as no screen ran in its run. It reads the state of the head in the same way, and keeps
+      # its own verdict. For screened, the decision is hand, and the label comment says that the screen and the review
+      # passed the pull request. For held, the decision is held. Else it is screen, and the label comment says that no
+      # screen passed the head in a run that also reviewed it.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2820,13 +2834,27 @@ jobs:
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
           }
+          # by_hand: for a review or a rescreen with no screen in this run (a review by hand), the state of the head
+          # that the review comments give (rules.py verdict), as relabeled reads it. The run keeps its own verdict, and
+          # records no check run. screened gives the decision hand, and held the decision held. For unscreened, the
+          # import check below gives the decision screen.
+          by_hand() {
+            local reviewed state why
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            read -r _ state <<< "$reviewed"
+            why="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
+            [ "$state" != screened ] || decided hand "$why"
+            why="a screen held $HEAD, and no review comment whose run screened it is newer"
+            [ "$state" != held ] || decided held "$why"
+          }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha"
           # The screen of this run passed the head when the route is screen: the review job, which this step needs to
           # have succeeded, runs on that route only after a screen that passed. A review by hand with no screen has the
-          # route review.
+          # route review (by_hand).
           screen=false verdict=$VERDICT
           [ "$ROUTE" != screen ] || screen=true
           if [ "$RECORD" != true ]; then
@@ -2841,6 +2869,7 @@ jobs:
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
           [ "$TASK" != relabel ] || relabeled
+          [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
           # The variable's text, given only when it is set: an empty value is no variable.
           imports=()
           [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
@@ -2864,15 +2893,18 @@ jobs:
       # what this step finds, so it does not run. A read that fails fails the job. The step runs when the author-kind
       # table's withdraw holds (the first step of this job), for every author: a check run of R12 that an earlier run
       # recorded may stand on the head, whatever the trust job says of the author now. The error of a read that fails,
-      # and of a withdrawal that GitHub refuses (the step after the sign-in), follows the table's retry. For an outside
-      # author, the rescreen pass's retry of the App's writes (a relabel, held.sh due_retry) withdraws the check run
-      # again, an hour or more after this run ends. After a hold that is not tried again names the head, that relabel is
-      # the one App write that the pass tries again for the head, and only when the relabel withdraws: a screen held the
-      # head after each review that screened it, or the newest review of the head gives a blocking finding or the
-      # verdict person (held.sh, consider). Such a relabel records no check run. After REVIEW_TRIES failed tries, this
-      # run among them, the head is not tried again, and the label comment names the next step for Sami (held.sh,
-      # head_stopped). So the error says so. The pass tries no App write of another author's pull request again
-      # (held.sh, consider and access_of), so for such an author the error says to re-run this run.
+      # and of a withdrawal that GitHub refuses (the step after the sign-in), follows the table's retry and the name of
+      # this run. For an outside author, the rescreen pass's retry of the App's writes (a relabel, held.sh due_retry)
+      # withdraws the check run again, an hour or more after this run ends. That retry takes only a run whose name gives
+      # the head (the trust job's named): a CI run, or a run by hand whose input head is set, as each run of the pass
+      # for a pull request sets it. held.sh take records no head for any other run. After a hold that is not tried again
+      # names the head, that relabel is the one App write that the pass tries again for the head, and only when the
+      # relabel withdraws: a screen held the head after each review that screened it, or the newest review of the head
+      # gives a blocking finding or the verdict person (held.sh, consider). Such a relabel records no check run. After
+      # REVIEW_TRIES failed tries, this run among them, the head is not tried again, and the label comment names the
+      # next step for Sami (held.sh, head_stopped). So the error says so. The pass tries no App write of another
+      # author's pull request again (held.sh, consider and access_of), so for such an author, and for a run whose name
+      # gives no head, the error says to re-run this run.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -2898,6 +2930,8 @@ jobs:
           HELD: ${{ steps.decide.outputs.held }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
+          # The head that the name of this run gives (the trust job's named), or empty.
+          NAMED: ${{ needs.trust.outputs.named }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -2916,9 +2950,10 @@ jobs:
             *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
-          # again: what the error of a read that fails says comes next (the author-kind table's retry).
+          # again: what the error of a read that fails says comes next: the rescreen pass's retry when the author-kind
+          # table's retry holds and the name of this run gives the head, else a re-run of this run.
           again=" Re-run this run."
-          if [ "$RETRY" = true ]; then
+          if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
             again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
             again+=" step for Sami."
@@ -2988,7 +3023,8 @@ jobs:
       # withdraws" found, with token A, each with its request: the conclusion neutral, so that the import no longer
       # reads it as the approval of the pull request. A call that fails fails the job, with an error that names the
       # head and the import check run, and says what comes next: the retry of the rescreen pass when the author-kind
-      # table's retry holds (the comment of the step that found it says how), else a re-run of this run.
+      # table's retry holds and the name of this run gives the head (the comment of the step that found it says how),
+      # else a re-run of this run.
       - name: Withdraw the import check runs of the head
         if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.checks != ''
         env:
@@ -2998,11 +3034,14 @@ jobs:
           HEAD: ${{ steps.withdraw.outputs.head }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
+          # The head that the name of this run gives (the trust job's named), or empty.
+          NAMED: ${{ needs.trust.outputs.named }}
         run: |
           set -euo pipefail
-          # again: what the error of a withdrawal that fails says comes next (the author-kind table's retry).
+          # again: what the error of a withdrawal that fails says comes next: the rescreen pass's retry when the
+          # author-kind table's retry holds and the name of this run gives the head, else a re-run of this run.
           again=" Re-run this run."
-          if [ "$RETRY" = true ]; then
+          if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
             again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
             again+=" step for Sami."

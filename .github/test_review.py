@@ -932,13 +932,13 @@ class TrustTest(Runner):
         the notices of a CI run's trust job (reviewed); contents: read is for the checkout of .github/review/held.sh
         alone, its one action (RescreenTrustTest). account is the account whose limit the run counts on, which the
         screen job's name gives; uncounted says that the account counts as at its limit because the trust job did not
-        read every run that could count on it."""
+        read every run that could count on it; named is the head that the run's name gives, or empty."""
         job = JOBS["trust"]
         self.assertEqual(job["permissions"], {"actions": "read", "contents": "read", "issues": "read",
                                               "pull-requests": "read", "checks": "read"})
         self.assertEqual([(s["uses"], s["with"]) for s in job["steps"] if "uses" in s], [(CHECKOUT, HELD_CHECKOUT)])
-        names = ("task", "route", "uncounted", "outsider", "kind", "outside", "account", "number", "head", "comment",
-                 "origin", "tries", "started", "stop")
+        names = ("task", "route", "uncounted", "outsider", "kind", "outside", "account", "number", "head", "named",
+                 "comment", "origin", "tries", "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
         for name in names:
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
@@ -5123,7 +5123,7 @@ class FreshReaderTest(ReaderRunner):
                   "repository, or is one of the GitHub Apps that the workflow's APPS list names.")
         outsider = ("The workflow treats its author as an outside author: the author has no write access to this "
                     "repository, or is a GitHub App that the workflow's APPS list does not name.")
-        unknown = ("GitHub did not say whether its author has write access to this repository, so the workflow treats "
+        unknown = ("GitHub did not say whether its author has write access to this repository. So this review treats "
                    "its author as an outside author.")
         for kind, outside, says in (("writer", "false", writer), ("outsider", "true", outsider),
                                     ("unknown", "false", unknown), ("", "", outsider)):
@@ -5245,7 +5245,8 @@ class FreshReaderTest(ReaderRunner):
         whose first line starts with a form that the verdict after code or the list rules out gets the line of the
         verdict first, and loses that form; the text after it on its line stays. When the rules of code make the
         verdict person, the result line is "Questions for Sami:" with one bullet for the text of each question that
-        the trim does not hold, and "Blocking findings." stays only below it, when the list holds a blocking finding."""
+        the trim does not hold, then a line that says that the review asks the other questions when the trim holds
+        them, and "Blocking findings." stays only below it, when the list holds a blocking finding."""
         question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
         trimmed = "`theories/Fd.v:213` leaves the case open."
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
@@ -5284,9 +5285,10 @@ class FreshReaderTest(ReaderRunner):
         # (rules.py blocking): its line "Blocking findings." never posts. The result line is "Questions for Sami:" with
         # one bullet for the text of each question that the trim does not hold, made inert and closed, in place of the
         # line that the reader kept, also in bold or in another form, or before the trim that dropped it; the text after
-        # the form on its line stays. A trim whose first line the reader wrote in that form keeps it. The verdict
-        # blocking keeps the review's line. With a blocking finding in the list (the soundness rule's person verdict
-        # keeps each one), the reader's "Blocking findings." stays below the questions.
+        # the form on its line stays. When the trim holds the other questions, a line after the bullets says that the
+        # review asks them. A trim whose first line the reader wrote in that form keeps it. The verdict blocking keeps
+        # the review's line. With a blocking finding in the list (the soundness rule's person verdict keeps each one),
+        # the reader's "Blocking findings." stays below the questions.
         review = f"Blocking findings.\n\n1. {trimmed}"
         asked = [{"kind": "question", "ref": "SCOPE.md:301", "optional": False, "text": "Does SCOPE.md:301\nhold?"},
                  {"kind": "question", "ref": None, "optional": True, "text": "Ask @octocat."}]
@@ -5299,7 +5301,8 @@ class FreshReaderTest(ReaderRunner):
                             f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}"),
                            (f"No blocking finding.\n\n{trimmed}", f"{questions}\n\n{trimmed}"),
                            (f"Blocking findings.\n\nDoes SCOPE.md:301 hold? {trimmed}",
-                            f"Questions for Sami:\n\n- Ask @{WJ}octocat.\n\nDoes SCOPE.md:301 hold? {trimmed}")):
+                            f"Questions for Sami:\n\n- Ask @{WJ}octocat.\n\nThe review below asks the other questions."
+                            f"\n\nDoes SCOPE.md:301 hold? {trimmed}")):
             with self.subTest(trim=text):
                 self.assertEqual(trim.with_result(review, text, head, "person", asked), want)
         changed = [*asked, dict(asked[0], kind="change")]
@@ -5363,12 +5366,12 @@ class FreshReaderTest(ReaderRunner):
         and keeps each blocking finding in the list. The model wrote "Blocking findings." with a change item and a
         question, and the reader kept both under that line. The posted text starts with "Questions for Sami:" and a
         bullet for the question on soundness alone: the reader's text holds the other question already (as plain
-        reads both), so it does not post twice. Then the reader's "Blocking findings." line and the findings after it
-        stay, so a blocking finding never reads as a question for Sami; also in bold, with the finding on its line. A
-        question that the reader reworded gets its bullet. With no blocking finding in the list (rules.py blocking made
-        the verdict person), the form "Blocking findings." goes, and the question after it on its line stays, with no
-        bullet: the result line says that each question is in the review below. In the comment step, the same review
-        posts so."""
+        reads both), so it does not post twice, and the line after the bullet says that the review asks the other
+        questions. Then the reader's "Blocking findings." line and the findings after it stay, so a blocking finding
+        never reads as a question for Sami; also in bold, with the finding on its line. A question that the reader
+        reworded gets its bullet. With no blocking finding in the list (rules.py blocking made the verdict person), the
+        form "Blocking findings." goes, and the question after it on its line stays, with no bullet: the result line
+        says that each question is in the review below. In the comment step, the same review posts so."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `step_ok`. Prove it or drop it."}
@@ -5378,8 +5381,9 @@ class FreshReaderTest(ReaderRunner):
         items = [change, asked, sound]
         model = "Blocking findings.\n\nMore."
         kept = f"Blocking findings.\n\n- {change['text']}\n- {asked['text']}"
+        others = "The review below asks the other questions."
         self.assertEqual(trim.with_result(model, kept, head, "person", items),
-                         f"Questions for Sami:\n\n- {sound['text']}\n\n{kept}")
+                         f"Questions for Sami:\n\n- {sound['text']}\n\n{others}\n\n{kept}")
         for text in (f"Blocking findings.\n\n- {change['text']}\n- Does fork_spec match Linux for CLONE_VM? See "
                      "theories/B.v line 40.", f"**Blocking findings.** {change['text']}"):
             with self.subTest(trim=text):
@@ -5396,7 +5400,7 @@ class FreshReaderTest(ReaderRunner):
         self.assertEqual((rc, got.get("verdict")), (0, "person"), out)
         shown = got["body"].split(self.WHOLE, 1)[0]
         text = shown.split(f"**Automated review** of commit {HEAD[:12]}\n\n", 1)[1]
-        self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {sound['text']}\n\n{kept}\n\n"), text)
+        self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {sound['text']}\n\n{others}\n\n{kept}\n\n"), text)
         self.assertEqual(shown.count("does `fork_spec` match"), 1, shown)
 
     def test_a_question_that_the_result_line_lists_is_not_added_a_second_time(self):
@@ -5439,6 +5443,32 @@ class FreshReaderTest(ReaderRunner):
                 ("no question in the list", [change], findings, "Questions for Sami: this review lists none.")):
             with self.subTest(case=case):
                 posted = trim.comment(review, trimmed, items, head, section, foot, verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
+
+    def test_a_result_line_that_lists_some_questions_says_that_the_review_asks_the_others(self):
+        """Fresh reader round 11 (finding 4): under the verdict person, the result line has a bullet for each question
+        of the list that the trim does not hold. When the trim holds the other questions, the bullets alone would read
+        as the whole list, and the question after the blocking findings would stand under no heading. So the line "The
+        review below asks the other questions." follows the bullets. When the trim holds no question of the list, the
+        bullets are the whole list, and no such line posts. The comment as it posts: the head, the result line, the
+        trimmed text whole, the section and the foot."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `step_ok`. Prove it or drop it."}
+        scope = {"kind": "question", "ref": "SCOPE.md:301", "optional": False,
+                 "text": "Does the change keep the model sound?"}
+        sound = dict(rules.QUESTION)
+        findings = f"Blocking findings.\n\n- {change['text']}"
+        review = f"{findings}\n\n{sound['text']}\n\n{scope['text']} See SCOPE.md:301."
+        bullet = f"- {scope['text']} (`SCOPE.md:301`)"
+        for case, trimmed, line in (
+                ("the trim holds the other question", f"{findings}\n\n{sound['text']}",
+                 f"Questions for Sami:\n\n{bullet}\n\nThe review below asks the other questions."),
+                ("the trim holds no question", findings, f"Questions for Sami:\n\n{bullet}\n- {sound['text']}")):
+            with self.subTest(case=case):
+                posted = trim.comment(review, trimmed, [change, scope, sound], head, section, foot, verdict="person")
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
 
@@ -13437,7 +13467,7 @@ class ImportCheckTest(ReaderRunner):
 
     def judge(self, paths, verdict="pass", value=None, trust=None, screen="clean", mint=True, event="workflow_run",
               changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",), outside="true",
-              listed=(), key=True):
+              listed=(), key=True, named=None):
         """The post job, then the comment job's label step, each when its if holds, for a run whose trust job gave
         trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen (none for the route review)
         and whose review gave verdict (an approval has no review job), while the variable REPO_PAIRS_IMPORT_PATHS is
@@ -13446,11 +13476,17 @@ class ImportCheckTest(ReaderRunner):
         its changed_files is changed, their count by default. comments and labels are #7's own, outside the gather
         job's outside of before round 11 (no step reads it now: the trust job's outside is trust's), and listed the
         check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False,
-        and the environment post holds no key of the App when key is False (its secret is empty).
+        and the environment post holds no key of the App when key is False (its secret is empty). named is the trust
+        job's output named, the head that the run's name gives. When neither named nor trust gives it, it is the trust
+        job's head for a workflow_run (the name of a CI run gives its head), and empty for a run by hand (no input
+        head).
         What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
         it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
         and the label comments posted or edited."""
         trust = dict(trust or self.REVIEWED)
+        if named is not None:
+            trust["named"] = named
+        trust.setdefault("named", trust["head"] if event == "workflow_run" else "")
         files = [{"filename": p, "previous_filename": None} if isinstance(p, str)
                  else {"filename": p[0], "previous_filename": p[1]} for p in paths]
         n = 2
@@ -13592,6 +13628,26 @@ class ImportCheckTest(ReaderRunner):
                               "github.repository": REPO})
                 rc, out, _ = self.run_script(s["run"], **dict({"GH_TOKEN": ""}, **env))
                 self.assertEqual((rc, len(writes(self.api))), (rc_wanted, posted), out)
+
+    def test_the_post_job_writes_and_logs_only_the_answers_that_its_steps_read(self):
+        """The fresh reader of round 11 (finding 3): the steps of the post job read the answers approve, record,
+        withdraw and retry of the author-kind table, and no step of it reads label: the label steps of the comment and
+        hold jobs decide it, with the trust job's kind. So the first step of the post job writes and logs those four
+        alone, as rules.py's table gives them. For the review of #7 by a writer (outside false) and by mallory (outside
+        true), its log names no label."""
+        self.checkout()
+        s = step("post", "Read the author-kind table")
+        writer = {"approve": "false", "record": "false", "withdraw": "true", "retry": "false"}
+        for outside, answers in (("false", writer), ("true", dict(writer, record="true", retry="true"))):
+            with self.subTest(outside=outside):
+                env = filled(s["env"], {"needs.trust.outputs.task": "review", "needs.trust.outputs.number": "7",
+                                        "needs.trust.outputs.outside": outside, "needs.trust.outputs.outsider": ""})
+                rc, out, got = self.run_script(s["run"], **env)
+                self.assertEqual((rc, got), (0, answers), out)
+                said = " ".join(f"{k}={v}" for k, v in answers.items())
+                self.assertIn(f"#7: the author-kind table gives, for the task review and outside={outside}: {said} \n",
+                              out)
+                self.assertNotIn("label", out)
 
     def test_with_no_variable_the_check_run_and_waits_on_theorem_with_a_merge_on_this_repository(self):
         """The pull request of the first case with no variable REPO_PAIRS_IMPORT_PATHS: the decision step and the
@@ -14436,15 +14492,19 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(have, want, got["log"])
 
     def test_a_withdrawal_that_fails_promises_the_retry_of_the_rescreen_pass_for_an_outside_author_alone(self):
-        """Round 11 (the author-kind table: withdraw for every author, retry for an outside author alone) and test
-        v10 b7 (review.yml's errors of a withdrawal): the post job withdraws the import check run of a head for every
-        author, as a check run that an earlier run recorded may stand on it. The rescreen pass tries no App write of
-        another author's pull request again (held.sh, consider and access_of), so only the error of an outside
-        author's pull request says that the pass tries the withdrawal again, and any other says "Re-run this run.".
-        GitHub refuses the read of the check runs of HEAD, then the PATCH of the check run 901, after a blocking finding
-        or the verdict person, for: a writer's pull request (eve pushed to alice's #7, and the screen passed); alice's
-        review by hand of mallory's #7 while GitHub does not say whether mallory has write access (outside false); the
-        review of mallory's #7; and alice's review by hand of it (outside true)."""
+        """Round 11 (the author-kind table: withdraw for every author, retry for an outside author alone), test v10 b7
+        (review.yml's errors of a withdrawal) and the fresh reader of round 11 (finding 1): the post job withdraws the
+        import check run of a head for every author, as a check run that an earlier run recorded may stand on it. The
+        rescreen pass tries no App write of another author's pull request again (held.sh, consider and access_of), and
+        no run whose name gives no head (held.sh, take and due_retry). So only the error of an outside author's run
+        whose name gives the head (the trust job's output named) says that the pass tries the withdrawal again: the run
+        of a CI run, or a run by hand whose input head is set, as each run of the pass sets it. Any other says "Re-run
+        this run.". GitHub refuses the read of the check runs of HEAD, then the PATCH of the check run 901, after a
+        blocking finding or the verdict person, for: a writer's pull request (eve pushed to alice's #7, and the screen
+        passed); alice's review by hand of mallory's #7 while GitHub does not say whether mallory has write access
+        (outside false); the review of the CI run of mallory's #7; alice's review by hand of it (outside true) with no
+        input head, and with the input head HEAD; and the rescreen pass's relabel of HEAD, which reads the review
+        comment of HEAD."""
         listed, _others = self.recorded()
         find = "Find the import check runs that a later review or screen withdraws"
         withdraw = "Withdraw the import check runs of the head"
@@ -14452,22 +14512,28 @@ class ImportCheckTest(ReaderRunner):
                  f" run ends. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment"
                  " names the next step for Sami.")
         cases = (("a writer's pull request", dict(self.REVIEWED, outsider="eve", outside="false"), "workflow_run",
-                  False),
+                  HEAD, False),
                  ("a review by hand while GitHub does not say of the author", dict(self.BY_HAND, outside="false"),
-                  "workflow_dispatch", False),
-                 ("an outside pull request", self.REVIEWED, "workflow_run", True),
-                 ("a review by hand of an outside pull request", self.BY_HAND, "workflow_dispatch", True))
+                  "workflow_dispatch", "", False),
+                 ("an outside pull request", self.REVIEWED, "workflow_run", HEAD, True),
+                 ("a review by hand of an outside pull request with no input head", self.BY_HAND, "workflow_dispatch",
+                  "", False),
+                 ("a review by hand of an outside pull request with the input head", self.BY_HAND, "workflow_dispatch",
+                  HEAD, True),
+                 ("the rescreen pass's relabel of the head", self.RELABEL, "workflow_dispatch", HEAD, True))
         for refused, name, error in (
                 (f"repos/{REPO}/commits/{HEAD}/check-runs", find,
                  f"::error::the import check runs of {HEAD} could not be read, so none of them is withdrawn."),
                 (f"repos/{REPO}/check-runs/901", withdraw, f"::error::the import check run 901 of {HEAD} could not be "
                                                            "withdrawn.")):
             self.refuse(refused, 502, "Bad Gateway")
-            for case, trust, event, promised in cases:
+            for case, trust, event, named, promised in cases:
                 for verdict in ("blocking", "person"):
                     with self.subTest(step=name, case=case, verdict=verdict):
                         start = len(self.logs)
-                        got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event=event, listed=[listed])
+                        comments = [review_of(HEAD, verdict)] if trust["task"] == "relabel" else ()
+                        got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event=event, listed=[listed],
+                                         comments=comments, named=named)
                         logs = "\n".join(self.logs[start:])
                         self.assertEqual((got["steps"].get(name), got["result"]), ("failure", "failure"), logs)
                         self.assertIn(error + (retry if promised else " Re-run this run.") + "\n", logs)
@@ -14545,6 +14611,46 @@ class ImportCheckTest(ReaderRunner):
                     self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD}, and "
                                   "no review comment whose run screened it is newer).", "\n".join(self.logs))
                     self.assertNotIn("No automated screen", body)
+
+    def test_a_review_by_hand_after_a_screened_review_of_the_head_says_that_a_screen_passed_it(self):
+        """OSSV-221's architect's ruling of 2026-11-20 18:01Z (the fresh reader of round 11, outside its brief): the CI
+        run of mallory's #7 screened and reviewed HEAD, and its review comment holds the marker
+        <!-- review-screened <head> -->. Then alice reviews HEAD by hand with no screen, and the review passes it. The
+        post job reads the state of the head from the review comments, as a relabel does (rules.py verdict). A screen
+        passed HEAD in the run of a review, so the decision is hand: the run records no check run, as no screen ran in
+        it, and makes no write. The label comment says that the automated screen and the automated review passed the
+        pull request, not that no screen passed its head, and names Sami's steps. With no review comment of HEAD whose
+        run screened it, the decision is still screen, and the label comment says that no screen passed the head. When
+        a hold comment of the screen that names HEAD is newer than the screened review comment, the decision is held,
+        and the label comment says that a screen held the head."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(90))
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        texts = {rules.PASSED, rules.UNSCREENED, rules.SCREEN_HELD_AFTER}
+        for case, comments, decision, said, text in (
+                ("a screened review of the head", [screened], "hand",
+                 f"a review by hand records no check run, but a screen passed {HEAD} in the run of an earlier review",
+                 rules.PASSED),
+                ("no screened review of the head", [review_of(HEAD, at=ago(90), screened=False)], "screen",
+                 "1 of 1 changed files read", rules.UNSCREENED),
+                ("a screened review, then a hold of the screen", [screened, hold], "held",
+                 f"a screen held {HEAD}, and no review comment whose run screened it is newer",
+                 rules.SCREEN_HELD_AFTER)):
+            with self.subTest(case=case):
+                start = len(self.logs)
+                got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
+                                 event="workflow_dispatch", comments=comments, listed=[listed])
+                self.assertNotRecorded(got, decision)
+                self.assertEqual((got["result"], got["steps"][self.RECORD], got["steps"][MINT_A]),
+                                 ("success", "skipped", "skipped"), self.logs)
+                self.assertIn(f"#7 at {HEAD}: the decision on the import check is {decision} ({said}).",
+                              "\n".join(self.logs[start:]))
+                body = self.assertWaits(got, self.SOME, text, value=self.LPS)
+                for other in texts - {text}:
+                    self.assertNotIn(other, body)
 
     def test_a_relabel_after_a_later_screen_hold_of_the_head_records_nothing_and_withdraws_the_check_run(self):
         """R12: the screen passed HEAD, the review passed it, and the check run was recorded. A later screen of the same
@@ -14648,7 +14754,7 @@ class ImportCheckTest(ReaderRunner):
                               f"withdrawn.{again}", self.logs[-1])
 
 
-def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False):
+def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False, rerun=False):
     """What the approved author-kind table gives for one cell of KindTableTest. state: the state of the label call
     (None: no label call runs; KindTableTest.UNCHANGED: a label call that changes nothing). decision: the post job's
     decision on the import check run. app: each write of the App, in order: R records the import check run, W withdraws
@@ -14656,9 +14762,11 @@ def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=No
     comment that the run writes. stop: the trust job's exit status and a line of its log, when it routes nothing. owed:
     what the rescreen pass does first for #7: it starts the run of the cell (starts), starts none of its task (none), or
     fails for #7 (fails). jobs: the jobs that run. said: a line that the log holds. marked: the label comment records
-    the catch-up of the head."""
+    the catch-up of the head. rerun: the name of the run gives no head, so the error of a withdrawal that fails says
+    "Re-run this run." for an outside author too (the fresh reader of round 11, finding 1): the rescreen pass takes no
+    such run again (held.sh, take and due_retry)."""
     return {"state": state, "decision": decision, "app": app, "held": held, "stop": stop, "owed": owed, "jobs": jobs,
-            "said": said, "marked": marked}
+            "said": said, "marked": marked, "rerun": rerun}
 
 
 class KindTableTest(Scheduled, ReaderRunner):
@@ -14673,7 +14781,7 @@ class KindTableTest(Scheduled, ReaderRunner):
     jobs did: each state label added or taken off, the label comment, each write of the App (an approval, the POST or
     the PATCH of a check run, a close or a reopen), the hold comment, and the text of a stop. For a cell that withdraws,
     the post job runs again while GitHub refuses the read of the check runs of the head: only for an outside author
-    does its error promise the rescreen pass's retry.
+    does its error promise the rescreen pass's retry, and only when the name of the run gives the head (rerun).
 
     The expected values are CELLS, which this class writes from the approved document: which run stops, the state of
     each label call, the label of each state, and each write of the App. The test does not read them from the
@@ -14762,16 +14870,18 @@ class KindTableTest(Scheduled, ReaderRunner):
         ("relabel", "person", "unknown", want(UNCHANGED, "writer", "W")),
         ("relabel", "held", "unknown", want(UNCHANGED, "held", "W")),
         ("relabel", "held-after", "unknown", want(UNCHANGED, "held", "W")),
-        # Review by hand, no screen (14:00Z ruling 1: an outside pull request's state by verdict, decision screen). The
-        # soundness rule holds back for carol too (16:22Z): her proof gets the verdict person.
+        # Review by hand, no screen (14:00Z ruling 1: an outside pull request's state by verdict, decision screen), with
+        # no earlier review of the head whose run screened it (ImportCheckTest holds the decision hand after one). The
+        # soundness rule holds back for carol too (16:22Z): her proof gets the verdict person. Its name gives no head
+        # (rerun), as for the run by hand of the routes screen and approve below.
         ("hand", "pass", "writer", want("reviewed", "writer")),
         ("hand", "blocking", "writer", want("reviewed", "writer", "W")),
         ("hand", "person", "writer", want("reviewed", "writer", "W")),
         ("hand", "proof", "writer", want("reviewed", "writer")),
         ("hand", "pass", "outsider", want("decide", "screen")),
-        ("hand", "blocking", "outsider", want("change", "screen", "W")),
-        ("hand", "person", "outsider", want("person", "screen", "W")),
-        ("hand", "proof", "outsider", want("person", "screen", "W")),
+        ("hand", "blocking", "outsider", want("change", "screen", "W", rerun=True)),
+        ("hand", "person", "outsider", want("person", "screen", "W", rerun=True)),
+        ("hand", "proof", "outsider", want("person", "screen", "W", rerun=True)),
         ("hand", "pass", "unknown", want(UNCHANGED, "writer")),
         ("hand", "blocking", "unknown", want(UNCHANGED, "writer", "W")),
         ("hand", "person", "unknown", want(UNCHANGED, "writer", "W")),
@@ -14782,9 +14892,9 @@ class KindTableTest(Scheduled, ReaderRunner):
         ("screen", "person", "writer", want("reviewed", "writer", "W")),
         ("screen", "held", "writer", want("screen", "", "W", HELD_REVIEW)),
         ("screen", "pass", "outsider", want("decide", "record", "R")),
-        ("screen", "blocking", "outsider", want("change", "verdict", "W")),
-        ("screen", "person", "outsider", want("person", "person", "W")),
-        ("screen", "held", "outsider", want("screen", "", "W", HELD_REVIEW)),
+        ("screen", "blocking", "outsider", want("change", "verdict", "W", rerun=True)),
+        ("screen", "person", "outsider", want("person", "person", "W", rerun=True)),
+        ("screen", "held", "outsider", want("screen", "", "W", HELD_REVIEW, rerun=True)),
         ("screen", "pass", "unknown", want(UNCHANGED, "writer")),
         ("screen", "blocking", "unknown", want(UNCHANGED, "writer", "W")),
         ("screen", "person", "unknown", want(UNCHANGED, "writer", "W")),
@@ -14810,7 +14920,7 @@ class KindTableTest(Scheduled, ReaderRunner):
         ("approve", "clean", "outsider", want(app="A")),
         ("approve", "steering", "outsider", want("steering")),
         ("approve", "no-key", "outsider", want("no-key")),
-        ("approve", "held", "outsider", want("screen", "", "W", "Automated start of the checks held.")),
+        ("approve", "held", "outsider", want("screen", "", "W", "Automated start of the checks held.", rerun=True)),
         ("approve", "clean", "unknown", want(stop=KNOWN)),
         # Conflict: the conflict comment posts for every author.
         ("conflict", "dirty", "writer", want("conflict")),
@@ -15067,7 +15177,8 @@ class KindTableTest(Scheduled, ReaderRunner):
 
     def run_cell(self, route, case, kind, w):
         """The run of the cell (start), its trust step, which must stop the run as the cell says or route it with the
-        author's kind, and then the jobs after it (jobs_after). None when no job runs after the trust job."""
+        author's kind and the head that the run's name gives (named), and then the jobs after it (jobs_after). None when
+        no job runs after the trust job."""
         args, given = self.start(route, case, kind, w)
         if args is None:
             return None
@@ -15080,8 +15191,9 @@ class KindTableTest(Scheduled, ReaderRunner):
             self.assertEqual(ran_jobs(ran) - {"trust"}, set(), out)
             return None
         self.assertEqual(rc, 0, out)
-        self.assertEqual((trust.get("kind"), trust.get("outside")),
-                         (kind, "true" if kind == "outsider" else "false" if kind else ""), out)
+        named = inputs.get("head") or ""
+        self.assertEqual((trust.get("kind"), trust.get("outside"), trust.get("named")),
+                         (kind, "true" if kind == "outsider" else "false" if kind else "", named), out)
         self.forget()
         return self.jobs_after(trust, event, **given)
 
@@ -15150,10 +15262,11 @@ class KindTableTest(Scheduled, ReaderRunner):
         steps = run_job(self, "post", dict(got["before post"]), ApproveTest.TOKENS)
         log = "\n".join(self.logs[start:])
         self.assertEqual(steps[self.FIND], "failure", log)
-        again = self.RETRY if kind == "outsider" else " Re-run this run."
+        promised = kind == "outsider" and not w["rerun"]
+        again = self.RETRY if promised else " Re-run this run."
         self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is withdrawn."
                       f"{again}\n", log)
-        self.assertEqual("The rescreen pass tries" in log, kind == "outsider", log)
+        self.assertEqual("The rescreen pass tries" in log, promised, log)
         self.assertEqual(self.app_writes(), [], log)
 
     def test_each_cell_of_the_author_kind_table(self):
