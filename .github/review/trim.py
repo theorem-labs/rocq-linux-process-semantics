@@ -46,14 +46,18 @@ The first line of a pull request's review is its result (.github/review.md, "The
 the form of RESULTS for its verdict. A pull request's review is one whose head holds the marker
 <!-- review-head <commit> -->. --verdict is the review's verdict after the rules of code (rules.py soundness and
 blocking), and the posted first line takes its form: "No blocking finding." for pass, "Blocking findings." for
-blocking, and "Questions for Sami:" for person. A trimmed text whose first line starts with that form posts as the
-reader gave it. Else a result line goes at the start of the trimmed text. It is the first line of the review when
-that line starts with the form: the reader dropped it. Else it is the form, for person with one bullet for the text
-of each question item after it. The trimmed text then loses its first line when that line starts with another form:
-the whole line goes, with any text after the form on it, so that no part of another result line posts. So the posted
-result never says another verdict than the one of code. For example, a review that the soundness rule made person
-never starts with "No blocking finding.". With no --verdict, the form is the one that the review's first line starts
-with. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
+blocking, and "Questions for Sami:" for person. First the trimmed text loses each form at the start of its first line
+that the verdict or the list rules out: "No blocking finding." under blocking or person, and "Blocking findings."
+under pass or person when the list holds no blocking finding (a change item that is not optional). The text after
+such a form on its line stays, as a line of its own. A trimmed text whose first line then starts with the form of the
+verdict posts as it is. Else a result line goes at the start of the trimmed text. It is the first line of the review
+when that line starts with the form: the reader dropped it. Else it is the form, for person with one bullet for the
+text of each question item that the trimmed text does not hold. So under person, a list with a blocking finding (the
+soundness rule keeps each one) keeps the reader's "Blocking findings." line and the findings after it, below the
+questions. The posted result never says another verdict than the one of code: for example, a review that the
+soundness rule made person never starts with "No blocking finding.". With no --verdict, the form is the one that the
+review's first line starts with. An issue's review has no fixed form, and its trimmed text stays as the reader gave
+it.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -1338,36 +1342,80 @@ def result_of(line):
     return next((form for form in RESULTS if start.startswith(form)), None)
 
 
-def without_result(text):
-    """text with its first line that is not empty taken off when that line starts with a form of RESULTS (result_of,
-    also in bold or in emphasis), whatever else the line holds, and closed again: no part of that result line stays.
-    A text whose first line starts with no form stays as it is."""
-    lines = text.split("\n")
-    k = next((n for n, line in enumerate(lines) if line.strip()), None)
-    if k is None or result_of(lines[k]) is None:
-        return text
-    return closed("\n".join(lines[k + 1:]).strip("\n"))
+def blocking_finding(item):
+    """Whether item of the list is a blocking finding: a change item whose optional is false, as rules.py
+    blocking_finding reads it. An item with no optional key is not optional."""
+    return item.get("kind") == "change" and not item.get("optional")
+
+
+def contradicted(form, verdict, items):
+    """Whether the form of RESULTS, at the start of the trimmed text, says what verdict, the verdict after the rules of
+    code, or items, the list, rule out: "No blocking finding." under blocking or person, and "Blocking findings." under
+    pass or person when items hold no blocking finding. "Questions for Sami:" can head the questions of any verdict."""
+    if form == RESULTS[0]:
+        return verdict in ("blocking", "person")
+    if form == RESULTS[1]:
+        return verdict != "blocking" and not any(blocking_finding(i) for i in items)
+    return False
+
+
+def after_form(line, form):
+    """The text of line after form, the form of RESULTS that line starts with, with the Markdown emphasis around the
+    form taken off: in bold or in emphasis, also with the form's last character (. or :) after the emphasis. An
+    emphasis that opens before the form and that the rest of the line closes stays around that rest. A line in any
+    other Markdown form gives the rest as plain reads it, so that no word of it goes."""
+    head, last = re.escape(form[:-1]), re.escape(form[-1])
+    for pattern, keep in ((rf"[ \t]*([*_]*){head}{last}\1[ \t]*", False),
+                          (rf"[ \t]*([*_]*){head}\1{last}[ \t]*", False),
+                          (rf"[ \t]*([*_]+){head}{last}[ \t]*", True)):
+        m = re.match(pattern, line)
+        if m:
+            return (m.group(1) if keep else "") + line[m.end():]
+    return plain(line).lstrip()[len(form):].strip()
+
+
+def without_contradicted(text, verdict, items):
+    """text with each form of RESULTS at the start of its first line that is not empty taken off while verdict or
+    items contradict it (contradicted), and closed again. The text after the form on its line stays, as a line of its
+    own (after_form), and is read again: it can start with a form too. A text whose first line starts with no such
+    form stays as it is."""
+    lines, changed = text.split("\n"), False
+    while True:
+        k = next((n for n, line in enumerate(lines) if line.strip()), None)
+        form = None if k is None else result_of(lines[k])
+        if form is None or not contradicted(form, verdict, items):
+            break
+        rest = after_form(lines[k], form)
+        lines, changed = ([rest] if rest.strip() else []) + lines[k + 1:], True
+    return closed("\n".join(lines).strip("\n")) if changed else text
 
 
 def with_result(review, trimmed, head, verdict="", items=()):
     """trimmed, whose first line that is not empty starts with the form of RESULTS for verdict (FORMS), the verdict
-    after the rules of code, in a pull request's review (head holds REVIEW_HEAD). A trimmed text whose first line
-    starts with that form stays as the reader gave it. Else the result line goes first, made inert and closed, as an
+    after the rules of code, in a pull request's review (head holds REVIEW_HEAD). First trimmed loses each form at the
+    start of its first line that verdict or items contradict (without_contradicted). A trimmed text whose first line
+    then starts with the form of verdict stays as it is. Else the result line goes first, made inert and closed, as an
     added item does: the first line of review that is not empty when it starts with that form (the reader dropped it),
-    else the form, for person with one bullet for the text of each question item of items after it. trimmed then
-    loses its first line, whole, when that line starts with another form of RESULTS (without_result). With no
-    verdict, the form is the one that the first line of review starts with. An issue's review, and a review with no
-    verdict whose first line has no such form, stay as the reader gave them."""
+    else the form, for person with one bullet for the text of each question item of items that trimmed does not hold
+    (both as plain reads them, with their white space made one space). So under person, a list with a blocking
+    finding (the soundness rule keeps each one) keeps the reader's "Blocking findings." line and what follows it,
+    after the questions. With no verdict, the form is the one that the first line of review starts with, and the
+    verdict is that form's. An issue's review, and a review with no verdict whose first line has no such form, stay
+    as the reader gave them."""
     line = first_line(review)
     form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
         return trimmed
+    verdict = next(v for v, f in FORMS.items() if f == form)
+    trimmed = without_contradicted(trimmed, verdict, items)
     if result_of(first_line(trimmed)) == form:
         return trimmed
     if result_of(line) != form:
-        questions = [" ".join(i["text"].split()) for i in items if i.get("kind") == "question"]
+        held = " ".join(plain(trimmed).split())
+        questions = [q for q in (" ".join(i["text"].split()) for i in items if i.get("kind") == "question")
+                     if " ".join(plain(inert(q)).split()) not in held]
         line = "\n".join([form, "", *(f"- {q}" for q in questions)]) if form == RESULTS[2] and questions else form
-    return "\n\n".join(p for p in (closed(inert(line.strip())), without_result(trimmed)) if p)
+    return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
 
 def comment(review, trimmed, items, head="", section="", foot="", verdict=""):

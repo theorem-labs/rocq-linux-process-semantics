@@ -5167,9 +5167,10 @@ class FreshReaderTest(ReaderRunner):
         finding.", "Blocking findings." or "Questions for Sami:" with the subject of each question gets the review's
         first line back at the start of the trimmed text, made inert and closed, as an added item is. A trim that keeps
         that line, also in bold, posts as the reader gave it. The block holds the whole review in each case. A trim
-        whose first line has the form of another verdict gets the line of the verdict after code first, and loses that
-        whole line. When the rules of code make the verdict person, the result line is "Questions for Sami:" with one
-        bullet for the text of each question, never "Blocking findings."."""
+        whose first line starts with a form that the verdict after code or the list rules out gets the line of the
+        verdict first, and loses that form; the text after it on its line stays. When the rules of code make the
+        verdict person, the result line is "Questions for Sami:" with one bullet for the text of each question that
+        the trim does not hold, and "Blocking findings." stays only below it, when the list holds a blocking finding."""
         question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
         trimmed = "`theories/Fd.v:213` leaves the case open."
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
@@ -5193,49 +5194,60 @@ class FreshReaderTest(ReaderRunner):
         self.assertEqual(trim.with_result(f"{line}\n\nMore.", trimmed, head),
                          f"Blocking findings. <details>@{WJ}octocat\n\n</details>\n\n{trimmed}")
         # The verdict is pass. A trim whose first line has its form keeps that line, also when the review's line has
-        # another form. A trim whose first line has the form of another verdict gets the review's line first when that
-        # line has the form of the pass, else "No blocking finding.", and loses that whole line: no fragment of it, such
-        # as the subject of a question, posts.
+        # another form. A trim whose first line is "Blocking findings." (the list holds no blocking finding) gets the
+        # review's line first when that line has the form of the pass, else "No blocking finding.", and loses that
+        # form. A line "Questions for Sami: ..." of the reader stays whole below the line of the pass: the pass rules
+        # out no question, and no fragment of that line posts.
         for line, text, want in (
                 ("Blocking findings.", f"**No blocking finding.** {trimmed}", f"**No blocking finding.** {trimmed}"),
                 ("No blocking finding.", f"Blocking findings.\n\n{trimmed}", f"No blocking finding.\n\n{trimmed}"),
                 ("Blocking findings.", f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}",
-                 f"No blocking finding.\n\n{trimmed}")):
+                 f"No blocking finding.\n\nQuestions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}")):
             with self.subTest(review=line, trim=text):
                 self.assertEqual(trim.with_result(f"{line}\n\nMore.", text, head, "pass"), want)
-        # A review whose list holds a question, and whose verdict the rules of code made person (rules.py blocking, or
-        # the soundness rule, which keeps each blocking finding): its line "Blocking findings." never posts. The result
-        # line is "Questions for Sami:" with one bullet for the text of each question, made inert and closed, in place
-        # of the line that the reader kept, also in bold or in another form, or before the trim that dropped it. A trim
-        # whose first line the reader wrote in that form keeps it. The verdict blocking keeps the review's line.
+        # A review whose list holds a question and no blocking finding, and whose verdict the rules of code made person
+        # (rules.py blocking): its line "Blocking findings." never posts. The result line is "Questions for Sami:" with
+        # one bullet for the text of each question that the trim does not hold, made inert and closed, in place of the
+        # line that the reader kept, also in bold or in another form, or before the trim that dropped it; the text after
+        # the form on its line stays. A trim whose first line the reader wrote in that form keeps it. The verdict
+        # blocking keeps the review's line. With a blocking finding in the list (the soundness rule's person verdict
+        # keeps each one), the reader's "Blocking findings." stays below the questions.
         review = f"Blocking findings.\n\n1. {trimmed}"
         asked = [{"kind": "question", "ref": "SCOPE.md:301", "optional": False, "text": "Does SCOPE.md:301\nhold?"},
                  {"kind": "question", "ref": None, "optional": True, "text": "Ask @octocat."}]
         questions = f"Questions for Sami:\n\n- Does SCOPE.md:301 hold?\n- Ask @{WJ}octocat."
         for text, want in ((trimmed, f"{questions}\n\n{trimmed}"),
                            (f"Blocking findings.\n\n{trimmed}", f"{questions}\n\n{trimmed}"),
-                           (f"**Blocking findings.** {trimmed}", questions),
+                           (f"**Blocking findings.** {trimmed}", f"{questions}\n\n{trimmed}"),
                            ("**Blocking findings**.", questions),
                            (f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}",
                             f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}"),
-                           (f"No blocking finding.\n\n{trimmed}", f"{questions}\n\n{trimmed}")):
+                           (f"No blocking finding.\n\n{trimmed}", f"{questions}\n\n{trimmed}"),
+                           (f"Blocking findings.\n\nDoes SCOPE.md:301 hold? {trimmed}",
+                            f"Questions for Sami:\n\n- Ask @{WJ}octocat.\n\nDoes SCOPE.md:301 hold? {trimmed}")):
             with self.subTest(trim=text):
                 self.assertEqual(trim.with_result(review, text, head, "person", asked), want)
-        for verdict, items, want in (("blocking", asked, f"Blocking findings.\n\n{trimmed}"),
-                                     ("person", [*asked, dict(asked[0], kind="change")], f"{questions}\n\n{trimmed}")):
-            with self.subTest(verdict=verdict, items=items):
-                self.assertEqual(trim.with_result(review, trimmed, head, verdict, items), want)
+        changed = [*asked, dict(asked[0], kind="change")]
+        for verdict, items, text, want in (
+                ("blocking", asked, trimmed, f"Blocking findings.\n\n{trimmed}"),
+                ("person", changed, trimmed, f"{questions}\n\n{trimmed}"),
+                ("person", changed, f"Blocking findings.\n\n{trimmed}",
+                 f"{questions}\n\nBlocking findings.\n\n{trimmed}")):
+            with self.subTest(verdict=verdict, items=items, trim=text):
+                self.assertEqual(trim.with_result(review, text, head, verdict, items), want)
 
     def test_the_posted_result_line_takes_the_form_of_the_verdict_after_code(self):
-        """Fresh reader round 10 (N-M2): .github/review.md ("The comment") gives the result line of each verdict: "No
-        blocking finding." for pass, "Blocking findings." for blocking, and "Questions for Sami:" with the subject of
-        each question for person. The verdict after the rules of code decides the line, not the model or the reader.
-        For each verdict, a trim whose first line has the form of another verdict, also in bold, posts the line of the
-        verdict first and loses that whole line, also the text after the form on it, whether the model's first line had
-        no form or the wrong one. A model's first line in the form of the verdict goes first in its place. In the
-        comment step, the soundness rule makes a review whose model wrote "No blocking finding." person, and the posted
-        review starts with "Questions for Sami:" and the question on soundness, with no part of the reader's line "No
-        blocking finding. ..."."""
+        """Fresh reader round 10 (N-M2) and round 11 (R11-M1): .github/review.md ("The comment") gives the result line
+        of each verdict: "No blocking finding." for pass, "Blocking findings." for blocking, and "Questions for Sami:"
+        with the subject of each question for person. The verdict after the rules of code decides the line, not the
+        model or the reader. For each verdict, a trim whose first line starts with a form that the verdict or the list
+        rules out ("No blocking finding." under blocking or person, "Blocking findings." under pass or person when the
+        list holds no blocking finding), also in bold, posts the line of the verdict first and loses that form, whether
+        the model's first line had no form or the wrong one. The text after the form on its line stays, as a line of
+        its own. A model's first line in the form of the verdict goes first in its place. A line "Questions for Sami:
+        ..." of the reader stays whole below the line of pass or blocking. In the comment step, the soundness rule makes
+        a review whose model wrote "No blocking finding." person: the posted review starts with "Questions for Sami:"
+        and the question on soundness, then the reader's text after its "No blocking finding."."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         body = "`theories/Fd.v:213` leaves the case open."
         asked = [{"kind": "question", "ref": None, "optional": False, "text": "Does SCOPE.md:301 hold?"}]
@@ -5243,21 +5255,21 @@ class FreshReaderTest(ReaderRunner):
                  "person": "Questions for Sami:\n\n- Does SCOPE.md:301 hold?"}
         own = {"pass": "No blocking finding. The rest is fine.", "blocking": "Blocking findings. One of them.",
                "person": "Questions for Sami: whether SCOPE.md:301 holds."}
+        ruled_out = {"pass": ("Blocking findings.",), "blocking": ("No blocking finding.",),
+                     "person": ("No blocking finding.", "Blocking findings.")}
         for verdict, line in lines.items():
-            for wrong in trim.RESULTS:
-                if line.startswith(wrong):
-                    continue
-                for text, rest in ((f"{wrong}\n\n{body}", f"\n\n{body}"), (f"**{wrong}** {body}", "")):
+            for wrong in ruled_out[verdict]:
+                for text in (f"{wrong}\n\n{body}", f"**{wrong}** {body}", f"{wrong} {body}"):
                     for model in ("Intro.", wrong, own[verdict]):
-                        want = f"{own[verdict] if model == own[verdict] else line}{rest}"
+                        want = f"{own[verdict] if model == own[verdict] else line}\n\n{body}"
                         with self.subTest(verdict=verdict, model=model, trim=text):
                             self.assertEqual(trim.with_result(f"{model}\n\nMore.", text, head, verdict, asked), want)
-        # The subject of a question on the reader's line "Questions for Sami: ..." never posts as a fragment under the
-        # line of another verdict.
+        # Neither the pass nor the verdict blocking rules out a question: the reader's line "Questions for Sami: ..."
+        # stays whole below the line of the verdict, so no fragment of it posts.
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings.")):
-            with self.subTest(verdict=verdict, trim="the subject of a question"):
-                self.assertEqual(trim.with_result("Intro.", f"Questions for Sami: whether X holds.\n\n{body}", head,
-                                                  verdict, asked), f"{line}\n\n{body}")
+            with self.subTest(verdict=verdict, trim="a line of questions"):
+                text = f"Questions for Sami: whether X holds.\n\n{body}"
+                self.assertEqual(trim.with_result("Intro.", text, head, verdict, asked), f"{line}\n\n{text}")
         proof = os.path.join(self.work, ".review", "head", "theories", "A.v")
         os.makedirs(os.path.dirname(proof), exist_ok=True)
         with open(proof, "w") as f:
@@ -5267,10 +5279,48 @@ class FreshReaderTest(ReaderRunner):
         self.assertEqual((rc, got.get("verdict")), (0, "person"), out)
         shown = got["body"].split(self.WHOLE, 1)[0]
         text = shown.split(f"**Automated review** of commit {HEAD[:12]}\n\n", 1)[1]
-        self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {rules.QUESTION['text']}\n\nThe proof ends with Qed."
-                                        "\n\n**Soundness of the proofs.**"), text)
-        self.assertNotIn("is fine.", shown)
+        self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {rules.QUESTION['text']}\n\n`theories/A.v:1` is "
+                                        "fine.\n\nThe proof ends with Qed.\n\n**Soundness of the proofs.**"), text)
         self.assertNotIn("No blocking finding.", shown)
+
+    def test_a_forced_person_keeps_its_blocking_findings_below_the_questions_and_asks_each_question_once(self):
+        """Fresh reader round 11 (R11-M1, R11-S2): the soundness rule gives the verdict person whatever the model gave,
+        and keeps each blocking finding in the list. The model wrote "Blocking findings." with a change item and a
+        question, and the reader kept both under that line. The posted text starts with "Questions for Sami:" and a
+        bullet for the question on soundness alone: the reader's text holds the other question already (as plain
+        reads both), so it does not post twice. Then the reader's "Blocking findings." line and the findings after it
+        stay, so a blocking finding never reads as a question for Sami; also in bold, with the finding on its line. A
+        question that the reader reworded gets its bullet. With no blocking finding in the list (rules.py blocking made
+        the verdict person), the form "Blocking findings." goes, and the question after it on its line stays, with no
+        bullet. In the comment step, the same review posts so."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `step_ok`. Prove it or drop it."}
+        asked = {"kind": "question", "ref": "theories/B.v:40", "optional": False,
+                 "text": "`theories/B.v` line 40: does `fork_spec` match Linux v6.18.46 for `CLONE_VM`?"}
+        sound = dict(rules.QUESTION)
+        items = [change, asked, sound]
+        model = "Blocking findings.\n\nMore."
+        kept = f"Blocking findings.\n\n- {change['text']}\n- {asked['text']}"
+        self.assertEqual(trim.with_result(model, kept, head, "person", items),
+                         f"Questions for Sami:\n\n- {sound['text']}\n\n{kept}")
+        for text in (f"Blocking findings.\n\n- {change['text']}\n- Does fork_spec match Linux for CLONE_VM? See "
+                     "theories/B.v line 40.", f"**Blocking findings.** {change['text']}"):
+            with self.subTest(trim=text):
+                self.assertEqual(trim.with_result(model, text, head, "person", items),
+                                 f"Questions for Sami:\n\n- {asked['text']}\n- {sound['text']}\n\n{text}")
+        self.assertEqual(trim.with_result(model, f"Blocking findings. {asked['text']}\n\nMore.", head, "person",
+                                          [asked]), f"Questions for Sami:\n\n{asked['text']}\n\nMore.")
+        proof = os.path.join(self.work, ".review", "head", "theories", "A.v")
+        os.makedirs(os.path.dirname(proof), exist_ok=True)
+        with open(proof, "w") as f:
+            f.write("Lemma a : True.\nProof. exact I. Qed.\n")
+        rc, out, got = self.post(kept, [change, asked], kept, "blocking")
+        self.assertEqual((rc, got.get("verdict")), (0, "person"), out)
+        shown = got["body"].split(self.WHOLE, 1)[0]
+        text = shown.split(f"**Automated review** of commit {HEAD[:12]}\n\n", 1)[1]
+        self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {sound['text']}\n\n{kept}\n\n"), text)
+        self.assertEqual(shown.count("does `fork_spec` match"), 1, shown)
 
     def test_an_issues_review_keeps_the_trim_that_the_reader_gave(self):
         """An issue's review has no fixed form: its first line says whether the report holds (.github/review.md, "The
@@ -5712,10 +5762,13 @@ class SoundnessTest(ReaderRunner):
     def test_a_model_that_passes_or_blocks_an_outside_proof_still_gives_the_person_verdict(self):
         """Code gives the verdict, whatever the model wrote: the list gets the question on soundness, the model's
         blocking finding stays in it, and the item waits on Sami, not on its author. The posted review starts with
-        "Questions for Sami:" and the question on soundness, never with the model's result line."""
+        "Questions for Sami:" and the question on soundness, never with "No blocking finding.". The model's line
+        "Blocking findings." and its finding stay below the questions (R11-M1): the list still holds that finding."""
         change = {"kind": "change", "ref": "theories/B.v:4", "optional": False, "text": "End the proof with Qed."}
-        for verdict, items, review in (("pass", [], "No blocking finding."),
-                                       ("blocking", [change], "Blocking findings.\n\n1. `theories/B.v:4`: end it.")):
+        for verdict, items, review, after in (
+                ("pass", [], "No blocking finding.", ""),
+                ("blocking", [change], "Blocking findings.\n\n1. `theories/B.v:4`: end it.",
+                 "Blocking findings.\n\n1. `theories/B.v:4`: end it.\n\n")):
             with self.subTest(verdict=verdict):
                 self.tearDown()
                 self.setUp()
@@ -5724,8 +5777,9 @@ class SoundnessTest(ReaderRunner):
                 self.assertRegex(shown, self.VM_LINE)
                 self.assertEqual(listed, items + [rules.QUESTION])
                 text = shown.split(f"**Automated review** of commit {head[:12]}\n\n", 1)[1]
-                self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {rules.QUESTION['text']}\n\n"), text)
-                self.assertNotRegex(shown, r"No blocking finding\.|Blocking findings\.")
+                self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {rules.QUESTION['text']}\n\n{after}"), text)
+                self.assertNotIn("No blocking finding.", shown)
+                self.assertEqual(shown.count("Blocking findings."), 1 if after else 0, shown)
                 self.assertEqual(self.label(got), ([("+", THEOREM_LABEL)], [self.person(head)]))
 
     def test_a_changed_proof_with_no_such_use_or_a_deleted_one_gets_the_soundness_verdict_too(self):
@@ -8042,15 +8096,16 @@ class RescreenTrustTest(Held):
         self.assertEqual((got.get("route"), got.get("outsider")), ("screen", "mallory"))
 
     def test_a_rescreen_by_hand_with_another_account_stops_and_names_the_account_of_the_held_event(self):
-        """Fresh reader round 10 (N-M4): a rescreen by hand needs the account of the held event, the item's author or
-        the account of its latest event, which the hold names by its run (held.sh, held_account): mallory's run here.
-        With another account, or none, the run stops, and its notice names the account that it needs."""
+        """Fresh reader round 10 (N-M4) and round 11 (R11-S4): a rescreen by hand needs the account of the event that
+        the workflow held, the item's author or the account of the item's latest event at the time of the hold, which
+        the hold names by its run (held.sh, held_account): mallory's run here. With another account, or none, the run
+        stops, and its notice names the account that it needs."""
         for account, named in (("bob", "bob"), ("", "none")):
             with self.subTest(account=account):
                 rc, out, got = self.rescreen(actor="alice", account=account)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
-                self.assertIn(f"::notice::No rescreen of #7: the account of its held event is mallory, not {named}.",
-                              out)
+                self.assertIn("::notice::No rescreen of #7: the account of the event that the workflow held is "
+                              f"mallory, not {named}.", out)
 
     def test_holds_at_the_cap_and_of_a_review_that_did_not_finish_take_the_outsiders_path_and_keep_their_tries(self):
         for kind, tries, want in (("cap", 1, "1"), ("transient", 2, "2"), ("limit", None, "0")):
@@ -12551,15 +12606,15 @@ class LabelRuleTest(unittest.TestCase):
          "decide", THEOREM_LABEL),
         ("a pass whose import check run the post job recorded while the variable gives the import's paths",
          pr(verdict="pass", recorded=True, import_paths="README.md", decision="record"), "import", None),
-        ("a pass on a writer's path, with no screen", dict(pr(verdict="pass"), outsider=False), "working", None),
-        ("a blocking finding on a writer's path", dict(pr(verdict="blocking"), outsider=False), "working", None),
-        ("a review of a writer's pull request whose head an outsider pushed",
-         {"kind": "pr", "verdict": "pass", "writer": True}, "reviewed", None),
-        ("the verdict person of a writer's pull request", {"kind": "pr", "verdict": "person", "writer": True},
-         "reviewed", None),
-        ("a hold of a writer's pull request that is tried again",
-         {"kind": "pr", "verdict": "blocking", "writer": True, "held": True}, "working", None),
-        ("a writer's pull request with no review", {"kind": "pr", "writer": True}, "working", None),
+        ("a pass of a writer's pull request, with no screen", dict(pr(verdict="pass"), outsider=False), "reviewed",
+         None),
+        ("a blocking finding of a writer's pull request", dict(pr(verdict="blocking"), outsider=False), "reviewed",
+         None),
+        ("the verdict person of a pull request that a person reviewed by hand, with no screen",
+         {"kind": "pr", "verdict": "person"}, "reviewed", None),
+        ("a hold of a reviewed pull request that is tried again, on no outside path",
+         {"kind": "pr", "verdict": "blocking", "held": True}, "working", None),
+        ("a pull request with no review", {"kind": "pr"}, "working", None),
         ("a pass of an issue", {"kind": "issue", "outsider": True, "verdict": "pass"}, "working", None),
         ("a hold of a reviewed head that is tried again", pr(verdict="blocking", held=True), "working", None),
     )
@@ -13913,9 +13968,10 @@ class ImportCheckTest(ReaderRunner):
         """Fresh reader round 10 (N-M1): an earlier screen of eve's push held alice's #7, so #7 has a label comment
         with Sami's step and no state label (R5, ruling 1 of OSSV-221's architect). eve pushes again, the screen
         passes, and the review gives each verdict. The comment job's label step writes the state reviewed in the place
-        of that label comment: the workflow posted its review and takes no further step. It does not say that the
-        workflow tries again, as nothing tries again (held.sh, consider: a writer's pull request gets only the work of
-        its holds that are tried again, and the review of a head that no review names). It sets no state label."""
+        of that label comment: the review names the next step, and a push starts the review again. It does not say
+        that the workflow tries again, as nothing tries again (held.sh, consider: a writer's pull request gets only the
+        work of its holds that are tried again, and the review of a head that no review names). It sets no state
+        label."""
         self.permissions(alice="write", eve="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         self.serve_item(7, "alice", kind="pr", head=HEAD)
@@ -13932,8 +13988,9 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(got["labels"], [], got["log"])
                 (body,) = got["comments"]
                 self.assertEqual(body, rules.label_comment("reviewed", old["body"]))
-                self.assertEqual(body, "<!-- review-label -->\n**Next step:** The workflow takes no further step.\n\n"
-                                       "The workflow posted its automated review of the head commit.")
+                self.assertEqual(body, "<!-- review-label -->\n**Next step:** The automated review of the head commit "
+                                       "names the next step and who takes it.\n\nAfter a push, the automated review "
+                                       "runs again.")
 
     def test_a_writers_own_push_with_a_label_comment_says_that_its_review_posted(self):
         """Fresh reader round 10 (N-M1, a writer's own push): an earlier screen of eve's push held alice's #7, so #7 has
@@ -13955,6 +14012,57 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(["README.md"], verdict, trust=trust, outside="false", comments=[old])
                 self.assertEqual((got["result"], got["labels"]), ("skipped", []), got["log"])
                 self.assertEqual(got["comments"], [rules.label_comment("reviewed", old["body"])], got["log"])
+
+    def test_a_pull_request_reviewed_by_hand_says_that_its_review_names_the_next_step(self):
+        """Fresh reader round 11 (N-M1 on its last path, and the case that it did not count): Sami reviews a pull
+        request by hand with no screen, as the label comment of a stopped review asks. The trust job asks GitHub
+        nothing of the author, so its outsider and its outside are empty, and the label step reads no outside path.
+        For alice's #7 (a writer's) and for mallory's #7 (an outside one), each with that label comment, the label step
+        writes the state reviewed in its place: the review names the next step, and a push starts the review again.
+        Never that the workflow tries again. It sets no state label, and takes waits-on-theorem off mallory's #7, as
+        the state working did."""
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("stopped")}
+        for author, outside, labels, taken in (
+                ("alice", "false", ("review-held",), []),
+                ("mallory", "true", ("review-held", THEOREM_LABEL), [("-", THEOREM_LABEL)])):
+            self.serve_item(7, author, kind="pr", head=HEAD)
+            rc, out, trust = self.run_trust("workflow_dispatch", actor="alice")
+            self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"), trust.get("outside")),
+                             (0, "review", "review", "", ""), out)
+            trust = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
+            for verdict in ("pass", "blocking", "person"):
+                with self.subTest(author=author, verdict=verdict):
+                    got = self.judge(["README.md"], verdict, trust=trust, event="workflow_dispatch", comments=[old],
+                                     labels=labels, outside=outside)
+                    self.assertEqual(got["labels"], taken, got["log"])
+                    self.assertEqual(got["comments"], [rules.label_comment("reviewed", old["body"])], got["log"])
+                    self.assertNotIn("tries again", got["comments"][0])
+
+    def test_a_writers_pull_request_reads_no_import_check_run_to_withdraw(self):
+        """Fresh reader round 11 (R11-M2): the workflow records the import check run for an outside pull request
+        alone, and the rescreen pass tries no App write of a writer's pull request again. So the post job of a
+        writer's pull request (the trust job's outside is false: eve pushed to alice's #7, and the screen passed)
+        neither reads nor withdraws a check run after a blocking finding or the verdict person: no error promises a
+        retry, here while GitHub refuses the read of the check runs. The review of an outside pull request (outside
+        true), and alice's review by hand of mallory's #7 (outside empty: the trust job does not know it), still read
+        them, and fail at the refused read with that error."""
+        find = "Find the import check runs that a later review or screen withdraws"
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        writer = dict(self.REVIEWED, outsider="eve", outside="false")
+        for case, trust, event, outside, step_ran in (
+                ("a writer's pull request", writer, "workflow_run", "false", "skipped"),
+                ("an outside pull request", self.REVIEWED, "workflow_run", "true", "failure"),
+                ("a review by hand of an outside pull request", dict(self.BY_HAND, outside=""), "workflow_dispatch",
+                 "true", "failure")):
+            for verdict in ("blocking", "person"):
+                with self.subTest(case=case, verdict=verdict):
+                    start = len(self.logs)
+                    got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event=event, outside=outside)
+                    logs = "\n".join(self.logs[start:])
+                    self.assertEqual(got["steps"].get(find, "skipped"), step_ran, logs)
+                    self.assertEqual(got["result"], "success" if step_ran == "skipped" else "failure", logs)
+                    self.assertEqual("could not be read, so none of them is withdrawn" in logs, step_ran == "failure")
 
     def test_a_relabel_reads_each_screened_review_comment_of_the_head_and_the_screen_holds_after_it(self):
         """R12 (review round 1): the screen passed HEAD in the run of a review, whose review comment holds the marker

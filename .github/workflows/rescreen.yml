@@ -54,9 +54,10 @@ on:
         description: >-
           Optional. With no number, the run takes each item that waits. With the number of a pull request, it takes
           that pull request alone. Then it starts the run for a merge conflict, or the screen and the approval of the
-          held runs of its head, or nothing. After 3 approvals (REVIEW_TRIES) of the head that did not finish, it
-          starts the run that stops the approval. That run gives the pull request waits-on-theorem and a hold comment
-          that says that the workflow does not try to start the checks again. screen-start.yml gives the number.
+          held runs of its head, or nothing. After 3 (REVIEW_TRIES) approvals of the head, none of which finished, it
+          starts a run that ends the tries. That run gives the pull request the label waits-on-theorem and the hold
+          comment "Automated start of the checks held.", which says that the workflow does not try the approval again.
+          screen-start.yml gives the number.
         required: false
         type: number
 

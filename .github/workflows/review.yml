@@ -314,8 +314,9 @@ on:
       account:
         description: >-
           The account whose hourly limit this run counts toward. The rescreen pass sets it. A rescreen by hand needs
-          the account of the held event: the item's author, or the account of its latest event. With another account,
-          the run stops, and its notice names the right one.
+          the account of the event that the workflow held. That is the item's author, or the account of the item's
+          latest event at the time of the hold. With another account, the run stops, and its notice names the right
+          one.
         type: string
         default: ""
       comment:
@@ -1094,11 +1095,11 @@ jobs:
                 approve|catchup|conflict|relabel) [ "$kind" = pr ] || stop "it is not a pull request." ;;
               esac
               # The rescreen pass's name for the task, from what the API says now: the item, its head, and its author
-              # when the author has no write access (a rescreen names the account of its held event, checked below, and
-              # the head of a pull request). The review of a writer's pull request names the account that the
-              # inputs give: the task review below checks it against the CI runs of the head. The account a name gives
-              # is the one whose limit the run counts on; a run by hand of a person or an App counts on none. Each
-              # task below then reads again, for the rescreen pass's run, the reason why the pass started it, and
+              # when the author has no write access (a rescreen names the account of the event that the workflow held,
+              # checked below, and the head of a pull request). The review of a writer's pull request names the account
+              # that the inputs give: the task review below checks it against the CI runs of the head. The account a
+              # name gives is the one whose limit the run counts on; a run by hand of a person or an App counts on none.
+              # Each task below then reads again, for the rescreen pass's run, the reason why the pass started it, and
               # stops when the reason no longer holds.
               limited=""
               if [ "$ACTOR" = 'github-actions[bot]' ]; then
@@ -1140,7 +1141,8 @@ jobs:
                   [ "$ACTOR" != 'github-actions[bot]' ] || again rescreen
                   account=$(held_account "$origin" "$AUTHOR") || fail "run $origin could not be read."
                   [ -n "$account" ] || stop "its hold names no run whose account this workflow can tell."
-                  [ "$ACCOUNT" = "$account" ] || stop "the account of its held event is $account, not ${ACCOUNT:-none}."
+                  [ "$ACCOUNT" = "$account" ] \
+                    || stop "the account of the event that the workflow held is $account, not ${ACCOUNT:-none}."
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   # A writer's item whose hold names a writer's run (at the cap, or a review that did not finish) is
                   # reviewed without the screen.
@@ -2222,9 +2224,10 @@ jobs:
       # blocking): a review whose verdict is blocking, and whose list holds a question item and no blocking finding (a
       # change item whose optional is false), gets the verdict person. So an outside pull request waits on Sami, not on
       # its author, and no fix runs. The posted result line takes the form of the verdict after both rules (trim.py's
-      # with_result): for person, "Questions for Sami:" with one bullet for the text of each question, in the place of
-      # the model's "Blocking findings." or "No blocking finding.". A verdict blocking whose list holds no question
-      # stays blocking.
+      # with_result): for person, "Questions for Sami:" with one bullet for each question whose text the trimmed text
+      # does not hold. The trimmed text loses the model's "No blocking finding.", and loses its "Blocking findings."
+      # only when the list holds no blocking finding: else that line and its findings stay below the questions. A
+      # verdict blocking whose list holds no question stays blocking.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
@@ -2820,11 +2823,15 @@ jobs:
       # screened it, or the newest review of the head gives a blocking finding or the verdict person (held.sh,
       # consider). Such a relabel records no check run. After REVIEW_TRIES failed tries, this run among them, the head
       # is not tried again, and the label comment names the next step for Sami (held.sh, head_stopped). So the error
-      # says so.
+      # says so. The step runs only for a pull request whose author has no write access (the trust job's outside is
+      # not false: true, or empty when the trust job does not know it). The workflow records the check run for no
+      # other pull request, and the rescreen pass tries no App write of a writer's pull request again (held.sh,
+      # consider), so the error would promise a retry that never comes.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
-          env.APP_KEY_SET == 'true' && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
+          env.APP_KEY_SET == 'true' && needs.trust.outputs.outside != 'false'
+          && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && (needs.review.result == 'success'
                    || (needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean')))
@@ -2931,7 +2938,7 @@ jobs:
       # head and the import check run, and says when the rescreen pass tries it again (the comment of the step that
       # found it says how).
       - name: Withdraw the import check runs of the head
-        if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.checks != ''
+        if: env.APP_KEY_SET == 'true' && needs.trust.outputs.outside != 'false' && steps.withdraw.outputs.checks != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
@@ -3538,8 +3545,8 @@ jobs:
               || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
             markers+=("marker=$marker")
           fi
-          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5). With the
-          # review's verdict, its pull request gets the state reviewed (rules.py): the workflow takes no further step.
+          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5). A pull request
+          # with the review's verdict and no outside state gets the state reviewed (rules.py), whoever started the run.
           writer=false
           [ "${OUTSIDE:-}" != false ] || writer=true
           if [ "${TASK:-}" = relabel ]; then
