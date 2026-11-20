@@ -796,7 +796,9 @@ Qed.
 
 (** The pinned-identity arm, branch for branch with
     [Stat.fstat_pinned_spec]: the identity's pin checked against both
-    predicates, and the delivery judged under [ok].  The character
+    predicates, and the delivery judged under [ok] and, against a pin,
+    the members the pin holds beside the stable ones too
+    ([Stat.stat_pin_held]).  The character
     devices ([State.IdDev] of the node's key) and a link the walk did
     not follow ([State.IdLink]) are its instances, as the spec's are. *)
 Definition check_fstat_pinned (id : StatId) (ok : list byte -> bool)
@@ -811,7 +813,9 @@ Definition check_fstat_pinned (id : StatId) (ok : list byte -> bool)
         match statpin_lookup (m_statpins m) id with
         | Some sp =>
             if negb (stat_buf_wf (sp_bytes sp) && ok (sp_bytes sp))%bool then CheckUnmodeled
-            else check_fstat_deliver_gen ok statbuf (Some (sp_bytes sp)) (fun _ => m) eff
+            else check_fstat_deliver_gen
+                   (fun bs => ok bs && stat_pin_held id bs (sp_bytes sp))%bool
+                   statbuf (Some (sp_bytes sp)) (fun _ => m) eff
         | None =>
             check_fstat_deliver_gen ok statbuf None
               (fun bs => with_statpin id (mkStatPin bs None) m) eff
@@ -836,7 +840,8 @@ Proof.
         [discriminate|].
       cbv iota.
       apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & HS & ->).
-      specialize (HS _ eq_refl).
+      specialize (HS _ eq_refl). cbv beta in HOK.
+      apply andb_true_iff in HOK as [HOK HNL].
       eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
       apply pure_ok.
     + apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & _ & ->).
@@ -882,8 +887,9 @@ Proof.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
       | H1 : stat_buf_wf ?b = true, H2 : ok ?b = true,
+        H4 : stat_pin_held _ ?b _ = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
-          rewrite H1, H2; cbn [andb negb]; rewrite H3
+          rewrite H1, H2, H4; cbn [andb negb]; rewrite H3
       end.
       reflexivity.
     + sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
@@ -969,7 +975,8 @@ Proof. intros * H. eapply check_fstat_pinned_complete_unmodeled. exact H. Qed.
 
 (** The directory arm, branch for branch with [Stat.fstat_dir_spec]: the
     folder's pin ([State.IdDir]) checked against both predicates, and the
-    delivery judged under [stat_dir_ok] with the rule the pin carries;
+    delivery judged under [stat_dir_ok] with the rule the pin carries
+    and, against a pin, the [st_blocks] it holds ([Stat.stat_pin_held]);
     the model left is [Stat.dir_pin_after]'s on a pinned folder, and a
     new pin carrying [Stat.dir_rule_after]'s rule on one with none. *)
 Definition check_fstat_dir (k : Fs.path) (i : SyscallInput) (statbuf : word)
@@ -985,7 +992,8 @@ Definition check_fstat_dir (k : Fs.path) (i : SyscallInput) (statbuf : word)
             if negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool
             then CheckUnmodeled
             else check_fstat_deliver_gen
-                   (stat_dir_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp))
+                   (fun bs => stat_dir_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp) bs
+                              && stat_pin_held (IdDir k) bs (sp_bytes sp))%bool
                    statbuf (Some (sp_bytes sp))
                    (fun bs => dir_pin_after k (Fs.fs_dir_links (m_fs m) k) sp bs m) eff
         | None =>
@@ -1015,7 +1023,8 @@ Proof.
         eqn:Hb0; [discriminate|].
       cbv iota.
       apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & HS & ->).
-      specialize (HS _ eq_refl).
+      specialize (HS _ eq_refl). cbv beta in HOK.
+      apply andb_true_iff in HOK as [HOK HPH].
       unfold stat_dir_ok in HOK. apply andb_true_iff in HOK as [HDIR HNL].
       eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
@@ -1065,8 +1074,9 @@ Proof.
       match goal with
       | H1 : stat_buf_wf ?b = true, H2 : stat_is_dir ?b = true,
         H4 : dir_nlink_ok _ _ ?b = true,
+        H5 : stat_pin_held _ ?b _ = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
-          rewrite H1, H2, H4; cbn [andb negb]; rewrite H3
+          rewrite H1, H2, H4, H5; cbn [andb negb]; rewrite H3
       end.
       reflexivity.
     + sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.

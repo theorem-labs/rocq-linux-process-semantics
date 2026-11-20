@@ -557,7 +557,11 @@ Definition unlink_file_spec (k : Fs.path) (i : Fs.ino) (m : Model)
     [do_unlinkat] (fs/namei.c:4729-4730) removes without following: it
     takes the last name with [lookup_one_qstr_excl] and calls
     [vfs_unlink] on that dentry, so the link goes and what it names stays.
-    [Fs.wf_fs_remove_file] says the image is still a namespace. *)
+    [Fs.wf_fs_remove_file] says the image is still a namespace.
+    [State.with_fs] drops the link's own stat pin, and with it every
+    other link's ([State.statpins_release_links]): the removed name may
+    have been another name of a link the run has pinned, whose link
+    count it lowered. *)
 Definition unlink_remove_spec (k : Fs.path) (m : Model) : Sys SyscallEffect :=
   alt (e <- errno_from unlinkat_errnos ;; err_ret e)  (* untracked env failure *)
       (set_fs (fs_remove (m_fs m) k) ;; ret_only (Z_to_bv 64 0)).

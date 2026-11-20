@@ -4168,7 +4168,10 @@ Record FsState := mkFsState { fsst_image : Fs.Fs; fsst_cwd : Fs.path }.
     image gives neither an inode number, so two names of one device node
     or one link are two identities here, and since no distinctness is
     asked between identities that admits whatever Linux reports for
-    them. *)
+    them.  Each holds its own link count ([Fs.Stat.stat_pin_held]), so
+    the removal of a link name, which may lower the count another link
+    identity holds, lets every link's pin go
+    ([statpins_release_links]). *)
 Inductive StatId :=
   | IdIno (i : Fs.ino)
   | IdDir (k : Fs.path)
@@ -4632,15 +4635,20 @@ Record ProcState := mkProcState {
        [fstat]s of one unchanged file report different inodes, which no
        Linux machine produces.  Chosen ONCE and recorded, they cannot.
 
-       ONLY THE STABLE MEMBERS ARE HELD AGAINST A LATER CALL, and which
+       THE STABLE MEMBERS ARE HELD AGAINST A LATER CALL, and which
        those are is [Uapi.stat_stable_eqb]'s subject rather than this
        field's: the whole 128 bytes are stored, and the comparison
-       ignores [st_nlink] (which the model computes, see [Fs.Stat]),
-       [st_size], [st_blocks] and the timestamps, and lets a regular
-       file's set-user-ID and set-group-ID bits drop as a write or a
-       truncate drops them.  The stat that first shows such a drop
+       ignores [st_nlink] (which the model computes for a file and a
+       folder), [st_size], [st_blocks] and the timestamps, and lets a
+       regular file's set-user-ID and set-group-ID bits drop as a write
+       or a truncate drops them.  The stat that first shows such a drop
        records its own bytes here ([Fs.Stat.file_pin_after]), so a
-       file's entry holds the last mode a stat of it showed.
+       file's entry holds the last mode a stat of it showed.  Beside
+       them a device node's, a link's and a folder's pin holds the
+       members no answered call moves for that object
+       ([Fs.Stat.stat_pin_held]: a device node's link count and
+       timestamps, a link's link count, [st_blocks], [st_mtime] and
+       [st_ctime], a folder's [st_blocks]).
 
        KEYED BY IDENTITY, as Linux keys [st_ino]: two names of one file
        share one pin, and a name made after the old one went is a new
@@ -5203,11 +5211,46 @@ Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId
     by its inode number, and a number is handed out again only after its
     row is gone ([Fs.fs_fresh_ino]), which is when this drops the pin.
     Every writer that keeps the identity -- a write, a truncate, an
-    O_TRUNC open, the removal of one of two names -- leaves the filter
-    inert for it. *)
+    O_TRUNC open, the removal of one of a file's two names -- leaves the
+    filter inert for it.  A LINK's pin goes on one more occasion, when a
+    link name is removed ([statpins_release_links]). *)
 Definition statpins_restrict (fs : Fs.Fs) (fds : list (word * FdEntry))
     (ps : list (StatId * StatPin)) : list (StatId * StatPin) :=
   List.filter (fun e => stat_id_alive fs fds (fst e)) ps.
+
+(** How many names of LINKS the image holds. *)
+Definition fs_link_count (fs : Fs.Fs) : nat :=
+  length (List.filter (fun ke => match snd ke with Fs.ELink _ => true | _ => false end)
+                      (Fs.fs_tree fs)).
+
+(** LET EVERY LINK'S PIN GO WHEN A LINK NAME GOES: drop the pin of every
+    link identity ([IdLink]) when the new image [fs] holds fewer links
+    than the old one [fs0], and keep every other pin.  It is a filter
+    over [ps] either way, so a model with no pin keeps none by
+    computation.
+
+    A link's pin holds its link count and [st_ctime]
+    ([Fs.Stat.stat_pin_held]), and the image cannot show two names of
+    one link as one identity ([StatId]), so the removed name may have
+    been a name of any link the run has pinned: [vfs_unlink] lowers the
+    count of the inode the name held and sets its ctime
+    ([simple_unlink], fs/libfs.c:787-795, and [shmem_unlink],
+    mm/shmem.c:4016-4019, Linux v6.18.46).  The image cannot say which
+    link that was, so every link's pin is chosen again at its next stat.
+    That frees the other members of those pins too, a precision loss,
+    and only after a link name is removed.
+
+    A COUNT IS ENOUGH TO SEE THE REMOVAL, because no arm makes a link (the
+    model has no [symlinkat], [linkat] or [rename] arm): a step removes a
+    link name exactly when the image holds fewer links after it.  An arm
+    that makes a link must revisit this.  A device node's pin and a
+    folder's need no release: no arm makes or removes a device name
+    ([Fs.Namei.unlinkat_file_spec] declines the removal), and no
+    answered call moves what [Fs.Stat.stat_pin_held] holds of either. *)
+Definition statpins_release_links (fs0 fs : Fs.Fs) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  let gone := Nat.ltb (fs_link_count fs) (fs_link_count fs0) in
+  List.filter (fun e => match fst e with IdLink _ => negb gone | _ => true end) ps.
 
 (** Install the working directory.  [init_model_setter_chain] is its ONE
     caller ([init_model] builds the same field in its one constructor):
@@ -5226,7 +5269,8 @@ Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         (statpins_restrict fs (m_fds m) (m_statpins m))
+                         (statpins_restrict fs (m_fds m)
+                            (statpins_release_links (m_fs m) fs (m_statpins m)))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
@@ -9689,7 +9733,8 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_accepted : model.
 
 Lemma m_statpins_with_fs : forall (v : Fs.Fs) (m : Model),
-  m_statpins (with_fs v m) = statpins_restrict v (m_fds m) (m_statpins m).
+  m_statpins (with_fs v m)
+  = statpins_restrict v (m_fds m) (statpins_release_links (m_fs m) v (m_statpins m)).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_fs : model.
 

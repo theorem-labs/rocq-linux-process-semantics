@@ -1721,15 +1721,19 @@ Definition fs_nsubdirs (fs : Fs) (k : path) : nat :=
 
 (** THE ROOT'S SUBFOLDERS AN IMAGE MAY LEAVE OUT: /proc and /sys, one
     for each that the tree does not hold as a folder.  Both are folders
-    of the root file system under two launch premises (SCOPE.md): procfs
-    is mounted at /proc, and a file system whose root is a folder is
-    mounted only on a folder ([graft_tree]'s -ENOTDIR,
-    fs/namespace.c:2816-2818, Linux v6.18.46); and the root file system
-    holds a folder /sys.  So the root counts both whatever the image
-    holds at their keys: a file or a link there is not what the root
-    file system holds, and [fs_nsubdirs] does not count it.  No run
-    changes either entry: a walk that looks "proc" or "sys" up at the
-    root ends at [ROutside] ([at_outside]), which every arm declines. *)
+    of the root file system, not symbolic links, by two launch premises
+    (SCOPE.md), and not by a kernel rule: [do_mount] follows a link at
+    the mount point (LOOKUP_FOLLOW, fs/namespace.c:4048, Linux v6.18.46),
+    so procfs could be mounted through a /proc link on a folder the link
+    names.  So the root counts both whether or not the image holds them:
+    [fs_nsubdirs] counts a folder the tree holds, and this counts one the
+    tree leaves out.  An image that holds a file or a link at either key
+    contradicts the premises, so its runs are outside the statements,
+    and no clause of [Run.valid_image] is needed to refuse it: no lookup
+    reaches the entry, and this counts the folder there as for an absent
+    key.  No run changes either entry: a walk that looks "proc" or "sys"
+    up at the root ends at [ROutside] ([at_outside]), which every arm
+    declines. *)
 Definition root_unheld_dirs (fs : Fs) : nat :=
   ((match fs_lookup fs proc_key with Some EDir => 0 | _ => 1 end)
    + (match fs_lookup fs sys_key with Some EDir => 0 | _ => 1 end))%nat.
@@ -1737,7 +1741,8 @@ Definition root_unheld_dirs (fs : Fs) : nat :=
 (** THE COUNTING COUNT THE IMAGE IMPLIES for the folder [k]: two, plus
     one per subfolder the tree shows ([fs_nsubdirs]), plus at the root
     one for each of /proc and /sys that the tree does not hold as a
-    folder ([root_unheld_dirs]).  On tmpfs and ramfs a folder starts at
+    folder ([root_unheld_dirs]: both are folders of the root file system
+    by a launch premise).  On tmpfs and ramfs a folder starts at
     2, the 1 [inode_init_always_gfp] sets (fs/inode.c:242, Linux
     v6.18.46) and the [inc_nlink] of [__shmem_get_inode]
     (mm/shmem.c:3133-3134) or of [ramfs_get_inode]

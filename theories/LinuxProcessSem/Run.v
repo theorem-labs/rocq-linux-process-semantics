@@ -4929,10 +4929,11 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
       ([shmem_mkdir], mm/shmem.c:3952; [ramfs_mkdir],
       fs/ramfs/inode.c:122-127), and [generic_fillattr] reports the count
       (fs/stat.c:91).  Every name of a folder outside /proc and /sys is
-      in the image but /proc and /sys themselves, which under the launch
-      premises (procfs at /proc, and a folder /sys) are folders of the
-      root file system whatever the image holds at their keys
-      ([Fs.root_unheld_dirs] says why): so the root's count is the
+      in the image but /proc and /sys themselves, which are folders of
+      the root file system, not symbolic links, by two launch premises
+      (SCOPE.md; [Fs.root_unheld_dirs] says why they are premises, and
+      why an image with a file or a link there needs no clause): so the
+      root's count is the
       tree's plus one for each of the two the tree does not hold as a
       folder, and every other such folder's count is the tree's.  The
       folders procfs and sysfs count are names an image may leave out,

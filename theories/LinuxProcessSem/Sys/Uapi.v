@@ -1197,6 +1197,8 @@ Definition ST_SIZE_OFF : nat := 48%nat.
 Definition ST_BLKSIZE_OFF : nat := 56%nat.
 Definition ST_PAD2_OFF : nat := 60%nat.
 Definition ST_BLOCKS_OFF : nat := 64%nat.
+Definition ST_ATIME_OFF : nat := 72%nat.
+Definition ST_MTIME_OFF : nat := 88%nat.
 Definition ST_UNUSED45_OFF : nat := 120%nat.
 
 (** One little-endian member of a delivered [struct stat], as the
@@ -1531,20 +1533,29 @@ Qed.
     and it moves under a run: a regular file's is [Fs.fs_ino_nlink],
     which [unlinkat] of one of its names lowers, and a folder's is
     [Fs.fs_dir_links] under the rule its pin chose, which [mkdirat] and
-    [rmdir] of a subfolder move.  A device node's and a link's count is
-    the environment's, and is not held either: another name of the same
-    node, which the image cannot show as one ([State.StatId]), may be
-    removed.
+    [rmdir] of a subfolder move.
+
+    WHAT A DEVICE NODE'S, A LINK'S AND A FOLDER'S PIN HOLDS BESIDE THESE
+    is [Fs.Stat.stat_pin_held]'s subject ([stat_field_eqb]): a device
+    node's link count and three timestamp pairs, a link's link count,
+    [st_blocks], [st_mtime] and [st_ctime], and a folder's [st_blocks].
+    No modeled call moves them but the removal of a link name, which
+    may lower a link's count and so move its [st_ctime], and lets every
+    link's pin go ([State.statpins_release_links]).  They stay out of
+    this predicate because a regular file's [st_blocks] and timestamps
+    move.
 
     WHAT IS DELIBERATELY LEFT FREE: [st_size] (which [write] and
     [ftruncate] move, and which [stat_size_ok] constrains instead),
     [st_blocks] (which moves with it, and is the filesystem's own
     allocation rather than a function of the length — a sparse file has
     fewer), and the three timestamp pairs (which every read and write
-    moves).  Requiring any of those to repeat would reject a conforming
-    trace.  The three besides [st_size] are then unconstrained ACROSS
-    calls, which admits a run Linux would not produce.  That is a
-    known over-approximation. *)
+    moves), of a regular file; and a folder's [st_size] and timestamps
+    and a link's [st_atime], which modeled calls move too
+    ([Fs.Stat.stat_pin_held] names them).  Requiring any of those to
+    repeat would reject a conforming trace.  Those besides [st_size]
+    are then unconstrained ACROSS calls, which admits a run Linux would
+    not produce.  That is a known over-approximation. *)
 Definition stat_stable_eqb (b1 b2 : list byte) : bool :=
   (stat_bytes_eqb (firstn ST_MODE_OFF b1) (firstn ST_MODE_OFF b2)
    && stat_mode_stable (stat_mode b1) (stat_mode b2)
@@ -1579,6 +1590,18 @@ Definition stat_is_lnk (bs : list byte) : bool :=
     no inode holds. *)
 Definition stat_nlink_ok (n : nat) (bs : list byte) : bool :=
   Z.eqb (stat_field_le ST_NLINK_OFF 4 bs) (bv_unsigned (Z_to_bv 32 (Z.of_nat n))).
+
+(** ONE MEMBER, OR A RUN OF MEMBERS, READ ALIKE OUT OF TWO BUFFERS: the
+    [n] bytes at [off] as one value.  [Fs.Stat.stat_pin_held] holds with
+    it the members a device node's, a link's and a folder's pin keeps
+    beside [stat_stable_eqb]; [generic_fillattr] reads each off the
+    inode (fs/stat.c:91-106, Linux v6.18.46), so two stats with nothing
+    between them read them alike. *)
+Definition stat_field_eqb (off n : nat) (b1 b2 : list byte) : bool :=
+  Z.eqb (stat_field_le off n b1) (stat_field_le off n b2).
+
+Lemma stat_field_eqb_refl : forall off n b, stat_field_eqb off n b b = true.
+Proof. intros off n b. unfold stat_field_eqb. apply Z.eqb_refl. Qed.
 
 (** [st_size] against the length of a LINK'S BODY, for a stat that does
     not follow it: tmpfs stores [i_size = strlen(symname)]
@@ -1939,6 +1962,18 @@ Proof. intros n bs H. unfold stat_is_dir. now rewrite stat_set_nlink_ifmt. Qed.
 Lemma stat_set_nlink_lnk : forall n bs,
   (20 <= length bs)%nat -> stat_is_lnk (stat_set_nlink n bs) = stat_is_lnk bs.
 Proof. intros n bs H. unfold stat_is_lnk. now rewrite stat_set_nlink_ifmt. Qed.
+
+(** ...and every member at or past byte 24 reads alike out of the
+    patched buffer and the one it patched ([stat_field_eqb]). *)
+Lemma stat_set_nlink_field_eqb : forall n off k bs,
+  (24 <= off)%nat -> (20 <= length bs)%nat ->
+  stat_field_eqb off k (stat_set_nlink n bs) bs = true.
+Proof.
+  intros n off k bs Hoff Hlen. unfold stat_field_eqb.
+  rewrite (stat_field_le_tail24 off k (stat_set_nlink n bs) bs Hoff
+             (stat_set_nlink_tail n bs Hlen)).
+  apply Z.eqb_refl.
+Qed.
 
 (** [stat_stable_eqb] chains: two patches that each keep the stable
     members keep them together, and two set-id drops are one

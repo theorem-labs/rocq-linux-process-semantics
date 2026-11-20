@@ -1287,11 +1287,11 @@ Qed.
 
 (** THE ROOT'S COUNT IS THE TREE'S PLUS /proc AND /sys.  The tree implies
     5 for the root (two, and /dev, /tmp and /work), and the root's count
-    also counts /proc and /sys: folders of the root file system under the
-    launch premises (procfs is mounted at /proc, which needs a folder
-    there, [graft_tree] at fs/namespace.c:2816-2818, Linux v6.18.46; and
-    the root file system holds a folder /sys), which this image does not
-    hold.  So its row must say 7, as a kernel gives ([ramfs_mkdir],
+    also counts /proc and /sys: folders of the root file system, not
+    symbolic links, by two launch premises ([Fs.root_unheld_dirs]; the
+    kernel does not make them so, since [do_mount] follows a link at the
+    mount point, fs/namespace.c:4048, Linux v6.18.46), which this image
+    does not hold.  So its row must say 7, as a kernel gives ([ramfs_mkdir],
     fs/ramfs/inode.c:122-127, and [shmem_mkdir], mm/shmem.c:3952, raise
     the root's count once for each; [generic_fillattr] reports it,
     fs/stat.c:91, Linux v6.18.46). *)
@@ -1326,8 +1326,9 @@ Qed.
     /sys as folders counts them as subfolders and adds nothing more:
     [proc_sys_image] holds /dev, /proc, /sys, /tmp and /work, so its
     root counts 7 and a root row there may say 7 and not 8.  A file or a
-    link at /proc is not a folder of the tree, and the root still counts
-    the folder procfs is mounted on. *)
+    link at /proc is not a folder of the tree: an image that holds one
+    contradicts the launch premise, and the root counts the folder /proc
+    all the same. *)
 Example the_root_counts_proc_and_sys_once :
   Fs.fs_dir_links (Fs.standard_root Fs.default_cwd) Fs.root = Fs.mkDirLinks 7 1
   /\ Fs.fs_nsubdirs (Fs.standard_root Fs.default_cwd) Fs.root = 3%nat

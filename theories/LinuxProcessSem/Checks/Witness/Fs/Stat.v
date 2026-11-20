@@ -269,10 +269,10 @@ Proof. vm_compute. reflexivity. Qed.
 (** The pinned-identity arm, mirroring [Stat.fstat_pinned_spec] branch
     for branch, with the seed [base] delivered on the unpinned branch.
     On the pinned branch the witness delivers THE PIN ITSELF: the spec
-    has just checked it against both predicates, and the stable
-    comparison is reflexive -- there is no [st_size] to patch, because
-    the device's is asserted to be 0 already and a link's was written
-    into its seed when the pin was made. *)
+    has just checked it against both predicates, and the link-count and
+    stable comparisons are reflexive -- there is no [st_size] to patch,
+    because the device's is asserted to be 0 already and a link's was
+    written into its seed when the pin was made. *)
 Definition fstat_pinned_witness (id : StatId) (ok : list byte -> bool)
     (base : list byte) (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
@@ -310,7 +310,8 @@ Proof.
     apply Bool.negb_false_iff in Hb0. apply andb_true_iff in Hb0 as [HWF HOK].
     eapply bind_step;
       [apply (choose_ok _ (sp_bytes sp));
-       exact (conj HWF (conj HOK (stat_stable_eqb_refl _)))|].
+       exact (conj HWF (conj HOK (conj (stat_pin_held_refl _ _)
+                                       (stat_stable_eqb_refl _))))|].
     apply pure_ok.
   - eapply bind_step;
       [apply (choose_ok _ base); exact (conj Hwf Hok)|].
@@ -412,8 +413,8 @@ Qed.
 (** fstat's directory arm, mirroring [Stat.fstat_dir_spec] branch for
     branch.  On the pinned branch it delivers THE PIN ITSELF with the
     link count the pin's rule gives: the spec has just checked the pin
-    against both predicates, and [Uapi.stat_stable_eqb] ignores
-    [st_nlink]. *)
+    against both predicates, and neither [Uapi.stat_stable_eqb] nor the
+    [st_blocks] [Stat.stat_pin_held] holds reads [st_nlink]. *)
 Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   let d := Fs.fs_dir_links (m_fs m) k in
@@ -456,10 +457,11 @@ Proof.
       [apply (choose_ok _ (stat_set_nlink
                              (dir_witness_nlink (Fs.fs_dir_links (m_fs m) k) (sp_rule sp))
                              (sp_bytes sp)));
-       refine (conj _ (conj _ (conj _ _)))|].
+       refine (conj _ (conj _ (conj _ (conj _ _))))|].
     + now apply stat_set_nlink_wf.
     + rewrite stat_set_nlink_dir by lia. exact HOK.
     + apply dir_witness_nlink_ok. lia.
+    + cbn [stat_pin_held]. apply stat_set_nlink_field_eqb; [unfold ST_BLOCKS_OFF; lia | lia].
     + now apply stat_set_nlink_stable.
     + eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - eapply bind_step;

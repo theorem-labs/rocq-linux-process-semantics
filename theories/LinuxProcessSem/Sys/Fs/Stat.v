@@ -438,6 +438,62 @@ Definition fstat_file_spec (ino : Fs.ino) (statbuf : word) : Sys SyscallEffect :
         end
     end.
 
+(** WHAT A PIN HOLDS BESIDE THE STABLE MEMBERS ([Uapi.stat_stable_eqb]),
+    by identity: the members [generic_fillattr] reads off the inode
+    (fs/stat.c:91-106, Linux v6.18.46) that no call the model answers
+    moves for that kind of object, or that only the removal of a link
+    name moves, after which every link's pin is let go
+    ([State.statpins_release_links]).  A later stat must repeat each
+    ([Uapi.stat_field_eqb]):
+
+    - a DEVICE NODE's link count (bytes 20..23) and its three timestamp
+      pairs (72..119).  No arm gives a device node a name ([mknod] and
+      [link] are unmodeled) or takes one away ([Fs.Namei.unlinkat_file_spec]
+      declines it), and no answered call on /dev/null or /dev/urandom
+      touches the inode's times: [read_null], [write_null] and their
+      [_iter] twins return at once (drivers/char/mem.c:412-433),
+      [urandom_read_iter] and [random_write_iter] mix the pool
+      (drivers/char/random.c:1448-1453), and [vfs_read] and [vfs_write]
+      update no time (fs/read_write.c:552, :666, Linux v6.18.46);
+    - a LINK's link count, [st_blocks] (64..71), [st_mtime] and
+      [st_ctime] (88..119).  Nothing writes a link's body, so its blocks
+      and mtime stay as [shmem_symlink] left them (mm/shmem.c:4159,
+      Linux v6.18.46); its count and ctime move only when one of its
+      names is removed ([simple_unlink], fs/libfs.c:787-795, and
+      [shmem_unlink], mm/shmem.c:4016-4019, set the inode's ctime and
+      drop its count), which lets the pin go;
+    - a FOLDER's [st_blocks]: tmpfs makes every inode with none
+      ([__shmem_get_inode], mm/shmem.c:3096, Linux v6.18.46) and adds
+      none to a folder, and a ramfs folder reports the [i_blocks] ramfs
+      never sets ([ramfs_dir_inode_operations] has no [getattr],
+      fs/ramfs/inode.c:191, Linux v6.18.46), so a folder's is 0 for its
+      whole life.
+
+    LEFT FREE, because an answered call moves them: a regular file's
+    [st_blocks] and timestamps (a write, a truncate, an O_TRUNC open; a
+    read's [file_accessed]); a folder's [st_size], [st_mtime] and
+    [st_ctime] (a name made or removed in it: [dir->i_size] by
+    [BOGO_DIRENT_SIZE] and the times, mm/shmem.c:3899-3900, :4015-4017)
+    and its [st_atime] ([getdents64]'s [iterate_dir] calls
+    [file_accessed] even when it answers -EINVAL, fs/readdir.c:111); and
+    a link's [st_atime] ([touch_atime] in [readlinkat],
+    fs/stat.c:589, and in a walk that follows it, fs/namei.c:1936, Linux
+    v6.18.46).  bugs/fstat-unpinned-members-over-admit.md records what
+    that admits.  A regular file's pin holds nothing here: its link
+    count and length are computed ([fstat_file_spec]). *)
+Definition stat_pin_held (id : StatId) (b1 b2 : list byte) : bool :=
+  match id with
+  | IdIno _ => true
+  | IdDir _ => stat_field_eqb ST_BLOCKS_OFF 8 b1 b2
+  | IdDev _ => (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_ATIME_OFF 48 b1 b2)%bool
+  | IdLink _ =>
+      (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_BLOCKS_OFF 8 b1 b2
+       && stat_field_eqb ST_MTIME_OFF 32 b1 b2)%bool
+  end.
+
+Lemma stat_pin_held_refl : forall id b, stat_pin_held id b b = true.
+Proof. intros [] b; cbn [stat_pin_held]; now rewrite ?stat_field_eqb_refl. Qed.
+
 (** THE SUCCESS ARM FOR A CHARACTER DEVICE THE MODEL KNOWS, in two
     instances: /dev/null ([fstat_devnull_spec], [Uapi.stat_devnull_ok])
     and /dev/urandom ([fstat_urandom_spec], [Uapi.stat_urandom_ok]).
@@ -450,8 +506,17 @@ Definition fstat_file_spec (ino : Fs.ino) (statbuf : word) : Sys SyscallEffect :
     ([State.IdDev] of its key), exactly as a file's are under its
     inode.  [k] is that key and [ok] the device's assertions; nothing
     below reads either for anything but the pin's key and the
-    delivery's test.  The link count is the environment's: the image
-    cannot show two names of one device node as one ([State.StatId]).
+    delivery's test.
+
+    THE LINK COUNT AND THE THREE TIMESTAMP PAIRS ARE THE ENVIRONMENT'S,
+    CHOSEN ONCE AND HELD like the stable members, and a link's count,
+    [st_blocks], [st_mtime] and [st_ctime] too ([stat_pin_held] says
+    why no answered call moves them).  A link's count may fall during a
+    run: the image cannot show two names of one link as one
+    ([State.StatId]), so an [unlinkat] of another link's name may remove
+    a name of this one.  That is why [State.with_fs] drops every link's
+    pin when a link name goes ([State.statpins_release_links]), and the
+    next stat chooses them again.
 
     THE PIN IS CHECKED AGAINST BOTH PREDICATES before it is used, where
     the file arm checks [stat_buf_wf] alone.  The file arm patches
@@ -489,6 +554,7 @@ Definition fstat_pinned_spec (id : StatId) (ok : list byte -> bool)
               bs <- choose (fun bs : list byte =>
                               stat_buf_wf bs = true
                               /\ ok bs = true
+                              /\ stat_pin_held id bs (sp_bytes sp) = true
                               /\ stat_stable_eqb bs (sp_bytes sp) = true) ;;
               pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
         | None =>
@@ -509,8 +575,9 @@ Definition fstat_chrdev_spec (k : path) (ok : list byte -> bool)
     ([State.IdLink]).  [generic_fillattr] copies the link inode's
     [i_mode], S_IFLNK (fs/stat.c:90), and its [i_size] (:95), which
     tmpfs sets to the body's length up to its first NUL
-    (mm/shmem.c:4140, :4158).  The link count is the environment's: the
-    image cannot show two names of one link. *)
+    (mm/shmem.c:4140, :4158).  Its link count, [st_blocks], [st_mtime]
+    and [st_ctime] are held, and let go when a link name goes
+    ([stat_pin_held]). *)
 Definition fstat_link_spec (k : path) (b : path) (statbuf : word)
     : Sys SyscallEffect :=
   fstat_pinned_spec (IdLink k)
@@ -589,17 +656,19 @@ Definition dir_pin_after (k : Fs.path) (d : Fs.DirLinks) (sp : StatPin)
     answer.  A folder with no row of the image's folder table counts as
     the image implies ([Fs.fs_dir_links], [Fs.fs_tree_count]): two, plus
     one per subfolder, and at the root also /proc and /sys, folders of
-    the root file system under the launch premises whatever the image
-    holds at their keys ([Fs.root_unheld_dirs]).
+    the root file system, not symbolic links, by a launch premise,
+    whether or not the image holds them ([Fs.root_unheld_dirs]).
 
     THE STABLE MEMBERS ARE CHOSEN ONCE AND HELD, as for a file
     ([Uapi.stat_stable_eqb]): the device, inode, mode, ids, [st_rdev]
-    and block size.  [st_size] and [st_blocks] are NOT held: they are
-    the filesystem's own bookkeeping, and they move whenever an entry is
-    made or removed in the folder — tmpfs adds and subtracts
-    [BOGO_DIRENT_SIZE] on every [shmem_mknod] (mm/shmem.c:3899) and
-    [shmem_unlink] (mm/shmem.c:4015), so creating a FILE in a folder an
-    earlier stat saw changes the folder's [st_size].
+    and block size; and [st_blocks] too, which a folder on tmpfs or
+    ramfs never moves ([stat_pin_held]).  [st_size] and the timestamps
+    are NOT held: they move whenever an entry is made or removed in the
+    folder — tmpfs adds and subtracts [BOGO_DIRENT_SIZE] on every
+    [shmem_mknod] (mm/shmem.c:3899) and [shmem_unlink]
+    (mm/shmem.c:4015), so creating a FILE in a folder an earlier stat
+    saw changes the folder's [st_size] — and [getdents64] moves the
+    atime.
 
     THE PIN IS KEYED BY THE FOLDER'S KEY ([State.IdDir]), a folder's
     identity, and it dies with the folder: [rmdir]'s removal goes
@@ -631,6 +700,7 @@ Definition fstat_dir_spec (k : Fs.path) (statbuf : word)
                               /\ stat_is_dir bs = true
                               /\ dir_nlink_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp) bs
                                  = true
+                              /\ stat_pin_held (IdDir k) bs (sp_bytes sp) = true
                               /\ stat_stable_eqb bs (sp_bytes sp) = true) ;;
               modify (dir_pin_after k (Fs.fs_dir_links (m_fs m) k) sp bs) ;;
               pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
@@ -700,11 +770,14 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     [st_rdev], [st_size] and [st_blocks] for the two devices, the type
     and [st_size] for a link; and of the members [Fs] cannot supply, the
     stable ones ([Uapi.stat_stable_eqb]: the device, inode number, mode,
-    ids, [st_rdev] and block size) chosen once per identity
-    ([State.StatId]: a file's inode, a folder's, a device node's or a
-    link's key) and held, the rest chosen afresh at every call: a
-    folder's [st_size], the block count but a device's, the three
-    timestamp pairs, and a device node's or a link's link count.  On
+    ids, [st_rdev] and block size) and those [stat_pin_held] names (a
+    device node's link count and timestamps, a link's link count,
+    [st_blocks], [st_mtime] and [st_ctime], a folder's [st_blocks]),
+    chosen once per identity ([State.StatId]: a file's inode, a
+    folder's, a device node's or a link's key) and held, a link's until
+    a link name is removed; the rest chosen afresh at every call: a
+    file's block count and timestamps, a folder's [st_size] and
+    timestamps, and a link's [st_atime].  On
     every failing arm [SYSCALL_DEFINE4(newfstatat)] reaches
     [cp_new_stat] only once [vfs_fstatat] has returned 0, so the kernel
     leaves [statbuf] untouched, and a bad [statbuf] with an absent file
@@ -1159,11 +1232,11 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdDir k)     => fstat_dir_spec k statbuf
                                      (* the directory the descriptor names.  S_IFDIR and
                                         the link count are asserted off the entry kind
-                                        and the image, the stable members are chosen
-                                        once and held under the key, which is what the
-                                        pin is for, and the filesystem's own
-                                        [st_size]/[st_blocks] are chosen afresh at every
-                                        call ([fstat_dir_spec]) *)
+                                        and the image, the stable members and
+                                        [st_blocks] are chosen once and held under the
+                                        key, which is what the pin is for, and
+                                        [st_size] and the timestamps are chosen afresh
+                                        at every call ([fstat_dir_spec]) *)
   | Some (FdSocket _)  => unmodeled  (* mode/uid/gid are known; ino, dev and the timestamps are not *)
   | Some (FdStream _ _ _) => unmodeled  (* the [FdSocket] case: S_IFSOCK is known; the sockfs
                                         inode number and the timestamps are not *)

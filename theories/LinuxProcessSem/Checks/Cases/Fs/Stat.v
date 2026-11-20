@@ -1234,6 +1234,111 @@ Example folder_pin_dies_with_rmdir_then_mkdir :
              st_stat [100]%Z 0 (dir_stat_ino 4711 2)] st_dir = CheckReject.
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 
+(** "f" and "g", nine bytes each (inodes 1 and 2), two links "l" and "m",
+    both -> "f", and an empty folder "d". *)
+Definition st_two_links : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (demo_input (demo_fs [([102], SFile fstat_data); ([103], SFile fstat_data);
+                          ([108], SLink [102]); ([109], SLink [102]); ([100], SDir)]) IEof).
+
+(** A [struct stat] with every member the pins below compare given
+    apart: the link count, [st_rdev], the size, the block count and the
+    three timestamps (their nanosecond halves 0). *)
+Definition stat_full (ino mode nl rdev size blocks ta tm tc : Z) : list byte :=
+  Z_to_le_bytes 8 2049 ++ Z_to_le_bytes 8 ino ++ Z_to_le_bytes 4 mode ++ Z_to_le_bytes 4 nl
+  ++ Z_to_le_bytes 4 1000 ++ Z_to_le_bytes 4 1000 ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 8 0
+  ++ Z_to_le_bytes 8 size ++ Z_to_le_bytes 4 4096 ++ Z_to_le_bytes 4 0 ++ Z_to_le_bytes 8 blocks
+  ++ Z_to_le_bytes 8 ta ++ Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 tm ++ Z_to_le_bytes 8 0
+  ++ Z_to_le_bytes 8 tc ++ Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 0.
+
+(** lstat of "l" (one byte of body), stat of /dev/null (S_IFCHR 0666,
+    [st_rdev] 259, 1:3, no size and no blocks) and stat of "d". *)
+Definition lstat_l (nl blocks ta tm tc : Z) : SyscallInput * SyscallEffect :=
+  st_stat [108]%Z AT_SYMLINK_NOFOLLOW (stat_full 4800 S_IFLNK nl 0 1 blocks ta tm tc).
+
+Definition stat_devnull_nl (nl ta tm tc : Z) : SyscallInput * SyscallEffect :=
+  st_stat [47; 100; 101; 118; 47; 110; 117; 108; 108]%Z 0
+    (stat_full 17 (S_IFCHR + 438)%Z nl 259 0 0 ta tm tc).
+
+Definition stat_d (nl size blocks ta tm tc : Z) : SyscallInput * SyscallEffect :=
+  st_stat [100]%Z 0 (stat_full 4711 S_IFDIR nl 0 size blocks ta tm tc).
+
+Definition unlink_m : SyscallInput * SyscallEffect :=
+  st_call 35 [109]%Z 0 (mkEffect 0 [] []).
+
+Definition unlink_g : SyscallInput * SyscallEffect :=
+  st_call 35 [103]%Z 0 (mkEffect 0 [] []).
+
+(** A LINK'S PIN HOLDS ITS LINK COUNT, [st_blocks], [st_mtime] AND
+    [st_ctime] FROM ONE lstat TO THE NEXT ([Fs.Stat.stat_pin_held]).
+    [generic_fillattr] reads them off the inode (fs/stat.c:91-106, Linux
+    v6.18.46); nothing writes a link's body, and its count and ctime move
+    only when one of its names is removed ([simple_unlink],
+    fs/libfs.c:787-795; [shmem_unlink], mm/shmem.c:4016-4019, Linux
+    v6.18.46).  Its [st_atime] stays free: [readlinkat] and a walk that
+    follows the link touch it (fs/stat.c:589, fs/namei.c:1936).  The
+    unlink of the other link "m" lets the pin go, since "m" may have been
+    a second name of "l" ([State.statpins_release_links]): there the count
+    falls and the ctime moves, and the next lstat holds them again; the
+    unlink of the file "g" lets nothing go. *)
+Example link_pin_holds_its_count_blocks_mtime_and_ctime :
+  let T := 1700000000%Z in
+  st_ok (st_seq [lstat_l 1 0 T T T; lstat_l 1 0 T T T] st_two_links)
+  /\ st_seq [lstat_l 1 0 T T T; lstat_l 2 0 T T T] st_two_links = CheckReject
+  /\ st_seq [lstat_l 1 0 T T T; lstat_l 1 8 T T T] st_two_links = CheckReject
+  /\ st_seq [lstat_l 1 0 T T T; lstat_l 1 0 T (T + 1) T] st_two_links = CheckReject
+  /\ st_seq [lstat_l 1 0 T T T; lstat_l 1 0 T T (T + 1)] st_two_links = CheckReject
+  (* the atime is free *)
+  /\ st_ok (st_seq [lstat_l 1 0 T T T; lstat_l 1 0 (T + 1) T T] st_two_links)
+  (* the unlink of another link lets the pin go *)
+  /\ st_ok (st_seq [lstat_l 2 0 T T T; unlink_m; lstat_l 1 0 T T (T + 5)] st_two_links)
+  (* and the next lstat holds it again *)
+  /\ st_seq [lstat_l 2 0 T T T; unlink_m; lstat_l 1 0 T T (T + 5);
+             lstat_l 2 0 T T (T + 5)] st_two_links = CheckReject
+  (* the unlink of a regular file's name lets nothing go *)
+  /\ st_seq [lstat_l 2 0 T T T; unlink_g; lstat_l 1 0 T T T] st_two_links = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A DEVICE NODE'S PIN HOLDS ITS LINK COUNT AND ITS THREE TIMESTAMP
+    PAIRS ([Fs.Stat.stat_pin_held]): no arm makes or removes a device
+    name, and no call the model answers on /dev/null touches the inode
+    ([read_null], drivers/char/mem.c:412-416; [write_null],
+    drivers/char/mem.c:418-422; Linux v6.18.46), the unlink of a link
+    included. *)
+Example device_pin_holds_its_count_and_timestamps :
+  let T := 1700000000%Z in
+  st_ok (st_seq [stat_devnull_nl 1 T T T; stat_devnull_nl 1 T T T] st_two_links)
+  /\ st_seq [stat_devnull_nl 1 T T T; stat_devnull_nl 2 T T T] st_two_links = CheckReject
+  /\ st_seq [stat_devnull_nl 1 T T T; stat_devnull_nl 1 (T + 1) T T] st_two_links
+     = CheckReject
+  /\ st_seq [stat_devnull_nl 1 T T T; stat_devnull_nl 1 T (T + 1) T] st_two_links
+     = CheckReject
+  /\ st_seq [stat_devnull_nl 1 T T T; stat_devnull_nl 1 T T (T + 1)] st_two_links
+     = CheckReject
+  /\ st_seq [stat_devnull_nl 1 T T T; unlink_m; stat_devnull_nl 2 T T (T + 5)] st_two_links
+     = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FOLDER'S PIN HOLDS ITS [st_blocks], 0 for a folder's whole life on
+    tmpfs and ramfs ([__shmem_get_inode], mm/shmem.c:3096;
+    [ramfs_dir_inode_operations], fs/ramfs/inode.c:191, Linux v6.18.46),
+    and leaves its [st_size] and timestamps free: a name made in it moves
+    them ([shmem_mknod], mm/shmem.c:3899-3900), and [getdents64] the
+    atime (fs/readdir.c:111).  So across [mkdirat] of "d/e" the count is
+    3, the size and times may move, and the blocks may not. *)
+Example folder_pin_holds_its_blocks :
+  let T := 1700000000%Z in
+  st_ok (st_seq [stat_d 2 40 0 T T T; stat_d 2 40 0 T T T] st_two_links)
+  /\ st_seq [stat_d 2 40 0 T T T; stat_d 2 40 8 T T T] st_two_links = CheckReject
+  (* the size and the times are free *)
+  /\ st_ok (st_seq [stat_d 2 40 0 T T T; stat_d 2 60 0 (T + 1) (T + 2) (T + 2)]
+              st_two_links)
+  /\ st_ok (st_seq [stat_d 2 40 0 T T T; mkdir_d_e; stat_d 3 60 0 T (T + 2) (T + 2)]
+              st_two_links)
+  /\ st_seq [stat_d 2 40 0 T T T; mkdir_d_e; stat_d 3 60 8 T (T + 2) (T + 2)] st_two_links
+     = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
 (** THE TRUE TRACE, stat, truncate, stat, of a setuid file through a
     read-write descriptor.  [ftruncate(3, 9)] keeps the length and still
     drops S_ISUID: [do_ftruncate] calls [do_truncate] whatever the

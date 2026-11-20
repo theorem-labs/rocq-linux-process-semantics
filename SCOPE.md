@@ -955,9 +955,8 @@ not apply.
   `fs/ramfs/inode.c:122-127`, Linux v6.18.46). `generic_fillattr` reports
   the count (`fs/stat.c:91`, Linux v6.18.46). The image holds every name
   of a folder outside `/proc` and `/sys` but `/proc` and `/sys`
-  themselves, which are folders of the root file system under the
-  premises below (procfs is mounted at `/proc`, and the root file system
-  holds a folder `/sys`). So the root's count is two, plus one per
+  themselves, which are folders of the root file system, not symbolic
+  links, by the premises below. So the root's count is two, plus one per
   subfolder the tree shows, plus one for each of `/proc` and `/sys` that
   the tree does not hold as a folder (`Fs.root_unheld_dirs`), and every
   other folder's count outside `/proc` and `/sys` is two plus one per
@@ -1092,11 +1091,16 @@ not apply.
 - No device cgroup refuses the process an open of `/dev/null` or
   `/dev/urandom`: the process runs in no cgroup whose BPF device
   programs or v1 devices controller answer such an open with anything
-  but 0. The model opens either node with no answer beside the
-  descriptor but `Fs.Open.openat_errnos` (`Fs.Open.open_devnull`,
-  `Fs.Open.open_urandom`), and Linux v6.18.46 asks the device cgroup on
-  every open of a device node but an `O_PATH` one, which the model never
-  answers: `may_open` (`fs/namei.c:3527-3567`)
+  but 0. The model's opens of either node (`Fs.Open.open_devnull`,
+  `Fs.Open.open_urandom`) answer the descriptor or a refusal Linux gives
+  without the device cgroup (`Fs.Open.openat_errnos`, the walk's own
+  refusals, and `do_open`'s -EEXIST for `O_CREAT|O_EXCL` and -ENOTDIR
+  for `O_DIRECTORY`, `fs/namei.c:3949-3950`, `:3958-3959`, which come
+  before `may_open`), and nothing a device cgroup alone would answer.
+  Linux v6.18.46 asks the device
+  cgroup on every open that reaches `may_open`'s permission check, which
+  every open that hands out a descriptor does but an `O_PATH` one, which
+  the model never answers: `may_open` (`fs/namei.c:3527-3567`)
   asks `inode_permission` (`fs/namei.c:568-602`), which asks
   `devcgroup_inode_permission` at `:597`
   (`include/linux/device_cgroup.h:17-39`), which asks
@@ -1197,27 +1201,36 @@ not apply.
   `/proc/self` names this process. The model answers
   `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
   (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
-  `-ENOENT` where the model opens the file again. The mount stands on a
-  folder of the root file system: `graft_tree` refuses to put a file
-  system whose root is a folder on anything else (`-ENOTDIR`,
-  `fs/namespace.c:2816-2818`, Linux v6.18.46). So the root's link count
-  counts a folder `/proc` whatever the image holds there
-  (`Fs.root_unheld_dirs`). The launch of the agreement checks makes it:
-  the initramfs holds `proc` (`testing/vm/mkinitramfs.py:19`) and the
-  tracer mounts procfs on it (`testing/vm/tracer.c:2312`).
-- The root file system holds a folder `/sys`, and the root's link count
-  counts it whatever the image holds there (`Fs.root_unheld_dirs`). The
-  model never walks into `/sys` (`Fs.at_outside`), so the folder matters
-  only to the root's count: `stat` of `/` answers two, plus one per
-  subfolder the image shows, plus one for each of `/proc` and `/sys` the
-  image does not hold as a folder. The launch of the agreement checks
-  meets it: the initramfs holds `sys` (`testing/vm/mkinitramfs.py:19`)
-  and the tracer mounts sysfs on it (`testing/vm/tracer.c:2313`), and
-  every image the harness declares holds `/proc` and `/sys` as folders
+  `-ENOENT` where the model opens the file again. `/proc` is a folder of
+  the root file system, not a symbolic link, and procfs is mounted on
+  that folder. The kernel does not make this so: `mount` follows a
+  symbolic link at the mount point (`do_mount` resolves it with
+  `LOOKUP_FOLLOW`, `fs/namespace.c:4048`, Linux v6.18.46), so procfs can
+  be mounted through a `/proc` link on a folder the link names, and then
+  the root file system holds no folder `/proc`. So the root's link count
+  counts a folder `/proc` whether or not the image holds one
+  (`Fs.root_unheld_dirs`), and an image that holds a file or a link at
+  `/proc` contradicts this assumption. The launch of the agreement checks
+  meets it: the initramfs makes `proc` a folder
+  (`testing/vm/mkinitramfs.py:19`, `:38-39`) and the tracer mounts procfs
+  on it (`testing/vm/tracer.c:2312`). A run whose `/proc` is a symbolic
+  link makes this assumption false: there Linux answers `stat` of `/`
+  with one link fewer than the model.
+- `/sys` is a folder of the root file system, not a symbolic link, and
+  the root's link count counts it whether or not the image holds one
+  (`Fs.root_unheld_dirs`); an image that holds a file or a link at `/sys`
+  contradicts this assumption. The model never walks into `/sys`
+  (`Fs.at_outside`), so the folder matters only to the root's count:
+  `stat` of `/` answers two, plus one per subfolder the image shows, plus
+  one for each of `/proc` and `/sys` the image does not hold as a folder.
+  The launch of the agreement checks meets it: the initramfs makes `sys`
+  a folder (`testing/vm/mkinitramfs.py:19`, `:38-39`) and the tracer
+  mounts sysfs on it (`testing/vm/tracer.c:2313`), and every image the
+  harness declares holds `/proc` and `/sys` as folders
   (`guest_root_folders`, `testing/syscall-check/main.ml:1293`). A run
-  whose root file system has no folder `/sys` makes this assumption
-  false: there Linux answers `stat` of `/` with one link fewer than the
-  model.
+  whose root file system has no folder `/sys`, or whose `/sys` is a
+  symbolic link, makes this assumption false: there Linux answers `stat`
+  of `/` with one link fewer than the model.
 - A hard link of a regular file that the image does not show, a name in
   a folder of the same file system that only another mount of it
   reaches, still counts in the file's link count, and the image says
