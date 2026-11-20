@@ -5322,6 +5322,25 @@ class FreshReaderTest(ReaderRunner):
         self.assertTrue(text.startswith(f"Questions for Sami:\n\n- {sound['text']}\n\n{kept}\n\n"), text)
         self.assertEqual(shown.count("does `fork_spec` match"), 1, shown)
 
+    def test_a_question_that_the_result_line_lists_is_not_added_a_second_time(self):
+        """R9 and the result line (trim.py, with_result): under the verdict person, when the review's first line is not
+        "Questions for Sami:" (rules.py blocking made a blocking verdict with only a question person, or the soundness
+        rule forced it), the result line lists each question that the trim does not hold, "and each question is asked
+        once" (the implementer's handoff, version 11). A question whose ref, theories/A.v:12, its own text does not
+        name, and which the reader dropped, posts once: the result line's bullet and the added item under "This review
+        also has these items:" are the same question of the same list item."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        asked = {"kind": "question", "ref": "theories/A.v:12", "optional": False,
+                 "text": "Does step_ok still hold for n = 0?"}
+        review = "Blocking findings.\n\n1. At theories/A.v:12: does step_ok still hold for n = 0? The proof covers n > 0."
+        for trimmed in ("Blocking findings.", "The rest of the change is fine."):
+            with self.subTest(trim=trimmed):
+                posted = trim.comment(review, trimmed, [asked], head, verdict="person")
+                shown = posted.split(f"<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertTrue(shown.startswith(f"{head}\n\nQuestions for Sami:"), shown)
+                self.assertEqual(shown.count(asked["text"]), 1, shown)
+                self.assertIn("theories/A.v:12", shown)
+
     def test_an_issues_review_keeps_the_trim_that_the_reader_gave(self):
         """An issue's review has no fixed form: its first line says whether the report holds (.github/review.md, "The
         comment"), and its head names no head commit. A trim that drops its first line posts as the reader gave it,
