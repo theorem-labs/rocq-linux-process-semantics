@@ -13607,6 +13607,32 @@ class ImportCheckTest(ReaderRunner):
                                   "request whose author has no write access.", body)
                     self.assertNotIn("No automated screen", body)
 
+    def test_a_writers_pull_request_whose_head_an_outsider_pushed_gets_no_outside_label(self):
+        """R5 and ruling 1 (rulings.md, 2026-11-20 07:33Z): R5 keeps one label on each open outside item, and a
+        writer's pull request whose head an outsider pushed is not one, as its author has write access. eve, with read
+        access, pushes to the branch of alice's #7: the trust job screens the push on eve (outsider eve, outside
+        false), the screen passes, and the review gives each verdict. The comment job's label step sets no state label
+        (neither waits-on-theorem nor waits-on-author) and posts no label comment, as for alice's own push. The pusher
+        screen and the decision writer stay. The same push to mallory's #7 keeps the outside label state."""
+        self.permissions(alice="write", mallory="read", eve="read")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        for author, outside in (("alice", "false"), ("mallory", "true")):
+            self.serve_item(7, author, kind="pr", head=HEAD)
+            rc, out, trust = self.run_trust("workflow_run", actor="eve", head=HEAD, head_repository=str(FORK_ID),
+                                            pulls=[named_pr(7)])
+            self.assertEqual((rc, trust.get("route"), trust.get("outsider"), trust.get("outside")),
+                             (0, "screen", "eve", outside), out)
+            trust = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
+            for verdict in ("pass", "blocking", "person"):
+                with self.subTest(author=author, verdict=verdict):
+                    got = self.judge(["README.md"], verdict, trust=trust, outside=outside)
+                    self.assertEqual(got["result"], "success", self.logs)
+                    if outside == "true":
+                        self.assertEqual(len(got["labels"]), 1, got["log"])
+                        continue
+                    self.assertNotRecorded(got, "writer")
+                    self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+
     def test_a_relabel_reads_each_screened_review_comment_of_the_head_and_the_screen_holds_after_it(self):
         """R12 (review round 1): the screen passed HEAD in the run of a review, whose review comment holds the marker
         <!-- review-screened <head> -->, and that review passed it. Then alice, a writer, reviews it by hand with no
