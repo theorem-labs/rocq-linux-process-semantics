@@ -83,19 +83,19 @@ FORK_OWNER = "bob"          # the account that owns that repository: bob's fork,
 REPO_ID = 444               # the id of REPO
 BRANCH = "patch-1"          # its head branch in that repository
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
-MINT_A = "Sign in as the Theorem Verify App"
-MINT_B = "Sign in as the Theorem Verify App to approve"
-# The inputs of each sign-in step that name the Theorem Verify App: its client id, from the env at the top of
+MINT_A = "Sign in as the OSS Verify App"
+MINT_B = "Sign in as the OSS Verify App to approve"
+# The inputs of each sign-in step that name the OSS Verify App: its client id, from the env at the top of
 # review.yml, and its key, a secret of the environment post.
-VERIFY_CLIENT_ID = "${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}"
-VERIFY_KEY = "${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY }}"
+VERIFY_CLIENT_ID = "${{ env.OSS_VERIFY_APP_CLIENT_ID }}"
+VERIFY_KEY = "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}"
 # The context of that key, which run_job fills in with a stand-in key when a test gives none: an empty one is the key
 # that the environment post does not hold yet (R10).
-APP_KEY = "secrets.THEOREM_VERIFY_APP_PRIVATE_KEY"
+APP_KEY = "secrets.OSS_VERIFY_APP_PRIVATE_KEY"
 # The post job's last step, which runs while the environment post holds no key of the App, and the line that it writes
 # to the run's summary.
-NO_KEY = "Say that the environment post holds no key of the Theorem Verify App"
-NO_KEY_LINE = ("The environment `post` holds no key of the Theorem Verify App. So this run approved no held run, "
+NO_KEY = "Say that the environment post holds no key of the OSS Verify App"
+NO_KEY_LINE = ("The environment `post` holds no key of the OSS Verify App. So this run approved no held run, "
                "recorded or changed no check run `repo-pairs/import-approved`, and closed or reopened no pull request.")
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
@@ -174,10 +174,10 @@ def load(path=WORKFLOW):
 WF = load()
 JOBS = WF["jobs"]
 APPS = WF["env"]["APPS"]
-# The Theorem Verify App, the identity of the post job's writes, from the env at the top of review.yml: its id, as a
+# The OSS Verify App, the identity of the post job's writes, from the env at the top of review.yml: its id, as a
 # check run names its App, and its login, as an event names its actor.
-VERIFY_APP_ID = int(WF["env"]["THEOREM_VERIFY_APP_ID"])
-VERIFY_APP_LOGIN = WF["env"]["THEOREM_VERIFY_APP_LOGIN"]
+VERIFY_APP_ID = int(WF["env"]["OSS_VERIFY_APP_ID"])
+VERIFY_APP_LOGIN = WF["env"]["OSS_VERIFY_APP_LOGIN"]
 CI = load(CI_WORKFLOW)
 RESCREEN = load(RESCREEN_WORKFLOW)
 SCREEN_START = load(SCREEN_START_WORKFLOW)
@@ -444,10 +444,10 @@ class Runner(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
         # A run of this workflow on main of REPO, as GitHub sets GITHUB_REF and GITHUB_REPOSITORY_ID for each of its
         # events there. GITHUB_WORKSPACE is the job's checkout, from which the trust step and the rescreen pass's step
-        # source .github/review/held.sh: here the root of this repository, which holds that file. APPS and the Theorem
-        # Verify App's id and login are values of the workflow's env, which each step gets.
+        # source .github/review/held.sh: here the root of this repository, which holds that file. APPS and the
+        # OSS Verify App's id and login are values of the workflow's env, which each step gets.
         self.env.update(PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH=self.api, REPO=REPO, APPS=APPS,
-                        THEOREM_VERIFY_APP_ID=str(VERIFY_APP_ID), THEOREM_VERIFY_APP_LOGIN=VERIFY_APP_LOGIN,
+                        OSS_VERIFY_APP_ID=str(VERIFY_APP_ID), OSS_VERIFY_APP_LOGIN=VERIFY_APP_LOGIN,
                         GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output,
                         GITHUB_REF="refs/heads/main", GITHUB_REPOSITORY_ID=str(REPO_ID),
                         GITHUB_WORKSPACE=os.path.dirname(GITHUB_DIR))
@@ -686,18 +686,17 @@ class TrustTest(Runner):
     def test_the_apps_of_the_organisation_count_and_others_are_screened(self):
         self.assertReview("review", "workflow_run", "sjawhar-agent[bot]", "sjawhar-agent[bot]")
         self.assertReview("review", "issues", "oss-verify[bot]", "oss-verify[bot]")
-        self.assertReview("review", "issues", VERIFY_APP_LOGIN, VERIFY_APP_LOGIN)
         self.assertReview("review", "issues", "legion-reviewer[bot]", "legion-reviewer[bot]")
         self.assertReview("screen", "workflow_run", "dependabot[bot]", "dependabot[bot]")
         self.assertReview("screen", "issues", "github-actions[bot]", "github-actions[bot]")
 
-    def test_the_apps_of_each_workflow_hold_the_login_of_the_theorem_verify_app(self):
-        """The CI run that a catch-up's reopen starts has the Theorem Verify App as its actor. Without its login in
-        APPS, that run counts toward the hourly limit as the run of an outside account. An env value cannot read
-        another, so APPS holds the login as text: it must hold the login of its own workflow's env."""
+    def test_the_apps_of_each_workflow_hold_the_login_of_the_oss_verify_app(self):
+        """The CI run that a catch-up's reopen starts has the OSS Verify App as its actor. Without its login in APPS,
+        that run counts toward the hourly limit as the run of an outside account. An env value cannot read another,
+        so APPS holds the login as text: it must hold the login of its own workflow's env."""
         for name, workflow in (("review.yml", WF), ("rescreen.yml", RESCREEN)):
             with self.subTest(workflow=name):
-                self.assertIn(workflow["env"]["THEOREM_VERIFY_APP_LOGIN"], workflow["env"]["APPS"].split(","))
+                self.assertIn(workflow["env"]["OSS_VERIFY_APP_LOGIN"], workflow["env"]["APPS"].split(","))
 
     def test_a_ci_run_is_matched_to_its_pull_request_by_head_and_head_repository(self):
         """Ruling 1: GitHub names no pull request in a CI run of a fork's pull request, so the number and the author
@@ -2740,7 +2739,7 @@ class HoldingsTest(unittest.TestCase):
     post job alone the App's key, in its sign-in steps alone, and whether the key is empty in its env."""
 
     # The post job's env value that says whether the environment post holds the App's key: true or false (R10).
-    KEY_SET = "${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}"
+    KEY_SET = "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}"
 
     def test_only_the_post_job_reads_a_secret_and_only_the_apps_key_in_its_sign_in_steps(self):
         """The key goes to the post job's two sign-in steps alone. The post job's env reads only whether it is empty,
@@ -2761,34 +2760,35 @@ class HoldingsTest(unittest.TestCase):
         for name in (MINT_A, MINT_B):
             self.assertEqual(step("post", name)["with"]["private-key"], VERIFY_KEY)
 
-    def test_the_theorem_verify_app_is_named_once_in_the_env_and_each_sign_in_uses_its_client_id_and_key(self):
-        """R10, R12: the post job's writes are the Theorem Verify App's. The env at the top of review.yml names its
-        id, its client id and its login once each, and no job names the client id or the login itself. Each read of a
-        check run by its App compares .app.id with the id of the env. Each sign-in step takes the client id from the
-        env and the key THEOREM_VERIFY_APP_PRIVATE_KEY, and no app-id. No file under .github/ but this one names the
-        OSS Verify App's id or key in code: a comment that names one must say that it names the old App. This file
-        names them to look for them, and one test of it serves a check run of the old App's id."""
+    def test_the_oss_verify_app_is_named_once_in_the_env_and_each_sign_in_uses_its_client_id_and_key(self):
+        """R10, R12: the post job's writes are the OSS Verify App's (dispatch://INFRA-3395, spec version 54). The env
+        at the top of review.yml names its id, its client id and its login once each, with the App's own values, and
+        no job names one of those values itself. Each read of a check run by its App compares .app.id with the id of
+        the env. Each sign-in step takes the client id from the env and the key OSS_VERIFY_APP_PRIVATE_KEY, and no
+        app-id. Outside this file, a line under .github/ names one of the three values only in the env of review.yml
+        or rescreen.yml: the line of that value, or APPS, which holds the login."""
         with open(WORKFLOW) as f:
             text = f.read()
-        for name in ("THEOREM_VERIFY_APP_ID", "THEOREM_VERIFY_APP_CLIENT_ID", "THEOREM_VERIFY_APP_LOGIN"):
+        app = {"OSS_VERIFY_APP_ID": "5447700", "OSS_VERIFY_APP_CLIENT_ID": "Iv23liAWPMahJZYsw3un",
+               "OSS_VERIFY_APP_LOGIN": "oss-verify[bot]"}
+        for name, value in app.items():
             with self.subTest(name=name):
                 self.assertEqual(len(re.findall(rf"^  {name}: ", text, re.M)), 1)
-                self.assertTrue(WF["env"][name])
-        for name in ("THEOREM_VERIFY_APP_CLIENT_ID", "THEOREM_VERIFY_APP_LOGIN"):
-            with self.subTest(value=name):
-                self.assertNotIn(WF["env"][name], json.dumps(JOBS))
-                self.assertNotIn(WF["env"][name], held_sh())
+                self.assertEqual(WF["env"][name], value)
+                self.assertNotIn(value, json.dumps(JOBS))
+                self.assertNotIn(value, held_sh())
         for path, body in ((WORKFLOW, text), (HELD_SH, held_sh())):
             with self.subTest(reads=path):
                 reads = re.findall(r"\.app\.id\b.*", body)
                 self.assertTrue(reads)
-                self.assertEqual(set(reads), {".app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID"})
+                self.assertEqual(set(reads), {".app.id | tostring) == $ENV.OSS_VERIFY_APP_ID"})
         for name in (MINT_A, MINT_B):
             with self.subTest(step=name):
                 given = step("post", name)["with"]
                 self.assertEqual((given.get("client-id"), given.get("private-key")), (VERIFY_CLIENT_ID, VERIFY_KEY))
                 self.assertNotIn("app-id", given)
-        old, found = ("5447700", "OSS_VERIFY_APP_PRIVATE_KEY"), []
+        # The lines of a workflow that may name a value: the line of the env that holds it, and APPS.
+        kept, found = {f'  {name}: "{value}"\n' for name, value in app.items()} | {f'  APPS: "{APPS}"\n'}, []
         for root, dirs, files in os.walk(GITHUB_DIR):
             dirs[:] = [d for d in dirs if d != "__pycache__"]
             for file in files:
@@ -2797,8 +2797,8 @@ class HoldingsTest(unittest.TestCase):
                     continue
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for number, line in enumerate(f, 1):
-                        history = line.lstrip().startswith("#") and "the old App" in line
-                        if any(o in line for o in old) and not history:
+                        place = path in (WORKFLOW, RESCREEN_WORKFLOW) and line in kept
+                        if any(value in line for value in app.values()) and not place:
                             found.append(f"{os.path.relpath(path, GITHUB_DIR)}:{number}")
         self.assertEqual(found, [])
 
@@ -3786,8 +3786,8 @@ class ApproveTest(Holding):
     """b8 (R10): a first-time contributor's pull request whose runs GitHub holds (status action_required), taken by a
     run by hand on main with its number: the trust job's step, the jobs that run (each job's if), a stand-in verdict
     of the screen, and the post job's own steps against the stand-in gh, with a stand-in token from each sign-in step.
-    When the screen passes, the Theorem Verify App approves the held runs of the screened head with token B. When it
-    does not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
+    When the screen passes, the OSS Verify App approves the held runs of the screened head with token B. When it does
+    not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
     request. When the head adds, changes or deletes a file under .github/, nothing is approved either, whatever the
     screen says: the comment job gives the pull request waits-on-theorem, with a label comment that says that a person
     at Theorem approves its runs and that records the head."""
@@ -3958,7 +3958,7 @@ class ApproveTest(Holding):
             self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["steering"], "")
 
     def test_with_no_key_in_the_environment_post_a_screened_held_head_waits_on_a_person_at_theorem(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
         Verify App, so its secret is empty, and the post job's env value APP_KEY_SET is false. The screen passes a held
         head that changes no file under .github/. The post job reads the pull request and the runs with this run's own
         token, mints neither token, approves no run and writes nothing. It ends with success, its summary says that
@@ -8164,7 +8164,7 @@ class RescreenTrustTest(Held):
         functions itself. Each of the two jobs checks out that file alone before the step, at github.sha, the commit of
         main whose workflow file runs: no head and no ref of a pull request. Both count with the same values: a pass
         that counted the limit or the tries with another value than review.yml's jobs would start runs that their trust
-        job refuses, or stops that it never takes. Both read the same id and login of the Theorem Verify App, the
+        job refuses, or stops that it never takes. Both read the same id and login of the OSS Verify App, the
         App of the import check run and of the close of a catch-up."""
         functions = set(re.findall(r"^([a-z_]+)\(\) \{", held_sh(), re.M))
         self.assertLessEqual({"consider", "consider_closed", "waiting", "held_account"}, functions)
@@ -8182,7 +8182,7 @@ class RescreenTrustTest(Held):
                 self.assertEqual([(s["uses"], s["with"]) for s in checkouts], [(CHECKOUT, HELD_CHECKOUT)])
                 self.assertLess(job["steps"].index(checkouts[0]), job["steps"].index(the))
         for name in ("POST_REVIEW", "APPS", "OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES",
-                     "THEOREM_VERIFY_APP_ID", "THEOREM_VERIFY_APP_LOGIN"):
+                     "OSS_VERIFY_APP_ID", "OSS_VERIFY_APP_LOGIN"):
             with self.subTest(name=name):
                 self.assertEqual(RESCREEN["env"][name], WF["env"][name])
 
@@ -9649,7 +9649,7 @@ class ScheduleTest(Scheduled):
                       "approves its runs.", out)
 
     def test_with_no_key_a_screened_held_head_waits_on_a_person_and_gets_no_second_approve_run(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
         Verify App. The approve run that the pass starts for a held head passes the screen, and its post job approves
         no run, writes nothing and ends with success. Its comment job records the head in the label comment and gives
         waits-on-theorem. The next runs of the pass, with a number and with none, start no approve run of that head,
@@ -9696,7 +9696,7 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, want), out)
                 if not want:
                     self.assertIn(f"#7: its label comment records that the environment post held no key of the "
-                                  f"Theorem Verify App when a run screened {HEAD}, so a person at Theorem approves its "
+                                  f"OSS Verify App when a run screened {HEAD}, so a person at Theorem approves its "
                                   "runs.", out)
 
     def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
@@ -9995,10 +9995,10 @@ CATCH_UP = "Close and reopen the pull request"
 
 
 class CatchUpScheduleTest(Scheduled):
-    """b1 (R6, D16): an outside pull request whose head no run of this workflow met is closed and reopened by the
-    Theorem Verify App, so that GitHub starts a CI run of the head and its review follows; a head whose review is in
-    the form of before the move off pull_request_target gets a review from the API, with no close and no reopen. Each
-    run that the schedule starts goes on through the trust job and the post job where a case says so."""
+    """b1 (R6, D16): an outside pull request whose head no run of this workflow met is closed and reopened by the OSS
+    Verify App, so that GitHub starts a CI run of the head and its review follows; a head whose review is in the form
+    of before the move off pull_request_target gets a review from the API, with no close and no reopen. Each run that
+    the schedule starts goes on through the trust job and the post job where a case says so."""
 
     # A review of HEAD in the older form, which names the head only in its text: no marker of its head.
     OLD_REVIEW = {"id": 2, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
@@ -10033,7 +10033,7 @@ class CatchUpScheduleTest(Scheduled):
         self.assertEqual((rc, runs), (0, []), out)
 
     def test_with_no_key_a_catch_up_closes_and_reopens_nothing_and_succeeds(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
         Verify App. The post job of a catchup run mints no token A, neither closes nor reopens the pull request, makes
         no call of the API, ends with success, and says so in its summary. It names no head that it caught up, so the
         comment job does not run, and the next run of the pass starts no second catch-up of the head while that run
@@ -10371,8 +10371,8 @@ class LeftClosedTest(Scheduled):
         self.dispatched("catchup", want=False)
 
     def test_a_pull_request_closed_outside_every_catchup_run_or_by_someone_else_is_never_reopened(self):
-        """The Theorem Verify App closed it before the catchup run started, or after it ended; its author closed it; or
-        the catchup run's post job passed: no catchup, and the trust job refuses one."""
+        """The OSS Verify App closed it before the catchup run started, or after it ended; its author closed it; or the
+        catchup run's post job passed: no catchup, and the trust job refuses one."""
         for case, at, by, jobs in (("before the run started", ago(300), VERIFY_APP_LOGIN, self.FAILED),
                                    ("after the run ended", ago(100), VERIFY_APP_LOGIN, self.FAILED),
                                    ("by its author", ago(200), "mallory", self.FAILED),
@@ -11366,8 +11366,8 @@ class HeadScheduleTest(Scheduled):
 class VariableScheduleTest(Scheduled):
     """b10 (R12, D16): the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of each open outside
     pull request (the newer of the label comment's marker line and the output text of the head's check run
-    repo-pairs/import-approved by the Theorem Verify App), against the value now: a head whose value is not the value
-    now gets a relabel run, which screens nothing and counts toward no limit."""
+    repo-pairs/import-approved by the OSS Verify App), against the value now: a head whose value is not the value now
+    gets a relabel run, which screens nothing and counts toward no limit."""
 
     # The pair's import_paths (GlobTest, below).
     LPS = property(lambda self: GlobTest.LPS)
@@ -11413,9 +11413,9 @@ class VariableScheduleTest(Scheduled):
         self.assertEqual((got["task"], got["route"], got["outsider"]), ("relabel", "review", "mallory"))
 
     def test_the_value_recorded_is_the_newer_marker_and_a_head_with_a_review_and_neither_is_relabelled(self):
-        """A head with a review and neither marker line: a relabel. A check run of the Theorem Verify App newer than
-        the label comment records the value, and one of another App counts for nothing; a label comment newer than
-        the check run records it. A relabel of the head that ended under an hour ago puts the next one off."""
+        """A head with a review and neither marker line: a relabel. A check run of the OSS Verify App newer than the
+        label comment records the value, and one of another App counts for nothing; a label comment newer than the
+        check run records it. A relabel of the head that ended under an hour ago puts the next one off."""
         self.item(kind="pr", comments=[review_of(HEAD)])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
@@ -11441,9 +11441,9 @@ class VariableScheduleTest(Scheduled):
 
     def test_a_check_run_of_another_pull_request_of_the_same_commit_records_nothing_for_this_one(self):
         """A check run belongs to a commit, and so shows on each pull request of that commit: the value of #7 is the
-        one that a check run whose external_id is 7:<head> records. The Theorem Verify App's check run of #8 at #7's
-        head, newer than #7's label comment, counts for nothing for #7, so #7 keeps its label comment's value; the same
-        check run of #7 records #7's value."""
+        one that a check run whose external_id is 7:<head> records. The OSS Verify App's check run of #8 at #7's head,
+        newer than #7's label comment, counts for nothing for #7, so #7 keeps its label comment's value; the same check
+        run of #7 records #7's value."""
         self.item(kind="pr", comments=[review_of(HEAD), self.label(HEAD, None, at=ago(300))])
         for number, value, want in ((8, None, []), (8, self.LPS, [("7", "relabel", "", HEAD, "")]),
                                     (7, self.LPS, []), (7, None, [("7", "relabel", "", HEAD, "")])):
@@ -12086,8 +12086,8 @@ class ConflictTest(Runner):
 
 class CatchupTest(Held):
     """A catchup run of a closed pull request is taken only as the reopen of a catch-up left closed: one that is not
-    merged, whose newest close is the Theorem Verify App's and falls within another catchup run of it whose post job
-    failed or was cancelled."""
+    merged, whose newest close is the OSS Verify App's and falls within another catchup run of it whose post job failed
+    or was cancelled."""
 
     def setUp(self):
         super().setUp()
@@ -12368,7 +12368,7 @@ class LabelRuleTest(unittest.TestCase):
                 rules.label_comment("steering", head=head)
 
     def test_the_no_key_state_records_its_head_and_every_later_state_keeps_it(self):
-        """R10 (spec v76): while the environment post holds no key of the Theorem Verify App, a held pull request whose
+        """R10 (spec v76): while the environment post holds no key of the OSS Verify App, a held pull request whose
         screen passed gets waits-on-theorem with a label comment that says that a person at Theorem approves its checks,
         that the workflow cannot approve them in this repository yet, and that the author needs to do nothing. It says
         nothing of a file under .github/, and it holds the line <!-- review-no-key <head> -->, which the rescreen pass
@@ -13098,7 +13098,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotIn("repo-pairs/import-approved", body)
 
     def test_with_no_key_in_the_environment_post_the_post_job_writes_nothing_and_succeeds(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the Theorem
+        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
         Verify App. The review of a head whose rule holds: the post job decides with this run's token, mints no token
         A, records no check run, ends with success, and says so in its summary. The comment job reads recorded as false
         and the decision record: waits-on-theorem, with each step for the variable, and no text says that the workflow
@@ -13426,9 +13426,9 @@ class ImportCheckTest(ReaderRunner):
                "started": PostLabelTest.STARTED}
 
     def recorded(self):
-        """The check run that the review of #7 at HEAD recorded, as GitHub lists it (id 901, of the Theorem Verify
-        App), and three that a withdrawal leaves: one of #8 at the same commit, one of another App, and one that is
-        neutral already."""
+        """The check run that the review of #7 at HEAD recorded, as GitHub lists it (id 901, of the OSS Verify App),
+        and three that a withdrawal leaves: one of #8 at the same commit, one of another App, and one that is neutral
+        already."""
         got = self.judge(["README.md"], value=self.LPS)
         self.assertRecorded(got, self.LPS)
         (_token, body), = got["checks"]

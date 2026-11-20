@@ -31,7 +31,7 @@ for a merge conflict, and loses that line with any other state. The state steeri
 head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the
 post job approves none of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact
 no_key=true, with head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head,
-but the environment post held no key of the Theorem Verify App, so the post job approved none of its runs, and the
+but the environment post held no key of the OSS Verify App, so the post job approved none of its runs, and the
 rescreen pass starts no approval of it. In a state with no state label (working, or import), an item that has a label
 comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
 kind=pr and outsider=true) in the state decide or person, the text also names the step of R12 for the import into the
@@ -205,8 +205,8 @@ FACTS = {
     # A held pull request whose head changes a file under .github/, so the post job approved none of its runs (R10):
     # a person at Theorem approves them.
     "steering": False,
-    # A held pull request whose head the screen passed, while the environment post held no key of the Theorem Verify
-    # App, so the post job approved none of its runs (R10): a person at Theorem approves them.
+    # A held pull request whose head the screen passed, while the environment post held no key of the
+    # OSS Verify App, so the post job approved none of its runs (R10): a person at Theorem approves them.
     "no_key": False,
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
@@ -312,9 +312,9 @@ STATES = {
         THEOREM, "A person at Theorem approves the checks of this pull request.",
         "This pull request changes a file under `.github/`, so the workflow does not approve its checks. You do not "
         "need to do anything."),
-    # A held pull request whose head the screen passed, while the environment post held no key of the Theorem Verify
-    # App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. The label comment
-    # records the head (no_key_line).
+    # A held pull request whose head the screen passed, while the environment post held no key of the
+    # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. The
+    # label comment records the head (no_key_line).
     "no-key": (
         THEOREM, "A person at Theorem approves the checks of this pull request.",
         "The workflow cannot approve the checks of a pull request in this repository yet. You do not need to do "
@@ -354,7 +354,7 @@ NUMBER = re.compile(r"[1-9][0-9]*")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
 # (R12), the stored draft of an issue's reply, the approved reply that posted, the head that a catch-up closed and
 # reopened the pull request at (D16 (a): once for each head), and the head whose runs the post job did not approve,
-# because it changes a file under .github/ or because the environment post held no key of the Theorem Verify App
+# because it changes a file under .github/ or because the environment post held no key of the OSS Verify App
 # (R10: the rescreen pass starts no approval of it again).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
@@ -486,7 +486,7 @@ def steering_line(head):
 
 def no_key_line(head):
     """The marker line of KEPT that records head as a head that the screen passed while the environment post held no
-    key of the Theorem Verify App (the state no-key): the post job approved none of its runs, and the rescreen pass
+    key of the OSS Verify App (the state no-key): the post job approved none of its runs, and the rescreen pass
     starts no approval of it again."""
     return f"<!-- review-no-key {head} -->"
 

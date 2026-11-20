@@ -195,8 +195,8 @@ head_marks() {
          and test("\n<!-- review-steering " + $ENV.SHA + " -->(\n|$)"))] | map(tostring) | join(" ")'
 }
 # no_key_of <number> <head>: true when the label comment of github-actions[bot] on <number> holds
-# <!-- review-no-key <head> -->: the screen passed <head> while the environment post held no key of the Theorem
-# Verify App, so the post job approved no run of it, and a person at Theorem approves its runs.
+# <!-- review-no-key <head> -->: the screen passed <head> while the environment post held no key of
+# the OSS Verify App, so the post job approved no run of it, and a person at Theorem approves its runs.
 no_key_of() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
@@ -875,7 +875,7 @@ due_draft() {
 # head; after REVIEW_TRIES of them, the head is not tried again (head_stopped). A hold of an approval that is
 # tried again leaves it to that hold (due_held). Never for a head that the label comment records as one that
 # changes a file under .github/ (head_marks, steered), or as one that the screen passed while the environment
-# post held no key of the Theorem Verify App (no_key_of): the post job approved no run of such a head.
+# post held no key of the OSS Verify App (no_key_of): the post job approved no run of such a head.
 due_approve() {
   local list n last created ended run f screen post tries keyless
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
@@ -893,7 +893,7 @@ due_approve() {
   fi
   keyless=$(no_key_of "$number" "$head") || { echo "::error::the comments of #$number could not be read."; return 1; }
   if [ "$keyless" = true ]; then
-    echo "#$number: its label comment records that the environment post held no key of the Theorem Verify App when" \
+    echo "#$number: its label comment records that the environment post held no key of the OSS Verify App when" \
       "a run screened $head, so a person at Theorem approves its runs."
     return 0
   fi
@@ -1049,7 +1049,7 @@ due_conflict() {
 # due_catchup: the catch-up of an outside pull request whose head no review, no hold comment and no run of
 # this workflow names (no run met it), whose head repository is still there, and whose newest CI run of the
 # head ended over an hour ago, with none still to finish: a catchup run, whose post job closes and reopens it
-# with the Theorem Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows.
+# with the OSS Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows.
 # A hold comment names its head whatever the age of the run that held it, which can be older than the 8 days
 # of runs that this pass reads. Once for each head: the comment job of the run that closed and reopened the
 # pull request records the head in the label comment (<!-- review-catchup <head> -->, caught), and that
@@ -1206,7 +1206,7 @@ due_unreviewed() {
 }
 # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
 # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
-# the same line in the output text of the head's check run repo-pairs/import-approved, by the Theorem Verify App,
+# the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App,
 # of this pull request: a check run belongs to a commit, so only one whose external_id is <number>:<head>
 # counts, and one of another pull request of the same commit does not. When it is not the value now
 # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
@@ -1225,7 +1225,7 @@ due_variable() {
   checks=$(SHA=$head NUMBER=$number gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
     -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
       | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
-               and (.app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID
+               and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
                and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
       | (.completed_at // .started_at // "-") as $at | .output.text // "" | split("\n")[]
       | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
@@ -1333,7 +1333,7 @@ consider() {
 }
 # consider_closed: a catch-up left closed, the one closed item that this pass takes: #number, a pull request
 # of an outside author that is not merged, whose newest close (at and by, of the list of the closed pull
-# requests) is the Theorem Verify App's (THEOREM_VERIFY_APP_LOGIN) and falls between the start and the end of
+# requests) is the OSS Verify App's (OSS_VERIFY_APP_LOGIN) and falls between the start and the end of
 # a catchup run of it whose post job failed or was cancelled (the closing run), as the trust job tells it
 # (left_closed). Its workflow_dispatch runs are read back to the day before the close. It is due a catchup run,
 # which only reopens it, once an hour after the newest catchup run of it ended. Each catchup run since the
@@ -1347,7 +1347,7 @@ consider_closed() {
   fi
   access_of "$author" || return 1
   (( ${access[$author]} != 0 )) || return 0
-  [ "${by:-}" = "$THEOREM_VERIFY_APP_LOGIN" ] || return 0
+  [ "${by:-}" = "$OSS_VERIFY_APP_LOGIN" ] || return 0
   [[ ${at:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
   given=$(gave_up "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
   if [ "$given" = true ]; then

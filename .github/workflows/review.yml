@@ -35,9 +35,9 @@
 #   approve   a first-time contributor's pull request whose CI runs GitHub holds: the screen, and, when it passes, the
 #             approval of the held runs. A head that changes a file under .github/ gets no approval: a person at
 #             Theorem approves its runs. A run by hand with the task review on such a pull request gets this task.
-#   catchup   an outside pull request whose head no run met: the Theorem Verify App closes and reopens it, which
-#             starts CI. A pull request that a catch-up closed and could not reopen is only reopened. The label comment
-#             records the head, so that each head gets one catch-up.
+#   catchup   an outside pull request whose head no run met: the OSS Verify App closes and reopens it, which starts CI.
+#             A pull request that a catch-up closed and could not reopen is only reopened. The label comment records
+#             the head, so that each head gets one catch-up.
 #   conflict  a pull request with a merge conflict, for which GitHub starts no CI run: a comment that asks its author
 #             to resolve the conflict.
 #   relabel   the import check run of R12 and the label and the label comment of a head, set again with no model from
@@ -338,25 +338,23 @@ env:
   # This repository's decision: "true" posts each review as a comment on its pull request or issue; any other value
   # keeps it in the run's summary only.
   POST_REVIEW: "true"
-  # The Theorem Verify App, which makes the writes of the post job. Sami chose it
-  # (dispatch://INFRA-3395/ask/42e91de9-d053-420c-a6b5-f8b0d199b568). THEOREM_VERIFY_APP_ID is its id: a read of the
-  # check run repo-pairs/import-approved takes only a check run of that App. THEOREM_VERIFY_APP_CLIENT_ID is its client
-  # id, with which the post job mints its tokens. THEOREM_VERIFY_APP_LOGIN is its login: a closed pull request is
-  # reopened only when its newest close is of that login. The App does not exist yet, so each value is a placeholder
-  # that no App has. Then no check run and no close matches it, and a sign-in, which runs only while the environment
-  # post holds the App's key, fails. dispatch://INFRA-3395 gives the real values when the App is made. rescreen.yml
-  # holds the same id and login, and APPS (below) holds the login.
-  THEOREM_VERIFY_APP_ID: "0"
-  THEOREM_VERIFY_APP_CLIENT_ID: "PLACEHOLDER-theorem-verify-client-id"
-  THEOREM_VERIFY_APP_LOGIN: "theorem-verify-placeholder[bot]"
+  # The OSS Verify App, which makes the writes of the post job: dispatch://INFRA-3395 at spec version 54, which Sami
+  # approved (dispatch://INFRA-3395/ask/097a0674-1460-432e-8961-8ac0326f198e). Each value below is the App's own, and
+  # none is a placeholder. OSS_VERIFY_APP_ID is its id: a read of the check run repo-pairs/import-approved takes only a
+  # check run of that App. OSS_VERIFY_APP_CLIENT_ID is its client id, with which the post job mints its tokens.
+  # OSS_VERIFY_APP_LOGIN is its login: a closed pull request is reopened only when its newest close is of that login.
+  # rescreen.yml holds the same id and login, and APPS (below) holds the login.
+  OSS_VERIFY_APP_ID: "5447700"
+  OSS_VERIFY_APP_CLIENT_ID: "Iv23liAWPMahJZYsw3un"
+  OSS_VERIFY_APP_LOGIN: "oss-verify[bot]"
   # The Apps that count as having write access: this organisation's own, legion-reviewer[bot], and
   # legion-implementer[bot], which starts the run that posts an approved reply (dispatch://INFRA-3395, R4). The Review
   # step admits no other App, except an App whose pull request or issue the screen passed, and github-actions[bot] for
-  # a run of the rescreen pass (rescreen.yml) that the trust job accepted. APPS holds the login of the Theorem Verify
-  # App (THEOREM_VERIFY_APP_LOGIN) as text, because an env value cannot read another. The CI run that a catch-up's
-  # reopen starts has that App as its actor. Without the login here, that run counts toward the hourly limit as the
-  # run of an outside account. oss-verify[bot] stays for the runs and the closes that it made before.
-  APPS: "sjawhar-agent[bot],oss-verify[bot],theorem-verify-placeholder[bot],legion-reviewer[bot],legion-implementer[bot]"
+  # a run of the rescreen pass (rescreen.yml) that the trust job accepted. APPS holds the login of the OSS Verify App
+  # (OSS_VERIFY_APP_LOGIN) as text, because an env value cannot read another. The CI run that a catch-up's reopen
+  # starts has that App as its actor. Without the login here, that run counts toward the hourly limit as the run of an
+  # outside account.
+  APPS: "sjawhar-agent[bot],oss-verify[bot],legion-reviewer[bot],legion-implementer[bot]"
   # The most reviews that may call the model in one hour. An agent of ours can open many pull requests at once, and
   # the screen passes others', so a burst must not start model runs without limit. A run at the cap stops before the
   # model, and the run is red; a maintainer can re-run it once the hour has passed. A run that the trust job stops, or
@@ -869,7 +867,7 @@ jobs:
             done
           }
           # left_closed: true when #NUMBER is a pull request that a catch-up run closed and could not reopen: it is not
-          # merged, and its newest closed event is the Theorem Verify App's (THEOREM_VERIFY_APP_LOGIN) and falls between
+          # merged, and its newest closed event is the OSS Verify App's (OSS_VERIFY_APP_LOGIN) and falls between
           # the start and the end of another run of the task catchup of it whose post job failed or was cancelled (the
           # closing run). A catchup run since then that reopened it would have left it open, or closed by a newer event.
           # The runs are read one day at a time (runs_in, which reads a day that GitHub cut at 1,000 runs one hour at a
@@ -881,7 +879,7 @@ jobs:
             closed=$(gh api --paginate "repos/$REPO/issues/$NUMBER/events" --jq '.[] | select(.event == "closed")
               | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) || fail "the events of #$NUMBER could not be read."
             read -r at by <<< "$closed"
-            [ "${by:-}" = "$THEOREM_VERIFY_APP_LOGIN" ] || return 1
+            [ "${by:-}" = "$OSS_VERIFY_APP_LOGIN" ] || return 1
             [[ $at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 1
             given=$(gave_up "$NUMBER") || fail "the comments of #$NUMBER could not be read."
             [ "$given" = false ] || return 1
@@ -2614,8 +2612,8 @@ jobs:
           delimiter="review_$(openssl rand -hex 16)"
           { echo "review<<$delimiter"; cat "$work/review.json"; echo "$delimiter"; } >> "$GITHUB_OUTPUT"
 
-  # The Theorem Verify App's writes, and nothing else: no comment and no label. In the environment post, which only
-  # main's runs reach and which holds the App's key (THEOREM_VERIFY_APP_PRIVATE_KEY) from the LPS move. Each write
+  # The OSS Verify App's writes, and nothing else: no comment and no label. In the environment post, which only
+  # main's runs reach and which holds the App's key (OSS_VERIFY_APP_PRIVATE_KEY) from the LPS move. Each write
   # comes after a step of its own that mints a token for this repository alone: token A, with checks: write and
   # pull-requests: write, for the import check run of a review or a relabel and for the close and reopen of a
   # catch-up; token B, with actions: write alone, for the approval of a head's held runs, minted only for the task
@@ -2665,10 +2663,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {contents: read, pull-requests: read, actions: read, checks: read}
-    # Whether the environment post holds the key of the Theorem Verify App: true or false, never the key. Each step
+    # Whether the environment post holds the key of the OSS Verify App: true or false, never the key. Each step
     # that needs the App, or that only finds work for it, runs only when it is true (R10).
     env:
-      APP_KEY_SET: ${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}
+      APP_KEY_SET: ${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY != '' && 'true' || 'false' }}
     outputs:
       recorded: ${{ steps.record.outputs.recorded == 'true' && 'true' || 'false' }}
       decision: ${{ steps.decide.outputs.decision }}
@@ -2780,7 +2778,7 @@ jobs:
             || { echo "::error::the import check of $HEAD could not be decided."; exit 1; }
           decided "$decision" "$(grep -c . "$RUNNER_TEMP/files.jsonl" || true) of $count changed files read"
       # The import check run of the head that a later review or screen withdraws (R12): with this job's own token, each
-      # check run repo-pairs/import-approved of the Theorem Verify App on the head, with conclusion success, whose
+      # check run repo-pairs/import-approved of the OSS Verify App on the head, with conclusion success, whose
       # external_id is <number>:<head>. A check run belongs to a commit, so one of another pull request of the same
       # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a writer's
       # review by hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or
@@ -2847,7 +2845,7 @@ jobs:
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
               | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
-                       and (.app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID
+                       and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
                        and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success")
               | {id, text: (.output.text // "")} | @json' > "$RUNNER_TEMP/approved.jsonl" \
             || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
@@ -2865,7 +2863,7 @@ jobs:
           { echo "checks=$ids"; echo "head=$head"; echo "why=$why"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
       # and for the close and reopen of a catch-up. Only while the environment post holds the App's key.
-      - name: Sign in as the Theorem Verify App
+      - name: Sign in as the OSS Verify App
         id: app
         if: >-
           env.APP_KEY_SET == 'true'
@@ -2873,8 +2871,8 @@ jobs:
               || steps.withdraw.outputs.checks != '')
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
-          client-id: ${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}
-          private-key: ${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY }}
+          client-id: ${{ env.OSS_VERIFY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}
           owner: theorem-labs
           repositories: rocq-linux-process-semantics
           permission-checks: write
@@ -2976,7 +2974,7 @@ jobs:
             closed=$(gh api --paginate "repos/$REPO/issues/$NUMBER/events" --jq '.[] | select(.event == "closed")
               | "\(.created_at) \(.actor.login // "-")"' | sort | tail -n 1) \
               || { echo "::error::the events of #$NUMBER could not be read."; exit 1; }
-            if [ "${closed##* }" != "$THEOREM_VERIFY_APP_LOGIN" ]; then
+            if [ "${closed##* }" != "$OSS_VERIFY_APP_LOGIN" ]; then
               echo "::notice::#$NUMBER was closed last by ${closed##* }, not by the catch-up. It is not reopened."
               exit 0
             fi
@@ -3077,15 +3075,15 @@ jobs:
           echo "runs=$ids" >> "$GITHUB_OUTPUT"
       # Token B: for the approval of the runs that the step before found, only when the screen passed and the
       # environment post holds the App's key.
-      - name: Sign in as the Theorem Verify App to approve
+      - name: Sign in as the OSS Verify App to approve
         id: approver
         if: >-
           env.APP_KEY_SET == 'true' && needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
           && steps.held.outputs.runs != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
-          client-id: ${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}
-          private-key: ${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY }}
+          client-id: ${{ env.OSS_VERIFY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}
           owner: theorem-labs
           repositories: rocq-linux-process-semantics
           permission-actions: write
@@ -3112,13 +3110,13 @@ jobs:
             fi
           done
           exit "$failed"
-      # While the environment post holds no key of the Theorem Verify App (APP_KEY_SET; R10, until the LPS move of
+      # While the environment post holds no key of the OSS Verify App (APP_KEY_SET; R10, until the LPS move of
       # dispatch://OSSV-321), each step before that needs the App did not run. This step says so in the run's summary.
       # For an approval whose held runs the step "The held runs of the screened head" found, the output head names
       # the head that the screen read: the comment job gives the pull request waits-on-theorem, with a label comment
       # that says that a person at Theorem approves its runs and that records the head, so that the rescreen pass
       # starts no second approval of it.
-      - name: Say that the environment post holds no key of the Theorem Verify App
+      - name: Say that the environment post holds no key of the OSS Verify App
         id: no_key
         if: env.APP_KEY_SET != 'true'
         env:
@@ -3126,13 +3124,13 @@ jobs:
           RUNS: ${{ steps.held.outputs.runs }}
         run: |
           set -euo pipefail
-          echo "The environment \`post\` holds no key of the Theorem Verify App. So this run approved no held run," \
+          echo "The environment \`post\` holds no key of the OSS Verify App. So this run approved no held run," \
             "recorded or changed no check run \`repo-pairs/import-approved\`, and closed or reopened no pull request." \
             >> "$GITHUB_STEP_SUMMARY"
           [ -n "${RUNS:-}" ] || exit 0
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the trust job gave no head commit: $HEAD"; exit 1; }
-          echo "::notice::GitHub holds the runs $RUNS of $HEAD. The environment post holds no key of the Theorem" \
-            "Verify App, so no run is approved: a person at Theorem approves its runs."
+          echo "::notice::GitHub holds the runs $RUNS of $HEAD. The environment post holds no key of the" \
+            "OSS Verify App, so no run is approved: a person at Theorem approves its runs."
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
@@ -3143,7 +3141,7 @@ jobs:
   # nothing but the line of its head in the label comment, and keeps the state label and the text of that comment. A
   # stop of the rescreen pass posts the label and the hold comment of its work alone. An approval whose head changes a
   # file under .github/ (the post job's output steering), or whose held runs the post job did not approve as the
-  # environment post holds no key of the Theorem Verify App (its output no_key), posts its state label and its label
+  # environment post holds no key of the OSS Verify App (its output no_key), posts its state label and its label
   # comment alone. A review, an answer or a fix that the fresh reader refused posts nothing: the item gets
   # waits-on-theorem and a label comment with Sami's next step.
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
@@ -3618,7 +3616,7 @@ jobs:
       # its label comment says so and holds the line <!-- review-steering <head> --> (.github/review/rules.py), which
       # every later label comment keeps. The rescreen pass and the trust job read that line, so that no run of the
       # pass screens that head again for its approval. An approval whose held runs the post job found while the
-      # environment post held no key of the Theorem Verify App (the post job's no_key, the head that the screen read)
+      # environment post held no key of the OSS Verify App (the post job's no_key, the head that the screen read)
       # gets waits-on-theorem the same way, with a label comment that says that the workflow cannot approve the checks
       # yet, and the line <!-- review-no-key <head> -->, which the rescreen pass reads (held.sh, due_approve). Nothing
       # is written when the pull request moved on from the head: the new head gets an approval of its own.
