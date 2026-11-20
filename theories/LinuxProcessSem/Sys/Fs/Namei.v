@@ -163,14 +163,18 @@ Definition top_level_key (k : Fs.path) : bool :=
     it on a row that answers.  Each source of it on a removal that
     reaches the victim is a mount point or a file system the
     configuration of record does not build: [vfs_unlink]'s
-    [is_local_mountpoint] of the victim (fs/namei.c:4669), [vfs_rmdir]'s
-    (4543-4546), [may_delete]'s [IS_ROOT] victim (3287-3288), a file
-    system's root, which only a mount shows at a name; [vfs_rmdir]'s
+    [is_local_mountpoint] of the victim (fs/namei.c:4669) and
+    [vfs_rmdir]'s (4543-4546); [vfs_rmdir]'s
     [S_KERNEL_FILE], which only cachefiles sets
     (fs/cachefiles/namei.c:22-23, and CONFIG_CACHEFILES is not set in
     arch/riscv/configs/defconfig); and [may_delete]'s
     [DCACHE_NFSFS_RENAMED] (3293-3294), NFS's, which
-    testing/vm/kernel.fragment leaves out.
+    testing/vm/kernel.fragment leaves out.  [may_delete]'s [IS_ROOT]
+    victim (3287-3288) is no source on these paths: only rmdir's
+    [isdir] call reaches it, and [do_rmdir] takes its victim from
+    [lookup_one_qstr_excl] (4600), which returns a child of the parent
+    it is given, from [lookup_dcache] or [d_alloc] (1692-1703), and
+    crosses no mount, so the victim is never its own parent.
     SCOPE.md's launch premises leave a mount point at a top-level folder
     only: the tree holds no bind mount, so a file or a link is never
     one, and every mount point is a child of "/", which [rmdir_spec]

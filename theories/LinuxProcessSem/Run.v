@@ -4891,12 +4891,17 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
       nor below either ([outside_proc_sysb]);
     - every file of the image holds at most [Fs.MAX_LFS_FILESIZE] =
       2^63 - 1 bytes ([Fs.files_cappedb]).  Linux guarantees it for
-      every file.  The clause narrows the statement in one case only: it
-      reads every row of the inode table, also a row that [Fs.itab_find]
-      never returns (a later row for an inode number that an earlier row
-      already has).  So it refuses an image whose hidden row is longer
-      than the limit, although no lookup reaches that row.  A hidden row
-      is not a file in Linux.  A file's size is a signed 64-bit
+      every file.  The clause narrows the statement in two cases, both
+      rows of the inode table no run reaches, since it reads every row:
+      a row that [Fs.itab_find] never returns (a later row for an inode
+      number that an earlier row already has), and a row whose inode
+      number no name of the tree holds (an orphan row: at launch no
+      descriptor holds a regular file, [State.init_model] opening fds
+      0, 1 and 2 only, a file the run creates gets a number above every
+      row, [Fs.fs_fresh_ino], and [Fs.fs_observe] drops the row).  So it
+      refuses an image whose hidden or orphan row is longer than the
+      limit, although no lookup reaches that row.  Neither row is a file
+      in Linux.  A file's size is a signed 64-bit
       [loff_t], and so is a file system's size limit, the [s_maxbytes]
       (include/linux/fs.h:1451, Linux v6.18.46) of its superblock.  No
       file system sets that limit above [MAX_LFS_FILESIZE]
@@ -4913,12 +4918,34 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
       [shmem_fill_super] (mm/shmem.c:5118, Linux v6.18.46) and
       [ramfs_fill_super] (fs/ramfs/inode.c:267, Linux v6.18.46).  Without the clause an
       image could hold a file whose length word wraps at 2^64, the word
-      [fstat]'s [st_size] and [lseek]'s SEEK_END base read.  It is the
-      last clause, after the working-directory clause: a proof that names
-      the first seven clauses by position is unchanged, and one that took
-      the working-directory clause as the last component now gets that
-      clause and this one as a pair.  A proof that wants it uses
-      [valid_image_files_capped].
+      [fstat]'s [st_size] and [lseek]'s SEEK_END base read.  It follows
+      the working-directory clause: a proof that names the first seven
+      clauses by position is unchanged.  A proof that wants it uses
+      [valid_image_files_capped];
+    - every row of the image's FOLDER TABLE holds counts a kernel gives
+      ([Fs.dir_rows_okb]): it names a folder of the tree, its counting
+      count is at least the two plus one per subfolder that the tree
+      implies, and its fixed count is 1.  On tmpfs and ramfs a folder
+      starts at 2 ([inode_init_always_gfp], fs/inode.c:242, then
+      [inc_nlink] in [__shmem_get_inode], mm/shmem.c:3133-3134, or in
+      [ramfs_get_inode], fs/ramfs/inode.c:77-82, Linux v6.18.46), each
+      subfolder adds one ([shmem_mkdir], mm/shmem.c:3952;
+      [ramfs_mkdir], fs/ramfs/inode.c:122-127), and a name the image
+      leaves out can only add more; [generic_fillattr] reports the count
+      (fs/stat.c:91).  Without the clause a row could give an empty
+      folder the counts 0 and 0, and [stat] of it would answer an
+      [st_nlink] of 0, which no kernel gives a folder.  Like the size
+      clause it reads every row, also two kinds no lookup reaches: a
+      later row for a key an earlier row already has ([Fs.dtab_find]
+      returns the first), and a row at a key that is no folder
+      ([Fs.fs_mkdir] drops it before it makes a folder there).  So it
+      refuses an image with a hidden row outside these counts, or with
+      any row at a key that is no folder, although no lookup reaches
+      either.  It is the last clause, after the size
+      clause: a proof that names the first eight clauses by position is
+      unchanged, and one that took the size clause as the last component
+      now gets that clause and this one as a pair.  A proof that wants it
+      uses [valid_image_dir_rows] or [valid_image_dir_links].
 
     THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER, "/" and /dev
     included: a process really can be started there, and the walk
@@ -4950,7 +4977,8 @@ Definition valid_image (inp : ProcInput) : Prop :=
   /\ standard_root_premise (in_fs inp)
   /\ localtime_absent (in_fs inp)
   /\ outside_proc_sysb (in_cwd inp) = true
-  /\ Fs.files_cappedb (in_fs inp) = true.
+  /\ Fs.files_cappedb (in_fs inp) = true
+  /\ Fs.dir_rows_okb (in_fs inp) = true.
 
 (** The size clause, read back by name, and what it gives: every inode
     number's bytes within [Fs.MAX_LFS_FILESIZE]. *)
@@ -4967,6 +4995,25 @@ Lemma valid_image_file_within_the_limit : forall inp i,
   (Z.of_nat (length (Fs.fs_ino_data (in_fs inp) i)) <= Fs.MAX_LFS_FILESIZE)%Z.
 Proof.
   intros inp i Hv. exact (Fs.files_cappedb_capped _ (valid_image_files_capped _ Hv) i).
+Qed.
+
+(** The folder-row clause, read back by name, and what it gives: at
+    every key, a counting count at least the tree's and a fixed count
+    of 1. *)
+Lemma valid_image_dir_rows : forall inp,
+  valid_image inp -> Fs.dir_rows_okb (in_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_image_dir_links : forall inp k,
+  valid_image inp ->
+  (2 + Fs.fs_nsubdirs (in_fs inp) k <= Fs.dl_counting (Fs.fs_dir_links (in_fs inp) k))%nat
+  /\ Fs.dl_fixed (Fs.fs_dir_links (in_fs inp) k) = 1%nat.
+Proof.
+  intros inp k Hv. exact (Fs.dir_rows_okb_links _ k (valid_image_dir_rows _ Hv)).
 Qed.
 
 (** REFUTED: an image holding a file of 2^63 bytes or more.  However the
@@ -5059,8 +5106,9 @@ Definition sstep_preserves_wf : Prop :=
     well-formedness, [Fs.canonical_key] the working directory, a lookup
     the directory clause, [Fs.standard_root_presentb] the premise,
     [localtime_absentb] the /etc/localtime clause, [outside_proc_sysb]
-    the working-directory clause and [Fs.files_cappedb] the size clause
-    (a closed boolean, so [vm_compute] reads back only [true]).  A
+    the working-directory clause, [Fs.files_cappedb] the size clause and
+    [Fs.dir_rows_okb] the folder-row clause (closed booleans, so
+    [vm_compute] reads back only [true]).  A
     fixture that is NOT valid fails here loudly. *)
 Ltac valid_image_vm :=
   first [ apply Fs.wf_fsb_iff; vm_compute; reflexivity

@@ -894,13 +894,18 @@ not apply.
   `RLIMIT_CORE` only and does not model `setrlimit`. A finite limit makes
   `generic_write_check_limits` (`fs/read_write.c:1713-1721`, Linux
   v6.18.46) send `SIGXFSZ` and answer `-EFBIG` at it, or cut the count to
-  it, and the model does neither. The other two limits there are facts,
-  not assumptions. Every descriptor has `O_LARGEFILE`: a 64-bit kernel
-  sets it on every open (`force_o_largefile`, `include/linux/fcntl.h:25`,
-  Linux v6.18.46), and `F_SETFL` cannot clear it (`SETFL_MASK`,
-  `fs/fcntl.c:37`, Linux v6.18.46), so the 2^31 - 1 limit of
-  `generic_write_check_limits` (`fs/read_write.c:1723-1724`, Linux
-  v6.18.46) never applies. And no smaller `s_maxbytes` occurs: the
+  it, and the model does neither at such a limit. The other two limits
+  there are facts, not assumptions. Every regular-file descriptor has `O_LARGEFILE`: a run
+  gets one only from an `openat` the model answers, which is never an
+  `O_PATH` one, and a 64-bit kernel sets the flag on every such open
+  (`force_o_largefile`, `include/linux/fcntl.h:25`, applied in
+  `fs/open.c:1466-1467`, Linux v6.18.46), and `F_SETFL` cannot clear it
+  (`SETFL_MASK`, `fs/fcntl.c:37`, Linux v6.18.46), so the 2^31 - 1 limit
+  of `generic_write_check_limits` (`fs/read_write.c:1723-1724`, Linux
+  v6.18.46) never applies. A pipe's descriptors and a socket's have no
+  `O_LARGEFILE` (`create_pipe_files`, `fs/pipe.c:944-946`, and
+  `sock_alloc_file`, `net/socket.c:483-485`, Linux v6.18.46), and no
+  write to either reaches that function. And no smaller `s_maxbytes` occurs: the
   regular files of a run are on tmpfs or ramfs ("The configuration of
   record"), and both set it to `MAX_LFS_FILESIZE`, `shmem_fill_super`
   (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
@@ -909,13 +914,17 @@ not apply.
   which `Run.valid_input` requires): `/`, `/dev` and `/tmp` are folders,
   and `/dev/null` and `/dev/urandom` are the two devices.
 - No regular file of the launch image holds more than 2^63 - 1 bytes
-  (`Fs.files_cappedb`, the last clause of `Run.valid_image`). Linux
-  guarantees it for every file. The clause narrows the statement in one
-  case only: it reads every row of the inode table, also a row that
-  `Fs.itab_find` never returns (a later row for an inode number that an
-  earlier row already has). So it refuses an image whose hidden row is
-  longer than the limit, although no lookup reaches that row. A hidden row
-  is not a file in Linux. A file's size is a
+  (`Fs.files_cappedb`, a clause of `Run.valid_image`). Linux
+  guarantees it for every file. The clause narrows the statement in two
+  cases, both rows of the inode table that no run reaches, since it reads
+  every row: a row that `Fs.itab_find` never returns (a later row for an
+  inode number that an earlier row already has), and a row whose inode
+  number no name of the tree holds (an orphan row: at launch no
+  descriptor holds a regular file, since `State.init_model` opens fds 0,
+  1 and 2 only, a file the run creates gets a number above every row,
+  `Fs.fs_fresh_ino`, and `Fs.fs_observe` drops the row). So it refuses an
+  image whose hidden or orphan row is longer than the limit, although no
+  lookup reaches that row. Neither row is a file in Linux. A file's size is a
   signed 64-bit `loff_t`, and so is a file system's size limit, the
   `s_maxbytes` (`include/linux/fs.h:1451`, Linux v6.18.46) of its
   superblock. No file system sets that limit above `MAX_LFS_FILESIZE`
@@ -934,6 +943,22 @@ not apply.
   v6.18.46). Both set the limit to `MAX_LFS_FILESIZE`: `shmem_fill_super`
   (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
   (`fs/ramfs/inode.c:267`, Linux v6.18.46).
+- Every row of the launch image's folder table holds link counts a kernel
+  gives (`Fs.dir_rows_okb`, the last clause of `Run.valid_image`): the row
+  names a folder of the tree, its counting count is at least two plus one
+  per subfolder the tree shows, and its fixed count is 1. On tmpfs and
+  ramfs a folder starts at 2, the 1 of `inode_init_always_gfp`
+  (`fs/inode.c:242`, Linux v6.18.46) and the `inc_nlink` of
+  `__shmem_get_inode` (`mm/shmem.c:3133-3134`, Linux v6.18.46) or of
+  `ramfs_get_inode` (`fs/ramfs/inode.c:77-82`, Linux v6.18.46), and each
+  subfolder adds one (`shmem_mkdir`, `mm/shmem.c:3952`, and `ramfs_mkdir`,
+  `fs/ramfs/inode.c:122-127`, Linux v6.18.46); a name the image leaves
+  out can only add more. `generic_fillattr` reports the count
+  (`fs/stat.c:91`, Linux v6.18.46). Without the clause a row could give
+  an empty folder the counts 0 and 0, and `stat` of it would answer an
+  `st_nlink` of 0. The clause narrows the statement in two cases, both
+  rows no lookup reaches: a later row for a key an earlier row already
+  has, and a row at a key that is no folder.
 - The image describes `/dev` completely at launch, and no device node is
   made during the run. A name under `/dev` that the image does not hold
   is therefore `-ENOENT`. In Linux v6.18.46 devtmpfs makes a node when a

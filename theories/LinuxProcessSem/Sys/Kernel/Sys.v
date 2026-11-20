@@ -379,11 +379,20 @@ Definition rlim64_wf (bs : list byte) : bool :=
       [RLIM_INFINITY] instead would deny an allocation failure the model
       really does force.
 
-    - [RLIMIT_FSIZE] caps a write, and this model has no -EFBIG: the
-      transfer bound the write/writev specs enforce is [Uaccess.rw_bytes_max],
-      Linux's own [MAX_RW_COUNT], which is a different limit with a
-      different failure.  An arm reporting a file-size limit would
-      promise an enforcement no spec in this file performs.
+    - [RLIMIT_FSIZE] caps a write, and this model raises no -EFBIG at
+      it.  Its one -EFBIG is the size limit of an append write, at
+      [s_maxbytes], taken as [Fs.MAX_LFS_FILESIZE]
+      ([ReadWrite.append_room]; [generic_write_check_limits]'s
+      [s_maxbytes] arm, fs/read_write.c:1726-1729, Linux v6.18.46), and
+      that arm sends no signal.  RLIMIT_FSIZE itself is a premise of the
+      run: RLIM_INFINITY at exec, and no run can lower it, since this
+      arm declines the resource and [setrlimit] has no arm
+      ([Open.ftruncate_spec]; SCOPE.md).  The transfer bound the
+      write/writev specs enforce is [Uaccess.rw_bytes_max], Linux's own
+      [MAX_RW_COUNT], which is a different limit with a different
+      failure.  An arm reporting a file-size limit would promise an
+      enforcement at that limit, the -EFBIG and the SIGXFSZ of
+      fs/read_write.c:1715-1721, that no spec performs.
     - [RLIMIT_NOFILE] is the one the model HOLDS —
       [State.limst_nofile], the SOFT limit, an input of the run seeded by
       [State.init_model] and read by [Fs.File.dup3_spec] — and it is

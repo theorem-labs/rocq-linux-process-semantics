@@ -1644,7 +1644,8 @@ Definition modeled_truncate_gap (data : list byte) (len : word) : bool :=
     position plus count past LLONG_MAX (fs/read_write.c, v6.18.46); an
     append write, whose position becomes the file's length only after
     that test, reaches them on a file already within its count of
-    LLONG_MAX.
+    LLONG_MAX, and the append arms of the write specs answer both there
+    ([ReadWrite.append_room]).
 
     -EROFS is deliberately absent, and that is a source-grounded
     difference from truncate(2)'s documented error list: there is no
@@ -1653,7 +1654,7 @@ Definition modeled_truncate_gap (data : list byte) (len : word) : bool :=
     gives -EROFS at the openat and an -EINVAL here on the O_RDONLY fd
     that results.
 
-    NO -EFBIG CONSTANT IS USED, and none is needed: on tmpfs and ramfs
+    THIS SPEC USES NO -EFBIG CONSTANT, and needs none: on tmpfs and ramfs
     [s_maxbytes] is LLONG_MAX (above), so [modeled_truncate_gap] is the
     only thing standing at the top of the range.  A measurement under
     qemu-riscv64, which is not a supported implementation, found

@@ -1275,11 +1275,19 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
 
     [write] on a regular file has three descriptor kinds in this model --
     O_WRONLY, O_RDWR and O_APPEND -- and Linux runs ONE [vfs_write] for
-    all three.  The differences between them are exactly three, and every
+    all three.  The differences between them are exactly four, and every
     one of them is a kernel fact rather than a modelling convenience:
 
     - the GAP GUARD, which the append arm does not need and does not have
       ([append_opens_no_gap]).
+    - the SIZE LIMIT, which only the append arm meets: [append_efbigb]'s
+      -EFBIG on a file of [Fs.MAX_LFS_FILESIZE] bytes, and
+      [append_count]'s cut of a write that would cross that size, after
+      the leading tests below and before the shared tail.  A write at its
+      own position has passed [rw_verify_area], so it ends at or below
+      [LLONG_MAX] and nothing cuts it ([append_room] has the argument,
+      after [generic_write_check_limits], fs/read_write.c:1726-1729,
+      Linux v6.18.46).
     - the DESTINATION: [off] for the two positional kinds,
       [len_word data] for the append one.
     - the ENTRY WRITTEN BACK, which carries the kind.

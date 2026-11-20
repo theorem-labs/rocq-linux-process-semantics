@@ -1215,6 +1215,66 @@ Example devices_in_dev_subtree_refuses_a_lookalike :
   = false.
 Proof. vm_compute. reflexivity. Qed.
 
+(** FIVE. EVERY FOLDER ROW HOLDS COUNTS A KERNEL GIVES ([Fs.dir_rows_okb],
+    the last clause of [Run.valid_image]).  The image below is the
+    standard root with an empty folder /work/d, and [dir_row_image r]
+    gives it the folder rows [r].  On tmpfs and ramfs an empty folder
+    has the count 2 ([inode_init_always_gfp], fs/inode.c:242, then
+    [inc_nlink] in [__shmem_get_inode], mm/shmem.c:3133-3134, Linux
+    v6.18.46), and [generic_fillattr] reports it (fs/stat.c:91, Linux
+    v6.18.46). *)
+Definition work_d : Fs.path := rp [47;119;111;114;107;47;100].          (* /work/d *)
+
+Definition dir_row_image (r : list (Fs.path * Fs.DirLinks)) : Fs.Fs :=
+  Fs.fs_with_dirs (Fs.fs_set (Fs.standard_root Fs.default_cwd) work_d Fs.EDir) r.
+
+Definition dir_row_input (r : list (Fs.path * Fs.DirLinks)) : ProcInput :=
+  mkProcInput_full [[]] [] (dir_row_image r) Fs.default_cwd IEof
+                   demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false
+                   Sv48 default_urandom default_kernel default_execfn
+                   true true false.
+
+(** The row [(/work/d, 0, 0)] is refused, and it is all that is wrong:
+    the same image with no row is valid.  Before the clause the input
+    was valid, and [stat] of /work/d answered an [st_nlink] of 0, which
+    no kernel gives a folder. *)
+Example valid_image_refuses_a_folder_row_below_the_tree :
+  ~ valid_image (dir_row_input [(work_d, Fs.mkDirLinks 0 0)]).
+Proof.
+  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  vm_compute in Hrows. discriminate.
+Qed.
+
+Example valid_image_admits_the_folder_without_a_row :
+  valid_image (dir_row_input []).
+Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+
+(** A ROOT ROW ABOVE THE TREE'S COUNT STAYS VALID.  The tree implies 5
+    for the root (two, and /dev, /tmp and /work), and the root's count
+    also counts /proc and /sys, folders of the root file system that the
+    image does not hold, so its row may say 7. *)
+Example valid_image_admits_a_root_row_above_the_tree :
+  valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 7 1)]).
+Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+
+(** The clause row by row: the tree's own count and any above it pass
+    with a fixed count of 1; a count one below the tree's, a fixed count
+    other than 1, and a row at a key that is no folder fail.  With no
+    row, /work/d has the counts 2 and 1 and the root 5 and 1. *)
+Example dir_rows_okb_decides_each_row :
+  Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 1)]) = true
+  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 9 1)]) = true
+  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 1 1)]) = false
+  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 2)]) = false
+  /\ Fs.dir_rows_okb (dir_row_image [(work_d, Fs.mkDirLinks 2 0)]) = false
+  /\ Fs.dir_rows_okb (dir_row_image [(Fs.root, Fs.mkDirLinks 4 1)]) = false
+  /\ Fs.dir_rows_okb (dir_row_image [(rp [47;119;111;114;107;47;101], Fs.mkDirLinks 2 1)])
+     = false
+  /\ Fs.fs_dir_links (dir_row_image []) work_d = Fs.mkDirLinks 2 1
+  /\ Fs.fs_dir_links (dir_row_image []) Fs.root = Fs.mkDirLinks 5 1.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
 (* =========================================================================
    PART 8c — a device at an ordinary key
    ========================================================================= *)

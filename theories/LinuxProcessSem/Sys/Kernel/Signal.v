@@ -823,14 +823,18 @@ Qed.
     has no reader, and this spec is what decides between the death and
     the -EPIPE: the mask is READ there.  What stays assumed rather
     than raised is SIGXFSZ: neither [write_spec] nor
-    [ftruncate_spec] carries a file-size
-    limit.  The
-    RLIMIT_FSIZE half of the limit is a premise of the run —
+    [ftruncate_spec] carries RLIMIT_FSIZE, the limit that sends it.
+    That half of the limit is a premise of the run —
     RLIM_INFINITY at exec, and the set fails closed, see
-    [Open.ftruncate_spec] — and the [s_maxbytes] half, which the model
-    does not carry either, raises no signal:
-    [inode_newsize_ok]'s [out_big] and [generic_write_check_limits]'s
-    [s_maxbytes] arm both return -EFBIG without a [send_sig].
+    [Open.ftruncate_spec] — and the [s_maxbytes] half raises no
+    signal: [inode_newsize_ok]'s [out_big] and
+    [generic_write_check_limits]'s [s_maxbytes] arm both return -EFBIG
+    without a [send_sig].  The model carries that half where a run can
+    reach it: the append arms of the write specs answer its -EFBIG and
+    its cut ([ReadWrite.append_room], with [s_maxbytes] taken as
+    [Fs.MAX_LFS_FILESIZE]), and no length [ftruncate_spec] answers
+    passes it on tmpfs or ramfs, whose [s_maxbytes] is [LLONG_MAX]
+    ([Open.ftruncate_spec]).
 
     That distinction is not pedantry, because this spec WIDENS what
     those assumptions cost.  Blocking SIGXFSZ succeeds here and is
@@ -840,12 +844,13 @@ Qed.
     unblocked the process dies on the signal, blocked it takes -EFBIG
     and runs on.  Under the RLIM_INFINITY premise no run reaches
     that ftruncate, but the model does not carry the premise.  So this
-    file adds no wrong answer — the missing limit owns it, with or
-    without this file — but it is a pair the
+    file adds no wrong answer — the missing RLIMIT_FSIZE limit owns it,
+    with or without this file — but it is a pair the
     equivalence relation cannot separate.  The obligation the invariant below states
-    therefore binds those specs too: a file-size limit in
-    [ftruncate_spec] would turn a blocked mask into something the model
-    reads, and must give this spec state in the same commit.  The
+    therefore binds those specs too: an RLIMIT_FSIZE limit in
+    [ftruncate_spec] or in a write spec would turn a blocked mask into
+    something the model reads, and must give this spec state in the
+    same commit.  The
     -EPIPE arm in [ReadWrite.write_spec] is the case that already
     happened, and it brought [State.procst_sigpipe_pending] and
     [sigmask_deliver_model]'s second branch with it.

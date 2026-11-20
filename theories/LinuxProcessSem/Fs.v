@@ -71,8 +71,11 @@
     root is a directory, and every key's parent is one.  It asks nothing
     of the two tables: an inode number with no row reads as an empty file
     named nowhere else, and a folder with no row has the counts
-    [fs_dir_links] gives it, so no image can be written whose tables
-    disagree with its tree.
+    [fs_dir_links] gives it, so a missing row never disagrees with the
+    tree.  What a row holds is [Run.valid_image]'s to ask, of the image a
+    run starts from: every file within [MAX_LFS_FILESIZE]
+    ([files_cappedb]) and every folder row a count a kernel gives
+    ([dir_rows_okb]).
 
     THE PATH NAMESPACE lives in the last section of this file: the key
     discipline ([canonical_key]), one resolution function ([resolve]) in
@@ -1613,9 +1616,10 @@ Definition wf_fsb (fs : Fs) : bool :=
       reaches it through directories, and [RNotDir] is the only way a
       non-directory can stop one.
 
-    NOTHING IS ASKED OF THE INODE TABLE OR THE FOLDER TABLE: every row
-    and every missing row means something ([fs_inode], [fs_dir_links]),
-    so there is no image the two tables could make inconsistent.  A
+    NOTHING IS ASKED OF THE INODE TABLE OR THE FOLDER TABLE: every
+    missing row means something ([fs_inode], [fs_dir_links]), and what a
+    row holds is asked by [Run.valid_image], of the starting image only
+    ([files_cappedb], [dir_rows_okb]).  A
     link's body is any bytes ([ELink]).
 
     It replaced the old validity predicate and the name ladder around
@@ -1704,12 +1708,77 @@ Definition fs_nsubdirs (fs : Fs) (k : path) : nat :=
     of a folder whose counts are the ones its own tree implies, and a
     folder whose count also reflects names the image leaves out -- the
     root, whose [/proc] and [/sys] mountpoints are folders of the root
-    file system -- takes a row. *)
+    file system -- takes a row, which [Run.valid_image] holds to counts a
+    kernel gives ([dir_rows_okb]). *)
 Definition fs_dir_links (fs : Fs) (k : path) : DirLinks :=
   match dtab_find (fs_dirs fs) k with
   | Some d => d
   | None => mkDirLinks (2 + fs_nsubdirs fs k)%nat 1
   end.
+
+Lemma dtab_find_in : forall t k d, dtab_find t k = Some d -> In (k, d) t.
+Proof.
+  intros t k d. induction t as [|[q e] r IH]; cbn [dtab_find]; [discriminate|].
+  destruct (path_eqb k q) eqn:Hkq.
+  - apply path_eqb_eq in Hkq. subst q. intros Hf. injection Hf as <-. left. reflexivity.
+  - intros Hf. right. exact (IH Hf).
+Qed.
+
+(** EVERY FOLDER ROW OF AN IMAGE HOLDS COUNTS A KERNEL GIVES: decided row
+    by row over the folder table ([dir_rows_okb]), as [files_cappedb] is
+    over the inode table, and [Run.valid_image] asks it of the image a
+    run starts from.  A row [(k, d)] must
+
+    - name a FOLDER of the tree: a row at any other key is no folder's
+      count;
+    - hold a counting count of at least the one the tree implies,
+      [2 + fs_nsubdirs fs k].  On tmpfs and ramfs a folder starts at 2,
+      the 1 [inode_init_always_gfp] sets (fs/inode.c:242, Linux
+      v6.18.46) and the [inc_nlink] of [__shmem_get_inode]
+      (mm/shmem.c:3133-3134) or of [ramfs_get_inode]
+      (fs/ramfs/inode.c:77-82), and each subfolder adds one
+      ([shmem_mkdir], mm/shmem.c:3952; [ramfs_mkdir],
+      fs/ramfs/inode.c:122-127); [generic_fillattr] reports that count
+      (fs/stat.c:91).  A row exists for a folder whose count also
+      reflects names the image leaves out ([fs_dir_links]), and those
+      can only add subfolders, so the count is never below the tree's;
+    - hold a fixed count of exactly 1, the only count the fixed rule
+      gives ([DirLinks]).
+
+    Without it an image could give an empty folder the counts 0 and 0,
+    and [Sys.Fs.Stat.fstat_dir_spec] would answer an [st_nlink] of 0,
+    which no kernel gives a folder.  Like [files_cappedb] it reads every
+    row, also one [dtab_find] never returns (a later row for a key an
+    earlier row already has).  [dir_rows_okb_links] is what it gives at
+    every key. *)
+Definition dir_row_okb (fs : Fs) (kd : path * DirLinks) : bool :=
+  match fs_lookup fs (fst kd) with
+  | Some EDir =>
+      Nat.leb (2 + fs_nsubdirs fs (fst kd))%nat (dl_counting (snd kd))
+      && Nat.eqb (dl_fixed (snd kd)) 1
+  | _ => false
+  end.
+
+Definition dir_rows_okb (fs : Fs) : bool :=
+  forallb (dir_row_okb fs) (fs_dirs fs).
+
+(** What the clause gives at EVERY key, a row or none: the counting
+    count is at least the tree's, and the fixed count is 1. *)
+Lemma dir_rows_okb_links : forall fs k,
+  dir_rows_okb fs = true ->
+  (2 + fs_nsubdirs fs k <= dl_counting (fs_dir_links fs k))%nat
+  /\ dl_fixed (fs_dir_links fs k) = 1%nat.
+Proof.
+  intros fs k H. unfold fs_dir_links.
+  destruct (dtab_find (fs_dirs fs) k) as [d|] eqn:Hf.
+  - unfold dir_rows_okb in H. rewrite forallb_forall in H.
+    specialize (H (k, d) (dtab_find_in _ _ _ Hf)).
+    unfold dir_row_okb in H. cbn [fst snd] in H.
+    destruct (fs_lookup fs k) as [[e| |e|e]|]; try discriminate.
+    apply andb_true_iff in H. destruct H as [H1 H2].
+    split; [apply Nat.leb_le; exact H1 | apply Nat.eqb_eq; exact H2].
+  - cbn [dl_counting dl_fixed]. split; [apply Nat.le_refl | reflexivity].
+Qed.
 
 (** The count past which the model declines the [mkdirat] that would take
     a folder's counting count further ([Sys.Fs.Namei.mkdirat_body_spec]).
