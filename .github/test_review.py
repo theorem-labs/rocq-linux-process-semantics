@@ -10193,6 +10193,40 @@ class ScheduleTest(Scheduled):
                 self.serve_item(7, "mallory", kind="pr", head=HEAD, branch=BRANCH, repository=FORK_ID)
                 self.dispatched("approve", account="mallory", want=bool(want))
 
+    def test_a_held_run_of_another_pull_request_workflow_of_the_head_gets_an_approve_run_and_is_approved(self):
+        """OSSV-221's architect (2026-11-20 17:09Z), a twin of the defect of OSSV-612: GitHub holds run 63 of another
+        pull_request workflow of the head (.github/workflows/other.yml), from the pull request's head repository and
+        head branch, and holds no CI run of the head. Each reader of held runs selects them by event, head, head
+        repository and head branch, and not by workflow. So the rescreen pass, with no number and with the number of
+        #7, owes the approve run of the head (held.sh held_of, held_at and due_approve, and the held runs of the head
+        that rescreen.yml reads). The trust job of a review by hand of the head takes it as an approval (held_runs).
+        After the screen passed, the step "The held runs of the screened head" lists run 63, and the next step approves
+        it with token B."""
+        self.item(kind="pr")
+        self.of_heads.append({"id": 63, "status": "action_required", "event": "pull_request", "head_sha": HEAD,
+                              "path": ".github/workflows/other.yml", "head_branch": BRANCH,
+                              "head_repository": {"id": FORK_ID}, "created_at": ago(300)})
+        self.publish()
+        self.serve(f"repos/{REPO}/actions/runs/63/approve", {})
+        for number in (None, 7):
+            with self.subTest(number=number):
+                rc, out, runs = self.started(number=number)
+                self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+        self.merge(7, "clean", changed_files=1)
+        self.serve_files(7, "README.md")
+        rc, out, trust = self.run_trust("workflow_dispatch", actor="alice")
+        self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("head")),
+                         (0, "approve", "screen", HEAD), out)
+        self.forget()
+        ctx = self.ctx(trust, **{"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                                 "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean"})
+        steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+        self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE)], ["success"] * 3, self.logs)
+        self.assertEqual(ctx["steps.held.outputs.runs"], "63")
+        self.assertIn(f"#7: GitHub holds the runs 63 of {HEAD}.", "\n".join(self.logs))
+        self.assertEqual([(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if c in writes(self.api)],
+                         [("token-B", ["--method", "POST", f"repos/{REPO}/actions/runs/63/approve"])])
+
     def test_a_held_head_that_a_run_screened_with_a_verdict_since_its_newest_held_run_gets_no_approval(self):
         """b8 (D16 (f)): an approve run of the head after its newest held run, whose screen job passed and whose post
         job did not fail (the screen held it, so no post job ran; or its post job passed): no approve run. A verdict
@@ -14612,6 +14646,527 @@ class ImportCheckTest(ReaderRunner):
                     ("failure", "failure"), self.logs)
                 self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is "
                               f"withdrawn.{again}", self.logs[-1])
+
+
+def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False):
+    """What the approved author-kind table gives for one cell of KindTableTest. state: the state of the label call
+    (None: no label call runs; KindTableTest.UNCHANGED: a label call that changes nothing). decision: the post job's
+    decision on the import check run. app: each write of the App, in order: R records the import check run, W withdraws
+    it, A approves the held runs 61 and 62, C closes the pull request and O reopens it. held: the title of the hold
+    comment that the run writes. stop: the trust job's exit status and a line of its log, when it routes nothing. owed:
+    what the rescreen pass does first for #7: it starts the run of the cell (starts), starts none of its task (none), or
+    fails for #7 (fails). jobs: the jobs that run. said: a line that the log holds. marked: the label comment records
+    the catch-up of the head."""
+    return {"state": state, "decision": decision, "app": app, "held": held, "stop": stop, "owed": owed, "jobs": jobs,
+            "said": said, "marked": marked}
+
+
+class KindTableTest(Scheduled, ReaderRunner):
+    """Round 11: each cell of the author-kind table that OSSV-221's architect approved (version 3, and its section 8
+    where it differs from the sections before it), as one subtest. A cell is an author, a route and a verdict, with the
+    screen's verdict where a screen runs. The authors: alice, a writer; mallory, an outside author; and carol, for whom
+    GitHub's permission API gives no answer. For each cell, the real trust step decides the run against the stand-in
+    gh, after the rescreen pass's step where the table names the pass. When the trust job routes the item, the jobs
+    after it run with its outputs, each when its if holds (run_graph). The gather job and the screen are stand-ins. The
+    review job's step "The comment, as it is posted" runs on a stand-in model's output, so the soundness rule reads the
+    trust job's outputs. The post, comment and hold jobs run their own steps (run_job). Then the test reads what the
+    jobs did: each state label added or taken off, the label comment, each write of the App (an approval, the POST or
+    the PATCH of a check run, a close or a reopen), the hold comment, and the text of a stop. For a cell that withdraws,
+    the post job runs again while GitHub refuses the read of the check runs of the head: only for an outside author
+    does its error promise the rescreen pass's retry.
+
+    The expected values are CELLS, which this class writes from the approved document: which run stops, the state of
+    each label call, the label of each state, and each write of the App. The test does not read them from the
+    author-kind table of rules.py (TABLE and answers), so it is no copy of that table. Only the text of a label comment
+    comes from rules.py (label_comment), for the state that a cell names."""
+
+    AUTHORS = {"writer": "alice", "outsider": "mallory", "unknown": "carol"}
+    UNCHANGED = "unchanged"
+    NOTICE = ("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes neither "
+              "its state label nor its label comment.")
+    # The label of each state that a cell gives, as the approved table names it (None: no state label).
+    LABEL_OF = {"reviewed": None, "import": None, "working": None, "decide": THEOREM_LABEL, "person": THEOREM_LABEL,
+                "will-fix": THEOREM_LABEL, "refused-answer": THEOREM_LABEL, "draft": THEOREM_LABEL,
+                "screen": THEOREM_LABEL, "stopped": THEOREM_LABEL, "steering": THEOREM_LABEL, "no-key": THEOREM_LABEL,
+                "change": AUTHOR_LABEL, "conflict": AUTHOR_LABEL, "replied": AUTHOR_LABEL}
+    # #7's label comment before the run, in a state that no cell gives, so that each label call that writes edits it.
+    LABELLED = {"id": 40, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                "body": rules.label_comment("refused-fix")}
+    # The import check run of #7 that an earlier run recorded on HEAD, which a withdrawal updates.
+    RECORDED = {"id": 901, "name": "repo-pairs/import-approved", "head_sha": HEAD, "app": {"id": VERIFY_APP_ID},
+                "external_id": f"7:{HEAD}", "status": "completed", "conclusion": "success",
+                "output": {"text": rules.import_marker(HEAD, None)}}
+    FIND = "Find the import check runs that a later review or screen withdraws"
+    RETRY = (" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this run "
+             f"ends. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment names the "
+             "next step for Sami.")
+    REPLY = "The approved reply."
+    HELD_REVIEW = "Automated review held."
+    KNOWN = (1, "::error::GitHub did not say whether carol has write access. Re-run this run.")
+    # The model's review of each verdict: its comment and its list.
+    MODEL = {"pass": ("No blocking finding.", []),
+             "blocking": ("Blocking findings.\n\n1. `docs/guide.md:1`: the link is broken.",
+                          [{"kind": "change", "ref": "docs/guide.md:1", "optional": False,
+                            "text": "The link is broken."}]),
+             "person": ("Questions for Sami:\n\n1. Is the guide right?",
+                        [{"kind": "question", "ref": None, "optional": False, "text": "Is the guide right?"}])}
+    # The answer of each case of an answer, as the review job gives it.
+    ANSWERS = {"none": {"answer": "<!-- review-answer 900 -->\n**Automated answer**\n\nThe answer.",
+                        "will_fix": "false"},
+               "will-fix": {"answer": f"<!-- review-answer 900 will-fix {HEAD} -->\n**Automated answer**\n\nI will.",
+                            "will_fix": "true"},
+               "refused": {"answer": "", "will_fix": "false", "refused": "answer"}}
+
+    # The cells, from the approved table. Cases of a review: pass, blocking and person are the model's verdict on a
+    # change of docs/guide.md (pass-var: with the variable REPO_PAIRS_IMPORT_PATHS docs/**), proof its pass on a change
+    # of the proof theories/B.v, and held the screen's hold of the head.
+    CELLS = (
+        # CI review: the workflow_run of a CI run of the head, pushed by the author; ci-eve, pushed by eve, an outside
+        # account, to alice's pull request, which the screen reads on eve. W for a writer too (section 8, item 3).
+        ("ci", "pass", "writer", want("reviewed", "writer")),
+        ("ci", "blocking", "writer", want("reviewed", "writer", "W")),
+        ("ci", "person", "writer", want("reviewed", "writer", "W")),
+        ("ci", "proof", "writer", want("reviewed", "writer")),
+        ("ci-eve", "pass", "writer", want("reviewed", "writer")),
+        ("ci-eve", "held", "writer", want("screen", "", "W", HELD_REVIEW)),
+        ("ci", "pass", "outsider", want("decide", "record", "R")),
+        ("ci", "pass-var", "outsider", want("import", "record", "R")),
+        ("ci", "blocking", "outsider", want("change", "verdict", "W")),
+        ("ci", "person", "outsider", want("person", "person", "W")),
+        ("ci", "proof", "outsider", want("person", "person", "W")),
+        ("ci", "held", "outsider", want("screen", "", "W", HELD_REVIEW)),
+        ("ci", "pass", "unknown", want(stop=KNOWN)),
+        # Rescreen: the pass's run of a held item, as CI review. alice's hold names bob's run (a writer: no screen).
+        ("rescreen", "pass", "writer", want("reviewed", "writer", owed="starts")),
+        ("rescreen", "blocking", "writer", want("reviewed", "writer", "W", owed="starts")),
+        ("rescreen", "person", "writer", want("reviewed", "writer", "W", owed="starts")),
+        ("rescreen", "pass", "outsider", want("decide", "record", "R", owed="starts")),
+        ("rescreen", "blocking", "outsider", want("change", "verdict", "W", owed="starts")),
+        ("rescreen", "person", "outsider", want("person", "person", "W", owed="starts")),
+        ("rescreen", "held", "outsider", want("screen", "", "W", HELD_REVIEW, owed="starts")),
+        ("rescreen", "pass", "unknown", want(stop=KNOWN, owed="fails")),
+        # Relabel: a person's run, no model, from the review comment of the head (screened: its run's screen passed
+        # the head). held: a hold of the screen is newer; held-after: then a review by hand with no screen passed it.
+        ("relabel", "pass", "writer", want("reviewed", "writer")),
+        ("relabel", "blocking", "writer", want("reviewed", "writer", "W")),
+        ("relabel", "person", "writer", want("reviewed", "writer", "W")),
+        ("relabel", "held", "writer", want("screen", "held", "W")),
+        ("relabel", "held-after", "writer", want("reviewed", "held", "W")),
+        ("relabel", "pass", "outsider", want("decide", "record", "R")),
+        ("relabel", "blocking", "outsider", want("change", "verdict", "W")),
+        ("relabel", "person", "outsider", want("person", "person", "W")),
+        ("relabel", "held", "outsider", want("screen", "held", "W")),
+        ("relabel", "held-after", "outsider", want("decide", "held", "W")),
+        ("relabel", "pass", "unknown", want(UNCHANGED, "writer")),
+        ("relabel", "blocking", "unknown", want(UNCHANGED, "writer", "W")),
+        ("relabel", "person", "unknown", want(UNCHANGED, "writer", "W")),
+        ("relabel", "held", "unknown", want(UNCHANGED, "held", "W")),
+        ("relabel", "held-after", "unknown", want(UNCHANGED, "held", "W")),
+        # Review by hand, no screen (14:00Z ruling 1: an outside pull request's state by verdict, decision screen). The
+        # soundness rule holds back for carol too (16:22Z): her proof gets the verdict person.
+        ("hand", "pass", "writer", want("reviewed", "writer")),
+        ("hand", "blocking", "writer", want("reviewed", "writer", "W")),
+        ("hand", "person", "writer", want("reviewed", "writer", "W")),
+        ("hand", "proof", "writer", want("reviewed", "writer")),
+        ("hand", "pass", "outsider", want("decide", "screen")),
+        ("hand", "blocking", "outsider", want("change", "screen", "W")),
+        ("hand", "person", "outsider", want("person", "screen", "W")),
+        ("hand", "proof", "outsider", want("person", "screen", "W")),
+        ("hand", "pass", "unknown", want(UNCHANGED, "writer")),
+        ("hand", "blocking", "unknown", want(UNCHANGED, "writer", "W")),
+        ("hand", "person", "unknown", want(UNCHANGED, "writer", "W")),
+        ("hand", "proof", "unknown", want(UNCHANGED, "writer", "W")),
+        # Review by hand with screen true: the screen runs for every author, as a person asked for it.
+        ("screen", "pass", "writer", want("reviewed", "writer")),
+        ("screen", "blocking", "writer", want("reviewed", "writer", "W")),
+        ("screen", "person", "writer", want("reviewed", "writer", "W")),
+        ("screen", "held", "writer", want("screen", "", "W", HELD_REVIEW)),
+        ("screen", "pass", "outsider", want("decide", "record", "R")),
+        ("screen", "blocking", "outsider", want("change", "verdict", "W")),
+        ("screen", "person", "outsider", want("person", "person", "W")),
+        ("screen", "held", "outsider", want("screen", "", "W", HELD_REVIEW)),
+        ("screen", "pass", "unknown", want(UNCHANGED, "writer")),
+        ("screen", "blocking", "unknown", want(UNCHANGED, "writer", "W")),
+        ("screen", "person", "unknown", want(UNCHANGED, "writer", "W")),
+        ("screen", "held", "unknown", want(UNCHANGED, "", "W", HELD_REVIEW)),
+        # Answer: the author's comment on #7. A R W: none.
+        ("answer", "none", "writer", want(stop=(0, "::notice::No answer of #7: its author alice has write access."))),
+        ("answer", "none", "outsider", want(said="#7: the answer changes no state, so the labels stay.")),
+        ("answer", "will-fix", "outsider", want("will-fix")),
+        ("answer", "refused", "outsider", want("refused-answer")),
+        ("answer", "held", "outsider", want("screen", held="Automated answer held.")),
+        ("answer", "none", "unknown", want(stop=KNOWN)),
+        # Draft of the reply to issue #7, by hand.
+        ("draft", "stored", "writer", want(stop=(0, "::notice::No draft of #7: its author alice has write access."))),
+        ("draft", "stored", "outsider", want("draft")),
+        ("draft", "held", "outsider", want("screen", held="Automated reply held.")),
+        ("draft", "stored", "unknown", want(stop=KNOWN)),
+        # Reply: the approved reply to issue #7.
+        ("reply", "posted", "writer", want("replied")),
+        ("reply", "posted", "outsider", want("replied")),
+        ("reply", "posted", "unknown", want(UNCHANGED)),
+        # Approve: a review by hand of #7, whose head has the held runs 61 and 62.
+        ("approve", "clean", "writer", want(jobs={"trust"})),
+        ("approve", "clean", "outsider", want(app="A")),
+        ("approve", "steering", "outsider", want("steering")),
+        ("approve", "no-key", "outsider", want("no-key")),
+        ("approve", "held", "outsider", want("screen", "", "W", "Automated start of the checks held.")),
+        ("approve", "clean", "unknown", want(stop=KNOWN)),
+        # Conflict: the conflict comment posts for every author.
+        ("conflict", "dirty", "writer", want("conflict")),
+        ("conflict", "dirty", "outsider", want("conflict")),
+        ("conflict", "dirty", "unknown", want(UNCHANGED)),
+        # Stop: the stop of the pass for issue #7, whose review the pass tried REVIEW_TRIES times since its hold.
+        ("stop", "hold-review", "writer", want("stopped", held=HELD_REVIEW, owed="starts")),
+        ("stop", "hold-review", "outsider", want("stopped", held=HELD_REVIEW, owed="starts")),
+        ("stop", "hold-review", "unknown", want(stop=(1, "::error::a read of the rescreen pass's functions for #7 "
+                                                         "failed. Re-run this run."), owed="fails")),
+        # Hold: the hold job at the hourly limit, at the hourly cap, after a review that did not finish, and after the
+        # last try of such a review. alice's pull request is held for eve's push, and carol's in a review by hand with
+        # the screen.
+        ("hold", "limit", "writer", want("working", held=HELD_REVIEW)),
+        ("hold", "cap", "writer", want("working", held=HELD_REVIEW)),
+        ("hold", "transient", "writer", want("working", held=HELD_REVIEW)),
+        ("hold", "last", "writer", want("stopped", held=HELD_REVIEW)),
+        ("hold", "limit", "outsider", want("working", held=HELD_REVIEW)),
+        ("hold", "cap", "outsider", want("working", held=HELD_REVIEW)),
+        ("hold", "transient", "outsider", want("working", held=HELD_REVIEW)),
+        ("hold", "last", "outsider", want("stopped", held=HELD_REVIEW)),
+        ("hold", "last", "unknown", want(UNCHANGED, held=HELD_REVIEW)),
+        # Catch-up: the App closes and reopens #7. The pass takes none of a writer's or of carol's; alice's run by hand
+        # acts as today. When the reopen fails, the rescreen pass tries it again (its stop reopen is LeftClosedTest's).
+        ("catchup", "pass", "writer", want(app="CO", owed="none", marked=True)),
+        ("catchup", "pass", "outsider", want(app="CO", owed="starts", marked=True)),
+        ("catchup", "reopen-failed", "outsider",
+         want(app="COOO", owed="starts", said="::error::#7 is closed, and 3 tries to reopen it failed. The rescreen "
+                                              "pass tries again an hour later.")),
+        ("catchup", "pass", "unknown", want(owed="fails")),
+        # Measure: no item, so no label, no label comment and no write of the App.
+        ("measure", "measure", "", want(jobs={"trust", "screen"})),
+    )
+
+    def prior(self, state):
+        """The state label of #7 before the run: the other one than the label of state, so that each label that a label
+        call adds or takes off shows."""
+        return AUTHOR_LABEL if self.LABEL_OF.get(state) == THEOREM_LABEL else THEOREM_LABEL
+
+    def moves(self, kind, state):
+        """The state labels that the label call of state adds to #7 ("+") or takes off it ("-"), as section 8 (item 4)
+        gives them: an outside author's item loses the label that it had and gets the label of state, a writer's item
+        loses the label that it had, and an unknown author's item keeps it."""
+        if state in (None, self.UNCHANGED):
+            return []
+        if kind == "writer" or self.LABEL_OF[state] is None:
+            return [("-", self.prior(state))]
+        return [("-", self.prior(state)), ("+", self.LABEL_OF[state])]
+
+    def body(self, route, case, kind, w):
+        """#7's label comment after the label call of the cell: the state's, with the marker lines that the call gives.
+        The label step of an issue's draft or reply records the stored draft or the posted reply. The label step of an
+        outside pull request's review, answer or relabel records the value of REPO_PAIRS_IMPORT_PATHS at HEAD, and its
+        text names the steps of R12 for the post job's decision."""
+        markers, head, imports = [], "", None
+        if route == "draft" and not w["held"]:
+            markers.append("<!-- issue-draft 100-1 -->")
+        if route == "reply":
+            markers.append("<!-- issue-reply-posted 501 -->")
+        if w["state"] in ("conflict", "steering", "no-key"):
+            head = HEAD
+        if kind == "outsider" and not w["held"] and route in ("ci", "rescreen", "relabel", "hand", "screen", "answer"):
+            value = "docs/**" if case == "pass-var" else None
+            markers.append(rules.import_marker(HEAD, value))
+            imports = (value, w["decision"])
+        return rules.label_comment(w["state"], "", markers, head, imports)
+
+    def relabelled(self, case):
+        """The comments of the workflow on HEAD that a relabel of the case reads: a review comment of a run whose screen
+        passed HEAD, with the case's verdict (pass for held and held-after). held: a hold of the screen of HEAD after
+        it. held-after: that hold, then a review by hand with no screen, which passes HEAD."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        if case == "held":
+            return [review_of(HEAD, at=ago(90)), hold]
+        if case == "held-after":
+            return [review_of(HEAD, at=ago(90)), hold, review_of(HEAD, at=ago(30), id_=31, screened=False)]
+        return [review_of(HEAD, case, at=ago(60))]
+
+    def start(self, route, case, kind, w):
+        """Serves #7 for the cell, runs the rescreen pass's step first when the cell says what it does, and checks it.
+        The run of the cell: the event and the arguments of its trust step (None: no run), and the stand-ins of the
+        jobs after the trust job (jobs_after)."""
+        author = self.AUTHORS.get(kind, "")
+        last = route == "hold" and case == "last"
+        # The account that pushed the head, and that started the run that a hold names.
+        pusher = "eve" if route == "ci-eve" or (route == "hold" and kind == "writer") else author
+        holder = "bob" if route == "rescreen" and kind == "writer" else pusher
+        item = "issue" if route in ("draft", "reply", "stop") else "pr"
+        path = {"proof": "theories/B.v", "steering": ".github/workflows/mine.yml"}.get(case, "docs/guide.md")
+        comments, held = [self.LABELLED], ()
+        if route == "rescreen" or (last and kind != "unknown"):
+            # A hold of the review that the pass tries again, of run 50, a comment of holder: at the limit, at the cap
+            # of bob's run (a writer), or of a review that did not finish REVIEW_TRIES - 1 times.
+            self.origin(50, holder, event="issue_comment")
+            hold = ("transient", self.TRIES - 1) if last else ("cap" if kind == "writer" else "limit", 0)
+            comments.append(limit_hold(50, kind=hold[0], tries=hold[1], head=HEAD))
+            held = ("review-held",)
+        if route == "stop":
+            self.origin(50, "mallory")
+            comments.append(limit_hold(50, at=ago(300), kind="transient", tries=1))
+            held = ("review-held",)
+        if route == "relabel":
+            comments += self.relabelled(case)
+        if route == "answer":
+            comments.append({"id": 900, "user": {"login": author}, "created_at": ago(5), "updated_at": ago(5),
+                             "body": "Please look again."})
+        merge = "dirty" if route == "conflict" else "clean"
+        if route != "measure":
+            self.item(7, item, author, labels=held + (self.prior(w["state"]),), comments=comments, merge=merge)
+        if item == "pr" and route != "measure":
+            self.merge(7, merge, changed_files=1)
+            self.serve_files(7, path)
+            self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": [self.RECORDED]})
+            self.serve(f"repos/{REPO}/check-runs/901", {"id": 901, "conclusion": "neutral"})
+            self.serve(f"repos/{REPO}/check-runs", {"id": 905})
+        if route == "approve":
+            self.held_runs()
+        if route == "catchup":
+            self.ci(ended=90)
+        if route == "stop":
+            for i in range(self.TRIES):
+                self.ran(10 + i, "rescreen #7 of mallory", made=120 + i)
+        if route == "reply":
+            self.serve(f"repos/{REPO}/issues/7/comments.body={self.REPLY}", {"id": 501})
+        if case == "limit":
+            self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": [
+                {"id": 10 + i, "event": "issues", "actor": {"login": pusher}, "status": "in_progress",
+                 "conclusion": None, "display_title": f"review #{20 + i}", "created_at": ago(5)}
+                for i in range(self.LIMIT)]})
+        if case == "reopen-failed":
+            self.stub_sleep()
+            self.refuse_field(f"repos/{REPO}/pulls/7", "state=open")
+        if route in ("ci", "ci-eve") or (route == "hold" and not last):
+            args = ("workflow_run", {"actor": pusher, "number": "", "head": HEAD, "head_repository": str(FORK_ID)})
+        elif route == "answer":
+            args = ("issue_comment", {"actor": author, "comment": "900"})
+        else:
+            inputs = {"relabel": {"task": "relabel", "head": HEAD}, "screen": {"screen": "true"},
+                      "draft": {"task": "draft"}, "reply": {"task": "reply", "reply": self.REPLY},
+                      "conflict": {"task": "conflict"}, "catchup": {"task": "catchup"},
+                      "stop": {"task": "stop", "comment": "hold-review"},
+                      "measure": {"task": "measure", "number": ""}}.get(route, {})
+            if route == "rescreen" or (last and kind != "unknown"):
+                inputs = {"task": "rescreen", "account": holder}
+            if last and kind == "unknown":
+                inputs = {"screen": "true"}
+            args = ("workflow_dispatch", dict({"actor": BOT if route == "stop" else "alice"}, **inputs))
+        if w["owed"]:
+            task = {"rescreen": "rescreen", "stop": "stop", "catchup": "catchup"}[route]
+            rc, out, runs = self.started()
+            mine = [r for r in runs if r[0] == "7"]
+            if w["owed"] == "fails":
+                self.assertEqual((rc, mine), (1, []), out)
+                self.assertIn("::error::GitHub did not say whether carol has write access.", out)
+                if route == "catchup":
+                    args = None
+            elif w["owed"] == "none":
+                self.assertNotIn(task, [r[1] for r in mine], out)
+            else:
+                found = [r for r in mine if r[1] == task]
+                self.assertEqual(len(found), 1, out)
+                args = ("workflow_dispatch", {"actor": BOT, "task": task, "account": found[0][2], "head": found[0][3],
+                                              "comment": found[0][4]})
+        screen = None
+        if route in ("ci", "ci-eve", "rescreen", "screen", "answer", "draft", "approve", "hold"):
+            screen = "held" if case == "held" else "clean"
+        review = {"proof": "pass", "pass-var": "pass"}.get(case, case)
+        if route == "hold":
+            review = {"cap": "cap", "transient": "failure", "last": "failure"}.get(case)
+        if route == "answer":
+            review = dict({"head": HEAD, "will_fix": "false", "fix_stop": "false", "refused": ""},
+                          **self.ANSWERS.get(case, {}))
+        if route == "draft":
+            review = {"draft": "100-1"}
+        return args, {"screen": screen, "review": review, "variable": "docs/**" if case == "pass-var" else "",
+                      "key": case != "no-key", "item": item, "proof": case == "proof"}
+
+    def reviewed(self, trust, screen, verdict, proof):
+        """The review job's step "The comment, as it is posted" (ReaderRunner's post), for the trust job's outputs trust
+        and the screen's verdict screen, on the model's review of verdict of a change of docs/guide.md, or of the proof
+        theories/B.v when proof: the review job's outputs, with no fix."""
+        if proof:
+            review = os.path.join(self.work, ".review")
+            os.makedirs(os.path.join(review, "head", "theories"))
+            with open(os.path.join(review, "head", "theories", "B.v"), "w") as f:
+                f.write(SoundnessTest.VM["theories/B.v"])
+            with open(os.path.join(review, rules.SOUNDNESS_FILE), "w") as f:
+                json.dump({"whole": True, "files": [{"path": "theories/B.v", "why": "proof", "by": None, "what": None,
+                                                     "at_head": True}], "unparsed": []}, f)
+        text, items = self.MODEL[verdict]
+        rc, out, got = ReaderRunner.post(self, text, items, text, verdict, outside=trust["outside"],
+                                         started=trust["started"], route=trust["route"], screen=screen or "",
+                                         author_kind=trust["kind"])
+        self.logs.append(out)
+        self.assertEqual(rc, 0, out)
+        return {"head": got["head"], "verdict": got["verdict"], "will_fix": "false", "fix_stop": "false",
+                "body": got["body"]}
+
+    def jobs_after(self, trust, event, screen=None, review=None, variable="", key=True, item="pr", proof=False):
+        """The jobs after the trust job that gave trust, each when its if holds, as GitHub runs them (run_graph): the
+        gather job (item, a stand-in) and the screen (its verdict screen, a stand-in); the review job (review: the
+        model's verdict; failure or cap, a job that failed, at the cap or not; a dict, the job's outputs as a stand-in);
+        then the post, comment and hold jobs' own steps, with the variable REPO_PAIRS_IMPORT_PATHS variable and with the
+        App's key unless key is False. What ran: the jobs, the review's verdict, the post job's decision and the
+        contexts before it ran, and the log of each step."""
+        start = len(self.logs)
+        ctx = self.ctx(trust, **{"github.event_name": event, "github.run_id": "100", "github.run_attempt": "1",
+                                 "github.server_url": "https://github.com", "inputs.reply": self.REPLY,
+                                 "vars.REPO_PAIRS_IMPORT_PATHS": variable, **({} if key else {APP_KEY: ""})})
+        results = {"review": "failure"} if review in ("failure", "cap") else {}
+        outputs = {"gather": {"kind": item, "number": trust["number"], "digest": "0" * 64},
+                   "screen": {"verdict": screen or ""}}
+        github = {"github.event_name": event}
+        graph = run_graph(trust, results, outputs, github=github)
+        attempt = [attempt_job("trust")]
+        for job in ("gather", "screen"):
+            ctx[f"needs.{job}.result"] = graph[job]
+            if graph[job] == "success":
+                ctx.update({f"needs.{job}.outputs.{k}": v for k, v in outputs[job].items()})
+                attempt.append(attempt_job(job, name=f"screen {trust['account']}" if job == "screen" else None))
+        got = {"verdict": "", "decision": None}
+        ctx["needs.review.result"] = graph["review"]
+        if graph["review"] == "failure":
+            attempt.append(attempt_job("review", "Hold at the hourly cap" if review == "cap" else "Review",
+                                       name="review (screened)"))
+        elif graph["review"] == "success":
+            outputs["review"] = review if isinstance(review, dict) else self.reviewed(trust, screen, review, proof)
+            got["verdict"] = outputs["review"].get("verdict", "")
+            ctx.update({f"needs.review.outputs.{k}": v for k, v in outputs["review"].items()})
+        self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": attempt})
+        ran = ran_jobs(graph) - {"post", "comment", "hold"}
+        for job in ("post", "comment", "hold"):
+            if not evaluate(JOBS[job]["if"], ctx):
+                ctx[f"needs.{job}.result"] = "skipped"
+                continue
+            ran.add(job)
+            given = dict(ctx)
+            if job == "post":
+                got["before post"] = dict(ctx)
+            steps = run_job(self, job, given, ApproveTest.TOKENS)
+            ctx[f"needs.{job}.result"] = "failure" if "failure" in steps.values() else "success"
+            if job == "post":
+                outputs["post"] = filled(JOBS["post"]["outputs"], given)
+                got["decision"] = outputs["post"]["decision"]
+                ctx.update({f"needs.post.outputs.{k}": v for k, v in outputs["post"].items()})
+        results["post"] = ctx["needs.post.result"]
+        # GitHub's own reading of the ifs runs the same jobs.
+        self.assertEqual(ran_jobs(run_graph(trust, results, outputs, github=github)), ran)
+        got.update(ran=ran, log="\n".join(self.logs[start:]))
+        return got
+
+    def run_cell(self, route, case, kind, w):
+        """The run of the cell (start), its trust step, which must stop the run as the cell says or route it with the
+        author's kind, and then the jobs after it (jobs_after). None when no job runs after the trust job."""
+        args, given = self.start(route, case, kind, w)
+        if args is None:
+            return None
+        event, inputs = args
+        rc, out, trust = self.run_trust(event, **inputs)
+        if w["stop"]:
+            self.assertEqual((rc, trust.get("route")), (w["stop"][0], None), out)
+            self.assertIn(w["stop"][1] + "\n", out)
+            ran = run_graph(trust, github={"github.event_name": event}, trust_result="failure" if rc else "success")
+            self.assertEqual(ran_jobs(ran) - {"trust"}, set(), out)
+            return None
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((trust.get("kind"), trust.get("outside")),
+                         (kind, "true" if kind == "outsider" else "false" if kind else ""), out)
+        self.forget()
+        return self.jobs_after(trust, event, **given)
+
+    def app_writes(self):
+        """Each write of the App, and each write of a check run, an approval or the state of #7 with any token, in
+        order: (token, method, endpoint[, state=<state>])."""
+        wrote = writes(self.api)
+        return [(t, c[1], c[2], *[a for a in c if a.startswith("state=")])
+                for t, c in zip(gh_tokens(self.api), gh_calls(self.api))
+                if c in wrote and (t in ("token-A", "token-B") or "/check-runs" in c[2] or c[2].endswith("/approve")
+                                   or c[2] == f"repos/{REPO}/pulls/7")]
+
+    def assertCell(self, route, case, kind, w, got):
+        """What the run of the cell did is what the cell gives (want), and for a cell that withdraws, its post job's
+        error after a read that GitHub refuses says what comes next."""
+        log = got["log"]
+        self.assertEqual(state_labels(self.api), self.moves(kind, w["state"]), log)
+        body = None
+        if w["marked"]:
+            body = rules.with_marker(self.LABELLED["body"], f"<!-- review-catchup {HEAD} -->")
+        elif w["state"] not in (None, self.UNCHANGED):
+            body = self.body(route, case, kind, w)
+        self.assertEqual(label_comments(self.api),
+                         [] if body is None else [("PATCH", f"repos/{REPO}/issues/comments/40", body)], log)
+        if w["state"] == self.UNCHANGED:
+            self.assertIn(self.NOTICE, log)
+        if w["decision"]:
+            self.assertEqual(got["decision"], w["decision"], log)
+        if w["said"]:
+            self.assertIn(w["said"] + "\n", log)
+        if w["jobs"]:
+            self.assertEqual(got["ran"], w["jobs"])
+        if case == "proof":
+            self.assertEqual(got["verdict"], "pass" if kind == "writer" else "person", log)
+        app = {"R": [("token-A", "POST", f"repos/{REPO}/check-runs")],
+               "W": [("token-A", "PATCH", f"repos/{REPO}/check-runs/901")],
+               "A": [("token-B", "POST", f"repos/{REPO}/actions/runs/{i}/approve") for i in (61, 62)],
+               "C": [("token-A", "PATCH", f"repos/{REPO}/pulls/7", "state=closed")],
+               "O": [("token-A", "PATCH", f"repos/{REPO}/pulls/7", "state=open")]}
+        self.assertEqual(self.app_writes(), [x for letter in w["app"] for x in app[letter]], log)
+        because = {"blocking": "because a later review asks for a change",
+                   "person": "because a later review has questions for Sami"}
+        because["proof"] = because["person"]
+        for c, sent in zip([c for c in gh_calls(self.api) if "--input" in c], gh_inputs(self.api)):
+            if c[:3] == ["--method", "POST", f"repos/{REPO}/check-runs"]:
+                self.assertEqual((sent["conclusion"], sent["head_sha"], sent["external_id"], sent["output"]["text"]),
+                                 ("success", HEAD, f"7:{HEAD}",
+                                  rules.import_marker(HEAD, "docs/**" if case == "pass-var" else None)))
+            if c[:3] == ["--method", "PATCH", f"repos/{REPO}/check-runs/901"]:
+                self.assertEqual((sent["conclusion"], sent["output"]["title"]),
+                                 ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, "
+                                             f"{because.get(case, 'because a later screen held it')}"))
+        wrote = writes(self.api)
+        holds = [a[len("body="):] for c in wrote for a in c if a.startswith("body=<!-- review-held -->")]
+        self.assertEqual([h.split("\n")[1] for h in holds], [f"**{w['held']}**"] if w["held"] else [], log)
+        self.assertEqual(any("labels[]=review-held" in c for c in wrote), bool(w["held"]) and route != "stop", log)
+        if route == "conflict":
+            posts = [a for c in wrote if c[:3] == ["--method", "POST", f"repos/{REPO}/issues/7/comments"] for a in c
+                     if a.startswith(f"body=<!-- review-conflict {HEAD} -->\n")]
+            self.assertEqual(len(posts), 1, log)
+        if "W" not in w["app"]:
+            return
+        self.forget()
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        start = len(self.logs)
+        steps = run_job(self, "post", dict(got["before post"]), ApproveTest.TOKENS)
+        log = "\n".join(self.logs[start:])
+        self.assertEqual(steps[self.FIND], "failure", log)
+        again = self.RETRY if kind == "outsider" else " Re-run this run."
+        self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is withdrawn."
+                      f"{again}\n", log)
+        self.assertEqual("The rescreen pass tries" in log, kind == "outsider", log)
+        self.assertEqual(self.app_writes(), [], log)
+
+    def test_each_cell_of_the_author_kind_table(self):
+        """Each cell of CELLS, on its own stand-in gh: the trust job stops the run as the cell says, or the jobs after
+        it do what the cell gives (assertCell)."""
+        for route, case, kind, w in self.CELLS:
+            with self.subTest(route=route, case=case, author=self.AUTHORS.get(kind, "none")):
+                self.tearDown()
+                self.doCleanups()
+                self.setUp()
+                got = self.run_cell(route, case, kind, w)
+                if got is not None:
+                    self.assertCell(route, case, kind, w, got)
 
 
 if __name__ == "__main__":
