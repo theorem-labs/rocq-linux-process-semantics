@@ -9894,6 +9894,29 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_withdrawal_that_github_refused_after_a_held_screen_gets_one_relabel_after_an_hour(self):
+        """Ruling 2 (rulings.md, 2026-11-20 07:33Z; R12, and OSSV-612's R20 for the App's steps): a withdrawal of the
+        import check run (success to neutral) that GitHub refuses is retried by the rescreen pass as a post hold is,
+        not left to a person. The review of mallory's #7 recorded the check run on HEAD. A later review run of HEAD,
+        whose screen held it, posted the screen's hold comment, which names HEAD, and its post job failed at the PATCH
+        that withdraws the check run, a write of the App. An hour after that run ended, the head gets one relabel run,
+        whose post job finds the newer hold and withdraws the check run; not before the hour."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        for ended, want in ((30, []), (61, [("7", "relabel", "", HEAD, "")])):
+            with self.subTest(ended=ended):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(300)), hold])
+                self.ran(10, f"review {HEAD} by mallory", made=ended + 40, ended=ended, event="workflow_run", jobs=[
+                    attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+
     def test_a_stopped_ci_run_of_another_pull_request_of_the_head_leaves_the_apps_retry_as_it_is(self):
         """D16 (the App's retry): the post job of run 10, the workflow_run review of mallory's #7, failed at token A's
         mint. Eve pushes the same commit to her fork and opens #9 of it into dev: the trust job stops its CI run
