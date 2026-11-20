@@ -45,14 +45,16 @@ parts, in this order:
 The first line of a pull request's review is its result (.github/review.md, "The comment"): a line that starts with
 one of RESULTS. A pull request's review is one whose head holds the marker <!-- review-head <commit> -->. When the
 first line of the review that is not empty starts with one of RESULTS, and the first such line of the trimmed text
-does not start with the same one, that line of the review goes back at the start of the trimmed text: the reader
-dropped it. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
+starts with none of them, that line of the review goes back at the start of the trimmed text: the reader dropped it.
+A trimmed text whose first line starts with one of RESULTS keeps it as the reader wrote it, with no second result
+line. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
 
 --verdict is the review's verdict after the rules of code (rules.py soundness and blocking). When it is person, the
 review's first line is "Blocking findings.", and the list holds no blocking finding (a change item that is not
-optional) and one question item or more, the result line is "Questions for Sami:" and the text of each question item,
-in place of the review's line. The trimmed text then loses "Blocking findings." at the start of its first line, when
-the reader kept it. So such a review never starts with "Blocking findings.", as its list holds no blocking finding.
+optional) and one question item or more, the result line is "Questions for Sami:", with one bullet for the text of
+each question item after it, in place of the review's line. The trimmed text then loses "Blocking findings." at the
+start of its first line, when the reader kept it. So such a review never starts with "Blocking findings.", as its
+list holds no blocking finding.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -1352,11 +1354,13 @@ def without_blocking(text):
 def with_result(review, trimmed, head, verdict="", items=()):
     """trimmed, with the result line of review back at its start when the reader dropped it: in a pull request's review
     (head holds REVIEW_HEAD), the first line of review that is not empty starts with a form of RESULTS, and the first
-    such line of trimmed does not start with the same form. The line goes back made inert and closed, as an added
-    item does. An issue's review, and a review whose first line has no such form, stay as the reader gave them.
+    such line of trimmed starts with no form of RESULTS. The line goes back made inert and closed, as an added item
+    does. A trimmed text whose first line starts with a form of RESULTS, the same one or another, is the reader's
+    rewrite of the result line, and gets no second one. An issue's review, and a review whose first line has no such
+    form, stay as the reader gave them.
     When verdict, the verdict after the rules of code, is person, review's line is "Blocking findings.", and items
-    holds no blocking finding and one question item or more, the result line is "Questions for Sami:" and the text of
-    each question item, and trimmed loses "Blocking findings." (without_blocking)."""
+    holds no blocking finding and one question item or more, the result line is "Questions for Sami:" and then one
+    bullet for the text of each question item, and trimmed loses "Blocking findings." (without_blocking)."""
     line = first_line(review)
     form = result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
@@ -1364,9 +1368,9 @@ def with_result(review, trimmed, head, verdict="", items=()):
     questions = [" ".join(i["text"].split()) for i in items if i.get("kind") == "question"]
     if (verdict == "person" and form == RESULTS[1] and questions
             and not any(i.get("kind") == "change" and not i.get("optional") for i in items)):
-        form, line = RESULTS[2], " ".join([RESULTS[2], *questions])
+        line = "\n".join([RESULTS[2], "", *(f"- {q}" for q in questions)])
         trimmed = without_blocking(trimmed)
-    if result_of(first_line(trimmed)) == form:
+    if result_of(first_line(trimmed)) is not None:
         return trimmed
     return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 

@@ -3009,7 +3009,7 @@ class Holding(Runner):
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
                  uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
                  labels=("review-held",), comment="", head="", total=None, run_jobs=None, account=None, author=None,
-                 unread=False):
+                 unread=False, outside=""):
         """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
         capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
         before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
@@ -3019,7 +3019,8 @@ class Holding(Runner):
         them; comment: the comment that an answer answers; head: the head that the trust job gave; account: the account
         whose limit the run counts on, as the trust job gave it (outsider when None); author: the item's author, as the
         API gives it (none when None); unread: the trust job's output uncounted, true when it did not read every run
-        that could count on the account. posts are the calls that post or edit the hold comment, and body the first."""
+        that could count on the account; outside: the trust job's output outside (false: the author has write access).
+        posts are the calls that post or edit the hold comment, and body the first."""
         n = number
         self.checkout()
         self.serve(f"repos/{REPO}/issues/{n}", {"number": n, **({"pull_request": {}} if kind == "pr" else {}),
@@ -3050,7 +3051,8 @@ class Holding(Runner):
         summary = os.path.join(self.dir, "summary")
         open(summary, "w").close()
         rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER=str(n), TASK=task, ROUTE=route,
-                                     OUTSIDER=outsider, ACCOUNT=outsider if account is None else account,
+                                     OUTSIDER=outsider, OUTSIDE=outside,
+                                     ACCOUNT=outsider if account is None else account,
                                      UNCOUNTED="true" if unread else "",
                                      REVIEW=review, ORIGIN=origin, TRIES=tries, COMMENT=comment, HEAD=head,
                                      RUN_ID="100",
@@ -3119,6 +3121,37 @@ class HoldTest(Holding):
                 self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
                 self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
 
+    def test_a_writers_pull_request_that_the_screen_of_an_outsiders_push_held_gets_no_state_label(self):
+        """R5 and ruling 1 of OSSV-221's architect (2026-11-20 09:29Z): a writer's pull request is no outside item. eve,
+        with read access, pushes to alice's #7, and the screen of that push holds it: the trust job's outsider is eve,
+        and its outside is false. The hold job labels #7 review-held and posts the screen's hold comment, which names
+        the head, and its label comment names Sami's step and ends with the marker <!-- waits-on-theorem: Sami -->, so
+        that Theorem's view lists it. But it sets no state label, and takes off the one that #7 has. The same hold of
+        mallory's #7 (outside true) gives waits-on-theorem, as before. The hold job's OUTSIDE is the trust job's
+        outside."""
+        self.assertEqual(JOBS["hold"]["env"]["OUTSIDE"], "${{ needs.trust.outputs.outside }}")
+        for author, outside in (("alice", "false"), ("mallory", "true")):
+            with self.subTest(author=author):
+                self.tearDown()
+                self.setUp()
+                labels = ("review-held", THEOREM_LABEL) if author == "alice" else ("review-held",)
+                calls, _post, body = self.hold("screen", outsider="eve", author=author, outside=outside, head=HEAD,
+                                               labels=labels)
+                self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
+                               "--jq", ".[].name"], calls)
+                self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held "
+                                       "this pull request, so the automated review did not run. You do not need to do "
+                                       f"anything.\n\n<!-- review-held-head {HEAD} -->")
+                if author == "mallory":
+                    self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
+                    continue
+                self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL)])
+                (method, _endpoint, label), = label_comments(self.api)
+                self.assertEqual(method, "POST")
+                self.assertEqual(label, "<!-- review-label -->\n**Next step:** Sami starts the work that the hold "
+                                        "comment names, by hand.\n\nYou do not need to do anything.\n\n"
+                                        "<!-- waits-on-theorem: Sami -->")
+
     # A hold that is tried again says first from when, and which events start the run that takes it again (there is
     # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why. The events
     # are those of a run of the pass with no number: a run with the number of a pull request takes the hold of its
@@ -3130,11 +3163,12 @@ class HoldTest(Holding):
              r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n\n"
              r"You do not need to do anything\.\n\n[^\n]* ")
     # A limit hold ends with a paragraph of its own: what happens while the account is still at its limit at the first
-    # such event after the time that it gives. A cap or transient hold, whose rescreen can be held for another reason,
-    # ends with only that a new hold says why. The marker follows, and nothing asks anyone to start a run.
+    # event of the list after the time that it gives. A cap or transient hold, whose rescreen can be held for another
+    # reason, ends with only that a new hold says why. The marker follows, and nothing asks anyone to start a run.
     AGAIN_LIMIT = AGAIN + (r"[^\n]*\n\n(This account|The account of the author) can still be at the limit at the "
-                           r"first such event after that time\. Then the workflow keeps this (pull request|issue) held "
-                           r"and screens it at a later event of the list\.\n\n<!-- ")
+                           r"first event of the list above after [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC\. "
+                           r"Then the workflow keeps this (pull request|issue) held and screens it at a later event of "
+                           r"that list\.\n\n<!-- ")
     AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
     # The limit as a limit hold gives it: the count at which the workflow holds, and no promise of how many screens an
     # hour an account had (a trust job that did not read every run that could count on it holds it at the limit too).
@@ -3195,7 +3229,7 @@ class HoldTest(Holding):
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory")
                 self.assertRegex(body, self.AGAIN_LIMIT)
                 self.assertIn(f"You do not need to do anything.\n\n{words}\n\n{who.capitalize()} can still be at the "
-                              "limit at the first such event after that time.", body)
+                              "limit at the first event of the list above after ", body)
                 self.assertNotIn("no write access", body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
@@ -3208,18 +3242,18 @@ class HoldTest(Holding):
         limit = self.LIMIT_WORDS
         for outsider, account, words, who in (
                 ("mallory", "mallory", "The author of this pull request has an account without write access to this "
-                                       f"repository. {limit} The workflow did not read all of its runs of the last "
+                                       f"repository. {limit} The workflow did not read all of its own runs of the last "
                                        "hour that can count toward the limit of this account. So the workflow treats "
                                        "this account as at that limit.", "this account"),
                 ("eve", "mallory", "The latest event of this pull request comes from an account without write access "
                                    "to this repository. For this event, the workflow uses the limit of the author of "
                                    "this pull request, who also has an account without write access. "
-                                   f"{limit} The workflow did not read all of its runs of the last hour that can count "
-                                   "toward the limit of the author. So the workflow treats the account of the author "
-                                   "as at that limit.", "the account of the author"),
+                                   f"{limit} The workflow did not read all of its own runs of the last hour that can "
+                                   "count toward the limit of the author. So the workflow treats the account of the "
+                                   "author as at that limit.", "the account of the author"),
                 ("eve", "eve", "The latest event of this pull request comes from an account without write access to "
-                               f"this repository. {limit} The workflow did not read all of its runs of the last hour "
-                               "that can count toward the limit of this account. So the workflow treats this "
+                               f"this repository. {limit} The workflow did not read all of its own runs of the last "
+                               "hour that can count toward the limit of this account. So the workflow treats this "
                                "account as at that limit.", "this account")):
             with self.subTest(outsider=outsider, account=account):
                 self.tearDown()
@@ -3228,7 +3262,7 @@ class HoldTest(Holding):
                                                 unread=True)
                 self.assertRegex(body, self.AGAIN_LIMIT)
                 self.assertIn(f"You do not need to do anything.\n\n{words}\n\n{who.capitalize()} can still be at the "
-                              "limit at the first such event after that time.", body)
+                              "limit at the first event of the list above after ", body)
                 self.assertNotIn("is at that limit", body)
                 self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 -->"), body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
@@ -3452,8 +3486,8 @@ class HoldTest(Holding):
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
-        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "ACCOUNT", "UNCOUNTED",
-                                  "REVIEW", "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID", "RUN_ATTEMPT"})
+        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "ACCOUNT",
+                                  "UNCOUNTED", "REVIEW", "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID", "RUN_ATTEMPT"})
         self.assertEqual(e["REVIEW"], "${{ needs.review.result }}")
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
@@ -4016,7 +4050,7 @@ class ApproveTest(Holding):
         self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=2)
         steps = self.post(trust, "clean")
         self.assertEqual((steps[self.HELD], steps[MINT_B]), ("failure", "skipped"), self.logs)
-        self.assertIn("GitHub lists 1 of the 2 changed files of #7. No run is approved.", self.logs[-1])
+        self.assertIn("GitHub lists 1 of the 2 changed files of #7. The workflow approves no run of it.", self.logs[-1])
         self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
         self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")
         steps = self.post(trust, "clean")
@@ -5109,9 +5143,10 @@ class FreshReaderTest(ReaderRunner):
         OSSV-612's twin workflow, the fresh reader dropped it in 2 of 8 trims. A trim that drops "No blocking
         finding.", "Blocking findings." or "Questions for Sami:" with the subject of each question gets the review's
         first line back at the start of the trimmed text, made inert and closed, as an added item is. A trim that keeps
-        that line, also in bold, posts as the reader gave it. The block holds the whole review in each case. When the
+        that line, also in bold, posts as the reader gave it, and so does a trim whose first line the reader rewrote
+        to another result form: it gets no second result line. The block holds the whole review in each case. When the
         rules of code make the verdict person for a list with a question and no blocking finding, the result line is
-        "Questions for Sami:" and the text of each question, never "Blocking findings."."""
+        "Questions for Sami:" with one bullet for the text of each question, never "Blocking findings."."""
         question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
         trimmed = "`theories/Fd.v:213` leaves the case open."
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
@@ -5134,21 +5169,29 @@ class FreshReaderTest(ReaderRunner):
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         self.assertEqual(trim.with_result(f"{line}\n\nMore.", trimmed, head),
                          f"Blocking findings. <details>@{WJ}octocat\n\n</details>\n\n{trimmed}")
+        # The reader rewrote the result line to another form: the trim keeps it, with no second result line before it.
+        for line, text in (("No blocking finding.", f"Blocking findings.\n\n{trimmed}"),
+                           ("Blocking findings.", f"**No blocking finding.** {trimmed}"),
+                           ("Blocking findings.", f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}")):
+            with self.subTest(review=line, trim=text):
+                self.assertEqual(trim.with_result(f"{line}\n\nMore.", text, head, "pass"), text)
         # A review whose list holds a question and no blocking finding, and whose verdict the rules of code made person
-        # (rules.py blocking): its line "Blocking findings." never posts. The result line is "Questions for Sami:" and
-        # the text of each question, made inert and closed, in place of the line that the reader kept, also in bold or
-        # in another form, or before the trim that dropped it. Another verdict, or a list that holds a blocking
-        # finding (the soundness rule's person verdict keeps each blocking finding), keeps the review's line.
+        # (rules.py blocking): its line "Blocking findings." never posts. The result line is "Questions for Sami:" with
+        # one bullet for the text of each question, made inert and closed, in place of the line that the reader kept,
+        # also in bold or in another form, or before the trim that dropped it. A trim whose first line the reader
+        # rewrote to another result form keeps it. Another verdict, or a list that holds a blocking finding (the
+        # soundness rule's person verdict keeps each blocking finding), keeps the review's line.
         review = f"Blocking findings.\n\n1. {trimmed}"
         asked = [{"kind": "question", "ref": "SCOPE.md:301", "optional": False, "text": "Does SCOPE.md:301\nhold?"},
                  {"kind": "question", "ref": None, "optional": True, "text": "Ask @octocat."}]
-        questions = f"Questions for Sami: Does SCOPE.md:301 hold? Ask @{WJ}octocat."
+        questions = f"Questions for Sami:\n\n- Does SCOPE.md:301 hold?\n- Ask @{WJ}octocat."
         for text, want in ((trimmed, f"{questions}\n\n{trimmed}"),
                            (f"Blocking findings.\n\n{trimmed}", f"{questions}\n\n{trimmed}"),
                            (f"**Blocking findings.** {trimmed}", f"{questions}\n\n{trimmed}"),
                            ("**Blocking findings**.", questions),
                            (f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}",
-                            f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}")):
+                            f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}"),
+                           (f"No blocking finding.\n\n{trimmed}", f"No blocking finding.\n\n{trimmed}")):
             with self.subTest(trim=text):
                 self.assertEqual(trim.with_result(review, text, head, "person", asked), want)
         for verdict, items in (("blocking", asked), ("person", [*asked, dict(asked[0], kind="change")])):
@@ -6895,11 +6938,11 @@ class AnswerFixTest(ReaderRunner):
         optional is false. A review of an outside pull request that gives the verdict blocking with a question and no
         blocking finding (a question alone, or the question on soundness alone), and that the soundness rule leaves as
         it is (no file of it can change a proof): the comment step gives the verdict person (rules.py blocking), in its
-        output and its marker. The posted review starts with "Questions for Sami:" and the text of each question, and
-        its visible part holds no "Blocking findings.", whether the reader kept that line or dropped it. No fix runs,
-        and the label step gives waits-on-theorem with Sami's step, never waits-on-author. A list with no question
-        (an optional change alone, or no item) keeps the verdict blocking, and so does a list with a blocking finding:
-        the review starts with "Blocking findings.", and the fix runs."""
+        output and its marker. The posted review starts with "Questions for Sami:" and one bullet for the text of each
+        question, and its visible part holds no "Blocking findings.", whether the reader kept that line or dropped it.
+        No fix runs, and the label step gives waits-on-theorem with Sami's step, never waits-on-author. A list with no
+        question (an optional change alone, or no item) keeps the verdict blocking, and so does a list with a blocking
+        finding: the review starts with "Blocking findings.", and the fix runs."""
         question = {"kind": "question", "ref": "theories/A.v:3", "optional": False,
                     "text": "Does `theories/A.v:3` need `exact I`?"}
         optional = {"kind": "change", "ref": "theories/A.v:3", "optional": True, "text": "End the proof with exact I."}
@@ -6924,8 +6967,8 @@ class AnswerFixTest(ReaderRunner):
                 shown = result["body"].split(self.WHOLE, 1)[0]
                 text = shown.split(f"**Automated review** of commit {HEAD[:12]}\n\n", 1)[1]
                 if verdict == "person":
-                    asked = " ".join(i["text"] for i in items if i["kind"] == "question")
-                    self.assertEqual(text, f"Questions for Sami: {asked}\n\n{dropped}\n\n---\n{self.FOOT}\n\n")
+                    asked = "\n".join(f"- {i['text']}" for i in items if i["kind"] == "question")
+                    self.assertEqual(text, f"Questions for Sami:\n\n{asked}\n\n{dropped}\n\n---\n{self.FOOT}\n\n")
                     self.assertNotIn("Blocking findings.", shown)
                 else:
                     self.assertTrue(text.startswith(kept), text)
@@ -9950,6 +9993,45 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_withdrawal_after_a_held_screen_is_tried_review_tries_times_while_the_screen_held_the_head(self):
+        """Ruling 2 of OSSV-221's architect: the retry of a withdrawal after a held screen stops as the App's retry
+        does. After REVIEW_TRIES review and relabel runs of HEAD whose post jobs failed at the withdrawal, the head gets
+        the stop head-import, whose hold comment names HEAD, and the pass fails. Once that hold is there, the pass
+        starts nothing for the head. A review comment whose run screened HEAD, newer than the screen's hold, leaves the
+        head not held: a relabel would then record the check run, so the pass tries no App write of the head again."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(450), "updated_at": ago(450),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        reviewed = review_of(HEAD, at=ago(500))
+        self.item(kind="pr", labels=("review-held",), comments=[reviewed, hold])
+        self.ran(10, f"review {HEAD} by mallory", made=400, event="workflow_run", jobs=[
+            attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
+        for i in range(1, self.TRIES):
+            self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 90 * i, jobs=[refused])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-import")]), out)
+        stopped = self.assertStopped("head-import", "Automated check for the import held.", "The automated check of "
+                                     f"the head commit {HEAD[:12]} for the import into the internal repository did not "
+                                     f"finish after {self.TRIES} tries. The workflow does not try it again.")
+        self.comments(7, reviewed, hold, {"id": 51, "user": {"login": BOT}, "created_at": ago(1),
+                                          "updated_at": ago(1), "body": stopped})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not tried again.",
+                      out)
+        self.tearDown()
+        self.setUp()
+        self.item(kind="pr", labels=("review-held",), comments=[hold, review_of(HEAD, at=ago(300))])
+        self.ran(10, f"review {HEAD} by mallory", made=101, ended=61, event="workflow_run", jobs=[
+            attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, []), out)
+        self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not tried again.",
+                      out)
+
     def test_a_stopped_ci_run_of_another_pull_request_of_the_head_leaves_the_apps_retry_as_it_is(self):
         """D16 (the App's retry): the post job of run 10, the workflow_run review of mallory's #7, failed at token A's
         mint. Eve pushes the same commit to her fork and opens #9 of it into dev: the trust job stops its CI run
@@ -11215,8 +11297,8 @@ class HeadScheduleTest(Scheduled):
                 rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="review", head=HEAD,
                                               account=account)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
-                self.assertIn("the account without write access that started the newest CI run of "
-                              f"{HEAD} is eve, not {account or 'none'}.", out)
+                self.assertIn(f"eve, an account without write access, started the newest CI run of {HEAD}, but the run "
+                              f"names {account or 'no account'}.", out)
         self.of_heads.clear()
         self.ci(ended=90, actor="alice")
         rc, out, runs = self.started()
@@ -13638,9 +13720,9 @@ class ImportCheckTest(ReaderRunner):
         """R12 (spec, Terms): the import check run is for an outside pull request alone, whose author has no write
         access. eve, with read access, pushes to the branch of alice's #7. The trust job of that CI run screens it on
         eve: its outsider is eve, and its outside is false. The screen passes, and the review passes a change of
-        Markdown files alone: no check run, and the decision is writer. The label comment says that the screen and the
-        review passed, and that the author has write access, not that no screen passed the head. The same push to
-        mallory's #7 records it."""
+        Markdown files alone: no check run, and the decision is writer. R5 (ruling 1 of OSSV-221's architect): the pull
+        request is no outside item, so the comment job sets no state label and posts no label comment. The same push
+        to mallory's #7 records it."""
         self.permissions(alice="write", mallory="read", eve="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         for author, outside in (("alice", "false"), ("mallory", "true")):
@@ -13656,12 +13738,7 @@ class ImportCheckTest(ReaderRunner):
                     self.assertRecorded(got, self.LPS)
                 else:
                     self.assertNotRecorded(got, "writer")
-                    body = self.assertWaits(got, self.SOME, rules.WRITER, value=self.LPS)
-                    self.assertIn("The automated screen and the automated review passed this pull request. Its "
-                                  "author has write access, so the workflow did not record the check "
-                                  "`repo-pairs/import-approved`. The workflow records that check only for a pull "
-                                  "request whose author has no write access.", body)
-                    self.assertNotIn("No automated screen", body)
+                    self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
 
     def test_a_writers_pull_request_whose_head_an_outsider_pushed_gets_no_outside_label(self):
         """R5 and ruling 1 (OSSV-221's architect, 2026-11-20 07:33Z): R5 keeps one label on each open outside item, and
@@ -13724,7 +13801,8 @@ class ImportCheckTest(ReaderRunner):
                     body = self.assertWaits(got, self.SOME, rules.SCREEN_HELD_AFTER, value=self.LPS)
                     self.assertIn("The automated review passed this pull request. An automated screen held its head "
                                   "commit. After that, no automated screen passed it in a run that also reviewed it. "
-                                  "So the workflow did not record the check `repo-pairs/import-approved`.", body)
+                                  "So the check `repo-pairs/import-approved` does not approve this head commit for the "
+                                  "import.", body)
                     self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD}, and "
                                   "no review comment whose run screened it is newer).", "\n".join(self.logs))
                     self.assertNotIn("No automated screen", body)
@@ -13799,34 +13877,35 @@ class ImportCheckTest(ReaderRunner):
 
     def test_a_withdrawal_that_github_refuses_fails_the_job_and_names_the_head_and_the_check_run(self):
         """A PATCH of the check run that GitHub refuses fails the post job, with an error that names the head and the
-        import check run. So does a read of the check runs of the head that GitHub refuses. After a screen that held
-        the head, each error also says that the rescreen pass tries it again only in a relabel run after a merge
-        conflict of the head ends, and that a person re-runs the job: the hold comment of the screen names the head,
-        so the pass makes no other App write of it (held.sh, consider). After a blocking finding, the pass's retry of
-        the App's writes (a relabel) withdraws it again."""
+        import check run. So does a read of the check runs of the head that GitHub refuses. Each error also says that
+        the rescreen pass tries the withdrawal again in a relabel of the head, an hour or more after the run ends, and
+        that after REVIEW_TRIES failed tries the label comment names Sami's next step: the pass's retry of the App's
+        writes (held.sh, due_retry) takes it after a blocking finding, and after a screen that held the head too
+        (ruling 2 of OSSV-221's architect; held.sh, consider)."""
         listed, _others = self.recorded()
-        again = ("The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict "
-                 "of this head ends. To try again, a person re-runs this job.")
-        cases = (("a screen that held the head", "pass", "held", True),
-                 ("a review with a blocking finding", "blocking", "clean", False))
+        again = (" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this "
+                 f"run ends. After {WF['env']['REVIEW_TRIES']} failed tries, the label comment names the next step for "
+                 "Sami.")
+        cases = (("a screen that held the head", "pass", "held"),
+                 ("a review with a blocking finding", "blocking", "clean"))
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
-        for case, verdict, screen, told in cases:
+        for case, verdict, screen in cases:
             with self.subTest(case=case):
                 got = self.judge(["README.md"], verdict, self.LPS, screen=screen, listed=[listed])
                 self.assertEqual((got["result"], got["steps"]["Withdraw the import check runs of the head"]),
                                  ("failure", "failure"), self.logs)
-                self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.", self.logs[-1])
-                self.assertEqual(again in self.logs[-1], told, self.logs[-1])
+                self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.{again}",
+                              self.logs[-1])
+                self.assertNotIn("re-runs", self.logs[-1])
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
-        for case, verdict, screen, told in cases:
+        for case, verdict, screen in cases:
             with self.subTest(case=case, read="refused"):
                 got = self.judge(["README.md"], verdict, self.LPS, screen=screen, listed=[listed])
                 self.assertEqual(
                     (got["result"], got["steps"]["Find the import check runs that a later review or screen withdraws"]),
                     ("failure", "failure"), self.logs)
                 self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is "
-                              "withdrawn.", self.logs[-1])
-                self.assertEqual(again in self.logs[-1], told, self.logs[-1])
+                              f"withdrawn.{again}", self.logs[-1])
 
 
 if __name__ == "__main__":

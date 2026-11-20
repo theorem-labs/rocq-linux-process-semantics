@@ -116,8 +116,9 @@ The workflow, not the review, keeps one label on each outside item:
 - `waits-on-theorem`: the next step is Sami's, or, for the checks of a pull
   request that the workflow does not approve, a person's at Theorem. The
   workflow does not approve the checks of a pull request that changes a
-  file under `.github/`. It cannot approve the checks of any pull request
-  in this repository yet. A comment of the workflow names the step.
+  file under `.github/`. While the environment `post` holds no key of the
+  OSS Verify App, the workflow approves the checks of no pull request. A
+  comment of the workflow names the step.
 - No label while the workflow works on the item. When a cap holds the item,
   the hold comment gives the time when the cap frees it.
 

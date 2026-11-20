@@ -312,7 +312,9 @@ on:
         type: string
         default: ""
       account:
-        description: The account toward whose hourly limit the run counts (the rescreen pass sets it)
+        description: >-
+          The account whose hourly limit the run counts on. The rescreen pass sets it. A rescreen by hand needs the
+          account that the hold names.
         type: string
         default: ""
       comment:
@@ -1161,8 +1163,9 @@ jobs:
                     b=0
                     [ -z "$pushed" ] || known "$pushed" || b=$?
                     (( b != 0 )) || pushed=""
-                    why="the account without write access that started the newest CI run of $pr_head"
-                    [ "$ACCOUNT" = "$pushed" ] || stop "$why is ${pushed:-none}, not ${ACCOUNT:-none}."
+                    starter="${pushed:-no account without write access}${pushed:+, an account without write access,}"
+                    why="$starter started the newest CI run of $pr_head, but the run names ${ACCOUNT:-no account}."
+                    [ "$ACCOUNT" = "$pushed" ] || stop "$why"
                     [ -z "$pushed" ] || screened "$AUTHOR" "$pushed"
                     route review ""
                   fi
@@ -2208,9 +2211,9 @@ jobs:
       # the gather job did not keep whole. Then comes the rule of the verdict blocking (.github/review/rules.py
       # blocking): a review whose verdict is blocking, and whose list holds a question item and no blocking finding (a
       # change item whose optional is false), gets the verdict person. So an outside pull request waits on Sami, not on
-      # its author, and no fix runs. Its result line is then "Questions for Sami:" with the text of each question, in
-      # place of the model's "Blocking findings." (trim.py's with_result, which reads the verdict after both rules).
-      # A verdict blocking whose list holds no question stays blocking.
+      # its author, and no fix runs. Its result line is then "Questions for Sami:" with one bullet for the text of each
+      # question, in place of the model's "Blocking findings." (trim.py's with_result, which reads the verdict after
+      # both rules). A verdict blocking whose list holds no question stays blocking.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
@@ -2384,7 +2387,17 @@ jobs:
           jq -j -e 'map(select(.type == "result")) | last | .structured_output
             | select(type == "object" and (.text | type) == "string") | .text' "$RESULT" > "$work/draft.md" \
             || { echo "::error::The draft gave no text. Nothing is uploaded."; exit 1; }
-          grep -q '[^[:space:]]' "$work/draft.md" || { echo "::error::The draft has no word in it. Nothing is uploaded."; exit 1; }
+          # strip: standard input with the characters that the file below never holds taken out: the C0 controls but
+          # tab and newline, DEL, the C1 controls, and the bidirectional-text controls U+061C, U+200E, U+200F, U+202A
+          # to U+202E and U+2066 to U+2069.
+          strip='import re, sys; sys.stdout.buffer.write(re.sub("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", sys.stdin.buffer.read().decode()).encode())'
+          # The OSSV controller refuses a draft that is empty or white space alone. So a draft that is empty or white
+          # space alone after strip (as Python's str.strip reads white space, a no-break space too) goes to no reader
+          # and to no file. After its line ---, the file holds this draft after strip when the reader refused it, else
+          # the reader's trim, which holds a word (trim.py read): strip takes out no word.
+          python3 -c "$strip" < "$work/draft.md" \
+            | python3 -c 'import sys; sys.exit(not sys.stdin.buffer.read().decode().strip())' \
+            || { echo "::error::The draft has no word in it. Nothing is uploaded."; exit 1; }
           python3 .github/review/trim.py draft --text "$work/draft.md" --rules .github/review-answer.md \
             --rules .github/review/skills/write-to-maintainer/SKILL.md > "$work/read.json" \
             || { echo "::error::The fresh reader gave no answer for the draft. Nothing is uploaded."; exit 1; }
@@ -2396,14 +2409,10 @@ jobs:
             jq -j .text "$work/read.json" > "$work/text"
             told="The artifact issue-draft-$NUMBER of this run holds the draft of the reply to issue #$NUMBER. No job posts it: Sami approves the text of a reply first."
           fi
-          # Taken out of the file: the C0 controls but tab and newline, DEL, the C1 controls, and the bidirectional-text
-          # controls U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
           { printf 'issue: %s\nrun: %s\n' "$NUMBER" "$RUN_ID"
             if [ "$refused" = true ]; then jq -j '"reason: \(.reason | gsub("\\s+"; " "))\n"' "$work/read.json"; fi
             printf -- '---\n'
-            cat "$work/text"; } \
-            | python3 -c 'import re, sys; sys.stdout.buffer.write(re.sub("[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", sys.stdin.buffer.read().decode()).encode())' \
-            > "$kept/issue-draft.txt"
+            cat "$work/text"; } | python3 -c "$strip" > "$kept/issue-draft.txt"
           echo "The fresh reader read the draft. The next step uploads it as the artifact issue-draft-$NUMBER."
           printf '%s\n' "$told" >> "$GITHUB_STEP_SUMMARY"
           echo "draft=$RUN_ID-$RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
@@ -2692,10 +2701,10 @@ jobs:
       # the soundness rule, and for a relabel, which runs no model. It is for an outside pull request alone, whose
       # author has no write access: a run whose trust job gave no outsider (a writer's pull request, also one that a
       # run by hand screened) gets no check run. Nor does a writer's pull request whose head an outsider pushed (the
-      # trust job's outside is false; the outsider of a relabel is its author, or none): its decision is writer, and
-      # its label comment says that its author has write access. A relabel takes the verdict from the markers of the
-      # newest review comment that names the head. It records a check run only when the screen passed the head in the
-      # run of a review (rules.py verdict, screened): a review comment of the head holds the marker
+      # trust job's outside is false; the outsider of a relabel is its author, or none): its decision is writer. It is
+      # no outside item, so the comment job gives it no outside label (R5). A relabel takes the verdict from the markers
+      # of the newest review comment that names the head. It records a check run only when the screen passed the head
+      # in the run of a review (rules.py verdict, screened): a review comment of the head holds the marker
       # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer than the newest
       # such review comment. A writer's review by hand with no screen writes no such marker. When such a hold comment
       # is newer (held), a later screen held the head: the decision is held, so that the label comment says so, and the
@@ -2793,12 +2802,12 @@ jobs:
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
       # withdrawn and no token is minted. While the environment post holds no key (APP_KEY_SET), no step can withdraw
-      # what this step finds, so it does not run. A read that fails fails the job. After the review's verdict, the
-      # rescreen pass's retry of the App's writes (a relabel) withdraws the check run again. After a screen that held
-      # the head, that retry does not run: the hold comment, which is not tried again, names the head (held.sh,
-      # consider). Only a relabel after a recorded merge conflict of the head ends withdraws it then, as consider takes
-      # the merge conflict (due_conflict) before it checks for such a hold. So the error says so, and that a person
-      # re-runs this job.
+      # what this step finds, so it does not run. A read that fails fails the job. The rescreen pass's retry of the
+      # App's writes (a relabel, held.sh due_retry) withdraws the check run again, an hour or more after this run ends.
+      # After a screen that held the head, that relabel is the one App write that the pass tries again for the head
+      # (held.sh, consider), and it reads the held state: it records no check run. After REVIEW_TRIES failed tries,
+      # the head is not tried again, and the label comment names the next step for Sami (held.sh, head_stopped). So
+      # the error says so.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -2839,11 +2848,8 @@ jobs:
             *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
-          # After a screen that held the head, the rescreen pass tries a failed withdrawal again only in a relabel after
-          # a recorded merge conflict of the head ends (held.sh, consider).
-          again=" The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict"
-          again+=" of this head ends. To try again, a person re-runs this job."
-          [ "$why" = screen ] || again=""
+          again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
+          again+=" run ends. After $REVIEW_TRIES failed tries, the label comment names the next step for Sami."
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
@@ -2863,7 +2869,7 @@ jobs:
             exit 0
           fi
           echo "#$NUMBER: a later step of this job withdraws the import check runs $ids of $head, because $because."
-          { echo "checks=$ids"; echo "head=$head"; echo "why=$why"; } >> "$GITHUB_OUTPUT"
+          { echo "checks=$ids"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
       # and for the close and reopen of a catch-up. Only while the environment post holds the App's key.
       - name: Sign in as the OSS Verify App
@@ -2908,8 +2914,8 @@ jobs:
       # The withdrawal of the import check runs that the step "Find the import check runs that a later review or screen
       # withdraws" found, with token A, each with its request: the conclusion neutral, so that the import no longer
       # reads it as the approval of the pull request. A call that fails fails the job, with an error that names the
-      # head and the import check run. After a screen that held the head, the error also says when the rescreen pass
-      # tries it again, and that a person re-runs this job (the comment of the step that found it says why).
+      # head and the import check run, and says when the rescreen pass tries it again (the comment of the step that
+      # found it says how).
       - name: Withdraw the import check runs of the head
         if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.checks != ''
         env:
@@ -2917,12 +2923,10 @@ jobs:
           REPO: ${{ github.repository }}
           CHECKS: ${{ steps.withdraw.outputs.checks }}
           HEAD: ${{ steps.withdraw.outputs.head }}
-          WHY: ${{ steps.withdraw.outputs.why }}
         run: |
           set -euo pipefail
-          again=" The rescreen pass does not try this withdrawal again, except in a relabel run after a merge conflict"
-          again+=" of this head ends. To try again, a person re-runs this job."
-          [ "$WHY" = screen ] || again=""
+          again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
+          again+=" run ends. After $REVIEW_TRIES failed tries, the label comment names the next step for Sami."
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
             [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not the id of an import check run: $id"; exit 1; }
@@ -3025,11 +3029,11 @@ jobs:
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha repository branch count <<< "$pr"
           if [ "$sha" != "$HEAD" ]; then
-            echo "::notice::#$NUMBER moved from $HEAD to $sha after the screen. No run is approved."
+            echo "::notice::#$NUMBER moved from $HEAD to $sha after the screen. The workflow approves no run of it."
             exit 0
           fi
           if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
-            echo "::notice::#$NUMBER has no head repository. No run is approved."
+            echo "::notice::#$NUMBER has no head repository. The workflow approves no run of it."
             exit 0
           fi
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -3048,12 +3052,13 @@ jobs:
             ids="$ids${ids:+ }$id"
           done <<< "$runs"
           if [ -z "$ids" ]; then
-            echo "#$NUMBER: GitHub holds no run of $HEAD from its head repository and branch. No run is approved."
+            echo "#$NUMBER: GitHub holds no run of $HEAD from its head repository and branch. The workflow approves" \
+              "no run."
             exit 0
           fi
           echo "#$NUMBER: GitHub holds the runs $ids of $HEAD."
           # refuse <why>: the end of this step with a failure, and no run approved.
-          refuse() { echo "::error::$1 No run is approved."; exit 1; }
+          refuse() { echo "::error::$1 The workflow approves no run of it."; exit 1; }
           [[ $count =~ ^[0-9]+$ ]] || refuse "#$NUMBER gives no count of changed files."
           files=$RUNNER_TEMP/files.jsonl
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
@@ -3064,12 +3069,13 @@ jobs:
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           if [ "$sha" != "$HEAD" ]; then
-            echo "::notice::#$NUMBER moved from $HEAD to $sha while its files were read. No run is approved."
+            echo "::notice::#$NUMBER moved from $HEAD to $sha while its files were read. The workflow approves no" \
+              "run of it."
             exit 0
           fi
           if [ "$steered" = true ]; then
-            echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. No run is approved: a person at Theorem" \
-              "approves its runs."
+            echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. The workflow approves no run of it." \
+              "A person at Theorem approves its runs."
             echo "steering=$HEAD" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -3344,9 +3350,9 @@ jobs:
       # rescreen pass takes that work again, and a rescreen needs the label. An answer also leaves the label on for a
       # hold of another work that is not tried again (the screen's, which waits on Sami), until that work posts. Then
       # the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind, whether
-      # this run took an outsider's path (so the screen passed it), the review's verdict, the two stops of the fix
-      # (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import check run at
-      # the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
+      # this run took an outsider's path (so the screen passed it) for an outside item, the review's verdict, the two
+      # stops of the fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import
+      # check run at the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
       # waits-on-theorem), the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author), and the text
       # that the fresh reader refused (waits-on-theorem, with Sami's step for it). An answer changes the state only when
       # the author said they will make the change, when a fix posted or stopped, or when the reader refused the answer or
@@ -3379,6 +3385,10 @@ jobs:
           POSTED: ${{ needs.post.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          # The trust job's outside: false when the author has write access, for a review or a rescreen whose route is
+          # screen and for a relabel; empty for any other run. A writer's pull request whose head an outsider pushed is
+          # no outside item, so it gets no outside state (R5).
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
           FIX_STOP: ${{ needs.review.outputs.fix_stop }}
@@ -3489,8 +3499,10 @@ jobs:
               take_off
             fi
           fi
+          # An outside item whose run took an outsider's path. Not a writer's pull request whose head an outsider
+          # pushed (OUTSIDE is false): it gets the state of a writer's item, as for its author's own push.
           outsider=false
-          [ -z "$OUTSIDER" ] || outsider=true
+          [ -z "$OUTSIDER" ] || [ "${OUTSIDE:-}" = false ] || outsider=true
           # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
           # the import check at the head, the state rests on the value that its decision read (IMPORTS), not on this
           # step's read: the variable can change between the two jobs, and the label comment records that value.
@@ -3511,15 +3523,18 @@ jobs:
               || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
             markers+=("marker=$marker")
           fi
+          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5).
+          writer=false
+          [ "${OUTSIDE:-}" != false ] || writer=true
           if [ "${TASK:-}" = relabel ]; then
             python3 .github/review/rules.py relabel "$NUMBER" "$HEAD" kind="$KIND" outsider="$outsider" \
-              recorded="$RECORDED" decision="$DECISION" "${facts[@]}" "${markers[@]}"
+              recorded="$RECORDED" decision="$DECISION" writer="$writer" "${facts[@]}" "${markers[@]}"
             exit
           fi
           python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$verdict" \
             will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
             decision="$DECISION" draft_stored="$draft_stored" reply_posted="$reply_posted" refused="${REFUSED:-}" \
-            "${facts[@]}" "${markers[@]}"
+            writer="$writer" "${facts[@]}" "${markers[@]}"
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
@@ -3661,14 +3676,16 @@ jobs:
   # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, or by
   # its screen, whose hold says that the checks of the pull request have not run. A hold that is not tried again (the
   # screen's, or the last try of a review, an answer or a draft) gives waits-on-theorem and a label comment that names
-  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). Each hold of a pull request also
-  # names the head that the run read, in the marker <!-- review-held-head <head> -->, by which the pass tells which
-  # head a hold stops. A cancelled screen holds nothing, nor a screened review or answer that a newer run of the same
-  # item and task cancelled: that run decides. Nor a run whose sign-in failed: a step whose name starts with "Sign in"
-  # failed in this attempt of the run, in any of its jobs. Such a run judged nothing of the item, so it gets no
-  # comment, no label and no try, and the rescreen pass takes the item again. The if below cannot see the steps of
-  # another job, so a screen job that failed at its sign-in starts this job, which reads this attempt's jobs first and
-  # stops.
+  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). A writer's pull request (the trust
+  # job's outside is false: its author has write access), as when the screen of an outsider's push to it held it, is
+  # no outside item: it gets that label comment, with its marker <!-- waits-on-theorem: Sami -->, but no state label
+  # (R5). Each hold of a pull request also names the head that the run read, in the marker
+  # <!-- review-held-head <head> -->, by which the pass tells which head a hold stops. A cancelled screen holds nothing,
+  # nor a screened review or answer that a newer run of the same item and task cancelled: that run decides. Nor a run
+  # whose sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of its
+  # jobs. Such a run judged nothing of the item, so it gets no comment, no label and no try, and the rescreen pass
+  # takes the item again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in
+  # starts this job, which reads this attempt's jobs first and stops.
   hold:
     needs: [trust, gather, screen, review]
     if: >-
@@ -3702,6 +3719,9 @@ jobs:
       TASK: ${{ needs.trust.outputs.task }}
       ROUTE: ${{ needs.trust.outputs.route }}
       OUTSIDER: ${{ needs.trust.outputs.outsider }}
+      # The trust job's outside: for a review or a rescreen whose route is screen, false when the item's author has
+      # write access, else true; empty for a run of any other task or route.
+      OUTSIDE: ${{ needs.trust.outputs.outside }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on, which a hold at the limit names: the item's author,
       # or the account of the latest event.
       ACCOUNT: ${{ needs.trust.outputs.account }}
@@ -3901,11 +3921,11 @@ jobs:
             # its limit (UNCOUNTED): the account can have had fewer screens, so the comment does not say that it had
             # that many.
             if [ "${UNCOUNTED:-}" = true ]; then
-              why+=" The workflow did not read all of its runs of the last hour that can count toward the limit of $whose. So the workflow treats $who as at that limit."
+              why+=" The workflow did not read all of its own runs of the last hour that can count toward the limit of $whose. So the workflow treats $who as at that limit."
             else
               why+=" ${who^} is at that limit."
             fi
-            why="$again$why"$'\n\n'"${who^} can still be at the limit at the first such event after that time. Then the workflow keeps $what held and screens it at a later event of the list."
+            why="$again$why"$'\n\n'"${who^} can still be at the limit at the first event of the list above after $next. Then the workflow keeps $what held and screens it at a later event of that list."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
@@ -3993,4 +4013,7 @@ jobs:
             echo "#$NUMBER: the answer is held and tried again, so its state label stays."
             exit 0
           fi
-          python3 .github/review/rules.py label "$NUMBER" "$fact=true"
+          # A writer's item (OUTSIDE is false) is no outside item, so it gets no state label: only the label comment.
+          writer=false
+          [ "${OUTSIDE:-}" != false ] || writer=true
+          python3 .github/review/rules.py label "$NUMBER" "$fact=true" writer="$writer"

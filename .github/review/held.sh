@@ -202,6 +202,29 @@ no_key_of() {
   comments "$1" | SHA=$2 jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
     | startswith("<!-- review-label -->") and test("\n<!-- review-no-key " + $ENV.SHA + " -->(\n|$)")))'
 }
+# screen_held <number> <head>: true when a hold comment of the screen of github-actions[bot] on <number> that
+# names <head> (its text holds "The automated screen held ", and it has no marker of a hold that is tried
+# again) is newer than each review comment of <head> whose run screened it (the marker
+# <!-- review-screened <head> --> on the line after the marker of its verdict), as rules.py verdict reads
+# them (the state held). A relabel of <head> then records no import check run, and withdraws each one that it
+# finds.
+screen_held() {
+  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+  comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
+      | {at: (.updated_at // ""), body: (.body // "")}] as $ours
+    | ([$ours[] | select(.body | startswith("<!-- review -->\n<!-- review-head " + $ENV.SHA + " -->\n"))
+        | select((.body | split("\n")) as $l
+          | ($l[2] // "" | test("^<!-- review-verdict " + $ENV.SHA + " (pass|blocking|person)( will-fix)? -->$"))
+            and $l[3] == "<!-- review-screened " + $ENV.SHA + " -->")
+        | .at] | max // "") as $screened
+    | ([$ours[] | select(.body | startswith("<!-- review-held -->")
+          and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")
+          and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+"
+            + "( [0-9]+( [a-z]+( [1-9][0-9]*)?)?)? -->(\n|$)") | not)
+          and contains("The automated screen held "))
+        | .at] | max // "") as $held
+    | $held != "" and $held > $screened'
+}
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
 gave_up() {
@@ -1259,7 +1282,7 @@ consider() {
   local head="" outsider=false limited="" hold=""
   local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
   local review=none held=false conflicted=false caught=false steered=false head_read="" merge=${1:-} ci=""
-  local ci_read=""
+  local ci_read="" withdraws=""
   if [ "$draft" != false ]; then
     echo "#$number: a draft, of which the trust job takes no run."
     return 0
@@ -1319,7 +1342,23 @@ consider() {
   head_of || return 1
   due_conflict || return 1
   [ -z "$taken" ] || return 0
+  # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
+  # check run is tried again. While a screen held the head after each review that screened it (screen_held), a
+  # relabel of the head records no import check run, and withdraws each one that a run recorded before. So the App's
+  # retry (due_retry) still takes a run of the head whose post job failed: one relabel an hour after that run ended.
+  # After REVIEW_TRIES failed tries, head_stopped import stops it, and the hold of that stop, which names the head,
+  # ends the retry.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
+    if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
+      withdraws=$(screen_held "$number" "$head") \
+        || { echo "::error::the comments of #$number could not be read."; return 1; }
+      if [ "$withdraws" = true ]; then
+        echo "#$number: a hold that is not tried again names $head, and a screen held it: of the App's writes of it," \
+          "only the withdrawal of its import check run is tried again."
+        due_retry 'review|rescreen|relabel|approve' relabel import
+        return
+      fi
+    fi
     echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
     return 0
   fi

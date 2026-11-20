@@ -36,8 +36,10 @@ rescreen pass starts no approval of it. In a state with no state label (working,
 comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
 kind=pr and outsider=true) in the state decide or person, the text also names the step of R12 for the import into the
 internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
-given only when it is set, and decision, the post job's decision (DECISIONS). GH_TOKEN and REPO come from the job's
-environment, as for gh in the workflow.
+given only when it is set, and decision, the post job's decision (DECISIONS). A writer's item (the fact writer=true:
+its author has write access) gets no state label and loses each one that it has, but its label comment is the one of
+its state, with the marker of the state's label. GH_TOKEN and REPO come from the job's environment, as for gh in the
+workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -181,8 +183,9 @@ LABELS = {
 FACTS = {
     # pr or issue.
     "kind": "",
-    # The run took an outsider's path (the trust job's outsider): it screened the item first, so its review ran only
-    # after the screen passed.
+    # The run took an outsider's path (the trust job's outsider) for an outside item: it screened the item first, so
+    # its review ran only after the screen passed. A writer's pull request whose head an outsider pushed is no outside
+    # item: the comment job gives it false.
     "outsider": False,
     # The review's verdict at the head: pass, blocking or person.
     "verdict": "",
@@ -223,6 +226,10 @@ FACTS = {
     "import_paths": None,
     # The post job's decision on the import check run at the head, one of DECISIONS.
     "decision": "",
+    # The item's author has write access (the trust job's outside is false): it is no outside item, so it gets no
+    # state label (R5). This fact changes no state (label_state does not read it): the label comment still names the
+    # next step, with the marker of the state's label, so that Theorem's view lists an item that waits on Sami.
+    "writer": False,
 }
 VERDICTS = ("", "pass", "blocking", "person")
 # The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
@@ -240,21 +247,15 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 # import is paused, so the comment names each step that can come next. With the variable, it names the step for the
 # paths that the pull request changes.
 PASSED = "The automated screen and the automated review passed this pull request."
-# The decision screen of an outside pull request whose review passed: no screen passed its head (a writer's review by
-# hand runs none), so the text says so in the place of PASSED.
-UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit, so the "
-              "workflow did not record the check `repo-pairs/import-approved`.")
-# The decision writer: the screen and the review passed the head of a writer's pull request, which an account without
-# write access pushed. The import check run is for an outside pull request alone, so the text says so in the place of
-# PASSED.
-WRITER = (f"{PASSED} Its author has write access, so the workflow did not record the check "
-          "`repo-pairs/import-approved`. The workflow records that check only for a pull request whose author has no "
-          "write access.")
+# The decision screen of an outside pull request whose review passed: no screen passed its head in the run of a review
+# (a writer's review by hand runs none), so the text says so in the place of PASSED.
+UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit in a run that "
+              "also reviewed it, so the workflow did not record the check `repo-pairs/import-approved`.")
 # The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
-# of PASSED.
+# of PASSED. A check run that a run recorded before stays on the head, with the conclusion neutral.
 SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit. After "
-                     "that, no automated screen passed it in a run that also reviewed it. So the workflow did not "
-                     "record the check `repo-pairs/import-approved`.")
+                     "that, no automated screen passed it in a run that also reviewed it. So the check "
+                     "`repo-pairs/import-approved` does not approve this head commit for the import.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -443,9 +444,9 @@ def import_steps(state, value, decision):
     variable, the step is Sami's approval of the head commit when the import takes each changed path, and a copy by
     hand when it does not take one or a file is under .github/. A decision that does not say which, as when the list of
     changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
-    MERGE_STEPS. For the decision screen, the text says that no screen passed the head (UNSCREENED), for the decision
-    writer that the author has write access (WRITER), and for the decision held that a screen held the head after each
-    screened review (SCREEN_HELD_AFTER), in the place of PASSED."""
+    MERGE_STEPS. For the decision screen, the text says that no screen passed the head in the run of a review
+    (UNSCREENED), and for the decision held that a screen held the head after each screened review
+    (SCREEN_HELD_AFTER), in the place of PASSED."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -453,7 +454,7 @@ def import_steps(state, value, decision):
     live = value is not None
     steps = IMPORT_STEPS if live else MERGE_STEPS
     unread = f"{UNREAD} " if decision == "unread" else ""
-    passed = {"screen": UNSCREENED, "writer": WRITER, "held": SCREEN_HELD_AFTER}.get(decision, PASSED)
+    passed = {"screen": UNSCREENED, "held": SCREEN_HELD_AFTER}.get(decision, PASSED)
     if state == "decide":
         if live and decision in ("person", "markdown"):
             return APPROVE, (f"{passed} The import copies each path that this pull request changes. You do not need "
@@ -590,12 +591,14 @@ def make_label(name):
     print(f"::warning::the label {name} could not be made or described; adding it makes it, with no description.")
 
 
-def apply(number, state, markers=(), head="", imports=None, labels=None):
+def apply(number, state, markers=(), head="", imports=None, labels=None, labelled=True):
     """Gives the item number the state label of state, takes the other one off, and writes its label comment
     (label_comment, with imports). labels are the item's label comments of BOT, each {id, body}, when the caller read
-    them already; else this reads them."""
+    them already; else this reads them. When labelled is False (a writer's item), the item gets no state label and
+    loses each one that it has, but its label comment is the state's all the same, with the marker of the state's
+    label."""
     repo = os.environ["REPO"]
-    want = label_of(state)
+    want = label_of(state) if labelled else None
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
     for other in (AUTHOR, THEOREM):
         if other != want and other in have:
@@ -611,7 +614,7 @@ def apply(number, state, markers=(), head="", imports=None, labels=None):
         labels = read_labels(number)
     old = labels[-1] if labels else None
     shown = f"#{number}: {want or 'no state label'} ({state})"
-    if old is None and want is None:
+    if old is None and label_of(state) is None:
         print(f"{shown}, and no label comment to change.")
         return
     body = label_comment(state, old["body"] if old else "", markers, head, imports)
@@ -673,14 +676,17 @@ def mark(number, line):
 
 def set_state(number, facts, markers=(), head="", labels=None):
     """Gives the item number the state that facts give (label_state), with its state label and its label comment
-    (apply, with labels): for an outside pull request, with the steps of R12 for the import. The label comment is made
-    once before any write, so that a marker or a head that it refuses changes nothing on GitHub."""
+    (apply, with labels): for an outside pull request, with the steps of R12 for the import. The fact writer keeps the
+    state label off (apply). The label comment is made once before any write, so that a marker or a head that it
+    refuses changes nothing on GitHub."""
+    facts = dict(facts)
+    writer = facts.pop("writer", False)
     state = label_state(**facts)
     imports = None
     if facts.get("kind") == "pr" and facts.get("outsider"):
         imports = (facts.get("import_paths"), facts.get("decision", ""))
     label_comment(state, "", markers, head, imports)
-    apply(number, state, markers, head, imports, labels)
+    apply(number, state, markers, head, imports, labels, labelled=not writer)
 
 
 def parse(args):
@@ -1148,15 +1154,15 @@ REGULAR = ("100644", "100755")
 # goes (COMMENT_LINE), so not include_subdirs, and a word after code on a line all the same; a glob field (GLOB_FIELD)
 # whose pattern, the word or the string after it as dune reads it (dune_text), does not end with a . and a fixed
 # extension (EXTENSION: letters, digits and _ only), or ends with .md, .MD, .Md or .mD, or whose next word starts with ;
-# or # (a comment: ; to the end of the line, #| ... |# or #;), which gives the pattern "" and counts; and a word or a
-# string (WORD, as dune reads it, and each word of a comment) that holds .md and also one of ROOTS, or that starts
-# with /.
-# WORD splits the text as dune 3.23 does, except that it does not know a #| ... |# or #; comment: a comment from ; to
-# the end of its line; a block string from "\| or "\> to the end of its line, whatever it holds; a quoted string, in
-# which a backslash and the character after it, a line break too, are one escape, so a string goes on after a backslash
-# before a line break; or an atom. dune reads a block string from after its "\| or "\> and the one space after it
-# (BLOCK), and a quoted string between its quotes (STRING), with no backslash before a line break, nor that line break
-# and the spaces and tabs after it (CONTINUED).
+# (a comment to the end of the line) or with #, whose pattern is then "", so the glob counts; and a word or a string
+# (WORD, as dune reads it, and each word of a comment) that holds .md and also one of ROOTS, or that starts with /.
+# dune 3.23 reads neither #| ... |# nor #; as a comment, but trigger counts a glob whose next word starts with # all the
+# same: that can only give the person verdict.
+# WORD splits the text as dune 3.23 does: a comment from ; to the end of its line; a block string from "\| or "\> to
+# the end of its line, whatever it holds; a quoted string, in which a backslash and the character after it, a line
+# break too, are one escape, so a string goes on after a backslash before a line break; or an atom. dune reads a block
+# string from after its "\| or "\> and the one space after it (BLOCK), and a quoted string between its quotes (STRING),
+# with no backslash before a line break, nor that line break and the spaces and tabs after it (CONTINUED).
 KEYWORDS = ("include", ":include", "source_tree", "copy_files", "copy_files#")
 COMMENT_LINE = re.compile(r"(?m)^[ \t]*;.*$")
 SPLIT = re.compile(r"[\s()]+")
