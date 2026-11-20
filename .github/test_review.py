@@ -3060,12 +3060,12 @@ class HoldTest(Holding):
              r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} UTC:\n\n- A CI run in this repository ends\.\n"
              r"- Someone pushes to `main`\.\n- Someone opens or reopens an issue\.\n\n"
              r"You do not need to do anything\.\n\n[^\n]* ")
-    # A limit hold ends with a paragraph of its own: what happens while the account stays at its limit at the first of
-    # the events that it lists. A cap or transient hold, whose rescreen can be held for another reason, ends with only
-    # that a new hold says why. The marker follows, and nothing asks anyone to start a run.
-    AGAIN_LIMIT = AGAIN + (r"[^\n]*\n\nIf (this account|the account of the author) is still at the limit at the "
-                           r"first of those events, the workflow holds this (pull request|issue) again\. This comment "
-                           r"then gives the new time\.\n\n<!-- ")
+    # A limit hold ends with a paragraph of its own: what happens while the account is still at its limit at the first
+    # such event after the time that it gives. A cap or transient hold, whose rescreen can be held for another reason,
+    # ends with only that a new hold says why. The marker follows, and nothing asks anyone to start a run.
+    AGAIN_LIMIT = AGAIN + (r"[^\n]*\n\n(This account|The account of the author) can still be at the limit at the "
+                           r"first such event after that time\. Then the workflow keeps this (pull request|issue) held "
+                           r"and screens it at a later event of the list\.\n\n<!-- ")
     AGAIN_OTHER = AGAIN + r"If the workflow holds this (pull request|issue) again, this comment says why\.\n\n<!-- "
     # The limit as a limit hold gives it: the count at which the workflow holds, and no promise of how many screens an
     # hour an account had (a trust job that did not read every run that could count on it holds it at the limit too).
@@ -3125,8 +3125,8 @@ class HoldTest(Holding):
                 self.setUp()
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory")
                 self.assertRegex(body, self.AGAIN_LIMIT)
-                self.assertIn(f"You do not need to do anything.\n\n{words}\n\nIf {who} is still at the limit at the "
-                              "first of those events, the workflow holds this pull request again.", body)
+                self.assertIn(f"You do not need to do anything.\n\n{words}\n\n{who.capitalize()} can still be at the "
+                              "limit at the first such event after that time.", body)
                 self.assertNotIn("no write access", body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
@@ -3158,8 +3158,8 @@ class HoldTest(Holding):
                 _calls, _post, body = self.hold("limit", outsider=outsider, account=account, author="mallory",
                                                 unread=True)
                 self.assertRegex(body, self.AGAIN_LIMIT)
-                self.assertIn(f"You do not need to do anything.\n\n{words}\n\nIf {who} is still at the limit at the "
-                              "first of those events, the workflow holds this pull request again.", body)
+                self.assertIn(f"You do not need to do anything.\n\n{words}\n\n{who.capitalize()} can still be at the "
+                              "limit at the first such event after that time.", body)
                 self.assertNotIn("is at that limit", body)
                 self.assertTrue(body.endswith("\n\n<!-- review-held-limit 50 0 -->"), body)
                 self.assertNotRegex(body, r"\b(mallory|eve)\b")
@@ -3195,7 +3195,7 @@ class HoldTest(Holding):
         self.assertIn(f"The automated screen passed this pull request. The workflow runs at most {cap} automated "
                       f"reviews and answers each hour for such accounts, and it already ran {cap}.", body)
         self.assertRegex(body, self.AGAIN_OTHER)
-        self.assertNotIn("account is still at the limit", body)
+        self.assertNotIn("can still be at the limit", body)
         self.assertTrue(body.endswith("\n\n<!-- review-held-cap 50 1 -->"), body)
 
     def test_a_cap_hold_shows_the_time_and_no_state_label(self):
@@ -3233,7 +3233,7 @@ class HoldTest(Holding):
                     _calls, _post, body = self.hold("screen", review=review, origin="50", tries=str(before))
                     self.assertIn(f"did not finish. This was try {before + 1} of {self.TRIES}.", body)
                     self.assertRegex(body, self.AGAIN_OTHER)
-                    self.assertNotIn("account is still at the limit", body)
+                    self.assertNotIn("can still be at the limit", body)
                     self.assertTrue(body.endswith(f"\n\n<!-- review-held-transient 50 {before + 1} -->"), body)
                     self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
             with self.subTest(review=review, before=self.TRIES - 1):
@@ -12740,7 +12740,8 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["README.md"], value=self.LPS, now=OTHER_HEAD)
         self.assertNotRecorded(got, "moved")
         self.assertEqual((got["labels"], got["comments"]), ([], []))
-        self.assertIn("has moved on from", got["log"])
+        self.assertIn(f"#7 moved from {HEAD} to {OTHER_HEAD}, so the workflow changes neither its labels nor its label "
+                      "comment.", got["log"])
         got = self.judge(["README.md"], value=self.LPS, then=OTHER_HEAD)
         self.assertNotRecorded(got, "moved")
         relabel = dict(self.RELABEL, head=OTHER_HEAD)
@@ -13103,20 +13104,25 @@ class ImportCheckTest(ReaderRunner):
         the check runs of HEAD with its own token, and then updates the check run of #7, with token A, to the
         conclusion neutral. The request's output title names #7 and says why, and its output text is the check run's
         own, the marker line of the value that it recorded. The request names no name and no external_id, so both
-        stay. The other check runs of the commit stay as they are."""
+        stay. The other check runs of the commit stay as they are. The logs of both steps name the import check run,
+        and the first says why in words."""
         listed, others = self.recorded()
-        person = ("a later review has questions for Sami",
-                  "A later automated review of this head commit has questions for Sami.")
-        for case, verdict, trust, screen, comments, (why, said) in (
+        person = ("because a later review has questions for Sami",
+                  "A later automated review of this head commit has questions for Sami.",
+                  "because a later review has questions for Sami")
+        for case, verdict, trust, screen, comments, (why, said, logged) in (
                 ("a review by hand with the verdict person", "person", self.BY_HAND, "", (), person),
                 ("a screened review with a blocking finding", "blocking", None, "clean", (),
-                 ("a later review asks for a change",
-                  "A later automated review of this head commit asks for a change.")),
+                 ("because a later review asks for a change",
+                  "A later automated review of this head commit asks for a change.",
+                  "because a later review asks for a change")),
                 ("a screen that held the head", "pass", None, "held", (),
-                 ("a later screen held it", "A later automated screen held this head commit.")),
+                 ("because a later screen held it", "A later automated screen held this head commit.",
+                  "after a later screen held it")),
                 ("a relabel of a review with the verdict person", "", self.RELABEL, "", (review_of(HEAD, "person"),),
                  person)):
             with self.subTest(case=case):
+                start = len(self.logs)
                 got = self.judge(["README.md"], verdict, self.LPS, trust=trust, screen=screen, comments=comments,
                                  event="workflow_run" if trust is None else "workflow_dispatch",
                                  listed=[listed, *others])
@@ -13133,6 +13139,9 @@ class ImportCheckTest(ReaderRunner):
                                                   os.path.join(self.temp, "withdraw-901.json"), "--jq",
                                                   ".conclusion"]])
                 self.assertEqual(got["read with"], {self.RUN_TOKEN})
+                logs = "\n".join(self.logs[start:])
+                self.assertIn(f"#7: the next step withdraws the import check runs 901 of {HEAD} {logged}.", logs)
+                self.assertIn(f"Withdrew the import check run 901 of {HEAD}: its conclusion is now neutral.", logs)
 
     def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
         """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only
@@ -13155,7 +13164,9 @@ class ImportCheckTest(ReaderRunner):
         """R12 (spec, Terms): the import check run is for an outside pull request alone, whose author has no write
         access. eve, with read access, pushes to the branch of alice's #7. The trust job of that CI run screens it on
         eve: its outsider is eve, and its outside is false. The screen passes, and the review passes a change of
-        Markdown files alone: no check run, and the decision is screen. The same push to mallory's #7 records it."""
+        Markdown files alone: no check run, and the decision is writer. The label comment says that the screen and the
+        review passed, and that the author has write access, not that no screen passed the head. The same push to
+        mallory's #7 records it."""
         self.permissions(alice="write", mallory="read", eve="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         for author, outside in (("alice", "false"), ("mallory", "true")):
@@ -13170,12 +13181,56 @@ class ImportCheckTest(ReaderRunner):
                 if outside == "true":
                     self.assertRecorded(got, self.LPS)
                 else:
-                    self.assertNotRecorded(got, "screen")
+                    self.assertNotRecorded(got, "writer")
+                    body = self.assertWaits(got, self.SOME, rules.WRITER, value=self.LPS)
+                    self.assertIn("The automated screen and the automated review passed this pull request. Its "
+                                  "author has write access, so the workflow did not record the check "
+                                  "`repo-pairs/import-approved`: that check is for a pull request whose author has no "
+                                  "write access.", body)
+                    self.assertNotIn("No automated screen", body)
+
+    def test_a_relabel_reads_each_screened_review_comment_of_the_head_and_the_screen_holds_after_it(self):
+        """R12 (review round 1): the screen passed HEAD in the run of a review, whose review comment holds the marker
+        <!-- review-screened <head> -->, and that review passed it. Then alice, a writer, reviews it by hand with no
+        screen, and that review passes it too. A relabel of the head records the check run: a screen passed the head,
+        and no later screen held it. When a hold comment of the screen comes between the two review comments, the
+        relabel records no check run (the decision is held), and withdraws the one that is still success, because a
+        later screen held the head. Its label comment says that a screen held the head after the screened review, not
+        that no screen passed it."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(90))
+        by_hand = review_of(HEAD, at=ago(30), id_=31, screened=False)
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later screen held it"
+        for case, comments, decision, withdrawn in (
+                ("a screened review, then a review by hand", [screened, by_hand], "record", []),
+                ("a screened review, a hold of the screen, then a review by hand", [screened, hold, by_hand],
+                 "held", [(f"repos/{REPO}/check-runs/901", title)])):
+            with self.subTest(case=case):
+                # The relabel starts after each comment, as the rescreen pass starts it: a hold newer than the run's
+                # start would keep the labels.
+                got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(1)),
+                                 event="workflow_dispatch", comments=comments, listed=[listed])
+                self.assertEqual(got["post"].get("decision"), decision, self.logs)
+                self.assertEqual([(endpoint, body["output"]["title"]) for _t, endpoint, body in got["withdrawn"]],
+                                 withdrawn)
+                if decision == "record":
+                    self.assertRecorded(got, self.LPS)
+                else:
+                    self.assertEqual((got["result"], got["checks"]), ("success", []), self.logs)
+                    body = self.assertWaits(got, self.SOME, rules.SCREEN_HELD_AFTER, value=self.LPS)
+                    self.assertIn("The automated review passed this pull request. An automated screen held its head "
+                                  "commit, and no run of the automated review screened it again after that. So the "
+                                  "workflow did not record the check `repo-pairs/import-approved`.", body)
+                    self.assertNotIn("No automated screen", body)
 
     def test_a_relabel_after_a_later_screen_hold_of_the_head_records_nothing_and_withdraws_the_check_run(self):
         """R12: the screen passed HEAD, the review passed it, and the check run was recorded. A later screen of the same
         head held it: its hold comment names HEAD and is newer than the review comment. A relabel of the head (after a
-        change of the variable, say) then records no new check run (the decision is screen), and updates the check run
+        change of the variable, say) then records no new check run (the decision is held), and updates the check run
         that is still success to neutral, as the later screen held the head. One that the held run withdrew already
         stays as it is. A hold of the screen that is older than the review comment stops no check run."""
         listed, _others = self.recorded()
@@ -13190,34 +13245,48 @@ class ImportCheckTest(ReaderRunner):
             with self.subTest(case=case):
                 got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
                                  comments=[review, hold], listed=checks)
-                self.assertEqual((got["result"], got["checks"], got["post"]["decision"]), ("success", [], "screen"),
+                self.assertEqual((got["result"], got["checks"], got["post"]["decision"]), ("success", [], "held"),
                                  self.logs)
                 self.assertEqual([endpoint for _t, endpoint, _b in got["withdrawn"]],
                                  [f"repos/{REPO}/check-runs/{i}" for i in withdrawn])
                 for _token, _endpoint, body in got["withdrawn"]:
                     self.assertEqual((body["conclusion"], body["output"]["title"]),
-                                     ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, a "
-                                                 "later screen held it"))
+                                     ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, "
+                                                 "because a later screen held it"))
         got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
                          comments=[dict(hold, updated_at=ago(90)), review])
         self.assertRecorded(got, self.LPS)
 
     def test_a_withdrawal_that_github_refuses_fails_the_job_and_names_the_head_and_the_check_run(self):
         """A PATCH of the check run that GitHub refuses fails the post job, with an error that names the head and the
-        check run. After a screen that held the head, the error also says that no run of the rescreen pass tries it
-        again: the hold comment of the screen names the head, so the pass makes no App write of it (held.sh,
-        consider). After a blocking finding, the pass's retry of the App's writes (a relabel) withdraws it again."""
+        import check run. So does a read of the check runs of the head that GitHub refuses. After a screen that held
+        the head, each error also says that the rescreen pass tries it again only in a relabel after a merge conflict
+        of the head goes away, and that a person re-runs the job: the hold comment of the screen names the head, so the
+        pass makes no other App write of it (held.sh, consider). After a blocking finding, the pass's retry of the
+        App's writes (a relabel) withdraws it again."""
         listed, _others = self.recorded()
+        again = ("The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of "
+                 "this head goes away. To try again, a person re-runs this job.")
+        cases = (("a screen that held the head", "pass", "held", True),
+                 ("a review with a blocking finding", "blocking", "clean", False))
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
-        for case, verdict, screen, again in (("a screen that held the head", "pass", "held", True),
-                                             ("a review with a blocking finding", "blocking", "clean", False)):
+        for case, verdict, screen, told in cases:
             with self.subTest(case=case):
                 got = self.judge(["README.md"], verdict, self.LPS, screen=screen, listed=[listed])
-                self.assertEqual((got["result"], got["steps"]["Withdraw the import check of the head"]),
+                self.assertEqual((got["result"], got["steps"]["Withdraw the import check runs of the head"]),
                                  ("failure", "failure"), self.logs)
                 self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.", self.logs[-1])
-                self.assertEqual("No run of the rescreen pass tries this again: a person withdraws it by hand."
-                                 in self.logs[-1], again, self.logs[-1])
+                self.assertEqual(again in self.logs[-1], told, self.logs[-1])
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        for case, verdict, screen, told in cases:
+            with self.subTest(case=case, read="refused"):
+                got = self.judge(["README.md"], verdict, self.LPS, screen=screen, listed=[listed])
+                self.assertEqual(
+                    (got["result"], got["steps"]["Find the import check runs that a later review or screen withdraws"]),
+                    ("failure", "failure"), self.logs)
+                self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is "
+                              "withdrawn.", self.logs[-1])
+                self.assertEqual(again in self.logs[-1], told, self.logs[-1])
 
 
 if __name__ == "__main__":

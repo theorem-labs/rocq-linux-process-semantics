@@ -156,12 +156,14 @@ many files the pull request has:
     The pattern counts unless its part after the last `.` is one fixed
     extension other than `md`, `MD`, `Md` or `mD`. A fixed extension has
     only letters, digits and `_`. So `*.vo` and `*MemImage_seg_*.hex` do
-    not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. A
-    comment between `glob_files` and its pattern also counts.
-  - Each Markdown file counts when a `dune` file anywhere holds a word
-    or a quoted string with `.md` in it, also in a comment. That word or
-    string also holds `..`, `%{project_root}` or `%{workspace_root}`, or
-    starts with `/`. For example: `"../x.md"` or `%{dep:../docs/x.md}`.
+    not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count.
+    When a comment stands between `glob_files` and its pattern, the case
+    holds whatever the pattern is.
+  - Each Markdown file counts when a `dune` file anywhere, also in a
+    comment, holds a word or a quoted string that has `.md` in it. The
+    case holds only when that word or string also holds `..`,
+    `%{project_root}` or `%{workspace_root}`, or starts with `/`. For
+    example: `"../x.md"` or `%{dep:../docs/x.md}`.
 
 This rule fails closed: the workflow does not examine which files the
 build of the proofs reads.

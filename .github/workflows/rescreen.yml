@@ -54,7 +54,7 @@ on:
         description: >-
           Optional. With no number, the run takes each item that waits. With the number of a pull request, it takes
           only the conflict run of that pull request, or the screen and the approval of the held runs of its head, else
-          nothing. screen-start.yml gives it.
+          nothing. screen-start.yml gives the number.
         required: false
         type: number
 

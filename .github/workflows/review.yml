@@ -660,7 +660,7 @@ jobs:
                 [[ -n $cut || $runs =~ [0-9] ]] || return 0
                 if ! open_pulls; then
                   echo "::notice::The open pull requests could not be read, so the CI runs that can count toward the" \
-                    "limit of $1 are not known. So $1 is held at the limit."
+                    "limit of $1 are not known. So the workflow counts $1 as at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -672,8 +672,8 @@ jobs:
               fi
               if [ -n "$cut" ]; then
                 echo "::notice::GitHub lists at most 1,000 runs of this workflow with $cut since $from, and more" \
-                  "of them match. The runs that it does not list can count toward the limit of $1, so $1 is held at" \
-                  "the limit."
+                  "of them match. The runs that it does not list can count toward the limit of $1, so the workflow" \
+                  "counts $1 as at the limit."
                 count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                 return 0
               fi
@@ -694,7 +694,7 @@ jobs:
                 if [ "$own" = 2 ] && trusted "$actor"; then continue; fi
                 if (( reads == 2 * OUTSIDE_HOURLY_LIMIT )); then
                   echo "::notice::This run read the jobs of $reads runs that can count toward the limit of $1. More" \
-                    "such runs of the last hour are left, so $1 is held at the limit."
+                    "such runs of the last hour are left, so the workflow counts $1 as at the limit."
                   count=$OUTSIDE_HOURLY_LIMIT uncounted=true
                   return 0
                 fi
@@ -2677,13 +2677,15 @@ jobs:
       # workflow_run or workflow_dispatch: for the review of a head whose screen passed, with the review's verdict after
       # the soundness rule, and for a relabel, which runs no model. It is for an outside pull request alone, whose
       # author has no write access: a run whose trust job gave no outsider (a writer's pull request, also one that a
-      # run by hand screened) gets no check run, and nor does a writer's pull request whose head an outsider pushed
-      # (the trust job's outside is false; the outsider of a relabel is its author, or none). A relabel takes the
-      # verdict from the markers of the review comment that names the head, and only from one whose run's screen passed
-      # that head (its marker <!-- review-screened <head> -->, rules.py verdict): a writer's review by hand with no
-      # screen writes no such marker, and so gets no check run. Nor does a head whose newest hold comment of the screen
-      # is newer than that review comment: a later screen held the head, and the step after this one withdraws its
-      # check run.
+      # run by hand screened) gets no check run. Nor does a writer's pull request whose head an outsider pushed (the
+      # trust job's outside is false; the outsider of a relabel is its author, or none): its decision is writer, and
+      # its label comment says that its author has write access. A relabel takes the verdict from the markers of the
+      # newest review comment that names the head. It records a check run only when the screen passed the head in the
+      # run of a review (rules.py verdict, screened): a review comment of the head holds the marker
+      # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer than the newest
+      # such review comment. A writer's review by hand with no screen writes no such marker. When such a hold comment
+      # is newer (held), a later screen held the head: the decision is held, so that the label comment says so, and the
+      # step after this one withdraws its check run.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2724,6 +2726,11 @@ jobs:
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha"
+          # A writer's pull request whose head an outsider pushed was screened for that account, and the trust job's
+          # outside is false: its decision is writer, with no read of its files.
+          if [ "$TASK" != relabel ] && [ "${OUTSIDE:-}" != true ] && [ -n "$OUTSIDER" ]; then
+            decided writer "the author of #$NUMBER has write access"
+          fi
           [[ $count =~ ^[0-9]+$ ]] || { echo "::error::#$NUMBER gives no count of changed files."; exit 1; }
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
             --jq '.[] | {filename, previous_filename} | @json' > "$RUNNER_TEMP/files.jsonl" \
@@ -2732,10 +2739,11 @@ jobs:
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
           screen=true verdict=$VERDICT
-          # A relabel's verdict comes from the review comment that names the head (rules.py verdict): the screen passed
-          # the head only when that comment holds the marker <!-- review-screened <head> --> and no hold comment of the
-          # screen that names the head is newer (held). The outputs verdict and held give them to the step that
-          # withdraws an import check run.
+          # A relabel's verdict comes from the newest review comment that names the head (rules.py verdict). The screen
+          # passed the head only when a review comment of the head holds the marker <!-- review-screened <head> --> and
+          # no hold comment of the screen that names the head is newer than the newest such comment (screened). The
+          # outputs verdict and held give them to the step that withdraws an import check run. A newer hold comment
+          # (held) gives the decision held.
           if [ "$TASK" = relabel ]; then
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
@@ -2743,12 +2751,14 @@ jobs:
             [ "$verdict" != - ] || verdict=""
             [ "$state" = screened ] || screen=false
             echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-            [ "$state" != held ] || echo "held=true" >> "$GITHUB_OUTPUT"
+            if [ "$state" = held ]; then
+              echo "held=true" >> "$GITHUB_OUTPUT"
+              decided held "a hold comment of the screen is newer than each review comment whose run screened $HEAD"
+            fi
           fi
           # The import check run is for an outside pull request alone, which the screen passed before its review: its
           # author has no write access.
           [ -n "$OUTSIDER" ] || screen=false
-          [ "$TASK" = relabel ] || [ "${OUTSIDE:-}" = true ] || screen=false
           # The variable's text, given only when it is set: an empty value is no variable.
           imports=()
           [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
@@ -2762,16 +2772,19 @@ jobs:
       # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a writer's
       # review by hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or
       # this run's screen held the head, or a relabel found a hold comment of the screen that names the head and is
-      # newer than its review comment (the decision's held). The if of this step reads the screen's verdict, as no
-      # other part of this job does: a review or a rescreen with no review job that succeeded, and an approval, run
-      # this step only when the screen held the head. The request of each check run goes to the runner's temporary
-      # directory (.github/review/rules.py withdrawal): the conclusion neutral, and an output title that names the pull
-      # request and says why. Its name, its external_id and its output text, the marker line of the value that it
-      # recorded, stay. With no such check run, nothing is withdrawn and no token is minted. A read that fails fails
-      # the job. After the review's verdict, the rescreen pass's retry of the App's writes (a relabel) withdraws the
-      # check run again. After a screen that held the head, no run of the pass does: the hold comment, which is not
-      # tried again, names the head (held.sh, consider). So the error says that a person withdraws it.
-      - name: Find the import check that a later review or screen withdraws
+      # newer than the newest review comment of the head with the marker <!-- review-screened <head> --> (the decision's
+      # held). The if of this step reads the screen's verdict, as no other part of this job does: a review or a rescreen
+      # with no review job that succeeded, and an approval, run this step only when the screen held the head. The
+      # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
+      # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
+      # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
+      # withdrawn and no token is minted. A read that fails fails the job. After the review's verdict, the rescreen
+      # pass's retry of the App's writes (a relabel) withdraws the check run again. After a screen that held the head,
+      # that retry does not run: the hold comment, which is not tried again, names the head (held.sh, consider). Only a
+      # relabel after a recorded merge conflict of the head goes away withdraws it then, as consider takes the merge
+      # conflict (due_conflict) before it checks for such a hold. So the error says so, and that a person re-runs this
+      # job.
+      - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
           (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
@@ -2804,13 +2817,17 @@ jobs:
             head=$TRUST_HEAD why=screen
           fi
           case $why in
-            blocking|person|screen) ;;
-            *) echo "#$NUMBER: no later review or screen of its head withdraws an import check."; exit 0 ;;
+            blocking) reason="because a later review asks for a change" ;;
+            person) reason="because a later review has questions for Sami" ;;
+            screen) reason="after a later screen held it" ;;
+            *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
-          # After a screen that held the head, no run of the rescreen pass tries a failed withdrawal again.
-          again=""
-          [ "$why" != screen ] || again=" No run of the rescreen pass tries this again: a person withdraws it by hand."
+          # After a screen that held the head, the rescreen pass tries a failed withdrawal again only in a relabel after
+          # a recorded merge conflict of the head goes away (held.sh, consider).
+          again=" The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of"
+          again+=" this head goes away. To try again, a person re-runs this job."
+          [ "$why" = screen ] || again=""
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
@@ -2818,17 +2835,18 @@ jobs:
                        and (.app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID
                        and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success")
               | {id, text: (.output.text // "")} | @json' > "$RUNNER_TEMP/approved.jsonl" \
-            || { echo "::error::the check runs of $head could not be read, so no import check of it is withdrawn.$again"
+            || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
                  exit 1; }
           ids=$(python3 .github/review/rules.py withdrawal "$NUMBER" "$head" "$why" "$RUNNER_TEMP/approved.jsonl" \
-            "$RUNNER_TEMP") || { echo "::error::the requests that withdraw the check runs could not be made."; exit 1; }
+            "$RUNNER_TEMP") \
+            || { echo "::error::the requests that withdraw the import check runs could not be made."; exit 1; }
           ids=$(tr '\n' ' ' <<< "$ids")
           ids=${ids% }
           if [ -z "$ids" ]; then
-            echo "#$NUMBER: no import check of $head to withdraw ($why)."
+            echo "#$NUMBER: no import check run of $head to withdraw $reason."
             exit 0
           fi
-          echo "#$NUMBER: the next step withdraws the import check runs $ids of $head ($why)."
+          echo "#$NUMBER: the next step withdraws the import check runs $ids of $head $reason."
           { echo "checks=$ids"; echo "head=$head"; echo "why=$why"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
       # and for the close and reopen of a catch-up.
@@ -2869,12 +2887,12 @@ jobs:
             || { echo "::error::the import check of $head could not be recorded."; exit 1; }
           echo "Recorded the check run $id, repo-pairs/import-approved, for #$NUMBER on $head."
           echo "recorded=true" >> "$GITHUB_OUTPUT"
-      # The withdrawal of the import check runs that the step "Find the import check that a later review or screen
+      # The withdrawal of the import check runs that the step "Find the import check runs that a later review or screen
       # withdraws" found, with token A, each with its request: the conclusion neutral, so that the import no longer
       # reads it as the approval of the pull request. A call that fails fails the job, with an error that names the
-      # head and the check run, and, after a screen that held the head, says that no run of the rescreen pass tries it
-      # again (the step before says why).
-      - name: Withdraw the import check of the head
+      # head and the import check run. After a screen that held the head, the error also says when the rescreen pass
+      # tries it again, and that a person re-runs this job (the step before says why).
+      - name: Withdraw the import check runs of the head
         if: steps.withdraw.outputs.checks != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
@@ -2884,15 +2902,16 @@ jobs:
           WHY: ${{ steps.withdraw.outputs.why }}
         run: |
           set -euo pipefail
-          again=""
-          [ "$WHY" != screen ] || again=" No run of the rescreen pass tries this again: a person withdraws it by hand."
+          again=" The rescreen pass does not try this withdrawal again, except in a relabel after a merge conflict of"
+          again+=" this head goes away. To try again, a person re-runs this job."
+          [ "$WHY" = screen ] || again=""
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
-            [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a check run id: $id"; exit 1; }
+            [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not the id of an import check run: $id"; exit 1; }
             gh api --method PATCH "repos/$REPO/check-runs/$id" --input "$RUNNER_TEMP/withdraw-$id.json" \
               --jq .conclusion > /dev/null \
               || { echo "::error::the import check run $id of $HEAD could not be withdrawn.$again"; exit 1; }
-            echo "Withdrew the check run $id, repo-pairs/import-approved: its conclusion is neutral."
+            echo "Withdrew the import check run $id of $HEAD: its conclusion is now neutral."
           done
       # The catch-up, with token A: a pull request that is closed and reopened gets a new CI run of its head (the event
       # pull_request), and the review of that CI run follows. An open pull request is closed, then reopened; one that a
@@ -3021,7 +3040,7 @@ jobs:
             --jq '.[] | {filename, previous_filename} | @json' > "$files" \
             || refuse "the files of #$NUMBER could not be read."
           steered=$(python3 .github/review/rules.py steering "$files") \
-            || refuse "the files of #$NUMBER are not in the form that GitHub lists them."
+            || refuse "the files of #$NUMBER are not in the form in which GitHub lists them."
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           if [ "$sha" != "$HEAD" ]; then
@@ -3337,7 +3356,9 @@ jobs:
           esac
           if [ -n "$HEAD" ]; then
             now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
-            [ "$now" = "$HEAD" ] || { echo "#$NUMBER has moved on from $HEAD: the labels stay."; exit 0; }
+            [ "$now" = "$HEAD" ] \
+              || { echo "#$NUMBER moved from $HEAD to $now, so the workflow changes neither its labels nor its label" \
+                     "comment."; exit 0; }
           fi
           # The work of this run: the review (a review or a rescreen), the answer, or the draft (a draft or a reply).
           work=review
@@ -3554,7 +3575,9 @@ jobs:
           [[ $STEERING =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::the post job names no head that changes a file under .github/: $STEERING"; exit 1; }
           now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
-          [ "$now" = "$STEERING" ] || { echo "#$NUMBER has moved on from $STEERING: the labels stay."; exit 0; }
+          [ "$now" = "$STEERING" ] \
+            || { echo "#$NUMBER moved from $STEERING to $now, so the workflow changes neither its labels nor its" \
+                   "label comment."; exit 0; }
           python3 .github/review/rules.py label "$NUMBER" steering=true head="$STEERING"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
@@ -3776,13 +3799,14 @@ jobs:
           [ "$item" = pr ] || what="this issue"
           # The rescreen pass (rescreen.yml) takes a hold with a marker once its comment is an hour old, at its first
           # run after that, which an event starts. Such a hold says that first, then that the author does not need to do
-          # anything, then why. A limit hold ends with a paragraph of its own: what happens if the account is still at
-          # its limit at the first of the events that the hold lists. The other holds end with only that a new hold
-          # replaces this comment, since a rescreen can be held for another cause than theirs. The events are those on
-          # which the pass takes the open items (the top of rescreen.yml). The hold of an approval has one more: a push
-          # to its own pull request, or a reopen, on which CI runs, starts screen-start.yml. Its run of the pass, with
-          # the number of that pull request, takes the hold of that approval when GitHub holds a run of the head. That
-          # run takes no other hold, and no other item.
+          # anything, then why. A limit hold ends with a paragraph of its own: the account can still be at its limit at
+          # the first such event after the time that the hold gives. Then the pass starts no run and leaves the hold
+          # comment as it is (rescreen.yml, pace), and a later event of the list starts the screen. The other holds end
+          # with only that a new hold replaces this comment, since a rescreen can be held for another cause than theirs.
+          # The events are those on which the pass takes the open items (the top of rescreen.yml). The hold of an
+          # approval has one more: a push to its own pull request, or a reopen, on which CI runs, starts
+          # screen-start.yml. Its run of the pass, with the number of that pull request, takes the hold of that approval
+          # when GitHub holds a run of the head. That run takes no other hold, and no other item.
           next=$(date -u -d '+1 hour' '+%Y-%m-%d %H:%M UTC')
           events=$'\n\n'"- A CI run in this repository ends."$'\n'"- Someone pushes to \`main\`."$'\n'"- Someone opens or reopens an issue."
           [ "$TASK" != approve ] \
@@ -3819,7 +3843,7 @@ jobs:
             else
               why+=" ${who^} is at that limit."
             fi
-            why="$again$why"$'\n\n'"If $who is still at the limit at the first of those events, the workflow holds $what again. This comment then gives the new time."
+            why="$again$why"$'\n\n'"${who^} can still be at the limit at the first such event after that time. Then the workflow keeps $what held and screens it at a later event of the list."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then

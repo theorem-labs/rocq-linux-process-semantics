@@ -33,7 +33,7 @@ post job approves none of its runs, and the rescreen pass starts no approval of 
 none. For an outside pull request (the facts kind=pr and outsider=true) in the state decide or person, the text also
 names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths, the
 text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
-(import_decision). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+(DECISIONS). GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -117,11 +117,12 @@ so that the line holds no line break and no --> before its end.
 
 verdict: "<verdict> <state>" on standard output for <head> of the pull request <number> (review_verdict), from the
 comments of github-actions[bot]: <verdict> is the verdict of the marker
-<!-- review-verdict <head> <verdict>[ will-fix] --> of the review comment that names <head>, or - when none does.
-<state> is held when a hold comment of the screen that names <head> is newer than that review comment, or there is
-no such review comment: a later screen held <head>. Else it is screened when the next marker line of that review
-comment is <!-- review-screened <head> -->, so that the screen passed <head> in the run of that review, and
-unscreened when it is not (a writer's review by hand runs no screen). A relabel records the import check run only for
+<!-- review-verdict <head> <verdict>[ will-fix] --> of the newest review comment that names <head>, or - when none
+does. <state> is screened when a review comment of <head> holds <!-- review-screened <head> --> as the next marker
+line, so that the screen passed <head> in the run of that review, and no hold comment of the screen that names <head>
+is newer than the newest such review comment. It is held when such a hold comment is newer than that review comment,
+or when no review comment of <head> holds the marker and such a hold comment exists: a later screen held <head>. Else
+it is unscreened (a writer's review by hand runs no screen). A relabel records the import check run only for
 screened, and withdraws it for held.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
@@ -154,7 +155,7 @@ import sys
 
 AUTHOR = "waits-on-author"
 THEOREM = "waits-on-theorem"
-# Who takes a step at Theorem: one person here, as this repository has no code owners.
+# Who takes a step at Theorem: one person, Sami.
 WHO = "Sami"
 
 # The labels that the workflow makes, with their colours and descriptions (at most 100 characters each).
@@ -213,9 +214,13 @@ FACTS = {
 VERDICTS = ("", "pass", "blocking", "person")
 # The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
 REFUSALS = ("", "review", "answer", "fix")
-# The post job's decisions on the import check run at a head (import_decision): record, or the first rule of R12 that
-# does not hold, or moved when the pull request moved on from the head. Empty when the job gave none.
-DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved")
+# The post job's decisions on the import check run at a head: record, or the first rule of R12 that does not hold
+# (import_decision), or moved when the pull request moved on from the head, or writer when its author has write access
+# (the screen was for the account without write access that pushed the head), or held when a relabel finds a hold
+# comment of the screen that is newer than each review comment whose run screened the head (review_verdict). Empty
+# when the job gave none.
+DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
+             "writer", "held")
 
 # The texts of R12 for an outside pull request that the screen and the review passed (import_steps). With no variable
 # REPO_PAIRS_IMPORT_PATHS, the workflow cannot tell whether the import does not run yet, a move is under way or the
@@ -226,6 +231,16 @@ PASSED = "The automated screen and the automated review passed this pull request
 # hand runs none), so the text says so in the place of PASSED.
 UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit, so the "
               "workflow did not record the check `repo-pairs/import-approved`.")
+# The decision writer: the screen and the review passed the head of a writer's pull request, which an account without
+# write access pushed. The import check run is for an outside pull request alone, so the text says so in the place of
+# PASSED.
+WRITER = (f"{PASSED} Its author has write access, so the workflow did not record the check "
+          "`repo-pairs/import-approved`: that check is for a pull request whose author has no write access.")
+# The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
+# of PASSED.
+SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit, and no "
+                     "run of the automated review screened it again after that. So the workflow did not record the "
+                     "check `repo-pairs/import-approved`.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -403,8 +418,9 @@ def import_steps(state, value, decision):
     variable, the step is Sami's approval of the head commit when the import takes each changed path, and a copy by
     hand when it does not take one or a file is under .github/. A decision that does not say which, as when the list of
     changed files is not whole or the post job did not succeed, gives both. With no variable, each step of
-    MERGE_STEPS. For the decision screen, the text says that no screen passed the head (UNSCREENED), in the place of
-    PASSED."""
+    MERGE_STEPS. For the decision screen, the text says that no screen passed the head (UNSCREENED), for the decision
+    writer that the author has write access (WRITER), and for the decision held that a screen held the head after each
+    screened review (SCREEN_HELD_AFTER), in the place of PASSED."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -412,7 +428,7 @@ def import_steps(state, value, decision):
     live = value is not None
     steps = IMPORT_STEPS if live else MERGE_STEPS
     unread = f"{UNREAD} " if decision == "unread" else ""
-    passed = UNSCREENED if decision == "screen" else PASSED
+    passed = {"screen": UNSCREENED, "writer": WRITER, "held": SCREEN_HELD_AFTER}.get(decision, PASSED)
     if state == "decide":
         if live and decision in ("person", "markdown"):
             return APPROVE, (f"{passed} The import copies each path that this pull request changes. You do not need "
@@ -887,7 +903,7 @@ def char_range(r):
 
 
 def steering(path):
-    """Whether path is a steering file: each file under .github/, as this repository has no CODEOWNERS."""
+    """Whether path is a steering file: each file under .github/."""
     return path.startswith(".github/")
 
 
@@ -997,10 +1013,11 @@ def check_run(number, head, value, hold):
 # blocking finding or the verdict person, or its screen held the head. Each is (the end of the output title, the
 # summary's first sentence).
 WITHDRAWN = {
-    "blocking": ("a later review asks for a change", "A later automated review of this head commit asks for a change."),
-    "person": ("a later review has questions for Sami",
+    "blocking": ("because a later review asks for a change",
+                 "A later automated review of this head commit asks for a change."),
+    "person": ("because a later review has questions for Sami",
                "A later automated review of this head commit has questions for Sami."),
-    "screen": ("a later screen held it", "A later automated screen held this head commit."),
+    "screen": ("because a later screen held it", "A later automated screen held this head commit."),
 }
 
 
@@ -1018,29 +1035,34 @@ def withdrawal(number, head, why, text):
 
 
 def review_verdict(comments, head):
-    """(verdict, state) of the review comment of BOT that names head, from comments, the item's comments as the API
-    lists them (issues/<n>/comments, with updated_at), the last one when more name it. verdict is its verdict ("" when
-    none names head). state is held when a hold comment of BOT of the screen (hold_fact screen_held) names head and
-    is newer than that review comment, or there is no such review: a later screen held the head. Else it is screened
-    when the review comment holds the marker <!-- review-screened <head> --> after its verdict, so that the screen
-    passed head in the run of that review (R12), and unscreened when it holds none (a writer's review by hand runs no
-    screen). Only the markers at the start of a review comment count: no marker of the model's or the reader's text
-    reaches a comment (trim.py inert). The marker of a hold comment is the workflow's own: its text is fixed."""
-    verdict, screened, reviewed, held = "", False, "", ""
+    """(verdict, state) of head, from comments, the item's comments as the API lists them (issues/<n>/comments, with
+    updated_at). verdict is the verdict of the review comment of BOT that names head, the last one when more name it
+    ("" when none names head). state is screened when a review comment of head holds the marker
+    <!-- review-screened <head> --> after its verdict, so that the screen passed head in the run of that review (R12),
+    and no hold comment of BOT of the screen (hold_fact screen_held) that names head is newer than the newest such
+    review comment. state is held when such a hold comment is newer than the newest screened review comment, or when no
+    review comment of head is screened and such a hold comment exists: a later screen held the head. Else it is
+    unscreened (a writer's review by hand runs no screen). So a writer's review by hand after a screened review leaves
+    the state screened, and gives the verdict. Only the markers at the start of a review comment count: no marker of
+    the model's or the reader's text reaches a comment (trim.py inert). The marker of a hold comment is the workflow's
+    own: its text is fixed."""
+    verdict, screened, held = "", None, ""
     for c in comments:
         if not of_bot(c):
             continue
         body, at = c.get("body") or "", c.get("updated_at") or ""
         m = REVIEWED.match(body)
         if m and m.group(1) == head:
-            verdict, screened, reviewed = m.group(2), bool(m.group(4)), at
+            verdict = m.group(2)
+            if m.group(4):
+                screened = max(screened or "", at)
         elif body.startswith("<!-- review-held -->"):
             m = HELD_HEAD.search(body)
             if m and m.group(1) == head and hold_fact(body) == "screen_held":
                 held = max(held, at)
-    if held and held > reviewed:
+    if held and (screened is None or held > screened):
         return verdict, "held"
-    return verdict, "screened" if screened else "unscreened"
+    return verdict, "unscreened" if screened is None else "screened"
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
@@ -1401,11 +1423,11 @@ def section(found, listed=LISTED, characters=LISTED_CHARACTERS, scope=None):
                      "- A `dune` file anywhere holds `glob_files` or `glob_files_rec`, also in a comment, with a "
                      "pattern. The pattern counts unless its part after the last `.` is one fixed extension other "
                      "than `md`, `MD`, `Md` or `mD`. A fixed extension has only letters, digits and `_`. So `*.vo` "
-                     "does not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. A comment between "
-                     "`glob_files` and its pattern also counts.\n"
-                     "- A `dune` file anywhere holds a word or a quoted string with `.md` in it, also in a comment. "
-                     "That word or string also holds `..`, `%{project_root}` or `%{workspace_root}`, or starts with "
-                     "`/`. For example: `%{dep:../docs/x.md}`.\n"
+                     "does not count, but `*.md`, `*.MD`, `*.{v,md}`, `*.[ch]` and `*` count. When a comment stands "
+                     "between `glob_files` and its pattern, the case holds whatever the pattern is.\n"
+                     "- A `dune` file anywhere, also in a comment, holds a word or a quoted string that has `.md` in "
+                     "it. The case holds only when that word or string also holds `..`, `%{project_root}` or "
+                     "`%{workspace_root}`, or starts with `/`. For example: `%{dep:../docs/x.md}`.\n"
                      "- The workflow cannot read one of the `dune` files, in any directory.")
         parts.append(f"{rule}\n\nThe workflow counts these changed files, other than `.v` files, as changes of the "
                      "proofs:\n\n" + listing(lines, files))
