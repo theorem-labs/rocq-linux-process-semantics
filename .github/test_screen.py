@@ -1104,10 +1104,10 @@ class ScreenTest(unittest.TestCase):
     # The reason's words for each kind of character that the screen holds: one that hides text (a bidirectional override
     # or isolate, a tag character or a zero-width character), and the others, which can show.
     HIDES = "a character that hides text"
-    FORMAT = "a format character, which the screen does not let through"
-    SELECTOR = "a variation selector, which the screen does not let through"
-    GRAPHEME = "the combining grapheme joiner, which the screen does not let through"
-    FILLER = "a Hangul filler, which the screen does not let through"
+    FORMAT = "a format character (Unicode category Cf), which the screen does not accept"
+    SELECTOR = "a variation selector, which the screen does not accept"
+    GRAPHEME = "the combining grapheme joiner, which the screen does not accept"
+    FILLER = "a Hangul filler, which the screen does not accept"
     # Text that the screen holds, each with the character and the words that the reason gives.
     HIDDEN = {
         "a bidirectional override": ("Fine.\u202Eenil", "U+202E", HIDES),

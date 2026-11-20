@@ -21,8 +21,7 @@ The verdict names the checks that ran. It is clean when every one answers clean,
 suspicious, when any cannot answer (a service that cannot be reached, refuses, or answers in a form this file does not
 know, a setting of it that is missing, no token from the sign-in, or no time left of DEADLINE_SECONDS), and when the
 text cannot be screened at all (a changed file that is not text, a character that hides text or another character
-that the screen does not let through, or more text than MAX_CHARS). A held item gets no full review; a person
-decides.
+that the screen does not accept, or more text than MAX_CHARS). A held item gets no full review; a person decides.
 
 What each check answered, and why the text could not be screened, is the reason. For each piece the model answered
 suspicious for, the reason also holds the sentences it quoted and its why, cut to CLAUDE_QUOTES quotes of
@@ -257,10 +256,10 @@ def held_for(code):
     c = chr(int(code[2:], 16))
     if HIDES_TEXT.fullmatch(c):
         return "a character that hides text"
-    kind = ("a format character" if unicodedata.category(c) == "Cf"
+    kind = ("a format character (Unicode category Cf)" if unicodedata.category(c) == "Cf"
             else "a variation selector" if unicodedata.name(c, "").startswith("VARIATION SELECTOR")
             else "the combining grapheme joiner" if c == "\u034F" else "a Hangul filler")
-    return f"{kind}, which the screen does not let through"
+    return f"{kind}, which the screen does not accept"
 
 
 def parts(review):
