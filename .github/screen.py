@@ -6,8 +6,9 @@ write access may go to the full review without a person.
     python3 .github/screen.py <the .review directory>
     python3 .github/screen.py --measure
 
-Up to three independent checks read the text that the full review would read, and each answers one word, clean or
-suspicious. SCREEN_CHECKS names the ones that run, and must name Model Armor:
+Up to three independent checks read the text that the full review would read, but for the comments, reviews and review
+comments of the workflow's own accounts, and each answers one word, clean or suspicious. SCREEN_CHECKS names the ones
+that run, and must name Model Armor:
 
   model_armor   Google Cloud Model Armor's prompt injection and jailbreak filter, through the template that
                 MODEL_ARMOR_TEMPLATE names (confidence medium and above).
@@ -166,20 +167,38 @@ def read_text(path):
 
 # git's line for a binary change; it quotes a name that is not plain ASCII ("b/\303\251.v").
 BINARY_DIFF = re.compile(r"^Binary files (.*) and (.*) differ$", re.M)
-# Every format character (Unicode's category Cf) of this Python's Unicode data: the bidirectional marks, overrides and
-# isolates, the zero-width characters (space, non-joiner, joiner, word joiner, byte order mark), the soft hyphen, the
-# invisible operators and the tag characters among them.
-FORMAT = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf")
-# The characters that hold the item: the format characters, the tag characters that Unicode has not assigned yet, the
-# variation selectors but U+FE0F, the combining grapheme joiner U+034F, and the Hangul fillers U+115F, U+1160, U+3164
-# and U+FFA0. Most of them can hide text from a person, or split a word so that a check misses it while a model reads
-# through it; a few format characters show (U+0600, say). Two kinds of them do ordinary work, and hiding() lets those
-# pass. U+FE0F, which asks for the emoji form of the character before it, is not of HIDING and passes anywhere.
-HIDING = re.compile("[" + FORMAT + "\U000E0000-\U000E007F\uFE00-\uFE0E\U000E0100-\U000E01EF"
-                    "\u034F\u115F\u1160\u3164\uFFA0]")
-# The characters of HIDING that hide text from a person: the bidirectional overrides and isolates, the tag characters,
+# The kinds of the characters that hold the item, in the words of the reason (held_for).
+CF = "a format character (Unicode category Cf)"
+SELECTOR = "a variation selector"
+GRAPHEME_JOINER = "the combining grapheme joiner"
+KHMER_VOWEL = "an invisible Khmer vowel"
+FILLER = "a Hangul filler"
+UNASSIGNED = "a code point that Unicode 16.0 leaves unassigned and marks as ignorable"
+# The characters that hold the item, as ranges of code points (first, last, kind), of Unicode 16.0.0: each character of
+# general category Cf (extracted/DerivedGeneralCategory-16.0.0.txt), and each character with the property
+# Default_Ignorable_Code_Point (DerivedCoreProperties-16.0.0.txt), as https://www.unicode.org/Public/16.0.0/ucd/ gave
+# them on 2026-11-20. A script made the table from those two files. The kind comes from the files: the general
+# category Cf, or Cn for a code point that Unicode leaves unassigned, else the name of the character. The screen does
+# not make the table from Python's unicodedata: unicodedata has no Default_Ignorable_Code_Point, and its version of
+# Unicode is the version of the runner's Python.
+# Most of these characters can hide text from a person, or split a word so that a check misses it while a model reads
+# through it; a few format characters show (U+0600, say). ALLOWED names the few that pass where they do ordinary work.
+HELD = (
+    (0x00AD, 0x00AD, CF), (0x034F, 0x034F, GRAPHEME_JOINER), (0x0600, 0x0605, CF), (0x061C, 0x061C, CF),
+    (0x06DD, 0x06DD, CF), (0x070F, 0x070F, CF), (0x0890, 0x0891, CF), (0x08E2, 0x08E2, CF), (0x115F, 0x1160, FILLER),
+    (0x17B4, 0x17B5, KHMER_VOWEL), (0x180B, 0x180D, SELECTOR), (0x180E, 0x180E, CF), (0x180F, 0x180F, SELECTOR),
+    (0x200B, 0x200F, CF), (0x202A, 0x202E, CF), (0x2060, 0x2064, CF), (0x2065, 0x2065, UNASSIGNED),
+    (0x2066, 0x206F, CF), (0x3164, 0x3164, FILLER), (0xFE00, 0xFE0F, SELECTOR), (0xFEFF, 0xFEFF, CF),
+    (0xFFA0, 0xFFA0, FILLER), (0xFFF0, 0xFFF8, UNASSIGNED), (0xFFF9, 0xFFFB, CF), (0x110BD, 0x110BD, CF),
+    (0x110CD, 0x110CD, CF), (0x13430, 0x1343F, CF), (0x1BCA0, 0x1BCA3, CF), (0x1D173, 0x1D17A, CF),
+    (0xE0000, 0xE0000, UNASSIGNED), (0xE0001, 0xE0001, CF), (0xE0002, 0xE001F, UNASSIGNED), (0xE0020, 0xE007F, CF),
+    (0xE0080, 0xE00FF, UNASSIGNED), (0xE0100, 0xE01EF, SELECTOR), (0xE01F0, 0xE0FFF, UNASSIGNED),
+)
+# The characters of HELD, as one class of a regular expression.
+HIDING = re.compile("[" + "".join(f"\\U{first:08X}-\\U{last:08X}" for first, last, _kind in HELD) + "]")
+# The characters of HELD that hide text from a person: the bidirectional overrides and isolates, the tag characters,
 # and the zero-width characters (space, non-joiner, joiner, word joiner, byte order mark). The reason says so of them.
-# Another character of HIDING can show, as U+0600 does: the reason gives its kind (held_for).
+# For another character of HELD, which can show, as U+0600 does, the reason gives its kind (held_for).
 HIDES_TEXT = re.compile("[\u202A-\u202E\u2066-\u2069\U000E0000-\U000E007F\u200B-\u200D\u2060\uFEFF]")
 # The scripts whose words use the zero-width non-joiner and joiner between their letters (Persian among the Arabic
 # script's languages, and the Indic scripts), by the first word of each character's Unicode name.
@@ -190,8 +209,10 @@ HUNK = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
 def in_joiner_script(c):
-    """A letter or mark of a script that uses joiners (a virama before a joiner is a mark)."""
-    return unicodedata.category(c)[0] in "LM" and unicodedata.name(c, "").split(" ")[0] in JOINER_SCRIPTS
+    """A letter or mark of a script that uses joiners (a virama before a joiner is a mark), and no character of HELD:
+    a Khmer inherent vowel is a mark, and holds the item."""
+    return (not HIDING.match(c) and unicodedata.category(c)[0] in "LM"
+            and unicodedata.name(c, "").split(" ")[0] in JOINER_SCRIPTS)
 
 
 def emoji(c):
@@ -233,33 +254,61 @@ def first_of_file(text, k, whole_file, diff):
     return {"-": old in ("0", "1"), "+": new == "1", " ": old == "1" and new == "1"}[side]
 
 
+def between_joiner_letters(text, k, _whole_file, _diff):
+    """Whether position k is between two letters of a script that uses joiners."""
+    return 0 < k < len(text) - 1 and in_joiner_script(text[k - 1]) and in_joiner_script(text[k + 1])
+
+
+def in_emoji_sequence(text, k, _whole_file, _diff):
+    """Whether position k is inside an emoji sequence: an emoji ends before it, and an emoji comes after it."""
+    return 0 < k < len(text) - 1 and emoji_before(text, k) and emoji(text[k + 1])
+
+
+def anywhere(_text, _k, _whole_file, _diff):
+    return True
+
+
+# The characters of HELD that pass, each with the places where it does ordinary work: functions of the text, the
+# position, and whether the text is a whole file or a diff. In any other place the character holds the item, as each
+# other character of HELD does.
+ALLOWED = {
+    "\u200C": (between_joiner_letters,),                    # the zero-width non-joiner
+    "\u200D": (between_joiner_letters, in_emoji_sequence),  # the zero-width joiner
+    "\uFEFF": (first_of_file,),                             # the byte order mark
+    "\uFE0F": (anywhere,),                                  # the variation selector that asks for the emoji form
+}
+
+
 def hiding(text, whole_file=False, diff=False):
-    """The first character of HIDING in text that holds the item, as U+XXXX, or None. A non-joiner or joiner passes
-    between two letters of a script that uses joiners, and a joiner inside an emoji sequence; a byte order mark passes
-    as the very first character of a file. Anything else of HIDING holds the item: a run of joiners, any other format
-    character, a variation selector but U+FE0F, U+034F and a Hangul filler."""
+    """The first character of HELD in text that holds the item, as U+XXXX, or None: a character that ALLOWED does not
+    name, or names for other places. So a run of joiners holds the item, and so does a joiner between two marks of
+    HELD, such as the Khmer inherent vowels."""
     for m in HIDING.finditer(text):
         c, k = m.group(), m.start()
-        if c in "\u200C\u200D" and 0 < k < len(text) - 1:
-            if in_joiner_script(text[k - 1]) and in_joiner_script(text[k + 1]):
-                continue
-            if c == "\u200D" and emoji_before(text, k) and emoji(text[k + 1]):
-                continue
-        if c == "\uFEFF" and first_of_file(text, k, whole_file, diff):
-            continue
-        return f"U+{ord(c):04X}"
+        if not any(passes(text, k, whole_file, diff) for passes in ALLOWED.get(c, ())):
+            return f"U+{ord(c):04X}"
     return None
 
 
 def held_for(code):
-    """Why the screen holds the character code (U+XXXX) that hiding gave, in the words of the reason."""
-    c = chr(int(code[2:], 16))
-    if HIDES_TEXT.fullmatch(c):
+    """Why the screen holds the character code (U+XXXX) that hiding gave, in the words of the reason. Its kind comes
+    from HELD, not from unicodedata, which may not know a character of Unicode 16.0."""
+    cp = int(code[2:], 16)
+    if HIDES_TEXT.fullmatch(chr(cp)):
         return "a character that hides text"
-    kind = ("a format character (Unicode category Cf)" if unicodedata.category(c) == "Cf"
-            else "a variation selector" if unicodedata.name(c, "").startswith("VARIATION SELECTOR")
-            else "the combining grapheme joiner" if c == "\u034F" else "a Hangul filler")
+    kind = next(kind for first, last, kind in HELD if first <= cp <= last)
     return f"{kind}, which the screen does not accept"
+
+
+# The account that posts the workflow's comments and reviews.
+WORKFLOW_BOT = "github-actions[bot]"
+
+
+def own_accounts():
+    """The workflow's own accounts: github-actions[bot], and the OSS Verify App, whose login review.yml's env gives as
+    OSS_VERIFY_APP_LOGIN. Without that login, github-actions[bot] alone counts: the screen then reads the App's
+    comments too."""
+    return WORKFLOW_BOT, os.environ.get("OSS_VERIFY_APP_LOGIN") or WORKFLOW_BOT
 
 
 def parts(review):
@@ -267,12 +316,15 @@ def parts(review):
     it cannot be screened (empty when it can).
 
     Every file the gather step wrote is screened, but for the changed files under head/: pr.json or issue.json (its
-    title, its body, each comment and review, whoever wrote it, and every other field), the diff, the review comments,
-    the list of what .review/ leaves out, and the checks. A writer's comment is screened too: a false hold on it costs
-    a maintainer's request, and telling the authors apart here is one more thing to get wrong. Each changed file under
-    head/ must be text, and the diff must show it as text: the diff then holds every new line of it, and an image or
-    another binary file could carry what no check here reads."""
-    found, unscreenable, whole_files = [], [], set()
+    title, its body, each comment and review but the workflow's own, and every other field), the diff, the review
+    comments (review-comments.json) but the workflow's own, the list of what .review/ leaves out, and the checks. A
+    writer's comment is screened too: a false hold on it costs a maintainer's request, and telling the authors apart
+    here is one more thing to get wrong. A comment, a review or a review comment of the workflow's own accounts
+    (own_accounts) is not screened: its text is the workflow's fixed text, or a trimmed review, answer or fix, to whose
+    words trim.py's inert() adds word joiners (U+2060). Each other comment keeps its number in its list (comments 2,
+    say). Each changed file under head/ must be text, and the diff must show it as text: the diff then holds every new
+    line of it, and an image or another binary file could carry what no check here reads."""
+    found, unscreenable, whole_files, own = [], [], set(), own_accounts()
     item_path = next((os.path.join(review, n) for n in ("pr.json", "issue.json")
                       if os.path.isfile(os.path.join(review, n))), None)
     if item_path is None:
@@ -298,9 +350,14 @@ def parts(review):
                 found.append(("body", item.get("body") or ""))
                 for kind in ("comments", "reviews"):
                     for i, c in enumerate(item.get(kind) or []):
-                        found.append((f"{kind} {i + 1}", c.get("body") or ""))
+                        if c.get("author") not in own:   # the gather step gives the login (user.login) as author
+                            found.append((f"{kind} {i + 1}", c.get("body") or ""))
                 rest = {k: v for k, v in item.items() if k not in ("title", "body", "comments", "reviews")}
                 found.append((f"{shown}, other fields", "\n".join(strings(rest))))
+            elif shown == "review-comments.json":   # each review comment: its author (the login), path, line and body
+                for i, c in enumerate(json.loads(text)):
+                    if c.get("author") not in own:
+                        found.append((f"review-comments {i + 1}", "\n".join(strings(c))))
             elif name.endswith(".json"):
                 found.append((shown, "\n".join(strings(json.loads(text)))))
             else:

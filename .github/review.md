@@ -33,12 +33,13 @@ Each review goes through three steps before it posts:
     changed file as the pull request has it, except what `omitted.txt`
     lists: deleted files, links and submodules, files cut at 2 MiB, and
     any `CLAUDE.md`, `AGENTS.md` or `.claude/`, which `pr.diff` still
-    shows), `review-comments.txt`, `checks.json` (the state of its checks
-    when the review started) and `soundness.json` (the changed files that
-    can change a Rocq proof: "Soundness of a Rocq proof", below).
+    shows), `review-comments.json` (each review comment with its author,
+    path, line and body), `checks.json` (the state of its checks when the
+    review started) and `soundness.json` (the changed files that can
+    change a Rocq proof: "Soundness of a Rocq proof", below).
   - for an issue, `issue.json`.
-  - in `pr.json`, `issue.json` and `review-comments.txt`, only the comments
-    and reviews of the author and of accounts with write access.
+  - in `pr.json`, `issue.json` and `review-comments.json`, only the
+    comments and reviews of the author and of accounts with write access.
     `omitted.txt` counts the others.
   - `linux/`: part of stable Linux v6.18.46, commit `1f99e9ab748f`: `mm/`,
     `kernel/`, `ipc/`, `lib/`, `arch/riscv/`, `include/`, `fs/`, `net/`,

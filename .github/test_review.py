@@ -60,6 +60,8 @@ SCREEN_START_WORKFLOW = os.path.join(os.path.dirname(WORKFLOW), "screen-start.ym
 GITHUB_DIR = os.path.dirname(os.path.abspath(__file__))
 RULES_PY = os.path.join(GITHUB_DIR, "review", "rules.py")
 TRIM_PY = os.path.join(GITHUB_DIR, "review", "trim.py")
+# The screen, which the screen job runs from main's checkout: the tests of the gather job read .review/ through it.
+SCREEN_PY = os.path.join(GITHUB_DIR, "screen.py")
 # The lists and the trims of the trim test (.github/review/fixtures/trim/README.md).
 TRIM_FIXTURES = os.path.join(GITHUB_DIR, "review", "fixtures", "trim")
 # The functions and values of the rescreen pass, which the trust step and the rescreen pass's step source from their
@@ -184,7 +186,7 @@ SCREEN_START = load(SCREEN_START_WORKFLOW)
 
 
 def load_module(path, name):
-    """A file of .github/review/ as a module, with no bytecode written beside it."""
+    """A file of .github/ as a module, with no bytecode written beside it."""
     sys.dont_write_bytecode = True
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -194,6 +196,7 @@ def load_module(path, name):
 
 rules = load_module(RULES_PY, "rules")
 trim = load_module(TRIM_PY, "trim")
+screen_py = load_module(SCREEN_PY, "screen")
 
 
 def evaluate(expression, ctx):
@@ -6604,9 +6607,10 @@ class AnswerFixTest(ReaderRunner):
         variable REPO_PAIRS_IMPORT_PATHS, which the label step read."""
         return rules.label_comment(state, markers=[rules.import_marker(head, None)])
 
-    def gather(self, changes, comments):
-        """Mallory's pull request #7, whose head makes changes on main, in git, with comments, gathered by the gather
-        job's step for the answer to comment 900 in the checkout of main: the head, and main's commit."""
+    def gather(self, changes, comments, reviews=(), review_comments=()):
+        """Mallory's pull request #7, whose head makes changes on main, in git, with comments, reviews and review
+        comments, as the API gives them, gathered by the gather job's step for the answer to comment 900 in the checkout
+        of main: the head, and main's commit."""
         origin, src = os.path.join(self.dir, "origin.git"), os.path.join(self.dir, "src")
         self.git("init", "-q", "--bare", "-b", "main", origin)
         self.git("init", "-q", "-b", "main", src)
@@ -6621,8 +6625,8 @@ class AnswerFixTest(ReaderRunner):
         self.permissions(mallory="read")
         self.serve_item(7, "mallory", kind="pr", head=head)
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
-        for endpoint in ("pulls/7/reviews", "pulls/7/comments"):
-            self.serve(f"repos/{REPO}/{endpoint}", [])
+        self.serve(f"repos/{REPO}/pulls/7/reviews", list(reviews))
+        self.serve(f"repos/{REPO}/pulls/7/comments", list(review_comments))
         self.serve("pr_view_7", {"number": 7, "title": "t", "author": {"login": "mallory"}, "isDraft": False,
                                  "baseRefName": "main", "headRefOid": head, "body": "b", "commits": [],
                                  "files": [{"path": p, "additions": 1, "deletions": 1} for p in changes],
@@ -6632,6 +6636,35 @@ class AnswerFixTest(ReaderRunner):
             "needs.trust.outputs.task": "answer", "needs.trust.outputs.comment": "900"})
         self.assertEqual(rc, 0, out)
         return head, main
+
+    def test_the_screen_of_an_answer_reads_no_review_comment_of_the_workflows_own_fix(self):
+        """R11: an answer reads the workflow's own fix review and its suggested changes, which the gather job keeps
+        with their author: the review comments in review-comments.json. The screen of the answer reads none of them,
+        so the word joiner (U+2060) that inert() put in the why of a suggestion holds nothing. The same review comment
+        of the author holds the answer."""
+        why = trim.inert(self.SUGGESTION["why"])
+        self.assertIn(WJ, why)
+        body = "\n\n".join((why, trim.suggestion(self.SUGGESTION["replacement"])))
+        fix = {"id": 40, "user": {"login": BOT}, "state": "COMMENTED", "submitted_at": "2026-11-02T10:30:00Z",
+               "body": f"<!-- review-fix {HEAD} -->\n**Automated fix**\n\nThe fix of `theories/A.v:3`."}
+        ask = {"id": 900, "user": {"login": "mallory"}, "created_at": "2026-11-02T11:00:00Z",
+               "updated_at": "2026-11-02T11:00:00Z", "body": "Is the fix right?"}
+        for i, (login, review, unscreenable) in enumerate((
+                (BOT, 40, []), ("mallory", 50, ["review-comments 1 holds U+2060, a character that hides text"]))):
+            with self.subTest(login=login):
+                if i:
+                    self.tearDown()
+                    self.setUp()
+                suggested = {"id": 41, "pull_request_review_id": review, "user": {"login": login},
+                             "path": "theories/A.v", "line": 4, "original_line": 4,
+                             "created_at": "2026-11-02T10:30:00Z", "body": body}
+                self.gather({"theories/A.v": self.HEAD_A}, [ask], reviews=[fix], review_comments=[suggested])
+                root = os.path.join(self.work, ".review")
+                with open(os.path.join(root, "review-comments.json")) as f:
+                    self.assertEqual(json.load(f), [{"author": login, "path": "theories/A.v", "line": 4, "body": body}])
+                with open(os.path.join(root, "pr.json")) as f:
+                    self.assertEqual([r["id"] for r in json.load(f)["reviews"]], [40])
+                self.assertEqual(screen_py.parts(root)[1], unscreenable)
 
     def test_a_new_comment_of_an_outside_author_gets_an_answer(self):
         """b1 (R1): the author's comment starts an issue_comment run that takes the outsider's path, and the comment

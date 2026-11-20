@@ -1381,8 +1381,8 @@ jobs:
           # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. An
           # answer also reads the workflow's own comments and reviews of the item (own), as data: its review, its
           # answers, its hold comment and its label comment (each by the marker that starts it), and its fix reviews
-          # with their suggested changes. They tell the answer the next step and whom the item waits on. The others
-          # are counted in omitted.txt, and never read.
+          # with their suggested changes. They tell the answer the next step and whom the item waits on. The screen
+          # reads none of them (.github/screen.py, own_accounts). The others are counted in omitted.txt, and never read.
           author=$(gh api "repos/$REPO/issues/$NUMBER" --jq .user.login)
           # outside: true when trusted does not pass the author, also when GitHub could not say (status 2).
           outside=false
@@ -1481,8 +1481,9 @@ jobs:
               | jq --slurpfile c "$RUNNER_TEMP/comments.json" --slurpfile r "$RUNNER_TEMP/reviews.json" \
                   '. + {comments: $c[0], reviews: $r[0]}' > "$out/pr.json"
             gh pr view "$NUMBER" -R "$REPO" --json statusCheckRollup > "$out/checks.json"
-            jq -r '.[] | "\(.author) \(.path):\(.line) \(.body)"' "$RUNNER_TEMP/review-comments.json" \
-              > "$out/review-comments.txt"
+            # The review comments, each with its author, path, line and body: the screen leaves out those of the
+            # workflow's own accounts, as it does their comments and reviews (.github/screen.py, own_accounts).
+            jq '[.[] | {author, path, line, body}]' "$RUNNER_TEMP/review-comments.json" > "$out/review-comments.json"
             if [ -n "$EVENT_HEAD" ] && [ "$(jq -r .headRefOid "$out/pr.json")" != "$EVENT_HEAD" ]; then
               echo "::notice::#$NUMBER has moved on from $EVENT_HEAD: the run of its newer push considers it."
               echo "moved=true" >> "$GITHUB_OUTPUT"
