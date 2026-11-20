@@ -319,9 +319,10 @@ on:
       account:
         description: >-
           The account whose hourly limit this run counts toward. The rescreen pass sets it. A rescreen by hand needs
-          the account of the event that the workflow held. That is the item's author, or the account of the item's
-          latest event at the time of the hold. With another account, the run stops, and its notice names the right
-          one.
+          the account of the run that the workflow held. For the run of an event, that is the item's author or the
+          account that started the event. For a run by hand of an account with write access, it is that account. For
+          a run that the rescreen pass started, it is the account that its name ends with. With another account, the
+          run stops, and its notice names the right one.
         type: string
         default: ""
       comment:
@@ -1115,7 +1116,7 @@ jobs:
                 approve|catchup|conflict|relabel) [ "$kind" = pr ] || stop "it is not a pull request." ;;
               esac
               # The rescreen pass's name for the task, from what the API says now: the item, its head, and its author
-              # when the author has no write access (a rescreen names the account of the event that the workflow held,
+              # when the author has no write access (a rescreen names the account of the run that the workflow held,
               # checked below, and the head of a pull request). The review of a writer's pull request names the account
               # that the inputs give: the task review below checks it against the CI runs of the head. The account a
               # name gives is the one whose limit the run counts on; a run by hand of a person or an App counts on none.
@@ -1162,7 +1163,7 @@ jobs:
                   account=$(held_account "$origin" "$AUTHOR") || fail "run $origin could not be read."
                   [ -n "$account" ] || stop "its hold names no run whose account this workflow can tell."
                   [ "$ACCOUNT" = "$account" ] \
-                    || stop "the account of the event that the workflow held is $account, not ${ACCOUNT:-none}."
+                    || stop "the account of the run that the workflow held is $account, not ${ACCOUNT:-none}."
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   # A writer's item whose hold names a writer's run (at the cap, or a review that did not finish) is
                   # reviewed without the screen.
@@ -3111,7 +3112,8 @@ jobs:
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha repository branch count <<< "$pr"
           if [ "$sha" != "$HEAD" ]; then
-            echo "::notice::#$NUMBER moved from $HEAD to $sha after the screen. The workflow approves no run of it."
+            echo "::notice::#$NUMBER moved from $HEAD to $sha after the screen. This run approves no run of $HEAD or" \
+              "of $sha."
             exit 0
           fi
           if ! [[ $repository =~ ^[1-9][0-9]*$ ]]; then
@@ -3139,8 +3141,15 @@ jobs:
             exit 0
           fi
           echo "#$NUMBER: GitHub holds the runs $ids of $HEAD."
-          # refuse <why>: the end of this step with a failure, and no run approved.
-          refuse() { echo "::error::$1 The workflow approves no run of #$NUMBER."; exit 1; }
+          # refuse <why>: the end of this step with a failure, and no run approved. The post job fails, so the rescreen
+          # pass tries the approval of the head again, at most once an hour, and stops after REVIEW_TRIES failed tries
+          # (held.sh, due_approve and head_stopped approval).
+          refuse() {
+            echo "::error::$1 This run approves no run of $HEAD. The rescreen pass tries the approval of $HEAD again" \
+              "in a later run, at most once an hour. After $REVIEW_TRIES failed tries, it does not try again, and the" \
+              "label comment names the next step for Sami."
+            exit 1
+          }
           [[ $count =~ ^[0-9]+$ ]] || refuse "#$NUMBER gives no count of changed files."
           files=$RUNNER_TEMP/files.jsonl
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
@@ -3151,12 +3160,12 @@ jobs:
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           if [ "$sha" != "$HEAD" ]; then
-            echo "::notice::#$NUMBER moved from $HEAD to $sha while its files were read. The workflow approves no" \
-              "run of it."
+            echo "::notice::#$NUMBER moved from $HEAD to $sha while its files were read. This run approves no run of" \
+              "$HEAD or of $sha."
             exit 0
           fi
           if [ "$steered" = true ]; then
-            echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. The workflow approves no run of it." \
+            echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. The workflow approves no run of $HEAD." \
               "A person at Theorem approves its runs."
             echo "steering=$HEAD" >> "$GITHUB_OUTPUT"
             exit 0

@@ -4106,17 +4106,23 @@ class ApproveTest(Holding):
     def test_a_list_of_files_that_fails_or_is_not_whole_approves_nothing(self):
         """R10: the files of the head decide the approval, so the post job approves no run when it cannot read them,
         when GitHub lists fewer files than the pull request changes (it lists at most 3,000), or when the head moved
-        while they were read. The first two fail the job: the rescreen pass takes the head again."""
+        while they were read. The first two fail the job: the error says that this run approves no run of the head,
+        and that the rescreen pass tries the approval again, at most once an hour, and stops after REVIEW_TRIES failed
+        tries. A head that moved gets a notice that this run approves no run of either head."""
+        refused = (f"This run approves no run of {HEAD}. The rescreen pass tries the approval of {HEAD} again in a "
+                   f"later run, at most once an hour. After {WF['env']['REVIEW_TRIES']} failed tries, it does not try "
+                   "again, and the label comment names the next step for Sami.")
         self.runs(*self.RUNS)
         trust = self.by_hand()
         self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=2)
         steps = self.post(trust, "clean")
         self.assertEqual((steps[self.HELD], steps[MINT_B]), ("failure", "skipped"), self.logs)
-        self.assertIn("GitHub lists 1 of the 2 changed files of #7. The workflow approves no run of #7.", self.logs[-1])
+        self.assertIn(f"::error::GitHub lists 1 of the 2 changed files of #7. {refused}", self.logs[-1])
         self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
         self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")
         steps = self.post(trust, "clean")
         self.assertEqual((steps[self.HELD], steps[MINT_B]), ("failure", "skipped"), self.logs)
+        self.assertIn(f"::error::the files of #7 could not be read. {refused}", self.logs[-1])
         os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_7_files.fail"))
         pull = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_pulls_7.json")
         with open(pull) as f:
@@ -4125,7 +4131,8 @@ class ApproveTest(Holding):
         self.serve(f"repos/{REPO}/pulls/7.then", moved)
         steps = self.post(trust, "clean")
         self.assertEqual((steps[self.HELD], steps[MINT_B]), ("success", "skipped"), self.logs)
-        self.assertIn(f"#7 moved from {HEAD} to {OTHER_HEAD} while its files were read", self.logs[-1])
+        self.assertIn(f"::notice::#7 moved from {HEAD} to {OTHER_HEAD} while its files were read. This run approves "
+                      f"no run of {HEAD} or of {OTHER_HEAD}.", self.logs[-1])
         self.assertEqual((self.approvals(), writes(self.api)), ([], []))
 
     def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
@@ -4176,12 +4183,15 @@ class ApproveTest(Holding):
     def test_a_head_that_moved_after_the_screen_gets_no_approval(self):
         """The author pushed after the trust job read the head, and GitHub holds the runs of both heads: the post job
         reads the pull request again, finds a head that the screen did not read, mints no token B and approves
-        nothing. The new head waits for a run of its own."""
+        nothing. Its notice says that this run approves no run of either head. The new head waits for a run of its
+        own."""
         self.runs(*self.RUNS)
         trust = self.by_hand()
         self.serve_item(7, "mallory", kind="pr", head=OTHER_HEAD)
         steps = self.post(trust, "clean")
         self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]), ("success", "skipped", "skipped"))
+        self.assertIn(f"::notice::#7 moved from {HEAD} to {OTHER_HEAD} after the screen. This run approves no run of "
+                      f"{HEAD} or of {OTHER_HEAD}.", "\n".join(self.logs))
         self.assertEqual(writes(self.api), [])
 
     def test_a_token_b_that_cannot_be_minted_holds_nothing_and_labels_nothing(self):
@@ -5357,7 +5367,8 @@ class FreshReaderTest(ReaderRunner):
         stay, so a blocking finding never reads as a question for Sami; also in bold, with the finding on its line. A
         question that the reader reworded gets its bullet. With no blocking finding in the list (rules.py blocking made
         the verdict person), the form "Blocking findings." goes, and the question after it on its line stays, with no
-        bullet. In the comment step, the same review posts so."""
+        bullet: the result line says that each question is in the review below. In the comment step, the same review
+        posts so."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `step_ok`. Prove it or drop it."}
@@ -5375,7 +5386,8 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(trim.with_result(model, text, head, "person", items),
                                  f"Questions for Sami:\n\n- {asked['text']}\n- {sound['text']}\n\n{text}")
         self.assertEqual(trim.with_result(model, f"Blocking findings. {asked['text']}\n\nMore.", head, "person",
-                                          [asked]), f"Questions for Sami:\n\n{asked['text']}\n\nMore.")
+                                          [asked]),
+                         f"Questions for Sami: each question is in the review below.\n\n{asked['text']}\n\nMore.")
         proof = os.path.join(self.work, ".review", "head", "theories", "A.v")
         os.makedirs(os.path.dirname(proof), exist_ok=True)
         with open(proof, "w") as f:
@@ -5405,6 +5417,30 @@ class FreshReaderTest(ReaderRunner):
                 self.assertTrue(shown.startswith(f"{head}\n\nQuestions for Sami:"), shown)
                 self.assertEqual(shown.count(asked["text"]), 1, shown)
                 self.assertIn("theories/A.v:12", shown)
+
+    def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
+        """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends
+        with the colon of "Questions for Sami:", which would open an empty list, so that the next lines would read as
+        Sami's questions. When the trimmed text holds each question of the list, the line says that each question is
+        in the review below, whether the reader put the questions before or after the blocking findings. When the list
+        holds no question, the line says that the review lists none. The comment as it posts: the head, that line, the
+        trimmed text whole, the section and the foot."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `step_ok`. Prove it or drop it."}
+        sound = dict(rules.QUESTION)
+        findings = f"Blocking findings.\n\n- {change['text']}"
+        review = f"{findings}\n\n{sound['text']}"
+        below = "Questions for Sami: each question is in the review below."
+        for case, items, trimmed, line in (
+                ("the questions after the findings", [change, sound], f"{findings}\n\n{sound['text']}", below),
+                ("the questions before the findings", [change, sound], f"{sound['text']}\n\n{findings}", below),
+                ("no question in the list", [change], findings, "Questions for Sami: this review lists none.")):
+            with self.subTest(case=case):
+                posted = trim.comment(review, trimmed, items, head, section, foot, verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
 
     def test_an_issues_review_keeps_the_trim_that_the_reader_gave(self):
         """An issue's review has no fixed form: its first line says whether the report holds (.github/review.md, "The
@@ -8231,17 +8267,21 @@ class RescreenTrustTest(Held):
         got = self.route(account="bob")
         self.assertEqual((got.get("route"), got.get("outsider")), ("screen", "mallory"))
 
-    def test_a_rescreen_by_hand_with_another_account_stops_and_names_the_account_of_the_held_event(self):
-        """Fresh reader round 10 (N-M4) and round 11 (R11-S4): a rescreen by hand needs the account of the event that
-        the workflow held, the item's author or the account of the item's latest event at the time of the hold, which
-        the hold names by its run (held.sh, held_account): mallory's run here. With another account, or none, the run
+    def test_a_rescreen_by_hand_with_another_account_stops_and_names_the_account_of_the_held_run(self):
+        """Fresh reader round 10 (N-M4), round 11 (R11-S4) and b7 of round 10 (M2): a rescreen by hand needs the
+        account of the run that the workflow held, which the hold names (held.sh, held_account). For the run of an
+        event, that is the item's author or the account that started the event: mallory's run here. For a run by hand
+        of an account with write access, it is that account: alice's run here. With another account, or none, the run
         stops, and its notice names the account that it needs."""
-        for account, named in (("bob", "bob"), ("", "none")):
-            with self.subTest(account=account):
+        cases = (("mallory", "issues", "", "bob", "bob"), ("mallory", "issues", "", "", "none"),
+                 ("alice", "workflow_dispatch", "review #7", "mallory", "mallory"))
+        for starter, event, title, account, named in cases:
+            with self.subTest(starter=starter, account=account):
+                self.origin(50, starter, event=event, title=title)
                 rc, out, got = self.rescreen(actor="alice", account=account)
                 self.assertEqual((rc, got.get("route")), (0, None), out)
-                self.assertIn("::notice::No rescreen of #7: the account of the event that the workflow held is "
-                              f"mallory, not {named}.", out)
+                self.assertIn("::notice::No rescreen of #7: the account of the run that the workflow held is "
+                              f"{starter}, not {named}.", out)
 
     def test_holds_at_the_cap_and_of_a_review_that_did_not_finish_take_the_outsiders_path_and_keep_their_tries(self):
         for kind, tries, want in (("cap", 1, "1"), ("transient", 2, "2"), ("limit", None, "0")):
