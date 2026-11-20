@@ -12434,6 +12434,24 @@ class ConflictTest(Runner):
                 self.assertTrue(label.endswith(f"\n<!-- review-conflict-state {HEAD} -->\n<!-- waits-on-author -->"),
                                 label)
 
+    def test_a_writers_pull_request_with_a_merge_conflict_gets_no_state_label(self):
+        """R5 and ruling 1 of OSSV-221's architect (2026-11-20 07:33Z, 09:29Z): a writer's pull request is no outside
+        item, so it gets no state label: "A writer's item (OUTSIDE is false) gets no state label in any state"
+        (review.yml, the comment job). alice, with write access, has #7 with a merge conflict, and a run by hand takes
+        the task conflict, as the rescreen pass's rescreen of a held #7 does. The comment on the conflict posts, and the
+        label comment names the author's step with its conflict-state line, but #7 gets no waits-on-author, and loses
+        the waits-on-theorem that it had."""
+        self.serve_item(7, "alice", kind="pr", head=HEAD, mergeable="dirty")
+        self.forget()
+        rc, out, got = self.run_trust("workflow_dispatch", actor="alice")
+        self.assertEqual((rc, got.get("task"), got.get("route"), got.get("head")), (0, "conflict", "review", HEAD), out)
+        bodies = self.comment(got["head"], labels=("review-held", THEOREM_LABEL))
+        self.assertEqual(len(bodies), 1, gh_calls(self.api))
+        self.assertNotIn(("+", AUTHOR_LABEL), state_labels(self.api))
+        (method, _endpoint, label), = label_comments(self.api)
+        self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** You resolve the merge conflict"), label)
+        self.assertIn(f"<!-- review-conflict-state {HEAD} -->", label)
+
     def test_one_comment_for_each_head(self):
         """The author's next comment, or the next scheduled run, posts no second comment on the same head, and the
         label and the label comment stay as they are; a new head that conflicts again gets its own comment, and the
