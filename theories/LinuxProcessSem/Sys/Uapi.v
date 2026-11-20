@@ -1310,18 +1310,20 @@ Definition stat_size_ok (n : nat) (bs : list byte) : bool :=
 Definition stat_no_rdev (bs : list byte) : bool :=
   Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) 0.
 
-(** [st_blksize] IS THE PAGE SIZE FOR EVERY INODE BUT A REGULAR FILE on
-    tmpfs, ramfs and devtmpfs, which is a mount of one of the two.
-    [generic_fillattr] reports [i_blocksize] (fs/stat.c:105, Linux
-    v6.18.46), [1 << i_blkbits] (include/linux/fs.h:931-934);
+(** [st_blksize] IS THE PAGE SIZE FOR EVERY INODE on tmpfs, ramfs and
+    devtmpfs, which is a mount of one of the two.  [generic_fillattr]
+    reports [i_blocksize] (fs/stat.c:105, Linux v6.18.46),
+    [1 << i_blkbits] (include/linux/fs.h:931-934);
     [inode_init_always_gfp] takes [i_blkbits] from the superblock
     (fs/inode.c:234), and both file systems give theirs [PAGE_SIZE]
     ([shmem_fill_super], mm/shmem.c:5119-5120; [ramfs_fill_super],
-    fs/ramfs/inode.c:268-269), 4096 on riscv64 ([State.page_size]).
-    [shmem_getattr] raises a REGULAR file's to the huge-page size when
-    huge pages are on for it (mm/shmem.c:1286-1287), and
-    [shmem_huge_global_enabled] answers 0 for anything else
-    (mm/shmem.c:606), so a regular file's is not asserted. *)
+    fs/ramfs/inode.c:268-269), 4096 on riscv64 ([State.page_size]).  A
+    regular file's too: [shmem_getattr] raises it to the huge-page size
+    only where [shmem_huge_global_enabled] answers nonzero
+    (mm/shmem.c:1286-1287), and the configuration of record sets no
+    CONFIG_TRANSPARENT_HUGEPAGE (SCOPE.md), so that is the stub that
+    answers 0 (mm/shmem.c:843-849); a ramfs file reports
+    [generic_fillattr]'s through [simple_getattr] (fs/libfs.c:32-40). *)
 Definition stat_page_blksize (bs : list byte) : bool :=
   Z.eqb (stat_field_le ST_BLKSIZE_OFF 4 bs) page_size.
 
@@ -1342,7 +1344,7 @@ Definition stat_page_blksize (bs : list byte) : bool :=
 
     NOT asserted here, and chosen once and held by the node's pin when
     the stat knows the node ([Fs.Stat.fstat_devfd_spec]; a path stat
-    always does), free at every call otherwise, like every other member: the
+    always does), and by the descriptor's pin otherwise: the
     permission bits and the owner, which are the image's node's
     (devtmpfs takes 0666 and root from [mem_devnode], drivers/char/mem.c,
     but a container runtime makes its own node), the link count, the
@@ -1579,7 +1581,7 @@ Qed.
     SOME OF THE STABLE MEMBERS ARE FIXED OUTRIGHT, not only held, where
     the file systems of the configuration of record fix them: [st_rdev] of a
     regular file, a folder and a link ([stat_no_rdev]), [st_blksize] of
-    a folder, a link and a device node ([stat_page_blksize]), and a
+    every kind ([stat_page_blksize]), and a
     link's whole [st_mode] ([stat_lnk_fixed]); the arms assert them at
     every delivery, the first included.
 
@@ -1657,10 +1659,10 @@ Definition stat_no_blocks (bs : list byte) : bool :=
   Z.eqb (stat_field_le ST_BLOCKS_OFF 8 bs) 0.
 
 (** WHAT tmpfs AND ramfs FIX OF A REGULAR FILE'S [struct stat] beside
-    its type: [st_rdev] 0 ([stat_no_rdev]).  Its [st_blksize] is not
-    fixed: see [stat_page_blksize]. *)
+    its type: [st_rdev] 0 ([stat_no_rdev]) and [st_blksize] the page
+    size ([stat_page_blksize]). *)
 Definition stat_reg_fixed (bs : list byte) : bool :=
-  (stat_is_reg bs && stat_no_rdev bs)%bool.
+  (stat_is_reg bs && stat_no_rdev bs && stat_page_blksize bs)%bool.
 
 (** WHAT tmpfs AND ramfs FIX OF A FOLDER'S [struct stat] beside its
     type: [st_rdev] 0 ([stat_no_rdev]), [st_blksize] the page size
@@ -2084,9 +2086,10 @@ Qed.
 Lemma stat_set_nlink_reg_fixed : forall n bs,
   (20 <= length bs)%nat -> stat_reg_fixed (stat_set_nlink n bs) = stat_reg_fixed bs.
 Proof.
-  intros n bs H. unfold stat_reg_fixed, stat_no_rdev.
-  rewrite stat_set_nlink_reg, (stat_set_nlink_field_le n ST_RDEV_OFF)
-    by (exact H || (cbv [ST_RDEV_OFF]; lia)).
+  intros n bs H. unfold stat_reg_fixed, stat_no_rdev, stat_page_blksize.
+  rewrite stat_set_nlink_reg, (stat_set_nlink_field_le n ST_RDEV_OFF),
+    (stat_set_nlink_field_le n ST_BLKSIZE_OFF)
+    by (exact H || (cbv [ST_RDEV_OFF ST_BLKSIZE_OFF]; lia)).
   reflexivity.
 Qed.
 

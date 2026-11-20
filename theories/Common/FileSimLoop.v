@@ -543,8 +543,8 @@ Proof.
                       (open_model model (alloc_fd (m_fds model)) fe ofs) [])).
       right; exists (alloc_fd (m_fds model)); repeat split; try reflexivity;
         exact Hfree.
-    + unfold open_model. destruct ofs; exact Hh.
-    + unfold open_model. destruct ofs; exact Hlazy.
+    + unfold open_model. destruct ofs; [|destruct (entry_dev_kind fe)]; exact Hh.
+    + unfold open_model. destruct ofs; [|destruct (entry_dev_kind fe)]; exact Hlazy.
     + exact Herr'.
     + intros _. unfold ms. rewrite adv_eff_ret_copyins.
       first [exact (Hok fe ofs Harm) | exact (Hok fe ofs eq_refl)].

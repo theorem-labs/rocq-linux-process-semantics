@@ -76,8 +76,8 @@ combinator now produces — followed by the one-line corollary
 `cp_ns` and `headcp_ns` are the two exceptions, and `tools/gen_checker.py`'s
 `SPEC_ON` list names them. Their `Proof.v` defines the input hypothesis
 `operands_inside_model` (the walk of each operand the program opens does not
-end at `Fs.ROutside` or at a device entry away from its own name, the two
-walk ends on which the model declines an open), a witness
+end at `Fs.ROutside`, the one walk end on which the model declines an open; a
+device entry is answered at any key), a witness
 `operands_inside_model_witness`, the lemma `operands_inside_model_iff` (the
 hypothesis holds exactly when the model answers the open of each operand), and
 `Theorem strong_universal_operands_inside :

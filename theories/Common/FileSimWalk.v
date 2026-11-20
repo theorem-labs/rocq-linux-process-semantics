@@ -137,11 +137,19 @@ Definition open_answered (rd : bool) (fs : Fs.Fs) (cwd p : Fs.path) : Prop :=
 Definition open_ok (rd : bool) (fs : Fs.Fs) (cwd p : Fs.path) : bool :=
   match open_arm rd fs cwd p with inl _ => true | inr _ => false end.
 
-(** The model a descriptor open leaves. *)
+(** The model a descriptor open leaves: a device descriptor's number
+    drops its old stat pin first, as [Open.open_devnull] and
+    [Open.open_urandom] do ([State.with_fd_unpinned]). *)
 Definition open_model (m : Model) (fd : word) (fe : FdEntry) (ofs : option Fs.Fs)
     : Model :=
   with_fds (fd_insert (m_fds m) fd fe)
-    (match ofs with Some fs' => with_fs fs' m | None => m end).
+    (match ofs with
+     | Some fs' => with_fs fs' m
+     | None => match entry_dev_kind fe with
+               | Some _ => with_fd_unpinned fd m
+               | None => m
+               end
+     end).
 
 (** Does [open_arm]'s descriptor entry stand beside a -ETXTBSY, and for
     which inode?  Exactly the write-create open of a regular file the
@@ -247,27 +255,27 @@ Qed.
 
 Lemma open_model_fds : forall m fd fe ofs,
   m_fds (open_model m fd fe ofs) = fd_insert (m_fds m) fd fe.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 Lemma open_model_fs : forall m fd fe ofs,
   m_fs (open_model m fd fe ofs) = match ofs with Some f => f | None => m_fs m end.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 Lemma open_model_cwd : forall m fd fe ofs,
   m_cwd (open_model m fd fe ofs) = m_cwd m.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 Lemma open_model_urandom : forall m fd fe ofs,
   m_urandom (open_model m fd fe ofs) = m_urandom m.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 Lemma open_model_halted : forall m fd fe ofs,
   m_halted (open_model m fd fe ofs) = m_halted m.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 Lemma open_model_lazy : forall m fd fe ofs,
   m_vm_lazy (open_model m fd fe ofs) = m_vm_lazy m.
-Proof. intros m fd fe [f|]; reflexivity. Qed.
+Proof. intros m fd fe [f|]; unfold open_model; [|destruct (entry_dev_kind fe)]; reflexivity. Qed.
 
 (** A pathname that reaches the walk: not empty, and its NUL within
     PATH_MAX ([Open.openat_body_spec] answers the other two before any
@@ -614,8 +622,8 @@ Proof.
                       (open_model model (alloc_fd (m_fds model)) fe ofs) [])).
       right; exists (alloc_fd (m_fds model)); repeat split; try reflexivity;
         exact Hfree.
-    + unfold open_model. destruct ofs; exact Hh.
-    + unfold open_model. destruct ofs; exact Hlazy.
+    + unfold open_model. destruct ofs; [|destruct (entry_dev_kind fe)]; exact Hh.
+    + unfold open_model. destruct ofs; [|destruct (entry_dev_kind fe)]; exact Hlazy.
     + intros r Hr. unfold ms. rewrite adv_eff_ret_copyins. exact (Herr r Hr).
     + intros _. unfold ms. rewrite adv_eff_ret_copyins.
       first [exact (Hok fe ofs Harm) | exact (Hok fe ofs eq_refl)].

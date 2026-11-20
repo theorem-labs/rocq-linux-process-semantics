@@ -965,7 +965,7 @@ Lemma check_fstat_kf : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H Hoff Hk.
   unfold check_fstat, check_fstat_file, check_fstat_dir, check_fstat_devnull,
-    check_fstat_urandom, check_fstat_devfd, check_fstat_unpinned, check_fstat_chrdev,
+    check_fstat_urandom, check_fstat_devfd, check_fstat_chrdev,
     check_fstat_pinned, check_fstat_deliver_gen,
     dir_pin_after, file_pin_after, pinned_after in H.
   cbv beta iota zeta in H.

@@ -983,8 +983,9 @@ not apply.
   which a device appears makes this assumption false. A node of the null
   or urandom device at a key other than the device's own name opens as
   the device (`Fs.Open.open_devnull`, `Fs.Open.open_urandom`), and a stat
-  of its descriptor holds nothing unless the node at the device's own
-  name is the image's one node of the kind (`Fs.Stat.fstat_devfd_spec`):
+  of its descriptor holds the node's members under the device's own name
+  when the node there is the image's one node of the kind, and under the
+  descriptor otherwise (`Fs.Stat.fstat_devfd_spec`):
   this answers the open `bugs/valid-image-excludes-a-device-outside-dev.md`
   names as declined, though `Run.valid_image` still keeps every device
   node under `/dev`.

@@ -759,15 +759,17 @@ Proof.
   now apply Bool.andb_true_iff in H as [Hc _].
 Qed.
 
-(** AN OPERAND RESOLVED FROM A WORKING DIRECTORY OFF THE ROOT AND
-    OUTSIDE THE /dev SUBTREE NEVER NAMES A DEVICE.
+(** THE KEY AN OPERAND NAMES FROM A WORKING DIRECTORY OFF THE ROOT AND
+    OUTSIDE THE /dev SUBTREE NEVER HOLDS A DEVICE.
 
     Every device the image declares is INSIDE the subtree
     ([Run.devices_in_dev_subtreeb]), and the working directory is
     outside it, so the child key an operand resolves to can only enter
     the subtree by BEING /dev -- and it cannot be: [Fs.dev_dir] has a
     single component, so a child key equal to it would need the ROOT
-    as its parent.  The two working-directory facts are hypotheses,
+    as its parent.  A LINK at that key may still lead to a device (the
+    walk follows it), which is why [ns_perimeter] excludes a link at
+    either operand.  The two working-directory facts are hypotheses,
     because [Run.valid_input] admits a working directory of "/" and of
     "/dev"; a caller standing at [Fs.default_cwd] discharges both by
     computation. *)

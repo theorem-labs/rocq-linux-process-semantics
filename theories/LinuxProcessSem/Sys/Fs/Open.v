@@ -549,7 +549,10 @@ Definition open_write_existing (m : Model) (i : Fs.ino) (s : Sys SyscallEffect)
     [chrdev_open], fs/char_dev.c:373-424, Linux v6.18.46, finds the
     driver by [i_rdev]), and the descriptor carries no key, so [k] does
     not choose the answer.  What a stat of such a descriptor may then
-    hold is [Fs.Stat.fstat_devnull_spec]'s concern.
+    hold is [Fs.Stat.fstat_devnull_spec]'s concern; the descriptor
+    number's old stat pin is dropped before the entry is installed
+    ([State.with_fd_unpinned]), since the number may have held a
+    descriptor on another node of the kind.
 
     THE ENVIRONMENT ASSUMPTION the kind carries, unchanged and now
     stated of the ENTRY rather than of the name: an [Fs.EDev DevNull] is
@@ -599,7 +602,8 @@ Definition open_write_existing (m : Model) (i : Fs.ino) (s : Sys SyscallEffect)
 Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
     : Sys SyscallEffect :=
   open_result_spec m
-    (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
+    (fun fd m' => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))
+                    (with_fd_unpinned fd m')).
 
 (** The success shape for /dev/urandom: the injectable errno, or the
     lowest free fd bound to the entry with the granted access mode.
@@ -609,7 +613,8 @@ Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
     are [urandom_fops] (drivers/char/random.c).  Issue #696 records the
     ruling and bugs/openat-urandom-assumed-random-device.md records the
     premise.  A random device at any key answers the same way, as the
-    null device does.
+    null device does, and the descriptor number's old stat pin is
+    dropped the same way.
 
     WHAT THE BYTES ARE.  Not a choice: the run's [State.in_urandom]
     declares them, in order, and [ReadWrite.read_urandom] hands them out
@@ -636,7 +641,8 @@ Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
 Definition open_urandom (k : Fs.path) (m : Model) (rd wr : bool)
     : Sys SyscallEffect :=
   open_result_spec m
-    (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
+    (fun fd m' => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))
+                    (with_fd_unpinned fd m')).
 
 (* -------------------------------------------------------------------------
    The argv premise, which outlives the arms that used to read it

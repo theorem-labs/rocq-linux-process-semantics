@@ -2413,35 +2413,22 @@ Proof.
     intros bs. autorewrite with model. reflexivity.
 Qed.
 
-Lemma check_fstat_unpinned_frame : forall ok i statbuf eff m m' evs,
-  check_fstat_unpinned ok i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_devfd_frame : forall d k ok fd i statbuf eff m m' evs,
+  check_fstat_devfd d k ok fd i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros ok i statbuf eff m m' evs H.
-  unfold check_fstat_unpinned in H.
-  destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
-  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
-    [|discriminate].
-  eapply check_fstat_deliver_gen_frame; [|exact H].
-  intros bs. reflexivity.
-Qed.
-
-Lemma check_fstat_devfd_frame : forall d k ok i statbuf eff m m' evs,
-  check_fstat_devfd d k ok i statbuf eff m = CheckOk m' evs ->
-  m_vmmaps m' = m_vmmaps m.
-Proof.
-  intros d k ok i statbuf eff m m' evs H. unfold check_fstat_devfd in H.
+  intros d k ok fd i statbuf eff m m' evs H. unfold check_fstat_devfd in H.
   revert H; destruct (dev_sole_node (m_fs m) d k); intro H;
-    [eapply check_fstat_chrdev_frame | eapply check_fstat_unpinned_frame]; exact H.
+    [eapply check_fstat_chrdev_frame | eapply check_fstat_pinned_frame]; exact H.
 Qed.
 
-Lemma check_fstat_devnull_frame : forall i statbuf eff m m' evs,
-  check_fstat_devnull i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_devnull_frame : forall fd i statbuf eff m m' evs,
+  check_fstat_devnull fd i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 
-Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
-  check_fstat_urandom i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_urandom_frame : forall fd i statbuf eff m m' evs,
+  check_fstat_urandom fd i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 

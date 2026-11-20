@@ -1413,11 +1413,11 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
     S_IFLNK|0777, its [st_rdev] 0, its [st_blksize] 4096, and its
     [st_blocks] 0 for a body kept inline and 0 or 8 for a body in a page
     ([Uapi.stat_lnk_fixed]); a device node's [st_blksize] 4096
-    ([Uapi.stat_chrdev_ok]); a regular file's [st_rdev] 0
-    ([Uapi.stat_reg_fixed]), while its [st_blksize] stays free
-    ([Uapi.stat_page_blksize] says why).  Each is a member the pin
-    holds, so a first stat that got one wrong would be held wrong for
-    good. *)
+    ([Uapi.stat_chrdev_ok]); a regular file's [st_rdev] 0 and its
+    [st_blksize] 4096 too ([Uapi.stat_reg_fixed]): the configuration of
+    record has no huge pages for [shmem_getattr] to raise it to
+    ([Uapi.stat_page_blksize]).  Each is a member the pin holds, so a
+    first stat that got one wrong would be held wrong for good. *)
 Example first_stat_carries_what_tmpfs_and_ramfs_fix :
   let T := 1700000000%Z in
   (* a folder: blocks, device number, block size *)
@@ -1449,10 +1449,12 @@ Example first_stat_carries_what_tmpfs_and_ramfs_fix :
                (stat_bs 17 (S_IFCHR + 438)%Z 1 259 0 512 0 T T T)] st_two_links
      = CheckReject
   /\ st_ok (st_seq [stat_devnull_nl 1 T T T] st_two_links)
-  (* a regular file: device number; its block size is free *)
+  (* a regular file: device number and block size *)
   /\ st_seq [st_stat [102]%Z 0 (stat_bs 4711 S_IFREG 1 1 9 4096 8 T T T)] st_two_links
      = CheckReject
-  /\ st_ok (st_seq [st_stat [102]%Z 0 (stat_bs 4711 S_IFREG 1 0 9 512 8 T T T)]
+  /\ st_seq [st_stat [102]%Z 0 (stat_bs 4711 S_IFREG 1 0 9 512 8 T T T)] st_two_links
+     = CheckReject
+  /\ st_ok (st_seq [st_stat [102]%Z 0 (stat_bs 4711 S_IFREG 1 0 9 4096 8 T T T)]
               st_two_links).
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 
@@ -1586,15 +1588,20 @@ Example readlinkat_empty_body_returns_zero_whatever_buf :
   /\ rl_call_at [108]%Z 158329674399744 (mkEffect 0 [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
-(** A STAT OF A DEVICE DESCRIPTOR HOLDS A NODE ONLY WHEN THE NODE IS
-    KNOWN ([Stat.fstat_devfd_spec]).  A null-device descriptor carries
-    no key and may come from any null-device node, and two nodes are
-    two inodes ([init_special_inode], fs/inode.c:2552-2577, Linux
-    v6.18.46).  With /dev/x beside /dev/null, two stats of descriptor 3
-    may report two [st_ino]s and no pin is left, while the device's own
-    members (S_IFCHR, [st_rdev] 1:3) are still asserted; with /dev/null
-    the image's one null node, the first stat pins it and a second must
-    repeat its [st_ino]. *)
+(** A STAT OF A DEVICE DESCRIPTOR HOLDS ITS NODE, under the node's key
+    when the node is the image's one of its kind and under the
+    DESCRIPTOR otherwise ([Stat.fstat_devfd_spec]).  A null-device
+    descriptor carries no key and may come from any null-device node,
+    and two nodes are two inodes ([init_special_inode],
+    fs/inode.c:2552-2577, Linux v6.18.46), but the descriptor holds one
+    of them for its whole life, and [vfs_fstat] reports that held
+    file's inode at every call (fs/stat.c:276-281; [generic_fillattr],
+    fs/stat.c:82-94).  With /dev/x beside /dev/null, two stats of
+    descriptor 3 with nothing between them report one [st_ino]; the pin
+    is the descriptor's ([State.IdDevFd]), not /dev/null's; the device's
+    own members (S_IFCHR, [st_rdev] 1:3) are asserted; and with
+    /dev/null the image's one null node, the first stat pins it and a
+    second must repeat its [st_ino]. *)
 Definition devx_key : Fs.path := Fs.child_key Fs.dev_dir [Z_to_bv 8 120].
 
 Definition devfd_model (fs0 : Fs.Fs) : Model :=
@@ -1604,14 +1611,55 @@ Definition devfd_model (fs0 : Fs.Fs) : Model :=
 Definition devfd_stat (ino rdev : Z) : list byte :=
   stat_full ino (S_IFCHR + 438)%Z 1 rdev 0 0 1700000000 1700000000 1700000000.
 
-Example device_descriptor_stat_holds_only_a_known_node :
-  let two := devfd_model (Fs.fs_set (demo_fs []) devx_key (EDev DevNull)) in
+Definition devfd_two : Model :=
+  devfd_model (Fs.fs_set (demo_fs []) devx_key (EDev DevNull)).
+
+Example device_descriptor_stat_holds_its_node :
   let one := devfd_model (demo_fs []) in
-  st_ok (st_seq [st_fstat (devfd_stat 17 259); st_fstat (devfd_stat 18 259)] two)
-  /\ (match st_seq [st_fstat (devfd_stat 17 259)] two with
-      | CheckOk m _ => statpin_lookup (m_statpins m) (IdDev Fs.devnull_key) = None
+  st_seq [st_fstat (devfd_stat 17 259); st_fstat (devfd_stat 18 259)] devfd_two
+  = CheckReject
+  /\ st_ok (st_seq [st_fstat (devfd_stat 17 259); st_fstat (devfd_stat 17 259)] devfd_two)
+  /\ (match st_seq [st_fstat (devfd_stat 17 259)] devfd_two with
+      | CheckOk m _ =>
+          statpin_lookup (m_statpins m) (IdDev Fs.devnull_key) = None
+          /\ statpin_lookup (m_statpins m) (IdDevFd 3 DevNull)
+             = Some (mkStatPin (devfd_stat 17 259) None false)
       | _ => False end)
-  /\ st_seq [st_fstat (devfd_stat 17 265)] two = CheckReject
+  /\ st_seq [st_fstat (devfd_stat 17 265)] devfd_two = CheckReject
   /\ st_seq [st_fstat (devfd_stat 17 259); st_fstat (devfd_stat 18 259)] one = CheckReject
   /\ st_ok (st_seq [st_fstat (devfd_stat 17 259); st_fstat (devfd_stat 17 259)] one).
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** THE DESCRIPTOR'S PIN DIES WITH ITS FILE.  [close(3)] and an [openat]
+    of "/dev/x" that answers 3 give number 3 another file, on the other
+    node, so its stat may report another [st_ino]; so does a [dup3] of a
+    descriptor on "/dev/x" onto 3, which leaves at 3 an entry equal to
+    the old one ([do_dup2] stores the other file there,
+    fs/file.c:1303-1304, Linux v6.18.46).  The opening arm and [dup3]
+    drop number 3's pin as they install ([State.with_fd_unpinned]).  The
+    control: an [openat] of "/dev/x" that answers 4 leaves 3's file and
+    its pin alone. *)
+Definition devx_name : list Z := [47; 100; 101; 118; 47; 120]%Z.
+
+Definition devx_open (ret : word) : SyscallInput * SyscallEffect :=
+  st_call 56 devx_name 0 (mkEffect ret [] []).
+
+Definition close3 : SyscallInput * SyscallEffect :=
+  (mkInput 57 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None), mkEffect 0 [] []).
+
+Definition dup3_4_3 : SyscallInput * SyscallEffect :=
+  (mkInput 24 [4; 3; 0; 0; 0; 0] (fun _ => None) (fun _ => None), mkEffect 3 [] []).
+
+Example device_descriptor_pin_dies_with_its_file :
+  st_ok (st_seq [st_fstat (devfd_stat 17 259); close3; devx_open 3;
+                 st_fstat (devfd_stat 18 259)] devfd_two)
+  /\ st_ok (st_seq [st_fstat (devfd_stat 17 259); devx_open 4; dup3_4_3;
+                    st_fstat (devfd_stat 18 259)] devfd_two)
+  (* the new file's stat is held in its turn *)
+  /\ st_seq [st_fstat (devfd_stat 17 259); devx_open 4; dup3_4_3;
+             st_fstat (devfd_stat 18 259); st_fstat (devfd_stat 17 259)] devfd_two
+     = CheckReject
+  (* the control: an open at another number keeps 3's pin *)
+  /\ st_seq [st_fstat (devfd_stat 17 259); devx_open 4;
+             st_fstat (devfd_stat 18 259)] devfd_two = CheckReject.
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.

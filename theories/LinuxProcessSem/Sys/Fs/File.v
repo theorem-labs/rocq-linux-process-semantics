@@ -234,7 +234,10 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     i.e. [State.alloc_fd]), which is where the two injectable failures
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
     the model has no O_PATH fds, so nothing turns on it.  The new
-    descriptor's close-on-exec bit is cleared, [flags] being 0.
+    descriptor's close-on-exec bit is cleared, [flags] being 0.  The new
+    number's old stat pin is dropped before the entry is installed
+    ([State.with_fd_unpinned]): a device descriptor copied there may
+    hold another node than the one a descriptor once there held.
 
     [oldfd] arrives already truncated to 32 bits (see
     [Syscall.fd32]), so [dup(2^32)] duplicates stdin and [dup(-1)] is
@@ -248,7 +251,7 @@ Definition dup_spec (oldfd : word) : Sys SyscallEffect :=
       else
         alt (er <- errno_from dup_errnos ;; err_ret er)  (* untracked env failure or no free fd *)
             (fd <- lowest_fd (m_fds m) ;;
-             set_fds (fd_insert (m_fds m) fd e) ;;
+             modify (fun m' => with_fds (fd_insert (m_fds m) fd e) (with_fd_unpinned fd m')) ;;
              ret_only fd)
   end.
 
@@ -358,7 +361,10 @@ Definition dup3_flags_ok (flags : word) : bool :=
     the same two answers — and the decision to
     ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
     decision to admit both answers to [F_GETFD].  The displaced entry is
-    dropped exactly as [Open.close_spec] drops one. *)
+    dropped exactly as [Open.close_spec] drops one, and [newfd]'s stat
+    pin with it ([State.with_fd_unpinned]): a device descriptor copied
+    over a device descriptor of the same kind leaves an entry equal to
+    the old one, though the two may hold two nodes. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 
@@ -377,9 +383,11 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
           | None =>
               (* free: answered only below the embedded table's floor *)
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
-              then set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+              then modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
+                                       (with_fd_unpinned newfd m')) ;; ret_only newfd
               else unmodeled
-          | Some _ => set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+          | Some _ => modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
+                                          (with_fd_unpinned newfd m')) ;; ret_only newfd
           end
     end.
 

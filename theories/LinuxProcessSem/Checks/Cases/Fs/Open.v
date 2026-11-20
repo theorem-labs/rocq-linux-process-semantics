@@ -3527,9 +3527,10 @@ Qed.
 
 (** [fstat] of a descriptor on the file, wherever its offset is: a
     well-formed [struct stat] is accepted exactly when its type is
-    S_IFREG, its [st_rdev] 0, its [st_size] the content's length and its
-    [st_nlink] the file's link count ([Fs.fs_ino_nlink]).  The first
-    [fstat] of the inode (no pin yet) pins what it accepts. *)
+    S_IFREG, its [st_rdev] 0, its [st_blksize] the page size, its
+    [st_size] the content's length and its [st_nlink] the file's link
+    count ([Fs.fs_ino_nlink]).  The first [fstat] of the inode (no pin
+    yet) pins what it accepts. *)
 Lemma r1_fstat_answers : forall mem wmem fd statbuf a2 a3 a4 a5 m i off c bs,
   (bv_unsigned fd < 2 ^ 31)%Z ->
   fd_lookup (m_fds m) fd = Some (FdFile i off) ->
@@ -3544,13 +3545,15 @@ Lemma r1_fstat_answers : forall mem wmem fd statbuf a2 a3 a4 a5 m i off c bs,
                 (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] []) m in
   (stat_ifmt bs = S_IFREG ->
    stat_field_le ST_RDEV_OFF 8 bs = 0%Z ->
+   stat_field_le ST_BLKSIZE_OFF 4 bs = page_size ->
    stat_field_le ST_SIZE_OFF 8 bs = Z.of_nat (length c) ->
    stat_field_le ST_NLINK_OFF 4 bs = nl ->
    call = CheckOk (with_statpin (IdIno i) (mkStatPin bs None false) m) [])
   /\ (stat_ifmt bs <> S_IFREG -> call = CheckReject)
   /\ (stat_field_le ST_SIZE_OFF 8 bs <> Z.of_nat (length c) -> call = CheckReject)
   /\ (stat_field_le ST_NLINK_OFF 4 bs <> nl -> call = CheckReject)
-  /\ (stat_field_le ST_RDEV_OFF 8 bs <> 0%Z -> call = CheckReject).
+  /\ (stat_field_le ST_RDEV_OFF 8 bs <> 0%Z -> call = CheckReject)
+  /\ (stat_field_le ST_BLKSIZE_OFF 4 bs <> page_size -> call = CheckReject).
 Proof.
   intros mem wmem fd statbuf a2 a3 a4 a5 m i off c bs Hfd Hlk Hfs Hlen Hacc Hmap Hpin Hwf.
   cbv zeta.
@@ -3567,18 +3570,20 @@ Proof.
   unfold check_fstat_deliver_gen.
   rewrite !bv_eqb_refl. cbn [andb negb]. cbv beta iota.
   rewrite Hwf.
-  unfold stat_reg_ok, stat_reg_fixed, stat_no_rdev, stat_size_ok, stat_is_reg, stat_nlink_ok.
+  unfold stat_reg_ok, stat_reg_fixed, stat_no_rdev, stat_page_blksize, stat_size_ok,
+    stat_is_reg, stat_nlink_ok.
   rewrite Hfs.
   rewrite (bv_unsigned_Z_to_bv_u64 (Z.of_nat (length c)))
     by (unfold two_pow_64; lia).
-  split; [|split; [|split; [|split]]].
-  - intros Ht Hr Hsz Hnl. rewrite Ht, Hr, Hsz, Hnl, !Z.eqb_refl. reflexivity.
+  split; [|split; [|split; [|split; [|split]]]].
+  - intros Ht Hr Hb Hsz Hnl. rewrite Ht, Hr, Hb, Hsz, Hnl, !Z.eqb_refl. reflexivity.
   - intros Ht. apply Z.eqb_neq in Ht. rewrite Ht. reflexivity.
   - intros Hsz. apply Z.eqb_neq in Hsz. rewrite Hsz.
-    destruct (Z.eqb (stat_ifmt bs) S_IFREG), (Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) 0);
-      reflexivity.
+    destruct (Z.eqb (stat_ifmt bs) S_IFREG), (Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) 0),
+      (Z.eqb (stat_field_le ST_BLKSIZE_OFF 4 bs) page_size); reflexivity.
   - intros Hnl. apply Z.eqb_neq in Hnl. rewrite Hnl, !andb_false_r. reflexivity.
   - intros Hr. apply Z.eqb_neq in Hr. rewrite Hr, andb_false_r. reflexivity.
+  - intros Hb. apply Z.eqb_neq in Hb. rewrite Hb, andb_false_r. reflexivity.
 Qed.
 
 (** [read] of it: the content from the descriptor's offset, as much as
@@ -3741,10 +3746,12 @@ Definition r1_fstat_step (bs : list byte) : SyscallInput * SyscallEffect :=
    mkEffect 0 [(4096, bs)] []).
 
 (** A regular file's [struct stat] with the asserted members as given:
-    the mode, the link count and the size, zero everywhere else. *)
+    the mode, the link count and the size, the page size as
+    [st_blksize] ([Uapi.stat_page_blksize]), zero everywhere else. *)
 Definition file_stat (mode nlink size : Z) : list byte :=
   Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 mode ++ Z_to_le_bytes 4 nlink
-  ++ Z_to_le_bytes 24 0 ++ Z_to_le_bytes 8 size ++ Z_to_le_bytes 72 0.
+  ++ Z_to_le_bytes 24 0 ++ Z_to_le_bytes 8 size ++ Z_to_le_bytes 4 page_size
+  ++ Z_to_le_bytes 68 0.
 
 Definition r1_read_step (bs : list byte) : SyscallInput * SyscallEffect :=
   (mkInput 63 [3; 65536; 1024; 0; 0; 0] (fun _ => None) r1_wmem,

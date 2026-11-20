@@ -3288,6 +3288,17 @@ Definition entry_dev_key (e : FdEntry) : option Fs.path :=
   | FdDgram _ => None
   end.
 
+(** The device kind of a device descriptor, which keys its stat pin
+    beside its number when its node is not known ([IdDevFd]). *)
+Definition entry_dev_kind (e : FdEntry) : option Fs.DevKind :=
+  match e with
+  | FdDevNull _ _ => Some Fs.DevNull
+  | FdUrandom _ _ => Some Fs.DevUrandom
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir _ | FdSocket _ | FdPipe _ _ | FdStream _ _ _ | FdEventfd _
+  | FdDgram _ => None
+  end.
+
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
     "allocated but untouched").  Intervals are (base, size) pairs of
@@ -4173,17 +4184,42 @@ Record FsState := mkFsState { fsst_image : Fs.Fs; fsst_cwd : Fs.path }.
     them.  Each holds its own link count ([Fs.Stat.stat_pin_held]), so
     the removal of a link name, which may lower the count another link
     identity holds, RELEASES every link's count and [st_ctime]
-    ([statpins_release_links]). *)
+    ([statpins_release_links]).
+
+    A DEVICE DESCRIPTOR'S is its number and its device's kind
+    ([IdDevFd]), for a stat of the descriptor that cannot name the node
+    ([Fs.Stat.fstat_devfd_spec]: the image holds more than one node of
+    the kind).  The descriptor carries no key ([FdDevNull],
+    [FdUrandom]), but it holds one node for its whole life, and
+    [vfs_fstat] (fs/stat.c:276-281, Linux v6.18.46) reports that node's
+    inode at every call ([generic_fillattr], fs/stat.c:82-94).  The pin
+    lives while the number holds a descriptor of the kind
+    ([stat_id_alive]), and every arm that can install a device
+    descriptor at a number drops that number's pin before it installs
+    ([with_fd_unpinned]): the new descriptor may hold another node of
+    the kind.  Two descriptors of one file (a [dup]) hold two such pins,
+    so their stats may report two [st_ino]s where Linux reports one: no
+    sameness is asked between identities either, and that over-admits
+    without refusing what Linux reports. *)
 Inductive StatId :=
   | IdIno (i : Fs.ino)
   | IdDir (k : Fs.path)
   | IdDev (k : Fs.path)
-  | IdLink (k : Fs.path).
+  | IdLink (k : Fs.path)
+  | IdDevFd (fd : word) (d : Fs.DevKind).
+
+(** The two device kinds compared. *)
+Definition devkind_eqb (a b : Fs.DevKind) : bool :=
+  match a, b with
+  | Fs.DevNull, Fs.DevNull | Fs.DevUrandom, Fs.DevUrandom => true
+  | _, _ => false
+  end.
 
 Definition stat_id_eqb (a b : StatId) : bool :=
   match a, b with
   | IdIno i, IdIno j => Z.eqb i j
   | IdDir k, IdDir q | IdDev k, IdDev q | IdLink k, IdLink q => Fs.path_eqb k q
+  | IdDevFd f d, IdDevFd g e => (bv_eqb f g && devkind_eqb d e)%bool
   | _, _ => false
   end.
 
@@ -4631,18 +4667,20 @@ Record ProcState := mkProcState {
   procst_statpins : list (StatId * StatPin)
     (* THE `struct stat` EACH STATTED IDENTITY WAS FIRST SEEN WITH,
        keyed by IDENTITY ([StatId]) -- the 128 bytes [Fs.Stat] delivered
-       the first time that file, folder, device node or link was
-       statted, kept so that a LATER stat of the same identity cannot
-       disagree with it about which object it is.  An identity with no
-       entry has not been statted yet.
+       the first time that file, folder, device node, link or device
+       descriptor was statted, kept so that a LATER stat of the same
+       identity cannot disagree with it about which object it is.  An
+       identity with no entry has not been statted yet.
 
        WHY A PIN AT ALL, and it is [procst_utsname]'s argument on a
        different value.  Of the twenty members of the delivered struct
        the model derives the type, [st_size] and [st_nlink] for a file
-       and a folder, and knows four more to be zero padding; the rest --
-       the device, the inode, the permission bits, the owning ids, the
-       block size, the block count and the three timestamps -- are the
-       environment's, because [Fs.Fs] carries none of them.  Chosen
+       and a folder, knows four more to be zero padding, and knows the
+       block size, the page size for every kind
+       ([Uapi.stat_page_blksize]); the rest -- the device, the inode, the
+       permission bits, the owning ids, the block count and the three
+       timestamps -- are the environment's, because [Fs.Fs] carries none
+       of them.  Chosen
        AFRESH at each call they would admit a trace in which two
        [fstat]s of one unchanged file report different inodes, which no
        Linux machine produces.  Chosen ONCE and recorded, they cannot.
@@ -4656,7 +4694,8 @@ Record ProcState := mkProcState {
        or a truncate drops them.  The stat that first shows such a drop
        records its own bytes here ([Fs.Stat.file_pin_after]), so a
        file's entry holds the last mode a stat of it showed.  Beside
-       them a device node's, a link's and a folder's pin holds the
+       them a device node's (or a device descriptor's), a link's and a
+       folder's pin holds the
        members no answered call moves for that object
        ([Fs.Stat.stat_pin_held]: a device node's link count and
        timestamps, a link's link count, [st_blocks], [st_mtime] and
@@ -4665,7 +4704,9 @@ Record ProcState := mkProcState {
        KEYED BY IDENTITY, as Linux keys [st_ino]: two names of one file
        share one pin, and a name made after the old one went is a new
        identity with no pin ([IdIno] of a fresh inode; [IdDir] of a key
-       [rmdir] emptied, whose pin [with_fs] drops).  No distinctness is
+       [rmdir] emptied, whose pin [with_fs] drops; [IdDevFd] of a number
+       a device descriptor was installed at, whose pin
+       [with_fd_unpinned] drops).  No distinctness is
        asked between two identities' pins: tmpfs hands inode numbers out
        of a counter that wraps in its 32-bit mode ([shmem_reserve_inode],
        mm/shmem.c:362-376), and an image may hold several file systems.
@@ -5194,7 +5235,11 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
     device or a descriptor of the device's kind is open ([entry_dev_key]:
     such a descriptor's stat reads the pin of the kind's own name, when
     the node there is the image's one node of the kind,
-    [Fs.Stat.fstat_devfd_spec]). *)
+    [Fs.Stat.fstat_devfd_spec]); a device descriptor's while its number
+    holds a descriptor of its kind ([entry_dev_kind], the first entry at
+    the number as [fd_lookup] reads it).  The installing arms drop the
+    last one too, where the number may come to hold another node of the
+    kind with no change this test can see ([with_fd_unpinned]). *)
 Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId)
     : bool :=
   match id with
@@ -5211,6 +5256,14 @@ Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId
                            end) fds
   | IdLink k =>
       match Fs.fs_lookup fs k with Some (Fs.ELink _) => true | _ => false end
+  | IdDevFd n d =>
+      match List.find (fun p => bv_eqb (fst p) n) fds with
+      | Some p => match entry_dev_kind (snd p) with
+                  | Some d' => devkind_eqb d' d
+                  | None => false
+                  end
+      | None => false
+      end
   end.
 
 (** Install a new file-system image, DROPPING THE STAT PIN of every
@@ -5391,6 +5444,44 @@ Definition with_statpin (id : StatId) (sp : StatPin) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
                          ((id, sp) :: m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
+            (m_lim m) (m_time m).
+
+(** The pins [ps] without the one a device descriptor at number [n]
+    holds ([IdDevFd n _], either kind). *)
+Definition statpins_unpin_fd (n : word) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  List.filter (fun e => match fst e with
+                        | IdDevFd q _ => negb (bv_eqb q n)
+                        | _ => true
+                        end) ps.
+
+(** DROP THE STAT PIN OF DESCRIPTOR NUMBER [n] ([statpins_unpin_fd]).
+    Every arm that can install a DEVICE descriptor at a number calls it
+    before it installs: [Fs.Open.open_devnull], [Fs.Open.open_urandom],
+    [Fs.File.dup_spec] and [Fs.File.dup3_spec] ([F_DUPFD] and
+    [F_DUPFD_CLOEXEC] are declined, [Fs.Fcntl.fcntl_spec]).  The new
+    descriptor may hold another node of the kind than the one whose stat
+    the old pin holds, and nothing on the table tells the two apart: a
+    descriptor carries no key, so a [dup3] onto a number holding a
+    null-device descriptor from one node, of a null-device descriptor
+    from another, leaves an entry equal to the old one.  So the drop is
+    the arm's, and [stat_id_alive], which the table alone decides, is
+    not enough.  An arm that installs a descriptor of another kind at
+    the number leaves the pin in place but dead ([stat_id_alive]: no
+    stat reads it while the number holds no device descriptor of its
+    kind), and the next arm that installs a device descriptor there
+    drops it. *)
+Definition with_fd_unpinned (n : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m)
+                         (statpins_unpin_fd n (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
@@ -7855,6 +7946,11 @@ Lemma m_kernel_with_statpin : forall id sp m,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_statpin : model.
 
+Lemma m_kernel_with_fd_unpinned : forall n m,
+  m_kernel (with_fd_unpinned n m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fd_unpinned : model.
+
 Lemma m_kernel_with_abort_terminal : forall v m,
   m_kernel (with_abort_terminal v m) = m_kernel m.
 Proof. reflexivity. Qed.
@@ -9707,10 +9803,12 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_utsname_mkModel : model.
 
 
-(** The per-file stat pins against every other move of the model.  One
-    row and one column of the matrix above: [Fs.Stat.fstat_spec] is the
-    only reader and [with_statpin] the only writer, so every entry but
-    the diagonal one is [m_statpins m].
+(** The stat pins against every other move of the model.  One row and
+    one column of the matrix above: [Fs.Stat]'s stats are the only
+    readers, and [with_statpin], [with_fs] (which drops and releases
+    pins, [statpins_restrict], [statpins_release_links]) and
+    [with_fd_unpinned] (which drops a device descriptor's) the only
+    writers, so every other entry is [m_statpins m].
 
     The column is what the framing obligations need.  A [fstat] that
     creates a pin changes the model on a
@@ -9912,6 +10010,107 @@ Lemma m_statpins_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
   m_statpins (with_statpin id sp m) = (id, sp) :: m_statpins m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_statpin : model.
+
+(** [with_fd_unpinned] moves the pins alone. *)
+Lemma m_fds_with_fd_unpinned : forall (n : word) (m : Model),
+  m_fds (with_fd_unpinned n m) = m_fds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_fd_unpinned : model.
+
+Lemma m_pipes_with_fd_unpinned : forall (n : word) (m : Model),
+  m_pipes (with_fd_unpinned n m) = m_pipes m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pipes_with_fd_unpinned : model.
+
+Lemma m_vmmaps_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vmmaps (with_fd_unpinned n m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_fd_unpinned : model.
+
+Lemma m_vm_lazy_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vm_lazy (with_fd_unpinned n m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_lazy_with_fd_unpinned : model.
+
+Lemma m_vm_materialized_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vm_materialized (with_fd_unpinned n m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_materialized_with_fd_unpinned : model.
+
+Lemma m_stdin_with_fd_unpinned : forall (n : word) (m : Model),
+  m_stdin (with_fd_unpinned n m) = m_stdin m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_stdin_with_fd_unpinned : model.
+
+Lemma m_net_with_fd_unpinned : forall (n : word) (m : Model),
+  m_net (with_fd_unpinned n m) = m_net m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_net_with_fd_unpinned : model.
+
+Lemma m_conn_ix_with_fd_unpinned : forall (n : word) (m : Model),
+  m_conn_ix (with_fd_unpinned n m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_conn_ix_with_fd_unpinned : model.
+
+Lemma m_fs_with_fd_unpinned : forall (n : word) (m : Model),
+  m_fs (with_fd_unpinned n m) = m_fs m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fs_with_fd_unpinned : model.
+
+Lemma m_halted_with_fd_unpinned : forall (n : word) (m : Model),
+  m_halted (with_fd_unpinned n m) = m_halted m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_halted_with_fd_unpinned : model.
+
+Lemma m_tid_with_fd_unpinned : forall (n : word) (m : Model),
+  m_tid (with_fd_unpinned n m) = m_tid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_tid_with_fd_unpinned : model.
+
+Lemma m_setsid_succeeded_with_fd_unpinned : forall (n : word) (m : Model),
+  m_setsid_succeeded (with_fd_unpinned n m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_setsid_succeeded_with_fd_unpinned : model.
+
+Lemma m_has_children_with_fd_unpinned : forall (n : word) (m : Model),
+  m_has_children (with_fd_unpinned n m) = m_has_children m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_fd_unpinned : model.
+
+Lemma m_sigmask_with_fd_unpinned : forall (n : word) (m : Model),
+  m_sigmask (with_fd_unpinned n m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_fd_unpinned : model.
+
+Lemma m_utsname_with_fd_unpinned : forall (n : word) (m : Model),
+  m_utsname (with_fd_unpinned n m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_fd_unpinned : model.
+
+Lemma m_rlimit_core_with_fd_unpinned : forall (n : word) (m : Model),
+  m_rlimit_core (with_fd_unpinned n m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_rlimit_core_with_fd_unpinned : model.
+
+Lemma m_nofile_with_fd_unpinned : forall (n : word) (m : Model),
+  m_nofile (with_fd_unpinned n m) = m_nofile m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_nofile_with_fd_unpinned : model.
+
+Lemma m_clock_with_fd_unpinned : forall (n : word) (m : Model),
+  m_clock (with_fd_unpinned n m) = m_clock m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_clock_with_fd_unpinned : model.
+
+Lemma m_creds_with_fd_unpinned : forall (n : word) (m : Model),
+  m_creds (with_fd_unpinned n m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_fd_unpinned : model.
+
+Lemma m_statpins_with_fd_unpinned : forall (n : word) (m : Model),
+  m_statpins (with_fd_unpinned n m) = statpins_unpin_fd n (m_statpins m).
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_fd_unpinned : model.
 
 Lemma m_statpins_mkModel : forall fds vm stdin fs halted tid rlim,
   m_statpins (mkModel fds vm stdin fs halted tid rlim) = [].

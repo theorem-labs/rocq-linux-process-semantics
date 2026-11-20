@@ -51,8 +51,9 @@ Definition check_dup_result (eff : SyscallEffect) (m : Model)
 (** [dup]/[dup3]: the [FdFile]/[FdFileW] arms decline, because the
     model cannot represent two fds sharing one file offset, and dup3
     declines a free [newfd] at or above [Uapi.NR_OPEN_DEFAULT], where
-    the answer turns on the descriptor table's size.  Kernel citations
-    live on [File.dup_spec] and [File.dup3_spec]. *)
+    the answer turns on the descriptor table's size.  Each drops the new
+    number's stat pin as it installs ([State.with_fd_unpinned]).  Kernel
+    citations live on [File.dup_spec] and [File.dup3_spec]. *)
 Definition check_dup (oldfd : word) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match fd_lookup (m_fds m) oldfd with
@@ -60,7 +61,7 @@ Definition check_dup (oldfd : word) (eff : SyscallEffect) (m : Model)
   | Some e =>
       if negb (dup_modeled_entry e) then CheckUnmodeled
       else check_dup_result eff m
-             (fun fd => with_fds (fd_insert (m_fds m) fd e) m)
+             (fun fd => with_fds (fd_insert (m_fds m) fd e) (with_fd_unpinned fd m))
   end.
 
 Definition check_dup3 (oldfd newfd flags : word) (eff : SyscallEffect)
@@ -79,11 +80,11 @@ Definition check_dup3 (oldfd newfd flags : word) (eff : SyscallEffect)
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then check_ret_only eff newfd
-                     (with_fds (fd_insert (m_fds m) newfd e) m) []
+                     (with_fds (fd_insert (m_fds m) newfd e) (with_fd_unpinned newfd m)) []
               else CheckUnmodeled
           | Some _ =>
               check_ret_only eff newfd
-                (with_fds (fd_insert (m_fds m) newfd e) m) []
+                (with_fds (fd_insert (m_fds m) newfd e) (with_fd_unpinned newfd m)) []
           end
     end.
 

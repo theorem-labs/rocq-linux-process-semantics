@@ -316,21 +316,26 @@ Definition file_pin_after (ino : Fs.ino) (sp : StatPin) (bs : list byte) (m : Mo
       part of the answer the model knows exactly, and it is what makes a
       poisoned, short or invented buffer rejectable
       ([Uapi.stat_buf_wf]).
-    - THE TYPE IS S_IFREG, [st_rdev] IS 0 AND [st_size] IS THE FILE'S
-      LENGTH, all asserted.  [generic_fillattr] (fs/stat.c:82-113, Linux
-      v6.18.46) copies [inode->i_mode] into [stat->mode] (:90),
-      [inode->i_rdev] into [stat->rdev] (:94) and [i_size_read(inode)]
-      into [stat->size] (:95), and [cp_new_stat] copies all three out.
+    - THE TYPE IS S_IFREG, [st_rdev] IS 0, [st_blksize] IS THE PAGE SIZE
+      AND [st_size] IS THE FILE'S LENGTH, all asserted.
+      [generic_fillattr] (fs/stat.c:82-113, Linux v6.18.46) copies
+      [inode->i_mode] into [stat->mode] (:90), [inode->i_rdev] into
+      [stat->rdev] (:94), [i_size_read(inode)] into [stat->size] (:95)
+      and [i_blocksize(inode)] into [stat->blksize] (:105), and
+      [cp_new_stat] copies all four out.
       An [Fs.EFile] is a regular file: the image
       names a device by [Fs.EDev] and a folder by [Fs.EDir], so an
       [EFile] it holds is the launch file system's regular file, and an
       [EFile] this run made came from an O_CREAT open, whose
       [build_open_flags] sets [op->mode = how->mode | S_IFREG]
       (fs/open.c:1271).  A regular file on tmpfs or ramfs has no device
-      number ([Uapi.stat_no_rdev]).  For a regular file [i_size] is the
-      number of bytes it holds, which is the length of the [EFile]'s
-      byte list.  So any other type, device number or size is rejected
-      ([Uapi.stat_reg_fixed], [Uapi.stat_size_ok]).
+      number ([Uapi.stat_no_rdev]) and the page size as its block size,
+      the configuration of record having no huge pages for
+      [shmem_getattr] to raise it to ([Uapi.stat_page_blksize]).  For a
+      regular file [i_size] is the number of bytes it holds, which is the
+      length of the [EFile]'s byte list.  So any other type, device
+      number, block size or size is rejected ([Uapi.stat_reg_fixed],
+      [Uapi.stat_size_ok]).
 
     - [st_nlink] IS THE INODE'S LINK COUNT, asserted:
       [generic_fillattr] copies [inode->i_nlink] (fs/stat.c:91), which
@@ -340,12 +345,10 @@ Definition file_pin_after (ino : Fs.ino) (sp : StatPin) (bs : list byte) (m : Mo
 
     WHAT IT DOES NOT DETERMINE, and how it answers anyway.  The device,
     the inode number, the permission bits, the owning ids, the block
-    size, the block count and the three timestamp pairs have no source
-    in [Fs] (the block size is the page size or the huge-page size,
-    [Uapi.stat_page_blksize] says when).  Each is a [choose] — an
-    environment value, not a zero.  Zero-filling them would be a
-    confident wrong answer of exactly the kind AGENTS.md's first
-    priority forbids.
+    count and the three timestamp pairs have no source in [Fs].  Each is
+    a [choose] — an environment value, not a zero.  Zero-filling them
+    would be a confident wrong answer of exactly the kind AGENTS.md's
+    first priority forbids.
 
     FOUR MEMBERS ARE LEFT OUT OF THE PIN and are therefore re-chosen at
     every call: [st_blocks] and the three timestamp pairs.  That is
@@ -389,8 +392,9 @@ Definition file_pin_after (ino : Fs.ino) (sp : StatPin) (bs : list byte) (m : Mo
     argued away because receptiveness ([Checks.Progress]) is a
     statement about every [Model], including ones no run can build, and
     an unsatisfiable [choose] is the one way to write a non-receptive
-    spec (Monad.v): the type and [st_rdev] are stable members, so a pin
-    of another type or device number leaves no answer to choose.
+    spec (Monad.v): the type, [st_rdev] and the block size are stable
+    members, so a pin of another type, device number or block size
+    leaves no answer to choose.
 
     THE ORDER IS THE KERNEL'S.  [vfs_fstat] resolves the descriptor
     before [cp_new_stat] runs, so -EBADF preempts everything here; then
@@ -450,7 +454,9 @@ Definition fstat_file_spec (ino : Fs.ino) (statbuf : word) : Sys SyscallEffect :
     ([Uapi.stat_field_eqb]):
 
     - a DEVICE NODE's link count (bytes 20..23) and its three timestamp
-      pairs (72..119).  No arm gives a device node a name ([mknod] and
+      pairs (72..119), whether the pin is the node's ([State.IdDev]) or
+      a descriptor's on it ([State.IdDevFd]).  No arm gives a device
+      node a name ([mknod] and
       [link] are unmodeled) or takes one away ([Fs.Namei.unlinkat_file_spec]
       declines it), and no answered call on /dev/null or /dev/urandom
       touches the inode's times: [read_null], [write_null] and their
@@ -500,7 +506,8 @@ Definition stat_pin_held (id : StatId) (released : bool) (b1 b2 : list byte) : b
   match id with
   | IdIno _ => true
   | IdDir _ => stat_field_eqb ST_BLOCKS_OFF 8 b1 b2
-  | IdDev _ => (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_ATIME_OFF 48 b1 b2)%bool
+  | IdDev _ | IdDevFd _ _ =>
+      (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_ATIME_OFF 48 b1 b2)%bool
   | IdLink _ =>
       ((released
         || (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_CTIME_OFF 16 b1 b2))
@@ -529,9 +536,10 @@ Definition pinned_after (id : StatId) (sp : StatPin) (bs : list byte) (m : Model
     members the kernel does not decide are chosen once and held in
     [State.procst_statpins] under the device node's identity
     ([State.IdDev] of its key), exactly as a file's are under its
-    inode.  [k] is that key and [ok] the device's assertions; nothing
-    below reads either for anything but the pin's key and the
-    delivery's test.
+    inode, or under the descriptor's ([State.IdDevFd]) when the stat
+    cannot name the node ([fstat_devfd_spec]).  [id] is that identity
+    and [ok] the device's assertions; nothing below reads either for
+    anything but the pin's key and the delivery's test.
 
     THE LINK COUNT AND THE THREE TIMESTAMP PAIRS ARE THE ENVIRONMENT'S,
     CHOSEN ONCE AND HELD like the stable members, and a link's count,
@@ -559,9 +567,9 @@ Definition pinned_after (id : StatId) (sp : StatPin) (bs : list byte) (m : Model
 
     A device descriptor carries no key, so [fstat] on one reads the pin
     of its kind's node at the device's own name only when that node is
-    the image's one node of the kind ([fstat_devfd_spec]); [unlinkat]
-    declines the removal of an [Fs.EDev] entry
-    ([Fs.Namei.unlinkat_file_spec]).  The rest — -EBADF before
+    the image's one node of the kind, and the descriptor's own pin
+    otherwise ([fstat_devfd_spec]); [unlinkat] declines the removal of
+    an [Fs.EDev] entry ([Fs.Namei.unlinkat_file_spec]).  The rest — -EBADF before
     anything, [access_ok]'s -EFAULT, the partial [copy_to_user] decline,
     the errnos past an open descriptor — is [fstat_file_spec]'s argument
     unchanged. *)
@@ -599,23 +607,6 @@ Definition fstat_chrdev_spec (k : path) (ok : list byte -> bool)
     (statbuf : word) : Sys SyscallEffect :=
   fstat_pinned_spec (IdDev k) ok statbuf.
 
-(** THE STAT OF A DEVICE DESCRIPTOR WHOSE NODE IS NOT KNOWN: the
-    delivery [ok] asserts, and no pin read or written.  The rest is
-    [fstat_pinned_spec]'s shape. *)
-Definition fstat_unpinned_spec (ok : list byte -> bool) (statbuf : word)
-    : Sys SyscallEffect :=
-  i <- input ;;
-  if negb (access_okb statbuf STAT_SIZE) then err_ret EFAULT
-  else
-    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
-    | None => unmodeled      (* a partial [copy_to_user] then -EFAULT *)
-    | Some _ =>
-        bs <- choose (fun bs : list byte =>
-                        stat_buf_wf bs = true
-                        /\ ok bs = true) ;;
-        pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
-    end.
-
 (** The keys of the image's device nodes of kind [d]. *)
 Definition dev_node_keys (fs : Fs.Fs) (d : DevKind) : list Fs.path :=
   List.map fst (List.filter (fun ke => match snd ke, d with
@@ -631,25 +622,36 @@ Definition dev_sole_node (fs : Fs.Fs) (d : DevKind) (k : Fs.path) : bool :=
   | _ => false
   end.
 
-(** THE STAT OF A DEVICE DESCRIPTOR of kind [d], whose own name is [k].
-    The descriptor carries no key ([State.FdDevNull], [State.FdUrandom])
-    and an open answers at any node of the kind ([Fs.Open.open_devnull]),
-    while two nodes are two inodes in Linux, with their own [st_ino],
-    link count and times ([init_special_inode], fs/inode.c:2552-2577,
-    Linux v6.18.46, gives each node its own inode).  So the stat holds
-    the node's members under its key's pin ([fstat_chrdev_spec]) only
-    when the node at [k] is the image's one node of kind [d], the only
-    node such a descriptor can have come from; otherwise it delivers
-    what [ok] asserts, what Linux fixes for every node of the kind, and
-    holds nothing ([fstat_unpinned_spec]).  The answer depends on the
-    image alone, which no answered call changes for a device: no arm
-    makes a device node, and [unlinkat] declines the removal of one
+(** THE STAT OF DEVICE DESCRIPTOR [fd], of kind [d], whose own name is
+    [k].  The descriptor carries no key ([State.FdDevNull],
+    [State.FdUrandom]) and an open answers at any node of the kind
+    ([Fs.Open.open_devnull]), while two nodes are two inodes in Linux,
+    with their own [st_ino], link count and times
+    ([init_special_inode], fs/inode.c:2552-2577, Linux v6.18.46, gives
+    each node its own inode).  So the stat holds the node's members
+    under its key's pin ([fstat_chrdev_spec]) when the node at [k] is
+    the image's one node of kind [d], the only node such a descriptor
+    can have come from.  Otherwise it holds them under the DESCRIPTOR's
+    pin ([State.IdDevFd] of [fd] and [d]): which node the descriptor
+    came from is not known, but it is one node for the descriptor's
+    whole life, and [vfs_fstat] (fs/stat.c:276-281) reports that held
+    file's inode at every call ([generic_fillattr], fs/stat.c:82-94).
+    So two stats of one descriptor with nothing between them repeat the
+    node's members, as on Linux.  The pin never outlives the descriptor's
+    file: it is dropped by the arm that installs a device descriptor at
+    [fd] ([State.with_fd_unpinned]), and by the next image when [fd]
+    holds no descriptor of the kind ([State.stat_id_alive]).  Two
+    descriptors of one file, as a [dup] makes, hold two pins and may
+    report two [st_ino]s, which over-admits and refuses nothing Linux
+    reports.  Which branch answers depends on the image alone, which no
+    answered call changes for a device: no arm makes a device node, and
+    [unlinkat] declines the removal of one
     ([Fs.Namei.unlinkat_file_spec]). *)
 Definition fstat_devfd_spec (d : DevKind) (k : path) (ok : list byte -> bool)
-    (statbuf : word) : Sys SyscallEffect :=
+    (fd statbuf : word) : Sys SyscallEffect :=
   m <- get_model ;;
   if dev_sole_node (m_fs m) d k then fstat_chrdev_spec k ok statbuf
-  else fstat_unpinned_spec ok statbuf.
+  else fstat_pinned_spec (IdDevFd fd d) ok statbuf.
 
 (** THE SUCCESS ARM FOR A LINK the walk did not follow ([lstat]): the
     device node's shape over the link's identity, its key
@@ -852,19 +854,27 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
 
     [Fs.resolve] finds the entry, and [stat_entry_spec] delivers it with
     the same machinery [fstat] uses for a descriptor on it: the padding
-    pinned to zero; S_IFREG, [st_size] and [st_nlink] asserted for a
-    file, the type and the link count for a directory, the type,
-    [st_rdev], [st_size] and [st_blocks] for the two devices, the type
-    and [st_size] for a link; and of the members [Fs] cannot supply, the
-    stable ones ([Uapi.stat_stable_eqb]: the device, inode number, mode,
-    ids, [st_rdev] and block size) and those [stat_pin_held] names (a
-    device node's link count and timestamps, a link's link count,
-    [st_blocks], [st_mtime] and [st_ctime], a folder's [st_blocks]),
-    chosen once per identity ([State.StatId]: a file's inode, a
-    folder's, a device node's or a link's key) and held, a link's until
-    a link name is removed; the rest chosen afresh at every call: a
-    file's block count and timestamps, a folder's [st_size] and
-    timestamps, and a link's [st_atime].  On
+    pinned to zero; the type asserted for every kind; [st_size] for a
+    file, a device and a link; the link count for a file and a folder;
+    [st_rdev] and [st_blocks] for the two devices; and what tmpfs and
+    ramfs fix of the other kinds ([Uapi.stat_reg_fixed],
+    [Uapi.stat_dir_fixed], [Uapi.stat_lnk_fixed]): [st_rdev] 0 for a
+    file, a folder and a link, the page size as [st_blksize] for every
+    kind, a folder's [st_blocks] 0, and a link's whole [st_mode]
+    S_IFLNK|0777 and its [st_blocks], 0 for a body kept inline and 0 or
+    8 for one in a page.  Of the members [Fs] cannot supply, the stable
+    ones ([Uapi.stat_stable_eqb]: the device, inode number, mode, ids,
+    [st_rdev] and block size, where not asserted) and those
+    [stat_pin_held] names (a device node's link count and timestamps, a
+    link's link count, [st_blocks], [st_mtime] and [st_ctime], a
+    folder's [st_blocks]) are chosen at the first stat of an identity
+    ([State.StatId]: a file's inode, a folder's, a device node's or a
+    link's key) and held, except that a regular file's set-id bits may
+    be shown cleared, and that the removal of a link name releases every
+    link's count and [st_ctime], and nothing else, until the link's next
+    stat pins them again ([State.statpins_release_links]); the rest are
+    chosen afresh at every call: a file's block count and timestamps, a
+    folder's [st_size] and timestamps, and a link's [st_atime].  On
     every failing arm [SYSCALL_DEFINE4(newfstatat)] reaches
     [cp_new_stat] only once [vfs_fstatat] has returned 0, so the kernel
     leaves [statbuf] untouched, and a bad [statbuf] with an absent file
@@ -1218,10 +1228,10 @@ Definition newfstatat_spec (dirfd pathp statbuf flag : word)
 
 (** The null device: S_IFCHR, [st_rdev] 1:3, zero size and blocks, the
     page size as [st_blksize], under the pin of the node at the device's
-    own name when that is the image's one null-device node
-    ([fstat_devfd_spec]). *)
-Definition fstat_devnull_spec (statbuf : word) : Sys SyscallEffect :=
-  fstat_devfd_spec DevNull devnull_path stat_devnull_ok statbuf.
+    own name when that is the image's one null-device node, and of the
+    descriptor [fd] otherwise ([fstat_devfd_spec]). *)
+Definition fstat_devnull_spec (fd statbuf : word) : Sys SyscallEffect :=
+  fstat_devfd_spec DevNull devnull_path stat_devnull_ok fd statbuf.
 
 (** The random device: S_IFCHR, [st_rdev] 1:9, zero size and blocks
     ([Uapi.stat_urandom_ok]), on the assumption
@@ -1231,8 +1241,8 @@ Definition fstat_devnull_spec (statbuf : word) : Sys SyscallEffect :=
     zero [st_size] and [st_blocks] rest on the same premise about a
     node nothing ever resized.  The pin is the null device's rule
     ([fstat_devfd_spec]). *)
-Definition fstat_urandom_spec (statbuf : word) : Sys SyscallEffect :=
-  fstat_devfd_spec DevUrandom urandom_path stat_urandom_ok statbuf.
+Definition fstat_urandom_spec (fd statbuf : word) : Sys SyscallEffect :=
+  fstat_devfd_spec DevUrandom urandom_path stat_urandom_ok fd statbuf.
 
 (** THE MATCH BELOW IS TOTAL ON [FdEntry] ON PURPOSE, with no wildcard.
     A new constructor is a new kind of file, and whoever adds it must
@@ -1338,12 +1348,13 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   | Some (FdPipe _ _)  => unmodeled  (* S_IFIFO is known; a pipe's [st_size]/[st_blocks] are
                                         not even the queue's length, so nothing plays the
                                         role the file contents play above *)
-  | Some (FdDevNull _ _) => fstat_devnull_spec statbuf
+  | Some (FdDevNull _ _) => fstat_devnull_spec fd statbuf
                                      (* the null device: S_IFCHR, [st_rdev] 1:3, [st_size]
                                         and [st_blocks] 0 asserted ([Uapi.stat_devnull_ok]),
                                         the rest pinned under [Uapi.devnull_path] when that
-                                        node is the image's one ([fstat_devfd_spec]) *)
-  | Some (FdUrandom _ _) => fstat_urandom_spec statbuf
+                                        node is the image's one, and under the descriptor
+                                        otherwise ([fstat_devfd_spec]) *)
+  | Some (FdUrandom _ _) => fstat_urandom_spec fd statbuf
                                      (* the random device: S_IFCHR, [st_rdev] 1:9
                                         ([Uapi.stat_urandom_ok]), the rest pinned under
                                         [Uapi.urandom_path] on the same rule *)

@@ -208,6 +208,10 @@ Lemma with_statpin_with_vdso : forall id sp v m,
   with_statpin id sp (with_vdso v m) = with_vdso v (with_statpin id sp m).
 Proof. reflexivity. Qed.
 
+Lemma with_fd_unpinned_with_vdso : forall n v m,
+  with_fd_unpinned n (with_vdso v m) = with_vdso v (with_fd_unpinned n m).
+Proof. reflexivity. Qed.
+
 Lemma with_abort_terminal_with_vdso : forall b v m,
   with_abort_terminal b (with_vdso v m) = with_vdso v (with_abort_terminal b m).
 Proof. reflexivity. Qed.

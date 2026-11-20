@@ -372,16 +372,18 @@ Qed.
 
 (** Mirrors [Open.open_devnull] and [Open.open_urandom]: the shared
     success shape with the granted access mode on the entry, at whatever
-    key the walk reached it. *)
+    key the walk reached it, the number's old stat pin dropped first. *)
 Local Definition check_open_devnull (k : Fs.path) (rd wr : bool)
     (eff : SyscallEffect) (m : Model) : check_result :=
   check_open_result_mk eff m
-    (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
+    (fun fd m' => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))
+                    (with_fd_unpinned fd m')).
 
 Local Definition check_open_urandom (k : Fs.path) (rd wr : bool)
     (eff : SyscallEffect) (m : Model) : check_result :=
   check_open_result_mk eff m
-    (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
+    (fun fd m' => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))
+                    (with_fd_unpinned fd m')).
 
 (** THE ARMS, each a match on [Fs.resolve]'s outcome and mirroring the
     spec of the same name row for row.  Each declines "proc" and "sys"
