@@ -85,9 +85,9 @@ empty.
 
 blocking: the rule of the verdict blocking (.github/review.md, "The verdict"), which code applies whatever the model
 wrote, after the soundness rule. A blocking finding is a change item whose optional is false. When <output.json>, the
-review's output, gives the verdict blocking and its list holds no blocking finding (questions alone, optional changes
-alone, or no item), the file gets the verdict person (settled). So Sami reads the review: the item does not wait on
-its author, and no fix runs. Any other output stays as it is.
+review's output, gives the verdict blocking and its list holds no blocking finding and one question item or more, the
+file gets the verdict person (settled). So the item waits on Sami, who answers the questions, and no fix runs. Any
+other output stays as it is, also a verdict blocking whose list holds no question.
 
 fixes: the count of the fix reviews since the author's last own push (.github/review-answer.md, "The two stops"), on
 standard output. <commits.jsonl> is the history of <head> as the API gives it (repos/<repo>/commits?sha=<head>), and
@@ -1510,8 +1510,10 @@ def blocking_finding(item):
 
 def settled(output):
     """The review's output after the rule of the verdict blocking: the verdict person when the output gives the verdict
-    blocking and its list holds no blocking finding, else output as it is."""
-    if output.get("verdict") == "blocking" and not any(blocking_finding(i) for i in output.get("items") or ()):
+    blocking and its list holds no blocking finding and one question item or more, else output as it is."""
+    items = output.get("items") or ()
+    if (output.get("verdict") == "blocking" and not any(blocking_finding(i) for i in items)
+            and any(isinstance(i, dict) and i.get("kind") == "question" for i in items)):
         return dict(output, verdict="person")
     return output
 
@@ -1796,8 +1798,9 @@ def main(argv):
             for name, part in ((section_path, text), (all_path, every)):
                 with open(name, "w", encoding="utf-8") as f:
                     f.write(part + "\n" if part else "")
-            print("The soundness rule holds: the verdict is person, and the comment gets the section on soundness."
-                  if text else "The soundness rule does not hold, so it leaves the review's verdict as it is.")
+            print("The soundness rule applies. So the workflow gives the verdict person, and the comment gets the "
+                  "section on soundness." if text else
+                  "The soundness rule does not apply, so it does not change the review's verdict.")
             return 0
         if len(argv) == 2 and argv[0] == "blocking":
             with open(argv[1], encoding="utf-8") as f:
@@ -1808,8 +1811,8 @@ def main(argv):
             if after is not output:
                 with open(argv[1], "w", encoding="utf-8") as f:
                     json.dump(after, f, ensure_ascii=False)
-                print("The review gives the verdict blocking, but its list holds no blocking finding: the verdict is "
-                      "person.")
+                print("The review gives the verdict blocking, but its list holds no blocking finding and holds a "
+                      "question. So the workflow changes the verdict to person.")
             return 0
         if len(argv) == 4 and argv[0] == "fixes" and HEAD.fullmatch(argv[3]):
             print(fixes(json_lines(argv[1]), json_lines(argv[2]), argv[3]))

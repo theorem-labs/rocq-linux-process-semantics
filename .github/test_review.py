@@ -94,8 +94,8 @@ VERIFY_KEY = "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}"
 APP_KEY = "secrets.OSS_VERIFY_APP_PRIVATE_KEY"
 # The post job's last step, which runs while the environment post holds no key of the App, and the line that it writes
 # to the run's summary.
-NO_KEY = "Say that the environment post holds no key of the OSS Verify App"
-NO_KEY_LINE = ("The environment `post` holds no key of the OSS Verify App. So this run approved no held run, "
+NO_KEY = "Say that the environment post has no key of the OSS Verify App"
+NO_KEY_LINE = ("The environment `post` has no key of the OSS Verify App. So this run approved no held run, "
                "recorded or changed no check run `repo-pairs/import-approved`, and closed or reopened no pull request.")
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
@@ -5106,12 +5106,11 @@ class FreshReaderTest(ReaderRunner):
         OSSV-612's twin workflow, the fresh reader dropped it in 2 of 8 trims. A trim that drops "No blocking
         finding.", "Blocking findings." or "Questions for Sami:" with the subject of each question gets the review's
         first line back at the start of the trimmed text, made inert and closed, as an added item is. A trim that keeps
-        that line, also in bold, posts as the reader gave it. The block holds the whole review in each case."""
+        that line, also in bold, posts as the reader gave it. The block holds the whole review in each case. When the
+        rules of code make the verdict person for a list with a question and no blocking finding, the result line is
+        "Questions for Sami:" and the text of each question, never "Blocking findings."."""
         question = "Questions for Sami: whether SCOPE.md:301 holds for @octocat's case."
         trimmed = "`theories/Fd.v:213` leaves the case open."
-        # The verdict blocking needs a blocking finding in the list (rules.py blocking), which the trimmed text names.
-        change = {"kind": "change", "ref": "theories/Fd.v:213", "optional": False,
-                  "text": "Close the case at `theories/Fd.v:213`."}
         for verdict, line in (("pass", "No blocking finding."), ("blocking", "Blocking findings."),
                               ("person", question)):
             review = f"{line}\n\n1. {trimmed}\n\nIt is worth noting that the rest of the change is fine."
@@ -5123,7 +5122,7 @@ class FreshReaderTest(ReaderRunner):
                 with self.subTest(verdict=verdict, trim=case):
                     self.tearDown()
                     self.setUp()
-                    rc, out, got = self.post(review, [change] if verdict == "blocking" else [], text, verdict)
+                    rc, out, got = self.post(review, [], text, verdict)
                     self.assertEqual(rc, 0, out)
                     self.assertEqual(got["body"], self.body(posted, whole=whole, verdict=verdict))
         # The line goes back made inert and closed: a mention notifies no one, and an element that it opens ends
@@ -5132,6 +5131,27 @@ class FreshReaderTest(ReaderRunner):
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         self.assertEqual(trim.with_result(f"{line}\n\nMore.", trimmed, head),
                          f"Blocking findings. <details>@{WJ}octocat\n\n</details>\n\n{trimmed}")
+        # A review whose list holds a question and no blocking finding, and whose verdict the rules of code made person
+        # (rules.py blocking): its line "Blocking findings." never posts. The result line is "Questions for Sami:" and
+        # the text of each question, made inert and closed, in place of the line that the reader kept, also in bold or
+        # in another form, or before the trim that dropped it. Another verdict, or a list that holds a blocking
+        # finding (the soundness rule's person verdict keeps each blocking finding), keeps the review's line.
+        review = f"Blocking findings.\n\n1. {trimmed}"
+        asked = [{"kind": "question", "ref": "SCOPE.md:301", "optional": False, "text": "Does SCOPE.md:301\nhold?"},
+                 {"kind": "question", "ref": None, "optional": True, "text": "Ask @octocat."}]
+        questions = f"Questions for Sami: Does SCOPE.md:301 hold? Ask @{WJ}octocat."
+        for text, want in ((trimmed, f"{questions}\n\n{trimmed}"),
+                           (f"Blocking findings.\n\n{trimmed}", f"{questions}\n\n{trimmed}"),
+                           (f"**Blocking findings.** {trimmed}", f"{questions}\n\n{trimmed}"),
+                           ("**Blocking findings**.", questions),
+                           (f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}",
+                            f"Questions for Sami: whether `SCOPE.md:301` holds.\n\n{trimmed}")):
+            with self.subTest(trim=text):
+                self.assertEqual(trim.with_result(review, text, head, "person", asked), want)
+        for verdict, items in (("blocking", asked), ("person", [*asked, dict(asked[0], kind="change")])):
+            with self.subTest(verdict=verdict, items=items):
+                self.assertEqual(trim.with_result(review, trimmed, head, verdict, items),
+                                 f"Blocking findings.\n\n{trimmed}")
 
     def test_an_issues_review_keeps_the_trim_that_the_reader_gave(self):
         """An issue's review has no fixed form: its first line says whether the report holds (.github/review.md, "The
@@ -6839,28 +6859,43 @@ class AnswerFixTest(ReaderRunner):
 
     def test_a_blocking_verdict_whose_list_holds_no_blocking_finding_is_the_person_verdict_and_starts_no_fix(self):
         """.github/review.md ("The verdict"): the verdict blocking needs a blocking finding, a change item whose
-        optional is false. A review of an outside pull request that gives the verdict blocking with only a question,
-        only an optional change, or no item, and that the soundness rule leaves as it is (no file of it can change a
-        proof): the comment step gives the verdict person (rules.py blocking), in its output and its marker. No fix
-        runs, and the label step gives waits-on-theorem with Sami's step, never waits-on-author. A list with a blocking
-        finding keeps the verdict blocking, and the fix runs."""
+        optional is false. A review of an outside pull request that gives the verdict blocking with a question and no
+        blocking finding (a question alone, or the question on soundness alone), and that the soundness rule leaves as
+        it is (no file of it can change a proof): the comment step gives the verdict person (rules.py blocking), in its
+        output and its marker. The posted review starts with "Questions for Sami:" and the text of each question, and
+        its visible part holds no "Blocking findings.", whether the reader kept that line or dropped it. No fix runs,
+        and the label step gives waits-on-theorem with Sami's step, never waits-on-author. A list with no question
+        (an optional change alone, or no item) keeps the verdict blocking, and so does a list with a blocking finding:
+        the review starts with "Blocking findings.", and the fix runs."""
         question = {"kind": "question", "ref": "theories/A.v:3", "optional": False,
                     "text": "Does `theories/A.v:3` need `exact I`?"}
         optional = {"kind": "change", "ref": "theories/A.v:3", "optional": True, "text": "End the proof with exact I."}
         change = dict(optional, optional=False)
-        for case, items, verdict, fix in (("a question alone", [question], "person", "false"),
-                                          ("an optional change alone", [optional], "person", "false"),
-                                          ("no item", [], "person", "false"),
-                                          ("a blocking finding", [change, question], "blocking", "true")):
+        kept, dropped = "Blocking findings.\n\n1. `theories/A.v:3`.", "1. `theories/A.v:3`."
+        for case, items, trimmed, verdict, fix in (
+                ("a question alone, and the reader keeps the result line", [question], kept, "person", "false"),
+                ("a question alone, and the reader drops the result line", [question], dropped, "person", "false"),
+                ("the question on soundness alone", [dict(rules.QUESTION)], kept, "person", "false"),
+                ("an optional change alone", [optional], kept, "blocking", "true"),
+                ("no item", [], kept, "blocking", "true"),
+                ("a blocking finding", [change, question], kept, "blocking", "true")):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
                 self.write("pr.diff", self.DIFF)
                 rc, out, result = self.post("Blocking findings.\n\n1. `theories/A.v:3` ends with `trivial`.", items,
-                                            "Blocking findings.\n\n1. `theories/A.v:3`.", verdict="blocking")
+                                            trimmed, verdict="blocking")
                 self.assertEqual((rc, result.get("verdict")), (0, verdict), out)
                 self.assertIn(f"\n<!-- review-verdict {HEAD} {verdict} -->\n", result["body"])
-                self.assertEqual("the verdict is person" in out, verdict == "person", out)
+                self.assertEqual("So the workflow changes the verdict to person." in out, verdict == "person", out)
+                shown = result["body"].split(self.WHOLE, 1)[0]
+                text = shown.split(f"**Automated review** of commit {HEAD[:12]}\n\n", 1)[1]
+                if verdict == "person":
+                    asked = " ".join(i["text"] for i in items if i["kind"] == "question")
+                    self.assertEqual(text, f"Questions for Sami: {asked}\n\n{dropped}\n\n---\n{self.FOOT}\n\n")
+                    self.assertNotIn("Blocking findings.", shown)
+                else:
+                    self.assertTrue(text.startswith(kept), text)
                 rc, out, fixable = self.fixable("review", result)
                 self.assertEqual((rc, fixable.get("fix")), (0, fix), out)
                 if verdict == "person":
@@ -9695,9 +9730,9 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started(number=number)
                 self.assertEqual((rc, runs), (0, want), out)
                 if not want:
-                    self.assertIn(f"#7: its label comment records that the environment post held no key of the "
-                                  f"OSS Verify App when a run screened {HEAD}, so a person at Theorem approves its "
-                                  "runs.", out)
+                    self.assertIn(f"#7: its label comment records that a run screened {HEAD} while the environment "
+                                  f"post had no key of the OSS Verify App. So a person at Theorem approves the runs "
+                                  f"of {HEAD}.", out)
 
     def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
         """b8 (R10, D16 (a) and (f)): GitHub lists a run that it holds for a person's approval with status completed

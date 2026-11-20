@@ -893,8 +893,8 @@ due_approve() {
   fi
   keyless=$(no_key_of "$number" "$head") || { echo "::error::the comments of #$number could not be read."; return 1; }
   if [ "$keyless" = true ]; then
-    echo "#$number: its label comment records that the environment post held no key of the OSS Verify App when" \
-      "a run screened $head, so a person at Theorem approves its runs."
+    echo "#$number: its label comment records that a run screened $head while the environment post had no key of the" \
+      "OSS Verify App. So a person at Theorem approves the runs of $head."
     return 0
   fi
   if [ -n "$(awk -v h="$head" -v last="$last" '$3 == "-" && $9 == h && $2 >= last' <<< "$hold")" ]; then

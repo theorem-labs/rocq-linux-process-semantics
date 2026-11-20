@@ -7,8 +7,8 @@ an answer or a fix posts is made inert here (inert). A draft posts nowhere, so i
 stay as they are.
 
     python3 .github/review/trim.py sign-in
-    python3 .github/review/trim.py review --review <file> --items <file> [--head <file>] [--section <file>]
-                                          [--foot <file>] [--summary <file> [--summary-extra <file>]]
+    python3 .github/review/trim.py review --review <file> --items <file> [--verdict <verdict>] [--head <file>]
+                                          [--section <file>] [--foot <file>] [--summary <file> [--summary-extra <file>]]
     python3 .github/review/trim.py answer --text <file> [--head <file>] [--foot <file>] [--summary <file>]
     python3 .github/review/trim.py fix --fix <file> --commit <sha> [--head <file>] [--foot <file>] [--summary <file>]
     python3 .github/review/trim.py draft --text <file> --rules <file> [--rules <file> ...]
@@ -47,6 +47,12 @@ one of RESULTS. A pull request's review is one whose head holds the marker <!-- 
 first line of the review that is not empty starts with one of RESULTS, and the first such line of the trimmed text
 does not start with the same one, that line of the review goes back at the start of the trimmed text: the reader
 dropped it. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
+
+--verdict is the review's verdict after the rules of code (rules.py soundness and blocking). When it is person, the
+review's first line is "Blocking findings.", and the list holds no blocking finding (a change item that is not
+optional) and one question item or more, the result line is "Questions for Sami:" and the text of each question item,
+in place of the review's line. The trimmed text then loses "Blocking findings." at the start of its first line, when
+the reader kept it. So such a review never starts with "Blocking findings.", as its list holds no blocking finding.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -1330,24 +1336,47 @@ def result_of(line):
     return next((form for form in RESULTS if start.startswith(form)), None)
 
 
-def with_result(review, trimmed, head):
+def without_blocking(text):
+    """text with "Blocking findings." taken off the start of its first line that is not empty, also in bold or in
+    emphasis, and closed again. The whole line goes when nothing else is on it, or when the form is in another
+    Markdown form (plain reads it)."""
+    lines = text.split("\n")
+    k = next((n for n, line in enumerate(lines) if line.strip()), None)
+    if k is None or result_of(lines[k]) != RESULTS[1]:
+        return text
+    m = re.match(r"[ \t]*([*_]*)" + re.escape(RESULTS[1]) + r"\1[ \t]*", lines[k])
+    rest = lines[k][m.end():] if m else ""
+    return closed("\n".join(([rest] if rest.strip() else []) + lines[k + 1:]).strip("\n"))
+
+
+def with_result(review, trimmed, head, verdict="", items=()):
     """trimmed, with the result line of review back at its start when the reader dropped it: in a pull request's review
     (head holds REVIEW_HEAD), the first line of review that is not empty starts with a form of RESULTS, and the first
     such line of trimmed does not start with the same form. The line goes back made inert and closed, as an added
-    item does. An issue's review, and a review whose first line has no such form, stay as the reader gave them."""
+    item does. An issue's review, and a review whose first line has no such form, stay as the reader gave them.
+    When verdict, the verdict after the rules of code, is person, review's line is "Blocking findings.", and items
+    holds no blocking finding and one question item or more, the result line is "Questions for Sami:" and the text of
+    each question item, and trimmed loses "Blocking findings." (without_blocking)."""
     line = first_line(review)
     form = result_of(line)
-    if not REVIEW_HEAD.search(head) or form is None or result_of(first_line(trimmed)) == form:
+    if not REVIEW_HEAD.search(head) or form is None:
         return trimmed
-    return f"{closed(inert(line.strip()))}\n\n{trimmed}"
+    questions = [" ".join(i["text"].split()) for i in items if i.get("kind") == "question"]
+    if (verdict == "person" and form == RESULTS[1] and questions
+            and not any(i.get("kind") == "change" and not i.get("optional") for i in items)):
+        form, line = RESULTS[2], " ".join([RESULTS[2], *questions])
+        trimmed = without_blocking(trimmed)
+    if result_of(first_line(trimmed)) == form:
+        return trimmed
+    return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
 
-def comment(review, trimmed, items, head="", section="", foot=""):
+def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
-    read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result) and the
-    added items are made inert and closed here. The collapsed copy loses its end when the comment would be over
-    MAX_COMMENT characters."""
-    trimmed = with_result(review, closed(inert(trimmed)), head)
+    read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
+    the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
+    its end when the comment would be over MAX_COMMENT characters."""
+    trimmed = with_result(review, closed(inert(trimmed)), head, verdict, items)
     extra = added(missing(items, trimmed))
 
     def build(whole):
@@ -1456,6 +1485,7 @@ def main(argv):
     review = kinds.add_parser("review")
     review.add_argument("--review", required=True)
     review.add_argument("--items", required=True)
+    review.add_argument("--verdict", choices=("pass", "blocking", "person"))
     for name in ("--head", "--section", "--foot", "--summary", "--summary-extra"):
         review.add_argument(name)
     for kind in ("answer", "fix", "draft"):
@@ -1512,7 +1542,7 @@ def main(argv):
                 items = checked(loads(text_of(args.items)))
             except ValueError:
                 raise ReaderError("the list is not JSON, or it nests too deep to read") from None
-            out = comment(text, trimmed("review", text, items), items, **fixed)
+            out = comment(text, trimmed("review", text, items), items, verdict=args.verdict or "", **fixed)
             if args.summary:
                 extra = text_of(args.summary_extra).strip("\n") if args.summary_extra else ""
                 with open(args.summary, "a", encoding="utf-8") as f:

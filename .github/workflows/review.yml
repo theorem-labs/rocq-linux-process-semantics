@@ -2205,9 +2205,11 @@ jobs:
       # those files but the .v files, the files that the job could not read, the lines of the changed .v files at
       # the head that use the VM, the native compiler or a primitive array, and each changed .v file at the head that
       # the gather job did not keep whole. Then comes the rule of the verdict blocking (.github/review/rules.py
-      # blocking): a review whose verdict is blocking and whose list holds no blocking finding (a change item whose
-      # optional is false) gets the verdict person. So an outside pull request waits on Sami, not on its author, and no
-      # fix runs.
+      # blocking): a review whose verdict is blocking, and whose list holds a question item and no blocking finding (a
+      # change item whose optional is false), gets the verdict person. So an outside pull request waits on Sami, not on
+      # its author, and no fix runs. Its result line is then "Questions for Sami:" with the text of each question, in
+      # place of the model's "Blocking findings." (trim.py's with_result, which reads the verdict after both rules).
+      # A verdict blocking whose list holds no question stays blocking.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
@@ -2278,7 +2280,7 @@ jobs:
             > "$work/foot.md"
           rc=0
           python3 .github/review/trim.py review --review "$work/review.md" --items "$work/items.json" \
-            --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
+            --verdict "$verdict" --head "$work/head.md" --section "$work/section.md" --foot "$work/foot.md" \
             --summary "$GITHUB_STEP_SUMMARY" --summary-extra "$work/section-all.md" > "$work/body.md" || rc=$?
           if (( rc == 3 )); then
             echo "refused=review" >> "$GITHUB_OUTPUT"
@@ -3116,7 +3118,7 @@ jobs:
       # the head that the screen read: the comment job gives the pull request waits-on-theorem, with a label comment
       # that says that a person at Theorem approves its runs and that records the head, so that the rescreen pass
       # starts no second approval of it.
-      - name: Say that the environment post holds no key of the OSS Verify App
+      - name: Say that the environment post has no key of the OSS Verify App
         id: no_key
         if: env.APP_KEY_SET != 'true'
         env:
@@ -3124,13 +3126,13 @@ jobs:
           RUNS: ${{ steps.held.outputs.runs }}
         run: |
           set -euo pipefail
-          echo "The environment \`post\` holds no key of the OSS Verify App. So this run approved no held run," \
+          echo "The environment \`post\` has no key of the OSS Verify App. So this run approved no held run," \
             "recorded or changed no check run \`repo-pairs/import-approved\`, and closed or reopened no pull request." \
             >> "$GITHUB_STEP_SUMMARY"
           [ -n "${RUNS:-}" ] || exit 0
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the trust job gave no head commit: $HEAD"; exit 1; }
-          echo "::notice::GitHub holds the runs $RUNS of $HEAD. The environment post holds no key of the" \
-            "OSS Verify App, so no run is approved: a person at Theorem approves its runs."
+          echo "::notice::GitHub holds the runs $RUNS of $HEAD. The environment post has no key of the OSS Verify" \
+            "App, so the workflow approves none of them. A person at Theorem approves them."
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
 
   # The posts, with this run's own GitHub token: the review comment, the answer, the fix as one review of suggested
@@ -3632,7 +3634,7 @@ jobs:
           fact=steering head=$STEERING
           [ -n "$STEERING" ] || fact=no_key head=$NO_KEY
           [[ $head =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::the post job names no head whose held runs it did not approve: $head"; exit 1; }
+            || { echo "::error::the post job gave no head commit for the label comment: $head"; exit 1; }
           now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
           [ "$now" = "$head" ] \
             || { echo "#$NUMBER moved from $head to $now, so the workflow changes neither its labels nor its" \

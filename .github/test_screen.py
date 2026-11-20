@@ -1101,32 +1101,41 @@ class ScreenTest(unittest.TestCase):
                 self.assertEqual(reason["unscreenable"], ["changed file docs/a.png is not UTF-8 text"])
                 self.assertEqual(self.services.to(":sanitizeUserPrompt") + self.services.to("/v1/messages"), [])
 
-    # Text that hides text, each with the character the reason names.
+    # The reason's words for each kind of character that the screen holds: one that hides text (a bidirectional override
+    # or isolate, a tag character or a zero-width character), and the others, which can show.
+    HIDES = "a character that hides text"
+    FORMAT = "a format character, which the screen does not let through"
+    SELECTOR = "a variation selector, which the screen does not let through"
+    GRAPHEME = "the combining grapheme joiner, which the screen does not let through"
+    FILLER = "a Hangul filler, which the screen does not let through"
+    # Text that the screen holds, each with the character and the words that the reason gives.
     HIDDEN = {
-        "a bidirectional override": ("Fine.\u202Eenil", "U+202E"),
-        "a bidirectional isolate": ("Fine.\u2066x\u2069", "U+2066"),
-        "a tag character": ("Fine.\U000E0041\U000E0042", "U+E0041"),
-        "a zero-width space in a word": ("ig\u200Bnore", "U+200B"),
-        "a joiner in a Latin word": ("ig\u200Dnore", "U+200D"),
-        "a non-joiner in a Latin word": ("ig\u200Cnore", "U+200C"),
-        "a joiner run between Latin letters": ("a\u200C\u200D\u200C\u200Db", "U+200C"),
-        "a joiner run between Persian letters": ("\u0645\u06CC\u200C\u200C\u062E\u0648\u0627\u0647\u0645", "U+200C"),
-        "a joiner between a Latin letter and an emoji": ("a\u200D\U0001F600", "U+200D"),
-        "a non-joiner between emoji": ("\U0001F468\u200C\U0001F469", "U+200C"),
-        "a word joiner": ("Ask @\u2060octocat.", "U+2060"),
-        "a byte order mark inside a body": ("Fine.\uFEFFhidden", "U+FEFF"),
-        "a soft hyphen in a word": ("ig\u00ADnore", "U+00AD"),
-        "an invisible times": ("ig\u2062nore", "U+2062"),
-        "a left-to-right mark": ("Fine.\u200Ex", "U+200E"),
-        "an interlinear annotation": ("Fine.\uFFF9x\uFFFAy\uFFFB", "U+FFF9"),
-        "a variation selector in a word": ("ig\uFE00nore", "U+FE00"),
-        "a text variation selector after an emoji": ("\u2764\uFE0E", "U+FE0E"),
-        "a variation selector of plane 14": ("ig\U000E0100nore", "U+E0100"),
-        "a combining grapheme joiner": ("ig\u034Fnore", "U+034F"),
-        "a Hangul choseong filler": ("ig\u115Fnore", "U+115F"),
-        "a Hangul jungseong filler": ("ig\u1160nore", "U+1160"),
-        "a Hangul filler": ("ig\u3164nore", "U+3164"),
-        "a halfwidth Hangul filler": ("ig\uFFA0nore", "U+FFA0"),
+        "a bidirectional override": ("Fine.\u202Eenil", "U+202E", HIDES),
+        "a bidirectional isolate": ("Fine.\u2066x\u2069", "U+2066", HIDES),
+        "a tag character": ("Fine.\U000E0041\U000E0042", "U+E0041", HIDES),
+        "a zero-width space in a word": ("ig\u200Bnore", "U+200B", HIDES),
+        "a joiner in a Latin word": ("ig\u200Dnore", "U+200D", HIDES),
+        "a non-joiner in a Latin word": ("ig\u200Cnore", "U+200C", HIDES),
+        "a joiner run between Latin letters": ("a\u200C\u200D\u200C\u200Db", "U+200C", HIDES),
+        "a joiner run between Persian letters": ("\u0645\u06CC\u200C\u200C\u062E\u0648\u0627\u0647\u0645", "U+200C",
+                                                 HIDES),
+        "a joiner between a Latin letter and an emoji": ("a\u200D\U0001F600", "U+200D", HIDES),
+        "a non-joiner between emoji": ("\U0001F468\u200C\U0001F469", "U+200C", HIDES),
+        "a word joiner": ("Ask @\u2060octocat.", "U+2060", HIDES),
+        "a byte order mark inside a body": ("Fine.\uFEFFhidden", "U+FEFF", HIDES),
+        "a soft hyphen in a word": ("ig\u00ADnore", "U+00AD", FORMAT),
+        "an invisible times": ("ig\u2062nore", "U+2062", FORMAT),
+        "a left-to-right mark": ("Fine.\u200Ex", "U+200E", FORMAT),
+        "an interlinear annotation": ("Fine.\uFFF9x\uFFFAy\uFFFB", "U+FFF9", FORMAT),
+        "an Arabic number sign, which shows": ("Fine. \u0600123", "U+0600", FORMAT),
+        "a variation selector in a word": ("ig\uFE00nore", "U+FE00", SELECTOR),
+        "a text variation selector after an emoji": ("\u2764\uFE0E", "U+FE0E", SELECTOR),
+        "a variation selector of plane 14": ("ig\U000E0100nore", "U+E0100", SELECTOR),
+        "a combining grapheme joiner": ("ig\u034Fnore", "U+034F", GRAPHEME),
+        "a Hangul choseong filler": ("ig\u115Fnore", "U+115F", FILLER),
+        "a Hangul jungseong filler": ("ig\u1160nore", "U+1160", FILLER),
+        "a Hangul filler": ("ig\u3164nore", "U+3164", FILLER),
+        "a halfwidth Hangul filler": ("ig\uFFA0nore", "U+FFA0", FILLER),
     }
     # Text where those characters do ordinary work.
     ALLOWED = {
@@ -1140,13 +1149,16 @@ class ScreenTest(unittest.TestCase):
     }
 
     def test_text_that_hides_text_is_held_unscreened(self):
-        for name, (body, char) in self.HIDDEN.items():
+        """Each character that the screen holds holds the item. The reason names it, and says that it hides text
+        only when it does (a bidirectional override or isolate, a tag character or a zero-width character). For
+        another one, which can show (U+0600), the reason gives its kind."""
+        for name, (body, char, why) in self.HIDDEN.items():
             with self.subTest(name=name):
                 self.fresh()
                 self.item(body=body)
                 v, reason = self.verdict()
                 self.assertEqual(v, "held")
-                self.assertEqual(reason["unscreenable"], [f"body holds {char}, a character that hides text"])
+                self.assertEqual(reason["unscreenable"], [f"body holds {char}, {why}"])
                 self.assertEqual(self.services.to(":sanitizeUserPrompt"), [])
 
     def test_joiners_that_do_ordinary_work_pass(self):
@@ -1159,14 +1171,19 @@ class ScreenTest(unittest.TestCase):
     def test_each_format_character_variation_selector_and_filler_is_held_and_u_fe0f_passes(self):
         """Each format character (Unicode's category Cf, of this Python's Unicode data) that does no ordinary work
         where it stands, each variation selector but U+FE0F, U+034F and each Hangul filler holds the item, and the
-        reason names it. U+FE0F passes anywhere: after an emoji, after a letter, and alone."""
-        held = [c for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf"]
-        held += map(chr, [*range(0xFE00, 0xFE0F), *range(0xE0100, 0xE01F0), 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0])
-        self.assertIn("\u00AD", held)
-        self.assertIn("\u2062", held)
-        for c in held:
+        reason names it with its kind. U+FE0F passes anywhere: after an emoji, after a letter, and alone."""
+        hides = "\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069\u200B\u200C\u200D\u2060\uFEFF"
+        held = {c: self.HIDES if c in hides or 0xE0000 <= ord(c) <= 0xE007F else self.FORMAT
+                for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf"}
+        held.update(dict.fromkeys(map(chr, [*range(0xFE00, 0xFE0F), *range(0xE0100, 0xE01F0)]), self.SELECTOR))
+        held.update(dict.fromkeys("\u115F\u1160\u3164\uFFA0", self.FILLER))
+        held["\u034F"] = self.GRAPHEME
+        self.assertEqual((held["\u00AD"], held["\u2062"], held["\u0600"], held["\U000E0001"]),
+                         (self.FORMAT, self.FORMAT, self.FORMAT, self.HIDES))
+        for c, why in held.items():
             with self.subTest(char=f"U+{ord(c):04X}"):
                 self.assertEqual(screen.hiding(f"ig{c}nore"), f"U+{ord(c):04X}")
+                self.assertEqual(screen.held_for(f"U+{ord(c):04X}"), why)
         for text in ("\u2764\uFE0F", "\U0001F600\uFE0F", "x\uFE0Fy", "\uFE0F"):
             with self.subTest(text=text):
                 self.assertIsNone(screen.hiding(text))

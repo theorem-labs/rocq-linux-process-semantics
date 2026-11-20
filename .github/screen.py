@@ -20,8 +20,9 @@ suspicious. SCREEN_CHECKS names the ones that run, and must name Model Armor:
 The verdict names the checks that ran. It is clean when every one answers clean, and held otherwise: when any answers
 suspicious, when any cannot answer (a service that cannot be reached, refuses, or answers in a form this file does not
 know, a setting of it that is missing, no token from the sign-in, or no time left of DEADLINE_SECONDS), and when the
-text cannot be screened at all (a changed file that is not text, a character that hides text, or more text than
-MAX_CHARS). A held item gets no full review; a person decides.
+text cannot be screened at all (a changed file that is not text, a character that hides text or another character
+that the screen does not let through, or more text than MAX_CHARS). A held item gets no full review; a person
+decides.
 
 What each check answered, and why the text could not be screened, is the reason. For each piece the model answered
 suspicious for, the reason also holds the sentences it quoted and its why, cut to CLAUDE_QUOTES quotes of
@@ -170,13 +171,17 @@ BINARY_DIFF = re.compile(r"^Binary files (.*) and (.*) differ$", re.M)
 # isolates, the zero-width characters (space, non-joiner, joiner, word joiner, byte order mark), the soft hyphen, the
 # invisible operators and the tag characters among them.
 FORMAT = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if unicodedata.category(c) == "Cf")
-# Characters used to hide text from a person, or to split a word so that a check misses it while a model reads
-# through it: the format characters, the tag characters that Unicode has not assigned yet, the variation selectors
-# but U+FE0F, the combining grapheme joiner U+034F, and the Hangul fillers U+115F, U+1160, U+3164 and U+FFA0. Two
-# kinds of them do ordinary work, and hiding() lets those pass. U+FE0F, which asks for the emoji form of the character
-# before it, is not of HIDING and passes anywhere.
+# The characters that hold the item: the format characters, the tag characters that Unicode has not assigned yet, the
+# variation selectors but U+FE0F, the combining grapheme joiner U+034F, and the Hangul fillers U+115F, U+1160, U+3164
+# and U+FFA0. Most of them can hide text from a person, or split a word so that a check misses it while a model reads
+# through it; a few format characters show (U+0600, say). Two kinds of them do ordinary work, and hiding() lets those
+# pass. U+FE0F, which asks for the emoji form of the character before it, is not of HIDING and passes anywhere.
 HIDING = re.compile("[" + FORMAT + "\U000E0000-\U000E007F\uFE00-\uFE0E\U000E0100-\U000E01EF"
                     "\u034F\u115F\u1160\u3164\uFFA0]")
+# The characters of HIDING that hide text from a person: the bidirectional overrides and isolates, the tag characters,
+# and the zero-width characters (space, non-joiner, joiner, word joiner, byte order mark). The reason says so of them.
+# Another character of HIDING can show, as U+0600 does: the reason gives its kind (held_for).
+HIDES_TEXT = re.compile("[\u202A-\u202E\u2066-\u2069\U000E0000-\U000E007F\u200B-\u200D\u2060\uFEFF]")
 # The scripts whose words use the zero-width non-joiner and joiner between their letters (Persian among the Arabic
 # script's languages, and the Indic scripts), by the first word of each character's Unicode name.
 JOINER_SCRIPTS = frozenset("ARABIC SYRIAC NKO THAANA MONGOLIAN DEVANAGARI BENGALI GURMUKHI GUJARATI ORIYA TAMIL TELUGU "
@@ -230,10 +235,10 @@ def first_of_file(text, k, whole_file, diff):
 
 
 def hiding(text, whole_file=False, diff=False):
-    """The first character of text that hides text, as U+XXXX, or None. A non-joiner or joiner passes between two
-    letters of a script that uses joiners, and a joiner inside an emoji sequence; a byte order mark passes as the very
-    first character of a file. Anything else of HIDING holds the item: a run of joiners, any other format character,
-    a variation selector but U+FE0F, U+034F and a Hangul filler."""
+    """The first character of HIDING in text that holds the item, as U+XXXX, or None. A non-joiner or joiner passes
+    between two letters of a script that uses joiners, and a joiner inside an emoji sequence; a byte order mark passes
+    as the very first character of a file. Anything else of HIDING holds the item: a run of joiners, any other format
+    character, a variation selector but U+FE0F, U+034F and a Hangul filler."""
     for m in HIDING.finditer(text):
         c, k = m.group(), m.start()
         if c in "\u200C\u200D" and 0 < k < len(text) - 1:
@@ -245,6 +250,17 @@ def hiding(text, whole_file=False, diff=False):
             continue
         return f"U+{ord(c):04X}"
     return None
+
+
+def held_for(code):
+    """Why the screen holds the character code (U+XXXX) that hiding gave, in the words of the reason."""
+    c = chr(int(code[2:], 16))
+    if HIDES_TEXT.fullmatch(c):
+        return "a character that hides text"
+    kind = ("a format character" if unicodedata.category(c) == "Cf"
+            else "a variation selector" if unicodedata.name(c, "").startswith("VARIATION SELECTOR")
+            else "the combining grapheme joiner" if c == "\u034F" else "a Hangul filler")
+    return f"{kind}, which the screen does not let through"
 
 
 def parts(review):
@@ -299,7 +315,7 @@ def parts(review):
     for source, text in found:
         c = hiding(text, whole_file=source in whole_files, diff=source == "pr.diff")
         if c:
-            unscreenable.append(f"{source} holds {c}, a character that hides text")
+            unscreenable.append(f"{source} holds {c}, {held_for(c)}")
     total = len(joined(found))   # the text every check is sent, each source under its name
     if total > MAX_CHARS:
         unscreenable.append(f"{total} characters, over the {MAX_CHARS} this screen reads")
