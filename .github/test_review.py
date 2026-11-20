@@ -9895,8 +9895,8 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, want), out)
 
     def test_a_withdrawal_that_github_refused_after_a_held_screen_gets_one_relabel_after_an_hour(self):
-        """Ruling 2 (rulings.md, 2026-11-20 07:33Z; R12, and OSSV-612's R20 for the App's steps): a withdrawal of the
-        import check run (success to neutral) that GitHub refuses is retried by the rescreen pass as a post hold is,
+        """Ruling 2 (OSSV-221's architect, 2026-11-20 07:33Z; R12; OSSV-612's R20 for the App's steps): a withdrawal of
+        the import check run (success to neutral) that GitHub refuses is retried by the rescreen pass as a post hold is,
         not left to a person. The review of mallory's #7 recorded the check run on HEAD. A later review run of HEAD,
         whose screen held it, posted the screen's hold comment, which names HEAD, and its post job failed at the PATCH
         that withdraws the check run, a write of the App. An hour after that run ended, the head gets one relabel run,
@@ -13631,12 +13631,12 @@ class ImportCheckTest(ReaderRunner):
                     self.assertNotIn("No automated screen", body)
 
     def test_a_writers_pull_request_whose_head_an_outsider_pushed_gets_no_outside_label(self):
-        """R5 and ruling 1 (rulings.md, 2026-11-20 07:33Z): R5 keeps one label on each open outside item, and a
-        writer's pull request whose head an outsider pushed is not one, as its author has write access. eve, with read
-        access, pushes to the branch of alice's #7: the trust job screens the push on eve (outsider eve, outside
-        false), the screen passes, and the review gives each verdict. The comment job's label step sets no state label
-        (neither waits-on-theorem nor waits-on-author) and posts no label comment, as for alice's own push. The pusher
-        screen and the decision writer stay. The same push to mallory's #7 keeps the outside label state."""
+        """R5 and ruling 1 (OSSV-221's architect, 2026-11-20 07:33Z): R5 keeps one label on each open outside item, and
+        a writer's pull request whose head an outsider pushed is not one, as its author has write access. eve, with read
+        access, pushes to the branch of alice's #7: the trust job screens the push on eve (outsider eve, outside false),
+        the screen passes, and the review gives each verdict. The comment job's label step sets no state label (neither
+        waits-on-theorem nor waits-on-author) and posts no label comment, as for alice's own push. The pusher screen and
+        the decision writer stay. The same push to mallory's #7 keeps the outside label state."""
         self.permissions(alice="write", mallory="read", eve="read")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         for author, outside in (("alice", "false"), ("mallory", "true")):
