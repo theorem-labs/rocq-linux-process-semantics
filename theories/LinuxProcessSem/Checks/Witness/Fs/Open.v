@@ -45,12 +45,11 @@ Local Ltac open_env := unfold open_write_existing, open_result_spec, create_wron
   open_append, open_rdwr; ow_split;
   first [ apply open_env_failure | apply alt_r; apply open_env_failure ].
 
-(** A device row: the decline of a device entry away from its own name
-    ([Open.dev_at_home]), else the injectable errno. *)
+(** A device row: the injectable errno, at whatever key the walk reached
+    the device. *)
 Local Definition dev_witness (k : Fs.path) (d : DevKind) (m : Model)
     : outcome SyscallEffect :=
-  if negb (dev_at_home k d) then Unmodeled
-  else ret_outcome (errno_ret witness_errno) m.
+  ret_outcome (errno_ret witness_errno) m.
 
 Local Lemma dev_witness_ok : forall k d rd wr i m,
   (match d with
@@ -59,8 +58,7 @@ Local Lemma dev_witness_ok : forall k d rd wr i m,
    end) i m (dev_witness k d m).
 Proof.
   intros k d rd wr i m. unfold dev_witness.
-  destruct d; unfold open_devnull, open_urandom;
-    (destruct (negb (dev_at_home k _)); [apply unmodeled_intro|open_env]).
+  destruct d; unfold open_devnull, open_urandom; open_env.
 Qed.
 
 Local Ltac dev_env :=

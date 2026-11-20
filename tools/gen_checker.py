@@ -172,13 +172,13 @@ End __.
 # Proof.v defines and the exact text of that definition, which --check
 # finds in the Proof.v and the Checker.v prints.  The reason, the same for
 # both: both programs open argv[1] (O_RDONLY) and argv[2]
-# (O_WRONLY|O_CREAT|O_TRUNC), and the model declines such an open on two
-# walk ends that Run.valid_input admits: Fs.ROutside ("proc" or "sys"
+# (O_WRONLY|O_CREAT|O_TRUNC), and the model declines such an open on one
+# walk end that Run.valid_input admits: Fs.ROutside ("proc" or "sys"
 # looked up at the root, by any spelling or link: /proc and /sys are
-# outside the model) and a device entry away from its own name
-# (Sys.Fs.Open.dev_at_home).  The hypothesis excludes exactly those
-# inputs; each Proof.v proves it equivalent to "the model answers the open
-# of each operand" (operands_inside_model_iff).
+# outside the model).  A device entry is answered at any key.  The
+# hypothesis excludes exactly those inputs; each Proof.v proves it
+# equivalent to "the model answers the open of each operand"
+# (operands_inside_model_iff).
 OPERANDS_INSIDE_MODEL = '''\
 Definition operands_inside_model (inp : ProcInput) : Prop :=
   (3 <= length (in_argv inp))%nat ->
@@ -189,7 +189,6 @@ Definition operands_inside_model (inp : ProcInput) : Prop :=
     (length (nth i (in_argv inp) []) < State.path_max)%nat ->
     match fst (fst (Fs.resolve md (in_fs inp) (in_cwd inp) (nth i (in_argv inp) []))) with
     | Fs.ROutside => False
-    | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
     | _ => True
     end.'''
 

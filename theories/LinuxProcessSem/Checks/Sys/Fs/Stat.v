@@ -601,15 +601,17 @@ Definition check_fstat_deliver_gen (ok : list byte -> bool) (statbuf : word)
 
 (** What a regular file's [struct stat] must carry beside
     [Uapi.stat_buf_wf], in [Stat.fstat_file_spec]'s [choose] order:
-    S_IFREG, the contents' length [n] and the link count [l]. *)
+    S_IFREG with no device number ([Uapi.stat_reg_fixed]), the contents'
+    length [n] and the link count [l]. *)
 Definition stat_reg_ok (n l : nat) (bs : list byte) : bool :=
-  (stat_is_reg bs && stat_size_ok n bs && stat_nlink_ok l bs)%bool.
+  (stat_reg_fixed bs && stat_size_ok n bs && stat_nlink_ok l bs)%bool.
 
-(** What a folder's must carry: S_IFDIR and the link count of the rule
-    the pin chose ([Stat.dir_nlink_ok]). *)
+(** What a folder's must carry: what tmpfs and ramfs fix of a folder
+    ([Uapi.stat_dir_fixed]) and the link count of the rule the pin chose
+    ([Stat.dir_nlink_ok]). *)
 Definition stat_dir_ok (d : Fs.DirLinks) (r : option DirRule) (bs : list byte)
     : bool :=
-  (stat_is_dir bs && dir_nlink_ok d r bs)%bool.
+  (stat_dir_fixed bs && dir_nlink_ok d r bs)%bool.
 
 Lemma check_fstat_deliver_gen_no_unmodeled : forall ok statbuf held post eff,
   check_fstat_deliver_gen ok statbuf held post eff <> CheckUnmodeled.
@@ -678,7 +680,7 @@ Definition check_fstat_file (i : SyscallInput) (ino : Fs.ino) (statbuf : word)
     | Some _ =>
         match statpin_lookup (m_statpins m) (IdIno ino) with
         | Some sp =>
-            if negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool
+            if negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool
             then CheckUnmodeled
             else check_fstat_deliver_gen
                    (stat_reg_ok (length (Fs.fs_ino_data (m_fs m) ino))
@@ -688,7 +690,7 @@ Definition check_fstat_file (i : SyscallInput) (ino : Fs.ino) (statbuf : word)
             check_fstat_deliver_gen
               (stat_reg_ok (length (Fs.fs_ino_data (m_fs m) ino))
                            (Fs.fs_ino_nlink (m_fs m) ino))
-              statbuf None (fun bs => with_statpin (IdIno ino) (mkStatPin bs None) m) eff
+              statbuf None (fun bs => with_statpin (IdIno ino) (mkStatPin bs None false) m) eff
         end
     end.
 
@@ -706,7 +708,7 @@ Proof.
       as [w|] eqn:Hw; [|discriminate].
     cbv iota.
     destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [discriminate|].
       cbv iota.
       apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & HS & ->).
@@ -735,7 +737,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [cbv iota|cbv iota; apply unmodeled_intro].
     destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [cbv iota; apply unmodeled_intro|].
       now apply check_fstat_deliver_gen_no_unmodeled in H.
     + now apply check_fstat_deliver_gen_no_unmodeled in H.
@@ -753,14 +755,14 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
     destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool)
         eqn:Hb0;
         [sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok|].
       sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
       unfold check_fstat_deliver_gen, stat_reg_ok.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
-      | H1 : stat_buf_wf ?b = true, H2 : stat_is_reg ?b = true,
+      | H1 : stat_buf_wf ?b = true, H2 : stat_reg_fixed ?b = true,
         H4 : stat_size_ok _ ?b = true, H5 : stat_nlink_ok _ ?b = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
           rewrite H1, H2, H4, H5; cbn [andb negb]; rewrite H3
@@ -770,7 +772,7 @@ Proof.
       unfold check_fstat_deliver_gen, stat_reg_ok.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
-      | H1 : stat_buf_wf ?b = true, H2 : stat_is_reg ?b = true,
+      | H1 : stat_buf_wf ?b = true, H2 : stat_reg_fixed ?b = true,
         H4 : stat_size_ok _ ?b = true, H5 : stat_nlink_ok _ ?b = true |- _ =>
           rewrite H1, H2, H4, H5
       end.
@@ -788,7 +790,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|reflexivity].
     destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [reflexivity|].
       exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
     + exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
@@ -798,7 +800,8 @@ Qed.
     [Stat.fstat_pinned_spec]: the identity's pin checked against both
     predicates, and the delivery judged under [ok] and, against a pin,
     the members the pin holds beside the stable ones too
-    ([Stat.stat_pin_held]).  The character
+    ([Stat.stat_pin_held], under the pin's release); the model left is
+    [Stat.pinned_after]'s on a pinned identity.  The character
     devices ([State.IdDev] of the node's key) and a link the walk did
     not follow ([State.IdLink]) are its instances, as the spec's are. *)
 Definition check_fstat_pinned (id : StatId) (ok : list byte -> bool)
@@ -814,11 +817,11 @@ Definition check_fstat_pinned (id : StatId) (ok : list byte -> bool)
         | Some sp =>
             if negb (stat_buf_wf (sp_bytes sp) && ok (sp_bytes sp))%bool then CheckUnmodeled
             else check_fstat_deliver_gen
-                   (fun bs => ok bs && stat_pin_held id bs (sp_bytes sp))%bool
-                   statbuf (Some (sp_bytes sp)) (fun _ => m) eff
+                   (fun bs => ok bs && stat_pin_held id (sp_released sp) bs (sp_bytes sp))%bool
+                   statbuf (Some (sp_bytes sp)) (fun bs => pinned_after id sp bs m) eff
         | None =>
             check_fstat_deliver_gen ok statbuf None
-              (fun bs => with_statpin id (mkStatPin bs None) m) eff
+              (fun bs => with_statpin id (mkStatPin bs None false) m) eff
         end
     end.
 
@@ -843,7 +846,7 @@ Proof.
       specialize (HS _ eq_refl). cbv beta in HOK.
       apply andb_true_iff in HOK as [HOK HNL].
       eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
-      apply pure_ok.
+      eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & _ & ->).
       eapply bind_ok0; [apply (choose_ok _ bs); split; eassumption|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
@@ -887,7 +890,7 @@ Proof.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
       | H1 : stat_buf_wf ?b = true, H2 : ok ?b = true,
-        H4 : stat_pin_held _ ?b _ = true,
+        H4 : stat_pin_held _ _ ?b _ = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
           rewrite H1, H2, H4; cbn [andb negb]; rewrite H3
       end.
@@ -945,13 +948,147 @@ Lemma check_fstat_chrdev_complete_unmodeled : forall ok k i statbuf m eff,
   check_fstat_chrdev ok k i statbuf eff m = CheckUnmodeled.
 Proof. intros * H. eapply check_fstat_pinned_complete_unmodeled. exact H. Qed.
 
-(** A link the walk did not follow ([Stat.fstat_link_spec]): S_IFLNK,
-    the body's length, under the link's own pin. *)
+(** A device descriptor's stat that holds nothing, branch for branch
+    with [Stat.fstat_unpinned_spec]: the delivery under [ok], and the
+    model left as it was. *)
+Definition check_fstat_unpinned (ok : list byte -> bool) (i : SyscallInput)
+    (statbuf : word) (eff : SyscallEffect) (m : Model) : check_result :=
+  if negb (access_okb statbuf STAT_SIZE)
+  then check_ret_only eff (errno_ret EFAULT) m []
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => CheckUnmodeled
+    | Some _ => check_fstat_deliver_gen ok statbuf None (fun _ => m) eff
+    end.
+
+Lemma check_fstat_unpinned_sound_ok : forall ok i statbuf eff m m' evs,
+  check_fstat_unpinned ok i statbuf eff m = CheckOk m' evs ->
+  fstat_unpinned_spec ok statbuf i m (Ok eff m' evs).
+Proof.
+  intros ok i statbuf eff m m' evs H.
+  unfold check_fstat_unpinned in H. unfold fstat_unpinned_spec.
+  eapply bind_ok0; [apply input_ok|]. cbv beta.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|discriminate].
+    cbv iota.
+    apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & _ & ->).
+    eapply bind_ok0; [apply (choose_ok _ bs); split; eassumption|].
+    apply pure_ok.
+Qed.
+
+Lemma check_fstat_unpinned_sound_unmodeled : forall ok i statbuf eff m,
+  check_fstat_unpinned ok i statbuf eff m = CheckUnmodeled ->
+  fstat_unpinned_spec ok statbuf i m Unmodeled.
+Proof.
+  intros ok i statbuf eff m H.
+  unfold check_fstat_unpinned in H. unfold fstat_unpinned_spec.
+  eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - now apply check_ret_only_no_unmodeled in H.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [cbv iota|cbv iota; apply unmodeled_intro].
+    now apply check_fstat_deliver_gen_no_unmodeled in H.
+Qed.
+
+Lemma check_fstat_unpinned_complete_ok : forall ok i statbuf eff m m' evs,
+  fstat_unpinned_spec ok statbuf i m (Ok eff m' evs) ->
+  check_fstat_unpinned ok i statbuf eff m = CheckOk m' evs.
+Proof.
+  intros ok i statbuf eff m m' evs H.
+  unfold fstat_unpinned_spec in H. unfold check_fstat_unpinned.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - sys_unfold; inv_ok; hall Ha; inv_ok.
+    apply check_ret_only_ok_iff. now repeat split.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
+    sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
+    unfold check_fstat_deliver_gen.
+    rewrite !bv_eqb_refl; cbn [andb negb].
+    match goal with
+    | H1 : stat_buf_wf ?b = true, H2 : ok ?b = true |- _ =>
+        rewrite H1, H2
+    end.
+    cbn [andb negb]. reflexivity.
+Qed.
+
+Lemma check_fstat_unpinned_complete_unmodeled : forall ok i statbuf m eff,
+  fstat_unpinned_spec ok statbuf i m Unmodeled ->
+  check_fstat_unpinned ok i statbuf eff m = CheckUnmodeled.
+Proof.
+  intros ok i statbuf m eff H.
+  unfold fstat_unpinned_spec in H. unfold check_fstat_unpinned.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha.
+  - exfalso. sys_unfold; inv_ok; hall Ha; inv_ok.
+  - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+      as [w|] eqn:Hw; [|reflexivity].
+    exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok.
+Qed.
+
+(** A device descriptor of kind [d] ([Stat.fstat_devfd_spec]): its
+    node's pin when the node at [k] is the image's one node of the kind,
+    and no pin otherwise. *)
+Definition check_fstat_devfd (d : DevKind) (k : Fs.path) (ok : list byte -> bool)
+    (i : SyscallInput) (statbuf : word) (eff : SyscallEffect) (m : Model)
+    : check_result :=
+  if dev_sole_node (m_fs m) d k then check_fstat_chrdev ok k i statbuf eff m
+  else check_fstat_unpinned ok i statbuf eff m.
+
+Lemma check_fstat_devfd_sound_ok : forall d k ok i statbuf eff m m' evs,
+  check_fstat_devfd d k ok i statbuf eff m = CheckOk m' evs ->
+  fstat_devfd_spec d k ok statbuf i m (Ok eff m' evs).
+Proof.
+  intros d k ok i statbuf eff m m' evs H.
+  unfold check_fstat_devfd in H. unfold fstat_devfd_spec.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H.
+  - eapply check_fstat_chrdev_sound_ok. exact H.
+  - eapply check_fstat_unpinned_sound_ok. exact H.
+Qed.
+
+Lemma check_fstat_devfd_sound_unmodeled : forall d k ok i statbuf eff m,
+  check_fstat_devfd d k ok i statbuf eff m = CheckUnmodeled ->
+  fstat_devfd_spec d k ok statbuf i m Unmodeled.
+Proof.
+  intros d k ok i statbuf eff m H.
+  unfold check_fstat_devfd in H. unfold fstat_devfd_spec.
+  eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H.
+  - eapply check_fstat_chrdev_sound_unmodeled. exact H.
+  - eapply check_fstat_unpinned_sound_unmodeled. exact H.
+Qed.
+
+Lemma check_fstat_devfd_complete_ok : forall d k ok i statbuf eff m m' evs,
+  fstat_devfd_spec d k ok statbuf i m (Ok eff m' evs) ->
+  check_fstat_devfd d k ok i statbuf eff m = CheckOk m' evs.
+Proof.
+  intros d k ok i statbuf eff m m' evs H.
+  unfold fstat_devfd_spec in H. unfold check_fstat_devfd.
+  apply bind_get_model_ok_inv in H. cbv beta in H.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H.
+  - eapply check_fstat_chrdev_complete_ok. exact H.
+  - eapply check_fstat_unpinned_complete_ok. exact H.
+Qed.
+
+Lemma check_fstat_devfd_complete_unmodeled : forall d k ok i statbuf m eff,
+  fstat_devfd_spec d k ok statbuf i m Unmodeled ->
+  check_fstat_devfd d k ok i statbuf eff m = CheckUnmodeled.
+Proof.
+  intros d k ok i statbuf m eff H.
+  unfold fstat_devfd_spec in H. unfold check_fstat_devfd.
+  apply bind_get_model_unmodeled_inv in H. cbv beta in H.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H.
+  - eapply check_fstat_chrdev_complete_unmodeled. exact H.
+  - eapply check_fstat_unpinned_complete_unmodeled. exact H.
+Qed.
+
+(** A link the walk did not follow ([Stat.fstat_link_spec]): what tmpfs
+    and ramfs fix of a link ([Uapi.stat_lnk_fixed]) over the body's
+    length, under the link's own pin. *)
 Definition check_fstat_link (k b : Fs.path) (i : SyscallInput) (statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  check_fstat_pinned (IdLink k)
-    (fun bs => stat_is_lnk bs && stat_lnk_size_ok (length (Fs.link_text b)) bs)%bool
-    i statbuf eff m.
+  check_fstat_pinned (IdLink k) (stat_lnk_fixed (length (Fs.link_text b))) i statbuf eff m.
 
 Lemma check_fstat_link_sound_ok : forall k b i statbuf eff m m' evs,
   check_fstat_link k b i statbuf eff m = CheckOk m' evs ->
@@ -989,18 +1126,19 @@ Definition check_fstat_dir (k : Fs.path) (i : SyscallInput) (statbuf : word)
     | Some _ =>
         match statpin_lookup (m_statpins m) (IdDir k) with
         | Some sp =>
-            if negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool
+            if negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool
             then CheckUnmodeled
             else check_fstat_deliver_gen
                    (fun bs => stat_dir_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp) bs
-                              && stat_pin_held (IdDir k) bs (sp_bytes sp))%bool
+                              && stat_pin_held (IdDir k) (sp_released sp) bs (sp_bytes sp))%bool
                    statbuf (Some (sp_bytes sp))
                    (fun bs => dir_pin_after k (Fs.fs_dir_links (m_fs m) k) sp bs m) eff
         | None =>
             check_fstat_deliver_gen
               (stat_dir_ok (Fs.fs_dir_links (m_fs m) k) None) statbuf None
               (fun bs => with_statpin (IdDir k)
-                           (mkStatPin bs (dir_rule_after (Fs.fs_dir_links (m_fs m) k) None bs))
+                           (mkStatPin bs (dir_rule_after (Fs.fs_dir_links (m_fs m) k) None bs)
+                              false)
                            m) eff
         end
     end.
@@ -1019,7 +1157,7 @@ Proof.
       as [w|] eqn:Hw; [|discriminate].
     cbv iota.
     destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [discriminate|].
       cbv iota.
       apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & HS & ->).
@@ -1047,7 +1185,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [cbv iota|cbv iota; apply unmodeled_intro].
     destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [cbv iota; apply unmodeled_intro|].
       now apply check_fstat_deliver_gen_no_unmodeled in H.
     + now apply check_fstat_deliver_gen_no_unmodeled in H.
@@ -1065,16 +1203,16 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|sys_unfold; inv_ok; hall Ha; hall Hw; inv_ok].
     destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool)
         eqn:Hb0;
         [sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok|].
       sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
       unfold check_fstat_deliver_gen, stat_dir_ok.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
-      | H1 : stat_buf_wf ?b = true, H2 : stat_is_dir ?b = true,
+      | H1 : stat_buf_wf ?b = true, H2 : stat_dir_fixed ?b = true,
         H4 : dir_nlink_ok _ _ ?b = true,
-        H5 : stat_pin_held _ ?b _ = true,
+        H5 : stat_pin_held _ _ ?b _ = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
           rewrite H1, H2, H4, H5; cbn [andb negb]; rewrite H3
       end.
@@ -1083,7 +1221,7 @@ Proof.
       unfold check_fstat_deliver_gen, stat_dir_ok.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
-      | H1 : stat_buf_wf ?b = true, H2 : stat_is_dir ?b = true,
+      | H1 : stat_buf_wf ?b = true, H2 : stat_dir_fixed ?b = true,
         H4 : dir_nlink_ok _ _ ?b = true |- _ =>
           rewrite H1, H2, H4
       end.
@@ -1101,7 +1239,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|] eqn:Hw; [|reflexivity].
     destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|] eqn:Hp.
-    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool)
+    + destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool)
         eqn:Hb0; [reflexivity|].
       exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; hall Hb0; inv_ok.
     + exfalso. sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
@@ -1109,54 +1247,55 @@ Qed.
 
 (** The two descriptor instances, and their lemmas by instantiation:
     a device descriptor reads the pin of the node at the device's own
-    name ([Open.dev_at_home]). *)
+    name when that node is the image's one of its kind
+    ([Stat.fstat_devfd_spec]). *)
 Definition check_fstat_devnull (i : SyscallInput) (statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  check_fstat_chrdev stat_devnull_ok devnull_path i statbuf eff m.
+  check_fstat_devfd DevNull devnull_path stat_devnull_ok i statbuf eff m.
 
 Definition check_fstat_urandom (i : SyscallInput) (statbuf : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  check_fstat_chrdev stat_urandom_ok urandom_path i statbuf eff m.
+  check_fstat_devfd DevUrandom urandom_path stat_urandom_ok i statbuf eff m.
 
 Lemma check_fstat_devnull_sound_ok : forall i statbuf eff m m' evs,
   check_fstat_devnull i statbuf eff m = CheckOk m' evs ->
   fstat_devnull_spec statbuf i m (Ok eff m' evs).
-Proof. intros. apply check_fstat_chrdev_sound_ok. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_sound_ok. exact H. Qed.
 
 Lemma check_fstat_devnull_sound_unmodeled : forall i statbuf eff m,
   check_fstat_devnull i statbuf eff m = CheckUnmodeled ->
   fstat_devnull_spec statbuf i m Unmodeled.
-Proof. intros. apply check_fstat_chrdev_sound_unmodeled with (eff := eff). exact H. Qed.
+Proof. intros. apply check_fstat_devfd_sound_unmodeled with (eff := eff). exact H. Qed.
 
 Lemma check_fstat_devnull_complete_ok : forall i statbuf eff m m' evs,
   fstat_devnull_spec statbuf i m (Ok eff m' evs) ->
   check_fstat_devnull i statbuf eff m = CheckOk m' evs.
-Proof. intros. apply check_fstat_chrdev_complete_ok. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_complete_ok. exact H. Qed.
 
 Lemma check_fstat_devnull_complete_unmodeled : forall i statbuf m eff,
   fstat_devnull_spec statbuf i m Unmodeled ->
   check_fstat_devnull i statbuf eff m = CheckUnmodeled.
-Proof. intros. apply check_fstat_chrdev_complete_unmodeled. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_complete_unmodeled. exact H. Qed.
 
 Lemma check_fstat_urandom_sound_ok : forall i statbuf eff m m' evs,
   check_fstat_urandom i statbuf eff m = CheckOk m' evs ->
   fstat_urandom_spec statbuf i m (Ok eff m' evs).
-Proof. intros. apply check_fstat_chrdev_sound_ok. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_sound_ok. exact H. Qed.
 
 Lemma check_fstat_urandom_sound_unmodeled : forall i statbuf eff m,
   check_fstat_urandom i statbuf eff m = CheckUnmodeled ->
   fstat_urandom_spec statbuf i m Unmodeled.
-Proof. intros. apply check_fstat_chrdev_sound_unmodeled with (eff := eff). exact H. Qed.
+Proof. intros. apply check_fstat_devfd_sound_unmodeled with (eff := eff). exact H. Qed.
 
 Lemma check_fstat_urandom_complete_ok : forall i statbuf eff m m' evs,
   fstat_urandom_spec statbuf i m (Ok eff m' evs) ->
   check_fstat_urandom i statbuf eff m = CheckOk m' evs.
-Proof. intros. apply check_fstat_chrdev_complete_ok. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_complete_ok. exact H. Qed.
 
 Lemma check_fstat_urandom_complete_unmodeled : forall i statbuf m eff,
   fstat_urandom_spec statbuf i m Unmodeled ->
   check_fstat_urandom i statbuf eff m = CheckUnmodeled.
-Proof. intros. apply check_fstat_chrdev_complete_unmodeled. exact H. Qed.
+Proof. intros. apply check_fstat_devfd_complete_unmodeled. exact H. Qed.
 
 (** [check_ret_only] on a bare errno arm, in the shape the proofs below
     apply it: the same [Local] helper [Checks.Sys.Fs.Open] carries. *)
@@ -1323,7 +1462,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|]; [|discriminate].
     destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|];
-      [destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool);
+      [destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool);
         [discriminate|]|];
       eapply check_fstat_deliver_gen_no_copyin; exact H.
 Qed.
@@ -1337,7 +1476,7 @@ Proof.
   - destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
       as [w|]; [|discriminate].
     destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|];
-      [destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool);
+      [destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool);
         [discriminate|]|];
       eapply check_fstat_deliver_gen_no_copyin; exact H.
 Qed.

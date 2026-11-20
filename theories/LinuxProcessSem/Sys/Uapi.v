@@ -1199,6 +1199,7 @@ Definition ST_PAD2_OFF : nat := 60%nat.
 Definition ST_BLOCKS_OFF : nat := 64%nat.
 Definition ST_ATIME_OFF : nat := 72%nat.
 Definition ST_MTIME_OFF : nat := 88%nat.
+Definition ST_CTIME_OFF : nat := 104%nat.
 Definition ST_UNUSED45_OFF : nat := 120%nat.
 
 (** One little-endian member of a delivered [struct stat], as the
@@ -1298,6 +1299,32 @@ Definition stat_size_ok (n : nat) (bs : list byte) : bool :=
         (Z.eqb (stat_field_le ST_SIZE_OFF 8 bs)
                (bv_unsigned (Z_to_bv 64 (Z.of_nat n)))).
 
+(** [st_rdev] IS 0 FOR A REGULAR FILE, A FOLDER AND A LINK on the file
+    systems of the configuration of record (tmpfs and ramfs, SCOPE.md's
+    launch premise).  [inode_init_always_gfp] makes every inode with
+    [i_rdev = 0] (fs/inode.c:260, Linux v6.18.46), and only
+    [init_special_inode] sets another (fs/inode.c:2552-2577), which
+    [__shmem_get_inode] (mm/shmem.c:3124) and [ramfs_get_inode]
+    (fs/ramfs/inode.c:71) call for a device, a socket or a fifo alone;
+    [generic_fillattr] copies [i_rdev] (fs/stat.c:94). *)
+Definition stat_no_rdev (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) 0.
+
+(** [st_blksize] IS THE PAGE SIZE FOR EVERY INODE BUT A REGULAR FILE on
+    tmpfs, ramfs and devtmpfs, which is a mount of one of the two.
+    [generic_fillattr] reports [i_blocksize] (fs/stat.c:105, Linux
+    v6.18.46), [1 << i_blkbits] (include/linux/fs.h:931-934);
+    [inode_init_always_gfp] takes [i_blkbits] from the superblock
+    (fs/inode.c:234), and both file systems give theirs [PAGE_SIZE]
+    ([shmem_fill_super], mm/shmem.c:5119-5120; [ramfs_fill_super],
+    fs/ramfs/inode.c:268-269), 4096 on riscv64 ([State.page_size]).
+    [shmem_getattr] raises a REGULAR file's to the huge-page size when
+    huge pages are on for it (mm/shmem.c:1286-1287), and
+    [shmem_huge_global_enabled] answers 0 for anything else
+    (mm/shmem.c:606), so a regular file's is not asserted. *)
+Definition stat_page_blksize (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_BLKSIZE_OFF 4 bs) page_size.
+
 (** THE MEMBERS A [struct stat] OF /dev/null CARRIES FROM THE
     KERNEL, asserted outright: the entry is an [Fs.EDev], so the
     device is known to be a device.  [cp_new_stat] (fs/stat.c, Linux v6.18.46)
@@ -1313,12 +1340,15 @@ Definition stat_size_ok (n : nat) (bs : list byte) : bool :=
     made by mknod or devtmpfs and never resized carries them, and a
     crafted inode could carry another.
 
-    NOT asserted here, and chosen once per descriptor by
-    [Fs.Stat.fstat_devnull_spec]'s pin like every other member: the
+    NOT asserted here, and chosen once and held by the node's pin when
+    the stat knows the node ([Fs.Stat.fstat_devfd_spec]; a path stat
+    always does), free at every call otherwise, like every other member: the
     permission bits and the owner, which are the image's node's
     (devtmpfs takes 0666 and root from [mem_devnode], drivers/char/mem.c,
     but a container runtime makes its own node), the link count, the
-    device and inode numbers, the block size and the timestamps. *)
+    device and inode numbers and the timestamps.  The block size IS
+    asserted: the node lives on tmpfs or devtmpfs, whose inodes all
+    report the page size ([stat_page_blksize]). *)
 Definition DEVNULL_RDEV : Z := 259%Z.
 
 (** The members a [struct stat] of ANY of the model's character
@@ -1329,7 +1359,8 @@ Definition stat_chrdev_ok (rdev : Z) (bs : list byte) : bool :=
   (Z.eqb (stat_ifmt bs) S_IFCHR
    && Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) rdev
    && Z.eqb (stat_field_le ST_SIZE_OFF 8 bs) 0
-   && Z.eqb (stat_field_le ST_BLOCKS_OFF 8 bs) 0)%bool.
+   && Z.eqb (stat_field_le ST_BLOCKS_OFF 8 bs) 0
+   && stat_page_blksize bs)%bool.
 
 Definition stat_devnull_ok (bs : list byte) : bool := stat_chrdev_ok DEVNULL_RDEV bs.
 
@@ -1540,10 +1571,17 @@ Qed.
     node's link count and three timestamp pairs, a link's link count,
     [st_blocks], [st_mtime] and [st_ctime], and a folder's [st_blocks].
     No modeled call moves them but the removal of a link name, which
-    may lower a link's count and so move its [st_ctime], and lets every
-    link's pin go ([State.statpins_release_links]).  They stay out of
-    this predicate because a regular file's [st_blocks] and timestamps
-    move.
+    may lower a link's count and so move its [st_ctime]: it releases
+    those two of every link's pin, and nothing else
+    ([State.statpins_release_links]).  They stay out of this predicate
+    because a regular file's [st_blocks] and timestamps move.
+
+    SOME OF THE STABLE MEMBERS ARE FIXED OUTRIGHT, not only held, where
+    the file systems of the configuration of record fix them: [st_rdev] of a
+    regular file, a folder and a link ([stat_no_rdev]), [st_blksize] of
+    a folder, a link and a device node ([stat_page_blksize]), and a
+    link's whole [st_mode] ([stat_lnk_fixed]); the arms assert them at
+    every delivery, the first included.
 
     WHAT IS DELIBERATELY LEFT FREE: [st_size] (which [write] and
     [ftruncate] move, and which [stat_size_ok] constrains instead),
@@ -1609,6 +1647,73 @@ Proof. intros off n b. unfold stat_field_eqb. apply Z.eqb_refl. Qed.
     (fs/stat.c:95) reports it through [i_size_read]. *)
 Definition stat_lnk_size_ok (n : nat) (bs : list byte) : bool :=
   Z.eqb (stat_field_le ST_SIZE_OFF 8 bs) (bv_unsigned (Z_to_bv 64 (Z.of_nat n))).
+
+(** [st_blocks] IS 0, for a folder on tmpfs and ramfs and for a link's
+    short body: [inode_init_always_gfp] and [__shmem_get_inode] make
+    every inode with [i_blocks = 0] (fs/inode.c:253, mm/shmem.c:3096,
+    Linux v6.18.46) and [generic_fillattr] reports it (fs/stat.c:106);
+    [stat_dir_fixed] and [stat_lnk_blocks_ok] say why it stays 0. *)
+Definition stat_no_blocks (bs : list byte) : bool :=
+  Z.eqb (stat_field_le ST_BLOCKS_OFF 8 bs) 0.
+
+(** WHAT tmpfs AND ramfs FIX OF A REGULAR FILE'S [struct stat] beside
+    its type: [st_rdev] 0 ([stat_no_rdev]).  Its [st_blksize] is not
+    fixed: see [stat_page_blksize]. *)
+Definition stat_reg_fixed (bs : list byte) : bool :=
+  (stat_is_reg bs && stat_no_rdev bs)%bool.
+
+(** WHAT tmpfs AND ramfs FIX OF A FOLDER'S [struct stat] beside its
+    type: [st_rdev] 0 ([stat_no_rdev]), [st_blksize] the page size
+    ([stat_page_blksize]), and [st_blocks] 0 for the folder's whole
+    life ([stat_no_blocks]).  A tmpfs folder holds no page: a name made
+    or removed in it moves only its size and times ([shmem_mknod],
+    mm/shmem.c:3899-3900; [shmem_unlink], mm/shmem.c:4015-4017, Linux
+    v6.18.46); a ramfs folder never has [i_blocks] set
+    ([ramfs_dir_inode_operations] has no [getattr], fs/ramfs/inode.c:191,
+    and its [simple_link]/[simple_unlink] move only counts and times,
+    fs/libfs.c:752-761, :787-795). *)
+Definition stat_dir_fixed (bs : list byte) : bool :=
+  (stat_is_dir bs && stat_no_rdev bs && stat_page_blksize bs && stat_no_blocks bs)%bool.
+
+(** [SHORT_SYMLINK_LEN] (mm/shmem.c:98, Linux v6.18.46): the longest
+    link body, its NUL included, tmpfs keeps inline. *)
+Definition SHORT_SYMLINK_LEN : nat := 128%nat.
+
+(** One page in the 512-byte units of [st_blocks]: 8 on riscv64. *)
+Definition PAGE_BLOCKS : Z := (page_size / 512)%Z.
+
+(** A LINK'S [st_blocks], [n] its body's length.  tmpfs keeps a body of
+    up to [SHORT_SYMLINK_LEN] bytes with its NUL inline and charges a
+    longer one one page ([shmem_symlink], mm/shmem.c:4159-4170, Linux
+    v6.18.46): [shmem_alloc_and_add_folio] (mm/shmem.c:1970) accounts it
+    through [shmem_inode_acct_blocks] (mm/shmem.c:221-252), whose
+    [dquot_alloc_block_nodirty] adds [1 << i_blkbits] bytes
+    (include/linux/quotaops.h:317-320) to [i_blocks] in 512-byte units
+    (fs/stat.c:917-926), and the page is one page, since
+    [shmem_huge_global_enabled] gives no inode but a regular file a large
+    folio (mm/shmem.c:606).  ramfs stores every body in the page cache
+    ([page_symlink], fs/ramfs/inode.c:155), which charges no block.  So
+    a body of fewer than [SHORT_SYMLINK_LEN] bytes reports 0, and a
+    longer one 0 or [PAGE_BLOCKS]: the model does not know which of the
+    two file systems holds the link. *)
+Definition stat_lnk_blocks_ok (n : nat) (bs : list byte) : bool :=
+  (stat_no_blocks bs
+   || (Nat.leb SHORT_SYMLINK_LEN n
+       && Z.eqb (stat_field_le ST_BLOCKS_OFF 8 bs) PAGE_BLOCKS))%bool.
+
+(** WHAT tmpfs AND ramfs FIX OF A LINK'S [struct stat], [n] its body's
+    length: the whole [st_mode], S_IFLNK|0777 -- [shmem_symlink] makes
+    the inode with it (mm/shmem.c:4144, Linux v6.18.46), [ramfs_symlink]
+    with S_IFLNK|S_IRWXUGO (fs/ramfs/inode.c:143), [inode_init_owner]
+    stores it as given for anything but a folder (fs/inode.c:2593-2606),
+    and [notify_change] refuses to change a link's mode
+    (fs/attr.c:447-448); [st_rdev] 0 ([stat_no_rdev]); [st_size] [n]
+    ([stat_lnk_size_ok]); [st_blksize] the page size
+    ([stat_page_blksize]); and [st_blocks] as [stat_lnk_blocks_ok]
+    says. *)
+Definition stat_lnk_fixed (n : nat) (bs : list byte) : bool :=
+  (Z.eqb (stat_mode bs) (S_IFLNK + 511)%Z && stat_no_rdev bs && stat_lnk_size_ok n bs
+   && stat_page_blksize bs && stat_lnk_blocks_ok n bs)%bool.
 
 (** TWO SLICES OF A DELIVERED [struct stat] READ THE SAME out of two
     buffers that agree on the region they fall in: wholly inside the
@@ -1962,6 +2067,38 @@ Proof. intros n bs H. unfold stat_is_dir. now rewrite stat_set_nlink_ifmt. Qed.
 Lemma stat_set_nlink_lnk : forall n bs,
   (20 <= length bs)%nat -> stat_is_lnk (stat_set_nlink n bs) = stat_is_lnk bs.
 Proof. intros n bs H. unfold stat_is_lnk. now rewrite stat_set_nlink_ifmt. Qed.
+
+(** A member at or past byte 24 reads alike out of the patched buffer
+    and the one it patched ... *)
+Lemma stat_set_nlink_field_le : forall n off k bs,
+  (24 <= off)%nat -> (20 <= length bs)%nat ->
+  stat_field_le off k (stat_set_nlink n bs) = stat_field_le off k bs.
+Proof.
+  intros n off k bs Hoff Hlen.
+  apply stat_field_le_tail24; [exact Hoff | now apply stat_set_nlink_tail].
+Qed.
+
+(** ... so the members a regular file's and a folder's [struct stat]
+    carry fixed ([stat_reg_fixed], [stat_dir_fixed]) survive the patch:
+    each is in the type bits or at or past byte 24. *)
+Lemma stat_set_nlink_reg_fixed : forall n bs,
+  (20 <= length bs)%nat -> stat_reg_fixed (stat_set_nlink n bs) = stat_reg_fixed bs.
+Proof.
+  intros n bs H. unfold stat_reg_fixed, stat_no_rdev.
+  rewrite stat_set_nlink_reg, (stat_set_nlink_field_le n ST_RDEV_OFF)
+    by (exact H || (cbv [ST_RDEV_OFF]; lia)).
+  reflexivity.
+Qed.
+
+Lemma stat_set_nlink_dir_fixed : forall n bs,
+  (20 <= length bs)%nat -> stat_dir_fixed (stat_set_nlink n bs) = stat_dir_fixed bs.
+Proof.
+  intros n bs H. unfold stat_dir_fixed, stat_no_rdev, stat_page_blksize, stat_no_blocks.
+  rewrite stat_set_nlink_dir, (stat_set_nlink_field_le n ST_RDEV_OFF),
+    (stat_set_nlink_field_le n ST_BLKSIZE_OFF), (stat_set_nlink_field_le n ST_BLOCKS_OFF)
+    by (exact H || (cbv [ST_RDEV_OFF ST_BLKSIZE_OFF ST_BLOCKS_OFF]; lia)).
+  reflexivity.
+Qed.
 
 (** ...and every member at or past byte 24 reads alike out of the
     patched buffer and the one it patched ([stat_field_eqb]). *)

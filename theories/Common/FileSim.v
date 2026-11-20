@@ -469,14 +469,13 @@ Qed.
 
 (** THE TWO OPEN ARMS A COPY PROGRAM CALLS, AND EXACTLY WHERE THEY
     DECLINE.  [openat_read_spec] (O_RDONLY) declines a walk that ends
-    [Fs.ROutside] or [Fs.RParent] and a device entry away from its own
-    name ([dev_at_home]); [openat_create_spec]
-    (O_WRONLY|O_CREAT|O_TRUNC) declines [Fs.ROutside] and the same
-    devices.  Every other outcome is an answer: an errno, or a
-    descriptor, and the success shapes [open_result_spec] and
+    [Fs.ROutside] or [Fs.RParent]; [openat_create_spec]
+    (O_WRONLY|O_CREAT|O_TRUNC) declines [Fs.ROutside].  A device entry
+    is answered at any key.  Every other outcome is an answer: an errno,
+    or a descriptor, and the success shapes [open_result_spec] and
     [create_wronly] have no [Unmodeled] outcome.  The read walk never
     ends [Fs.RParent] ([read_walk_not_parent]), so both opens decline on
-    the same two shapes, which [openat_operand_answers_iff] states. *)
+    the same one shape, which [openat_operand_answers_iff] states. *)
 Lemma err_ret_answers : forall e si m', ~ err_ret e si m' Unmodeled.
 Proof. intros e si m' H. unfold err_ret, ret_only, pure in H. discriminate H. Qed.
 
@@ -556,7 +555,6 @@ Lemma openat_read_spec_answers_iff : forall r m si m',
   ~ openat_read_spec r m si m' Unmodeled <->
   match r with
   | Fs.ROutside => False
-  | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
   | _ => True
   end.
 Proof.
@@ -566,12 +564,7 @@ Proof.
     + split; [intros _; exact I | intros _; apply open_result_spec_answers].
     + split; [intros _; exact I | intros _; apply open_result_spec_answers].
     + destruct d; cbv beta iota; [unfold open_devnull | unfold open_urandom];
-        [destruct (dev_at_home k DevNull) | destruct (dev_at_home k DevUrandom)];
-        cbn [negb]; split.
-      all: first [ intros _; reflexivity
-                 | intros _; apply open_result_spec_answers
-                 | intros Hn; exfalso; apply Hn; exact eq_refl
-                 | intros Hq; discriminate Hq ].
+        (split; [intros _; exact I | intros _; apply open_result_spec_answers]).
     + split; [intros _; exact I | intros _; apply err_ret_answers].
   - split; [intros _; exact I | intros _; apply err_ret_answers].
   - split; [intros _; exact I | intros _; apply err_ret_answers].
@@ -585,7 +578,6 @@ Lemma openat_create_spec_answers_iff : forall r m si m',
   ~ openat_create_spec r m si m' Unmodeled <->
   match r with
   | Fs.ROutside => False
-  | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
   | _ => True
   end.
 Proof.
@@ -596,12 +588,7 @@ Proof.
       apply open_write_existing_answers. apply create_wronly_answers.
     + split; [intros _; exact I | intros _; apply err_ret_answers].
     + destruct d; cbv beta iota; [unfold open_devnull | unfold open_urandom];
-        [destruct (dev_at_home k DevNull) | destruct (dev_at_home k DevUrandom)];
-        cbn [negb]; split.
-      all: first [ intros _; reflexivity
-                 | intros _; apply open_result_spec_answers
-                 | intros Hn; exfalso; apply Hn; exact eq_refl
-                 | intros Hq; discriminate Hq ].
+        (split; [intros _; exact I | intros _; apply open_result_spec_answers]).
     + split; [intros _; exact I | intros _; apply err_ret_answers].
   - split; [intros _; exact I | intros _; apply create_wronly_answers].
   - split; [intros _; exact I | intros _; apply err_ret_answers].
@@ -615,8 +602,7 @@ Qed.
     for a pathname with no separator, the O_RDONLY open (walk
     [Fs.WalkFull true false]) and the O_WRONLY|O_CREAT|O_TRUNC open
     (walk [Fs.WalkCreate true]) have an [Unmodeled] outcome exactly
-    when the walk ends [Fs.ROutside] or at a device entry away from its
-    own name. *)
+    when the walk ends [Fs.ROutside]. *)
 Lemma openat_operand_answers_iff : forall p fl md m si,
   path_has_slash p = false ->
   (fl = Z_to_bv 64 0 /\ md = Fs.WalkFull true false
@@ -624,7 +610,6 @@ Lemma openat_operand_answers_iff : forall p fl md m si,
   ~ openat_resolved_spec p fl m si m Unmodeled <->
   match fst (fst (Fs.resolve md (m_fs m) (m_cwd m) p)) with
   | Fs.ROutside => False
-  | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
   | _ => True
   end.
 Proof.

@@ -2356,7 +2356,7 @@ Proof.
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
     [|discriminate].
   destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|].
-  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool);
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool);
       [discriminate|].
     eapply check_fstat_deliver_gen_frame; [|exact H].
     intros bs. unfold file_pin_after.
@@ -2377,7 +2377,9 @@ Proof.
   destruct (statpin_lookup (m_statpins m) id) as [sp|].
   - destruct (negb (stat_buf_wf (sp_bytes sp) && ok (sp_bytes sp))%bool);
       [discriminate|].
-    eapply check_fstat_deliver_gen_frame; [|exact H]. reflexivity.
+    eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. unfold pinned_after.
+    destruct (sp_released sp); [autorewrite with model|]; reflexivity.
   - eapply check_fstat_deliver_gen_frame; [|exact H].
     intros bs. autorewrite with model. reflexivity.
 Qed.
@@ -2402,7 +2404,7 @@ Proof.
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
     [|discriminate].
   destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|].
-  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool);
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool);
       [discriminate|].
     eapply check_fstat_deliver_gen_frame; [|exact H].
     intros bs. unfold dir_pin_after.
@@ -2411,15 +2413,37 @@ Proof.
     intros bs. autorewrite with model. reflexivity.
 Qed.
 
+Lemma check_fstat_unpinned_frame : forall ok i statbuf eff m m' evs,
+  check_fstat_unpinned ok i statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros ok i statbuf eff m m' evs H.
+  unfold check_fstat_unpinned in H.
+  destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
+    [|discriminate].
+  eapply check_fstat_deliver_gen_frame; [|exact H].
+  intros bs. reflexivity.
+Qed.
+
+Lemma check_fstat_devfd_frame : forall d k ok i statbuf eff m m' evs,
+  check_fstat_devfd d k ok i statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros d k ok i statbuf eff m m' evs H. unfold check_fstat_devfd in H.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H;
+    [eapply check_fstat_chrdev_frame | eapply check_fstat_unpinned_frame]; exact H.
+Qed.
+
 Lemma check_fstat_devnull_frame : forall i statbuf eff m m' evs,
   check_fstat_devnull i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
-Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
+Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 
 Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
   check_fstat_urandom i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
-Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
+Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 
 (** newfstatat's success arm, like [fstat]'s, records a stat pin
     ([State.with_statpin]); that setter rebuilds [ProcState] and carries

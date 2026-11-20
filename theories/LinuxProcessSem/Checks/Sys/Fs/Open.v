@@ -370,29 +370,23 @@ Proof.
     eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
 
-(** Mirrors [Open.open_devnull] and [Open.open_urandom]: the decline of
-    a device entry at a key other than the device's own name
-    ([Open.dev_at_home]), then the shared success shape with the granted
-    access mode on the entry. *)
+(** Mirrors [Open.open_devnull] and [Open.open_urandom]: the shared
+    success shape with the granted access mode on the entry, at whatever
+    key the walk reached it. *)
 Local Definition check_open_devnull (k : Fs.path) (rd wr : bool)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if negb (dev_at_home k DevNull) then CheckUnmodeled
-  else
-    check_open_result_mk eff m
-      (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
+  check_open_result_mk eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
 
 Local Definition check_open_urandom (k : Fs.path) (rd wr : bool)
     (eff : SyscallEffect) (m : Model) : check_result :=
-  if negb (dev_at_home k DevUrandom) then CheckUnmodeled
-  else
-    check_open_result_mk eff m
-      (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
+  check_open_result_mk eff m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
 
 (** THE ARMS, each a match on [Fs.resolve]'s outcome and mirroring the
     spec of the same name row for row.  Each declines "proc" and "sys"
-    at the root ([Fs.ROutside]), the read and directory arms also the
-    [O_CREAT] walk's end they never get ([Fs.RParent]), and the device
-    rows a device entry away from its own name. *)
+    at the root ([Fs.ROutside]), and the read and directory arms also
+    the [O_CREAT] walk's end they never get ([Fs.RParent]). *)
 Local Definition check_openat_read (r : Fs.Resolved)
     (eff : SyscallEffect) (m : Model) : check_result :=
   match r with
@@ -900,15 +894,14 @@ Local Ltac op_ret_cnil :=
       reflexivity
   end.
 
-(** The device rows are [open_result_spec] under a different name,
-    behind the device-at-home test, so one lemma per direction covers
-    both. *)
+(** The device rows are [open_result_spec] under a different name, so
+    one lemma per direction covers both. *)
 Local Lemma check_open_devnull_sound_ok : forall i k rd wr eff m m' evs,
   check_open_devnull k rd wr eff m = CheckOk m' evs ->
   open_devnull k m rd wr i m (Ok eff m' evs).
 Proof.
   intros i k rd wr eff m m' evs H. unfold check_open_devnull in H.
-  unfold open_devnull. destruct (negb (dev_at_home k DevNull)); [discriminate|].
+  unfold open_devnull.
   eapply check_open_result_mk_sound_ok; exact H.
 Qed.
 
@@ -917,7 +910,7 @@ Local Lemma check_open_urandom_sound_ok : forall i k rd wr eff m m' evs,
   open_urandom k m rd wr i m (Ok eff m' evs).
 Proof.
   intros i k rd wr eff m m' evs H. unfold check_open_urandom in H.
-  unfold open_urandom. destruct (negb (dev_at_home k DevUrandom)); [discriminate|].
+  unfold open_urandom.
   eapply check_open_result_mk_sound_ok; exact H.
 Qed.
 
@@ -926,8 +919,6 @@ Local Lemma check_open_devnull_sound_unmodeled : forall i k rd wr eff m,
   open_devnull k m rd wr i m Unmodeled.
 Proof.
   intros i k rd wr eff m H. unfold check_open_devnull in H.
-  unfold open_devnull. destruct (negb (dev_at_home k DevNull));
-    [apply unmodeled_intro|].
   exfalso. eapply check_open_result_mk_no_unmodeled; exact H.
 Qed.
 
@@ -936,8 +927,6 @@ Local Lemma check_open_urandom_sound_unmodeled : forall i k rd wr eff m,
   open_urandom k m rd wr i m Unmodeled.
 Proof.
   intros i k rd wr eff m H. unfold check_open_urandom in H.
-  unfold open_urandom. destruct (negb (dev_at_home k DevUrandom));
-    [apply unmodeled_intro|].
   exfalso. eapply check_open_result_mk_no_unmodeled; exact H.
 Qed.
 
@@ -946,8 +935,7 @@ Local Lemma check_open_devnull_complete_ok : forall i k rd wr eff m m' evs,
   check_open_devnull k rd wr eff m = CheckOk m' evs.
 Proof.
   intros i k rd wr eff m m' evs H. unfold open_devnull in H.
-  unfold check_open_devnull. destruct (negb (dev_at_home k DevNull));
-    [unfold unmodeled in H; inv_ok|].
+  unfold check_open_devnull.
   eapply check_open_result_mk_complete_ok; exact H.
 Qed.
 
@@ -956,8 +944,7 @@ Local Lemma check_open_urandom_complete_ok : forall i k rd wr eff m m' evs,
   check_open_urandom k rd wr eff m = CheckOk m' evs.
 Proof.
   intros i k rd wr eff m m' evs H. unfold open_urandom in H.
-  unfold check_open_urandom. destruct (negb (dev_at_home k DevUrandom));
-    [unfold unmodeled in H; inv_ok|].
+  unfold check_open_urandom.
   eapply check_open_result_mk_complete_ok; exact H.
 Qed.
 
@@ -966,8 +953,6 @@ Local Lemma check_open_devnull_complete_unmodeled : forall i k rd wr eff m,
   check_open_devnull k rd wr eff m = CheckUnmodeled.
 Proof.
   intros i k rd wr eff m H. unfold open_devnull in H.
-  unfold check_open_devnull. destruct (negb (dev_at_home k DevNull));
-    [reflexivity|].
   exfalso. eapply open_result_spec_no_unmodeled; exact H.
 Qed.
 
@@ -976,8 +961,6 @@ Local Lemma check_open_urandom_complete_unmodeled : forall i k rd wr eff m,
   check_open_urandom k rd wr eff m = CheckUnmodeled.
 Proof.
   intros i k rd wr eff m H. unfold open_urandom in H.
-  unfold check_open_urandom. destruct (negb (dev_at_home k DevUrandom));
-    [reflexivity|].
   exfalso. eapply open_result_spec_no_unmodeled; exact H.
 Qed.
 
@@ -985,7 +968,6 @@ Local Lemma check_open_devnull_no_copyin : forall k rd wr eff m m' evs,
   check_open_devnull k rd wr eff m = CheckOk m' evs -> eff_copyins eff = [].
 Proof.
   intros k rd wr eff m m' evs H. unfold check_open_devnull in H.
-  destruct (negb (dev_at_home k DevNull)); [discriminate|].
   eapply check_open_result_mk_no_copyin; exact H.
 Qed.
 
@@ -993,7 +975,6 @@ Local Lemma check_open_urandom_no_copyin : forall k rd wr eff m m' evs,
   check_open_urandom k rd wr eff m = CheckOk m' evs -> eff_copyins eff = [].
 Proof.
   intros k rd wr eff m m' evs H. unfold check_open_urandom in H.
-  destruct (negb (dev_at_home k DevUrandom)); [discriminate|].
   eapply check_open_result_mk_no_copyin; exact H.
 Qed.
 
@@ -1079,7 +1060,11 @@ Local Ltac ow_complete_nu :=
 (* ------------------------------------------------------------ the arms *)
 
 (** Every arm splits on the outcome, the entry and the device kind, and
-    each leaf closes by the lemma for its acceptor, one per direction. *)
+    each leaf closes by the lemma for its acceptor, one per direction.
+    In the complete direction a device leaf is tried first, by its own
+    lemma: its spec is [open_result_spec] under another name, and with
+    the generic acceptor's lemma tried first the proof of the read arm
+    was left incomplete. *)
 Local Ltac arm_sound_ok :=
   first [ ow_sound_ok
         | op_ret_ok
@@ -1099,23 +1084,23 @@ Local Ltac arm_sound_nu :=
         | exfalso; eapply check_open_rdwr_no_unmodeled; eassumption
         | dev_sound_nu ].
 Local Ltac arm_complete_ok :=
-  first [ ow_complete_ok
+  first [ dev_complete_ok
+        | ow_complete_ok
         | op_ret_co
         | eapply check_open_result_mk_complete_ok; eassumption
         | eapply check_create_wronly_complete_ok'; eassumption
         | eapply check_open_append_complete_ok'; eassumption
         | eapply check_open_rdwr_complete_ok'; eassumption
-        | dev_complete_ok
         | unfold unmodeled in *; inv_ok ].
 Local Ltac arm_complete_nu :=
-  first [ ow_complete_nu
+  first [ dev_complete_nu
+        | ow_complete_nu
         | reflexivity
         | sys_unfold; inv_ok; fail
         | exfalso; eapply open_result_spec_no_unmodeled; eassumption
         | exfalso; eapply create_wronly_no_unmodeled; eassumption
         | exfalso; eapply open_append_no_unmodeled; eassumption
-        | exfalso; eapply open_rdwr_no_unmodeled; eassumption
-        | dev_complete_nu ].
+        | exfalso; eapply open_rdwr_no_unmodeled; eassumption ].
 
 Local Lemma check_openat_read_sound_ok : forall i r eff m m' evs,
   check_openat_read r eff m = CheckOk m' evs ->

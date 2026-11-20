@@ -132,9 +132,10 @@ Definition fstat_witness_buf (n nl : nat) (pin : option (list byte)) : list byte
   | None => stat_set_nlink nl (stat_set_size n stat_witness_base)
   end.
 
-(** The file seed is S_IFREG, and the head [Uapi.stat_set_size] and
-    [Uapi.stat_set_nlink] leave alone keeps it so. *)
-Lemma stat_witness_base_reg : stat_is_reg stat_witness_base = true.
+(** The file seed is S_IFREG with no device number, and the head
+    [Uapi.stat_set_size] and [Uapi.stat_set_nlink] leave alone keeps it
+    so. *)
+Lemma stat_witness_base_reg : stat_reg_fixed stat_witness_base = true.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma stat_set_size_reg : forall n bs,
@@ -145,12 +146,22 @@ Proof.
     [reflexivity | unfold ST_MODE_OFF; lia | apply stat_set_size_head; exact Hlen].
 Qed.
 
+Lemma stat_set_size_reg_fixed : forall n bs,
+  (48 <= length bs)%nat -> stat_reg_fixed (stat_set_size n bs) = stat_reg_fixed bs.
+Proof.
+  intros n bs Hlen. unfold stat_reg_fixed, stat_no_rdev.
+  rewrite stat_set_size_reg by exact Hlen.
+  rewrite (stat_field_le_head ST_RDEV_OFF 8 (stat_set_size n bs) bs);
+    [reflexivity | unfold ST_RDEV_OFF; lia | apply stat_set_size_head; exact Hlen].
+Qed.
+
 (** Everything [Stat.fstat_file_spec]'s [choose] asks of a delivery
-    built over a well-formed S_IFREG buffer [b]. *)
+    built over a well-formed buffer [b] that carries what a regular
+    file's must. *)
 Lemma fstat_witness_buf_ok : forall n nl b,
-  stat_buf_wf b = true -> stat_is_reg b = true ->
+  stat_buf_wf b = true -> stat_reg_fixed b = true ->
   stat_buf_wf (stat_set_nlink nl (stat_set_size n b)) = true
-  /\ stat_is_reg (stat_set_nlink nl (stat_set_size n b)) = true
+  /\ stat_reg_fixed (stat_set_nlink nl (stat_set_size n b)) = true
   /\ stat_size_ok n (stat_set_nlink nl (stat_set_size n b)) = true
   /\ stat_nlink_ok nl (stat_set_nlink nl (stat_set_size n b)) = true
   /\ stat_stable_eqb (stat_set_nlink nl (stat_set_size n b)) b = true.
@@ -161,7 +172,8 @@ Proof.
     by now apply stat_set_size_length.
   refine (conj _ (conj _ (conj _ (conj _ _)))).
   - apply stat_set_nlink_wf, stat_set_size_wf, Hwf.
-  - rewrite stat_set_nlink_reg by lia. rewrite stat_set_size_reg by lia. exact Hreg.
+  - rewrite stat_set_nlink_reg_fixed by lia. rewrite stat_set_size_reg_fixed by lia.
+    exact Hreg.
   - rewrite stat_set_nlink_size_ok by lia. now apply stat_set_size_size_ok.
   - apply stat_set_nlink_nlink_ok. lia.
   - eapply stat_stable_eqb_trans; [apply stat_set_nlink_stable; exact Hlen'|].
@@ -185,7 +197,7 @@ Definition fstat_file_witness (ino : Fs.ino) (statbuf : word)
     | Some _ =>
         match statpin_lookup (m_statpins m) (IdIno ino) with
         | Some sp =>
-            if negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool
+            if negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool
             then Unmodeled
             else
               let bs := fstat_witness_buf n nl (Some (sp_bytes sp)) in
@@ -194,7 +206,7 @@ Definition fstat_file_witness (ino : Fs.ino) (statbuf : word)
         | None =>
             let bs := fstat_witness_buf n nl None in
             Ok (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
-               (with_statpin (IdIno ino) (mkStatPin bs None) m) []
+               (with_statpin (IdIno ino) (mkStatPin bs None false) m) []
         end
     end.
 
@@ -210,7 +222,7 @@ Proof.
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
     as [w|] eqn:Hw; cbv iota; [|apply unmodeled_intro].
   destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|] eqn:Hp; cbv iota.
-  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_reg (sp_bytes sp))%bool)
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool)
       eqn:Hb0; cbv iota; [apply unmodeled_intro|].
     apply Bool.negb_false_iff in Hb0. apply andb_true_iff in Hb0 as [Hb0 HREG].
     unfold fstat_witness_buf.
@@ -236,15 +248,17 @@ Proof.
     eapply bind_step; [apply modify_ok|]. apply pure_ok.
 Qed.
 
-(** THE /dev/null SEED: [stat_witness_base] with the device's four
-    members set — S_IFCHR, [st_rdev] 1:3, and the zero [st_size] and
-    [st_blocks] the seed already carries — so that it satisfies
-    [Uapi.stat_devnull_ok] outright.  Zero everywhere else, for the
-    reason the file seed is.  [stat_urandom_witness_base] is the same
-    seed with the random device's number. *)
+(** THE /dev/null SEED: [stat_witness_base] with the device's five
+    members set — S_IFCHR, [st_rdev] 1:3, the page size as
+    [st_blksize], and the zero [st_size] and [st_blocks] the seed
+    already carries — so that it satisfies [Uapi.stat_devnull_ok]
+    outright.  Zero everywhere else, for the reason the file seed is.
+    [stat_urandom_witness_base] is the same seed with the random
+    device's number. *)
 Definition stat_chrdev_witness_base (rdev : Z) : list byte :=
   Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 S_IFCHR ++ Z_to_le_bytes 12 0
-  ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 88 0.
+  ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 page_size
+  ++ Z_to_le_bytes 68 0.
 
 Definition stat_devnull_witness_base : list byte :=
   stat_chrdev_witness_base DEVNULL_RDEV.
@@ -269,10 +283,11 @@ Proof. vm_compute. reflexivity. Qed.
 (** The pinned-identity arm, mirroring [Stat.fstat_pinned_spec] branch
     for branch, with the seed [base] delivered on the unpinned branch.
     On the pinned branch the witness delivers THE PIN ITSELF: the spec
-    has just checked it against both predicates, and the link-count and
-    stable comparisons are reflexive -- there is no [st_size] to patch,
-    because the device's is asserted to be 0 already and a link's was
-    written into its seed when the pin was made. *)
+    has just checked it against both predicates, and the held and
+    stable comparisons are reflexive, released or not -- there is no
+    [st_size] to patch, because the device's is asserted to be 0
+    already and a link's was written into its seed when the pin was
+    made.  The model left is [Stat.pinned_after]'s. *)
 Definition fstat_pinned_witness (id : StatId) (ok : list byte -> bool)
     (base : list byte) (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
@@ -284,10 +299,11 @@ Definition fstat_pinned_witness (id : StatId) (ok : list byte -> bool)
         match statpin_lookup (m_statpins m) id with
         | Some sp =>
             if negb (stat_buf_wf (sp_bytes sp) && ok (sp_bytes sp))%bool then Unmodeled
-            else Ok (mkEffect (Z_to_bv 64 0) [(statbuf, sp_bytes sp)] []) m []
+            else Ok (mkEffect (Z_to_bv 64 0) [(statbuf, sp_bytes sp)] [])
+                    (pinned_after id sp (sp_bytes sp) m) []
         | None =>
             Ok (mkEffect (Z_to_bv 64 0) [(statbuf, base)] [])
-               (with_statpin id (mkStatPin base None) m) []
+               (with_statpin id (mkStatPin base None false) m) []
         end
     end.
 
@@ -310,9 +326,9 @@ Proof.
     apply Bool.negb_false_iff in Hb0. apply andb_true_iff in Hb0 as [HWF HOK].
     eapply bind_step;
       [apply (choose_ok _ (sp_bytes sp));
-       exact (conj HWF (conj HOK (conj (stat_pin_held_refl _ _)
+       exact (conj HWF (conj HOK (conj (stat_pin_held_refl _ _ _)
                                        (stat_stable_eqb_refl _))))|].
-    apply pure_ok.
+    eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - eapply bind_step;
       [apply (choose_ok _ base); exact (conj Hwf Hok)|].
     eapply bind_step; [apply modify_ok|]. apply pure_ok.
@@ -333,34 +349,95 @@ Proof.
   now apply fstat_pinned_witness_ok.
 Qed.
 
-(** THE LINK SEED: [stat_witness_base] with S_IFLNK in place of S_IFREG,
-    and the body's length patched into [st_size] by [stat_set_size]. *)
+(** A device descriptor's stat that holds nothing
+    ([Stat.fstat_unpinned_spec]): the seed, and the model as it was. *)
+Definition fstat_unpinned_witness (ok : list byte -> bool) (base : list byte)
+    (statbuf : word) (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
+  if negb (access_okb statbuf STAT_SIZE) then ret_outcome (errno_ret EFAULT) m
+  else
+    match read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE) with
+    | None => Unmodeled                    (* a partial [copy_to_user] *)
+    | Some _ => Ok (mkEffect (Z_to_bv 64 0) [(statbuf, base)] []) m []
+    end.
+
+Lemma fstat_unpinned_witness_ok : forall ok base,
+  stat_buf_wf base = true -> ok base = true ->
+  forall statbuf i m,
+  fstat_unpinned_spec ok statbuf i m (fstat_unpinned_witness ok base statbuf i m).
+Proof.
+  intros ok base Hwf Hok statbuf i m.
+  unfold fstat_unpinned_spec, fstat_unpinned_witness.
+  eapply bind_step; [apply input_ok|]. cbv beta.
+  destruct (negb (access_okb statbuf STAT_SIZE)) eqn:Ha; cbv iota;
+    [unfold err_ret, ret_only, ret_outcome; apply pure_ok|].
+  destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
+    as [w|] eqn:Hw; cbv iota; [|apply unmodeled_intro].
+  eapply bind_step; [apply (choose_ok _ base); exact (conj Hwf Hok)|].
+  apply pure_ok.
+Qed.
+
+(** A device descriptor of kind [d] ([Stat.fstat_devfd_spec]). *)
+Definition fstat_devfd_witness (d : DevKind) (k : Fs.path) (ok : list byte -> bool)
+    (base : list byte) (statbuf : word) (i : SyscallInput) (m : Model)
+    : outcome SyscallEffect :=
+  if dev_sole_node (m_fs m) d k then fstat_chrdev_witness k ok base statbuf i m
+  else fstat_unpinned_witness ok base statbuf i m.
+
+Lemma fstat_devfd_witness_ok : forall d k ok base,
+  stat_buf_wf base = true -> ok base = true ->
+  forall statbuf i m,
+  fstat_devfd_spec d k ok statbuf i m (fstat_devfd_witness d k ok base statbuf i m).
+Proof.
+  intros d k ok base Hwf Hok statbuf i m.
+  unfold fstat_devfd_spec, fstat_devfd_witness.
+  eapply bind_step; [apply get_model_ok|]. cbv beta.
+  destruct (dev_sole_node (m_fs m) d k).
+  - now apply fstat_chrdev_witness_ok.
+  - now apply fstat_unpinned_witness_ok.
+Qed.
+
+(** THE LINK SEED: what tmpfs and ramfs fix of a link
+    ([Uapi.stat_lnk_fixed]) -- S_IFLNK|0777, the page size as
+    [st_blksize] -- and zero everywhere else, the body's length patched
+    into [st_size] by [stat_set_size]. *)
 Definition stat_lnk_witness_base : list byte :=
-  Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 S_IFLNK ++ Z_to_le_bytes 108 0.
+  Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 (S_IFLNK + 511)%Z ++ Z_to_le_bytes 36 0
+  ++ Z_to_le_bytes 4 page_size ++ Z_to_le_bytes 68 0.
 
 Lemma stat_lnk_witness_base_wf : stat_buf_wf stat_lnk_witness_base = true.
-Proof. vm_compute. reflexivity. Qed.
-
-Lemma stat_lnk_witness_base_lnk : stat_is_lnk stat_lnk_witness_base = true.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma stat_lnk_witness_base_length : length stat_lnk_witness_base = 128%nat.
 Proof. vm_compute. reflexivity. Qed.
 
-Lemma stat_set_size_lnk : forall n bs,
-  (48 <= length bs)%nat -> stat_is_lnk (stat_set_size n bs) = stat_is_lnk bs.
+(** The seed with any body length [n] patched in carries what a link of
+    that length must: [stat_set_size] moves [st_size] alone, and the
+    seed's zero [st_blocks] fits a body of any length. *)
+Lemma stat_lnk_witness_ok : forall n,
+  stat_lnk_fixed n (stat_set_size n stat_lnk_witness_base) = true.
 Proof.
-  intros n bs Hlen. unfold stat_is_lnk, stat_ifmt.
-  rewrite (stat_field_le_head ST_MODE_OFF 4 (stat_set_size n bs) bs);
-    [reflexivity | unfold ST_MODE_OFF; lia | apply stat_set_size_head; exact Hlen].
+  intro n. pose proof stat_lnk_witness_base_length as Hlen.
+  assert (Hh : firstn 48 (stat_set_size n stat_lnk_witness_base)
+               = firstn 48 stat_lnk_witness_base)
+    by (apply stat_set_size_head; lia).
+  assert (Ht : skipn 56 (stat_set_size n stat_lnk_witness_base)
+               = skipn 56 stat_lnk_witness_base)
+    by (apply stat_set_size_tail; lia).
+  unfold stat_lnk_fixed, stat_lnk_blocks_ok, stat_no_blocks, stat_page_blksize,
+    stat_no_rdev, stat_mode.
+  rewrite (stat_field_le_head ST_MODE_OFF 4 _ _ ltac:(cbv [ST_MODE_OFF]; lia) Hh),
+    (stat_field_le_head ST_RDEV_OFF 8 _ _ ltac:(cbv [ST_RDEV_OFF]; lia) Hh),
+    (stat_field_le_tail ST_BLKSIZE_OFF 4 _ _ ltac:(cbv [ST_BLKSIZE_OFF]; lia) Ht),
+    (stat_field_le_tail ST_BLOCKS_OFF 8 _ _ ltac:(cbv [ST_BLOCKS_OFF]; lia) Ht),
+    (stat_set_size_lnk_size_ok n _ Hlen).
+  vm_compute. reflexivity.
 Qed.
 
 (** A link the walk did not follow: the link seed with the body's
     length ([Stat.fstat_link_spec]). *)
 Definition fstat_link_witness (k b : Fs.path) (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
-  fstat_pinned_witness (IdLink k)
-    (fun bs => stat_is_lnk bs && stat_lnk_size_ok (length (Fs.link_text b)) bs)%bool
+  fstat_pinned_witness (IdLink k) (stat_lnk_fixed (length (Fs.link_text b)))
     (stat_set_size (length (Fs.link_text b)) stat_lnk_witness_base) statbuf i m.
 
 Lemma fstat_link_witness_ok : forall k b statbuf i m,
@@ -369,22 +446,22 @@ Proof.
   intros k b statbuf i m. unfold fstat_link_spec, fstat_link_witness.
   apply fstat_pinned_witness_ok.
   - apply stat_set_size_wf, stat_lnk_witness_base_wf.
-  - rewrite stat_set_size_lnk by (rewrite stat_lnk_witness_base_length; lia).
-    rewrite stat_lnk_witness_base_lnk. cbn [andb].
-    apply stat_set_size_lnk_size_ok, stat_lnk_witness_base_length.
+  - apply stat_lnk_witness_ok.
 Qed.
 
-(** THE DIRECTORY SEED: [stat_witness_base] with S_IFDIR in place of
-    S_IFREG, and zero everywhere else.  A real directory reports a
-    nonzero device, inode and block size; the seed is one member of the
-    envelope the spec chooses over, not the likeliest one. *)
+(** THE DIRECTORY SEED: what tmpfs and ramfs fix of a folder
+    ([Uapi.stat_dir_fixed]) -- S_IFDIR, the page size as [st_blksize] --
+    and zero everywhere else.  A real directory reports a nonzero
+    device and inode; the seed is one member of the envelope the spec
+    chooses over, not the likeliest one. *)
 Definition stat_dir_witness_base : list byte :=
-  Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 S_IFDIR ++ Z_to_le_bytes 108 0.
+  Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 S_IFDIR ++ Z_to_le_bytes 36 0
+  ++ Z_to_le_bytes 4 page_size ++ Z_to_le_bytes 68 0.
 
 Lemma stat_dir_witness_base_wf : stat_buf_wf stat_dir_witness_base = true.
 Proof. vm_compute. reflexivity. Qed.
 
-Lemma stat_dir_witness_base_is_dir : stat_is_dir stat_dir_witness_base = true.
+Lemma stat_dir_witness_base_fixed : stat_dir_fixed stat_dir_witness_base = true.
 Proof. vm_compute. reflexivity. Qed.
 
 Lemma stat_dir_witness_base_length : length stat_dir_witness_base = 128%nat.
@@ -413,8 +490,9 @@ Qed.
 (** fstat's directory arm, mirroring [Stat.fstat_dir_spec] branch for
     branch.  On the pinned branch it delivers THE PIN ITSELF with the
     link count the pin's rule gives: the spec has just checked the pin
-    against both predicates, and neither [Uapi.stat_stable_eqb] nor the
-    [st_blocks] [Stat.stat_pin_held] holds reads [st_nlink]. *)
+    against both predicates, and neither [Uapi.stat_stable_eqb], nor
+    [Uapi.stat_dir_fixed], nor the [st_blocks] [Stat.stat_pin_held]
+    holds reads [st_nlink]. *)
 Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   let d := Fs.fs_dir_links (m_fs m) k in
@@ -425,7 +503,7 @@ Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
     | Some _ =>
         match statpin_lookup (m_statpins m) (IdDir k) with
         | Some sp =>
-            if negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool
+            if negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool
             then Unmodeled
             else
               let bs := stat_set_nlink (dir_witness_nlink d (sp_rule sp)) (sp_bytes sp) in
@@ -434,7 +512,7 @@ Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
         | None =>
             let bs := stat_set_nlink (Fs.dl_counting d) stat_dir_witness_base in
             Ok (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
-               (with_statpin (IdDir k) (mkStatPin bs (dir_rule_after d None bs)) m) []
+               (with_statpin (IdDir k) (mkStatPin bs (dir_rule_after d None bs) false) m) []
         end
     end.
 
@@ -449,7 +527,7 @@ Proof.
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE))
     as [w|] eqn:Hw; cbv iota; [|apply unmodeled_intro].
   destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|] eqn:Hp; cbv iota.
-  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_is_dir (sp_bytes sp))%bool)
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool)
       eqn:Hb0; cbv iota; [apply unmodeled_intro|].
     apply Bool.negb_false_iff in Hb0. apply andb_true_iff in Hb0 as [HWF HOK].
     pose proof (stat_buf_wf_length _ HWF) as Hlen.
@@ -459,7 +537,7 @@ Proof.
                              (sp_bytes sp)));
        refine (conj _ (conj _ (conj _ (conj _ _))))|].
     + now apply stat_set_nlink_wf.
-    + rewrite stat_set_nlink_dir by lia. exact HOK.
+    + rewrite stat_set_nlink_dir_fixed by lia. exact HOK.
     + apply dir_witness_nlink_ok. lia.
     + cbn [stat_pin_held]. apply stat_set_nlink_field_eqb; [unfold ST_BLOCKS_OFF; lia | lia].
     + now apply stat_set_nlink_stable.
@@ -469,8 +547,8 @@ Proof.
                              stat_dir_witness_base));
        refine (conj _ (conj _ _))|].
     + apply stat_set_nlink_wf, stat_dir_witness_base_wf.
-    + rewrite stat_set_nlink_dir by (rewrite stat_dir_witness_base_length; lia).
-      apply stat_dir_witness_base_is_dir.
+    + rewrite stat_set_nlink_dir_fixed by (rewrite stat_dir_witness_base_length; lia).
+      apply stat_dir_witness_base_fixed.
     + change (Fs.dl_counting (Fs.fs_dir_links (m_fs m) k))
         with (dir_witness_nlink (Fs.fs_dir_links (m_fs m) k) None).
       apply dir_witness_nlink_ok. rewrite stat_dir_witness_base_length. lia.
@@ -479,25 +557,25 @@ Qed.
 
 Definition fstat_devnull_witness (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
-  fstat_chrdev_witness devnull_path stat_devnull_ok stat_devnull_witness_base
+  fstat_devfd_witness DevNull devnull_path stat_devnull_ok stat_devnull_witness_base
     statbuf i m.
 
 Lemma fstat_devnull_witness_ok : forall statbuf i m,
   fstat_devnull_spec statbuf i m (fstat_devnull_witness statbuf i m).
 Proof.
-  intros. apply fstat_chrdev_witness_ok;
+  intros. apply fstat_devfd_witness_ok;
     [apply stat_devnull_witness_base_wf | apply stat_devnull_witness_base_ok].
 Qed.
 
 Definition fstat_urandom_witness (statbuf : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
-  fstat_chrdev_witness urandom_path stat_urandom_ok stat_urandom_witness_base
+  fstat_devfd_witness DevUrandom urandom_path stat_urandom_ok stat_urandom_witness_base
     statbuf i m.
 
 Lemma fstat_urandom_witness_ok : forall statbuf i m,
   fstat_urandom_spec statbuf i m (fstat_urandom_witness statbuf i m).
 Proof.
-  intros. apply fstat_chrdev_witness_ok;
+  intros. apply fstat_devfd_witness_ok;
     [apply stat_urandom_witness_base_wf | apply stat_urandom_witness_base_ok].
 Qed.
 

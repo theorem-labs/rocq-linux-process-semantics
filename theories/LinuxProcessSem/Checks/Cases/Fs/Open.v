@@ -987,7 +987,8 @@ Proof. split_conj; check_eq. Qed.
     the arm read the flag word and not just the entry.  A device lives
     under /dev on every valid image ([Run.devices_in_dev_subtree]), so
     the plain name is "null" from a working directory of /dev; the same
-    entry at "/work/n", an image no valid input holds, is declined. *)
+    entry at "/work/n", an image no valid input holds, opens as the
+    device too. *)
 Example ns_perimeter_device_at_an_operand_is_a_device :
   (* the SOURCE half: O_RDONLY *)
   check_syscall
@@ -1018,13 +1019,15 @@ Example ns_perimeter_device_at_an_operand_is_a_device :
        ns_open_at_dev
      <> CheckOk (with_fds (fd_insert (m_fds ns_open_at_dev) 3
                              (FdFile 1 (Z_to_bv 64 0))) ns_open_at_dev) []
-  (* a device entry outside /dev: no valid image holds it *)
+  (* a device entry outside /dev, which no valid image holds, opens as
+     the device too: the arm reads the entry's kind, not its key *)
   /\ check_syscall
        (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0]
           (open_path_mem [110%Z]) (fun _ => None))
        (with_copyins [(8192, 2%nat)] (mkEffect 3 [] []))
        ns_open_dev_n
-     = CheckUnmodeled.
+     = CheckOk (with_fds (fd_insert (m_fds ns_open_dev_n) 3
+                            (FdDevNull true false)) ns_open_dev_n) [].
 Proof. split; [|split; [|split]]; [check_eq | check_eq | vm_compute; discriminate | check_eq]. Qed.
 
 (** CONJUNCT FIVE, THE SOURCE not a directory — and the source ONLY,
@@ -1785,16 +1788,17 @@ Example devnull_open_by_word :
   /\ open O_DIRECTORY (mkEffect 3 [] []) = CheckReject.
 Proof. vm_compute. split_conj; check_eq. Qed.
 
-(** WHAT DECLINES, AND WHAT DOES NOT.  A null-device entry at a key
-    other than "/dev/null" declines: device pins are per kind, and two
-    nodes are two inodes ([Fs.Open.dev_at_home]).  Beside it, the
-    spellings the walk reads: a doubled separator reaches the device, a
-    truncated name is an absent one, and a FILE at the device's key
-    opens as a file. *)
+(** A SECOND NULL-DEVICE NODE ANSWERS AS THE DEVICE.  A null-device
+    entry at a key other than "/dev/null" opens the null device: Linux
+    opens a character device through its inode's device number, whatever
+    the name ([chrdev_open], fs/char_dev.c:373-424, Linux v6.18.46), and
+    the descriptor carries no key.  Beside it, the spellings the walk
+    reads: a doubled separator reaches the device, a truncated name is an
+    absent one, and a FILE at the device's key opens as a file. *)
 Definition devnull2_key : Fs.path :=
   Fs.child_key Fs.dev_dir (map (fun z => Z_to_bv 8 z) [110; 117; 108; 108; 50]%Z).
 
-Example devnull_open_declines :
+Example devnull_open_at_any_node :
   let open fs bs n eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -1802,11 +1806,13 @@ Example devnull_open_declines :
         (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
   let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
   let other := Fs.fs_set (demo_fs []) devnull2_key (EDev DevNull) in
-  (* the null-device kind at another key: declined, whatever is offered *)
-  open other ([47; 100; 101; 118; 47; 110; 117; 108; 108; 50]%Z) 11%nat
-    (mkEffect 3 [] []) = CheckUnmodeled
+  (* the null-device kind at another key: the device, at the lowest free fd *)
+  (match open other ([47; 100; 101; 118; 47; 110; 117; 108; 108; 50]%Z) 11%nat
+              (mkEffect 3 [] []) with
+   | CheckOk m [] => fd_lookup (m_fds m) 3 = Some (FdDevNull true false)
+   | _ => False end)
   /\ open other ([47; 100; 101; 118; 47; 110; 117; 108; 108; 50]%Z) 11%nat
-       (mkEffect (errno_ret ENOENT) [] []) = CheckUnmodeled
+       (mkEffect 4 [] []) = CheckReject
   (* "/dev//null" is the device *)
   /\ (match open (demo_fs []) ([47; 100; 101; 118; 47; 47; 110; 117; 108; 108]%Z)
               11%nat (mkEffect 3 [] []) with
@@ -1823,12 +1829,14 @@ Example devnull_open_declines :
 Proof. vm_compute. split_conj; check_eq. Qed.
 
 (** A table with one descriptor of each access mode, for the dispatch
-    sites below: 3 read-only, 4 write-only, 5 read-write. *)
+    sites below: 3 read-only, 4 write-only, 5 read-write, over the
+    standard root, whose /dev/null is the image's one null-device node
+    the descriptors came from ([Fs.Stat.fstat_devfd_spec]). *)
 Definition devnull_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
            (3, FdDevNull true false); (4, FdDevNull false true);
            (5, FdDevNull true true)]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof (Fs.standard_root Fs.default_cwd) None None None.
 
 (** THE COMMON SHAPE: open write-only, write, read, close.  The write
     returns the count from an UNMAPPED buffer with an EMPTY ledger —
@@ -1906,11 +1914,12 @@ Example devnull_dispatch_sites :
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (** A [struct stat] for the examples: the device's asserted members as
-    given, zero everywhere else. *)
+    given, the page size as [st_blksize] (asserted too), zero everywhere
+    else. *)
 Definition dev_stat (mode rdev size : Z) : list byte :=
   Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 mode ++ Z_to_le_bytes 12 0
   ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 size
-  ++ Z_to_le_bytes 72 0.
+  ++ Z_to_le_bytes 4 4096 ++ Z_to_le_bytes 68 0.
 
 (** fstat ON /dev/null IS ANSWERED, AND THE DEVICE'S MEMBERS ARE ASSERTED.
     A delivered S_IFCHR with [st_rdev] 1:3 and a zero size is accepted
@@ -1930,7 +1939,7 @@ Example devnull_fstat_asserts_the_device :
   let deliver bs := mkEffect 0 [(4096, bs)] [] in
   (match call devnull_model (deliver good) with
    | CheckOk m [] =>
-       statpin_lookup (m_statpins m) (IdDev devnull_path) = Some (mkStatPin good None)
+       statpin_lookup (m_statpins m) (IdDev devnull_path) = Some (mkStatPin good None false)
        /\ call m (deliver good) = CheckOk m []
        /\ call m (deliver (Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 7
                             ++ skipn 16 good)) = CheckReject
@@ -2004,15 +2013,14 @@ Example urandom_open_by_word :
   /\ minted (O_RDWR + O_CREAT + O_TRUNC)%Z true true.
 Proof. vm_compute. split_conj; check_eq. Qed.
 
-(** WHAT DECLINES, AND WHAT DOES NOT: a random-device entry at a key
-    other than "/dev/urandom" declines ([Fs.Open.dev_at_home]);
-    "/dev//urandom" is the device; "/dev/random", which this image does
-    not hold, is an absent name. *)
+(** A SECOND RANDOM-DEVICE NODE ANSWERS AS THE DEVICE, as the null
+    device's does; "/dev//urandom" is the device; "/dev/random", which
+    this image does not hold, is an absent name. *)
 Definition urandom2_key : Fs.path :=
   Fs.child_key Fs.dev_dir
     (map (fun z => Z_to_bv 8 z) [117; 114; 97; 110; 100; 111; 109; 50]%Z).
 
-Example urandom_open_declines :
+Example urandom_open_at_any_node :
   let open fs bs n eff := check_syscall
         (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0]
            (open_path_mem bs) (fun _ => None))
@@ -2020,8 +2028,12 @@ Example urandom_open_declines :
         (init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof)) in
   let base fs := init_model [] 0 0 demo_sp demo_limit (demo_input fs IEof) in
   let other := Fs.fs_set (demo_fs []) urandom2_key (EDev DevUrandom) in
-  open other ([47; 100; 101; 118; 47; 117; 114; 97; 110; 100; 111; 109; 50]%Z)
-    14%nat (mkEffect 3 [] []) = CheckUnmodeled
+  (match open other ([47; 100; 101; 118; 47; 117; 114; 97; 110; 100; 111; 109; 50]%Z)
+              14%nat (mkEffect 3 [] []) with
+   | CheckOk m [] => fd_lookup (m_fds m) 3 = Some (FdUrandom true false)
+   | _ => False end)
+  /\ open other ([47; 100; 101; 118; 47; 117; 114; 97; 110; 100; 111; 109; 50]%Z)
+       14%nat (mkEffect 4 [] []) = CheckReject
   /\ (match open (demo_fs [])
               ([47; 100; 101; 118; 47; 47; 117; 114; 97; 110; 100; 111; 109]%Z)
               14%nat (mkEffect 3 [] []) with
@@ -2029,6 +2041,37 @@ Example urandom_open_declines :
       | _ => False end)
   /\ open (demo_fs []) ([47; 100; 101; 118; 47; 114; 97; 110; 100; 111; 109]%Z)
        12%nat (mkEffect (errno_ret ENOENT) [] []) = CheckOk (base (demo_fs [])) [].
+Proof. vm_compute. split_conj; check_eq. Qed.
+
+(** THE LAUNCH THAT USED TO DECLINE: working folder /dev, the standard
+    root plus /dev/x as a second node of one device kind, and a relative
+    open of "x".  [Run.valid_input] admits it (devices stay under /dev,
+    and an argv operand may be a relative name), so the open must
+    answer: it mints the device's descriptor at the lowest free fd, as
+    at the device's own name ([Fs.Open.open_devnull],
+    [Fs.Open.open_urandom]; [chrdev_open], fs/char_dev.c:373-424, Linux
+    v6.18.46, opens by the inode's device number). *)
+Definition devx_key : Fs.path := Fs.child_key Fs.dev_dir [Z_to_bv 8 120].
+
+Definition dev_cwd_model (fs0 : Fs.Fs) : Model :=
+  init_model [] 0 0 demo_sp demo_limit
+    (mkProcInput_full [] [] fs0 Fs.dev_dir IEof demo_uid demo_gid demo_groups
+                      net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false
+                      Sv48 default_urandom default_kernel default_execfn
+                      true true false).
+
+Example second_device_node_opens_from_dev :
+  let open fs eff := check_syscall
+        (mkInput 56 [AT_FDCWD; 8192; 0; 420; 0; 0] (open_path_mem [120]%Z) (fun _ => None))
+        (with_copyins [(8192, 2%nat)] eff) (dev_cwd_model fs) in
+  let null2 := Fs.fs_set (Fs.standard_root Fs.default_cwd) devx_key (EDev DevNull) in
+  let urandom2 := Fs.fs_set (Fs.standard_root Fs.default_cwd) devx_key (EDev DevUrandom) in
+  (match open null2 (mkEffect 3 [] []) with
+   | CheckOk m [] => fd_lookup (m_fds m) 3 = Some (FdDevNull true false)
+   | _ => False end)
+  /\ (match open urandom2 (mkEffect 3 [] []) with
+      | CheckOk m [] => fd_lookup (m_fds m) 3 = Some (FdUrandom true false)
+      | _ => False end).
 Proof. vm_compute. split_conj; check_eq. Qed.
 
 
@@ -2104,12 +2147,15 @@ Example device_opens_answer_on_a_valid_image :
 Proof. vm_compute. split_conj; reflexivity. Qed.
 
 
-(** A table with the device at 3, over the declared stream. *)
+(** A table with the device at 3, over the declared stream and the
+    standard root, whose /dev/urandom is the image's one random-device
+    node ([Fs.Stat.fstat_devfd_spec]). *)
 Definition urandom_model : Model :=
   with_urandom (urandom_stream urandom_decl)
     (mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
               (3, (FdUrandom true false))]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof (Fs.standard_root Fs.default_cwd)
+       None None None).
 
 (** 128 writable bytes at 4096, the destination of every read below. *)
 Definition urandom_wmem : word -> option byte :=
@@ -2256,7 +2302,7 @@ Example urandom_fstat_asserts_the_device :
   let deliver bs := mkEffect 0 [(4096, bs)] [] in
   (match call urandom_model (deliver good) with
    | CheckOk m [] =>
-       statpin_lookup (m_statpins m) (IdDev urandom_path) = Some (mkStatPin good None)
+       statpin_lookup (m_statpins m) (IdDev urandom_path) = Some (mkStatPin good None false)
        /\ call m (deliver good) = CheckOk m []
        /\ call m (deliver (Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 7
                             ++ skipn 16 good)) = CheckReject
@@ -3481,9 +3527,9 @@ Qed.
 
 (** [fstat] of a descriptor on the file, wherever its offset is: a
     well-formed [struct stat] is accepted exactly when its type is
-    S_IFREG, its [st_size] is the content's length and its [st_nlink]
-    the file's link count ([Fs.fs_ino_nlink]).  The first [fstat] of the
-    inode (no pin yet) pins what it accepts. *)
+    S_IFREG, its [st_rdev] 0, its [st_size] the content's length and its
+    [st_nlink] the file's link count ([Fs.fs_ino_nlink]).  The first
+    [fstat] of the inode (no pin yet) pins what it accepts. *)
 Lemma r1_fstat_answers : forall mem wmem fd statbuf a2 a3 a4 a5 m i off c bs,
   (bv_unsigned fd < 2 ^ 31)%Z ->
   fd_lookup (m_fds m) fd = Some (FdFile i off) ->
@@ -3497,12 +3543,14 @@ Lemma r1_fstat_answers : forall mem wmem fd statbuf a2 a3 a4 a5 m i off c bs,
   let call := check_syscall (mkInput 80 [fd; statbuf; a2; a3; a4; a5] mem wmem)
                 (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] []) m in
   (stat_ifmt bs = S_IFREG ->
+   stat_field_le ST_RDEV_OFF 8 bs = 0%Z ->
    stat_field_le ST_SIZE_OFF 8 bs = Z.of_nat (length c) ->
    stat_field_le ST_NLINK_OFF 4 bs = nl ->
-   call = CheckOk (with_statpin (IdIno i) (mkStatPin bs None) m) [])
+   call = CheckOk (with_statpin (IdIno i) (mkStatPin bs None false) m) [])
   /\ (stat_ifmt bs <> S_IFREG -> call = CheckReject)
   /\ (stat_field_le ST_SIZE_OFF 8 bs <> Z.of_nat (length c) -> call = CheckReject)
-  /\ (stat_field_le ST_NLINK_OFF 4 bs <> nl -> call = CheckReject).
+  /\ (stat_field_le ST_NLINK_OFF 4 bs <> nl -> call = CheckReject)
+  /\ (stat_field_le ST_RDEV_OFF 8 bs <> 0%Z -> call = CheckReject).
 Proof.
   intros mem wmem fd statbuf a2 a3 a4 a5 m i off c bs Hfd Hlk Hfs Hlen Hacc Hmap Hpin Hwf.
   cbv zeta.
@@ -3518,16 +3566,19 @@ Proof.
   rewrite Hpin.
   unfold check_fstat_deliver_gen.
   rewrite !bv_eqb_refl. cbn [andb negb]. cbv beta iota.
-  rewrite Hwf. unfold stat_reg_ok, stat_size_ok, stat_is_reg, stat_nlink_ok.
+  rewrite Hwf.
+  unfold stat_reg_ok, stat_reg_fixed, stat_no_rdev, stat_size_ok, stat_is_reg, stat_nlink_ok.
   rewrite Hfs.
   rewrite (bv_unsigned_Z_to_bv_u64 (Z.of_nat (length c)))
     by (unfold two_pow_64; lia).
-  split; [|split; [|split]].
-  - intros Ht Hsz Hnl. rewrite Ht, Hsz, Hnl, !Z.eqb_refl. reflexivity.
+  split; [|split; [|split; [|split]]].
+  - intros Ht Hr Hsz Hnl. rewrite Ht, Hr, Hsz, Hnl, !Z.eqb_refl. reflexivity.
   - intros Ht. apply Z.eqb_neq in Ht. rewrite Ht. reflexivity.
   - intros Hsz. apply Z.eqb_neq in Hsz. rewrite Hsz.
-    destruct (Z.eqb (stat_ifmt bs) S_IFREG); reflexivity.
+    destruct (Z.eqb (stat_ifmt bs) S_IFREG), (Z.eqb (stat_field_le ST_RDEV_OFF 8 bs) 0);
+      reflexivity.
   - intros Hnl. apply Z.eqb_neq in Hnl. rewrite Hnl, !andb_false_r. reflexivity.
+  - intros Hr. apply Z.eqb_neq in Hr. rewrite Hr, andb_false_r. reflexivity.
 Qed.
 
 (** [read] of it: the content from the descriptor's offset, as much as
@@ -4062,8 +4113,11 @@ Definition r1_d_m0 : Model :=
 Definition r1_d_m3 : Model :=
   with_fds (fd_insert (m_fds r1_d_m0) 3 (FdDir (r1_path r1_etc r1_app))) r1_d_m0.
 
-(** A folder's [struct stat]: S_IFDIR|0755, two links, size 0. *)
-Definition r1_dir_stat : list byte := file_stat (S_IFDIR + 493) 2 0.
+(** A folder's [struct stat]: S_IFDIR|0755, two links, size 0, the page
+    size as [st_blksize], zero everywhere else. *)
+Definition r1_dir_stat : list byte :=
+  Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 (S_IFDIR + 493) ++ Z_to_le_bytes 4 2
+  ++ Z_to_le_bytes 32 0 ++ Z_to_le_bytes 4 4096 ++ Z_to_le_bytes 68 0.
 
 (** The pin an accepted call with no event leaves at [id]; [None] for
     any other verdict. *)
@@ -4083,7 +4137,7 @@ Example r1_folder_at_the_name :
   /\ r1_call (r1_open_step r1_rdnb 3) r1_d_m0 = CheckOk r1_d_m3 []
   /\ r1_call (r1_open_step r1_rdnb (errno_ret EISDIR)) r1_d_m0 = CheckReject
   /\ r1_ok_pin (r1_call (r1_fstat_step r1_dir_stat) r1_d_m3) (IdDir (r1_path r1_etc r1_app))
-     = Some (mkStatPin r1_dir_stat (Some DirCounting))
+     = Some (mkStatPin r1_dir_stat (Some DirCounting) false)
   /\ r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 0)) r1_d_m3 = CheckReject
   /\ r1_call r1_close_step r1_d_m3
      = CheckOk (with_fds (fd_remove (m_fds r1_d_m3) 3) r1_d_m3) [].
@@ -4144,10 +4198,11 @@ Definition r1_l_m3 : Model :=
   with_fds (fd_insert (m_fds r1_l_m0) 3 (FdDevNull true false)) r1_l_m0.
 
 (** A character device's [struct stat]: the mode, one link, the device
-    number, zero everywhere else. *)
+    number, the page size as [st_blksize], zero everywhere else. *)
 Definition r1_chr_stat (mode rdev : Z) : list byte :=
   Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 mode ++ Z_to_le_bytes 4 1 ++ Z_to_le_bytes 8 0
-  ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 88 0.
+  ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 4096
+  ++ Z_to_le_bytes 68 0.
 
 (** OVER L, under 0x8800: open gives 3 on the null device, read-only;
     fstat of 3 admits the null device's [struct stat] and pins it, and
@@ -4157,7 +4212,7 @@ Example r1_link_to_the_null_device :
   /\ r1_call (r1_open_step r1_rdnb 3) r1_l_m0 = CheckOk r1_l_m3 []
   /\ r1_ok_pin (r1_call (r1_fstat_step (r1_chr_stat (S_IFCHR + 438) DEVNULL_RDEV)) r1_l_m3)
        (IdDev devnull_path)
-     = Some (mkStatPin (r1_chr_stat (S_IFCHR + 438) DEVNULL_RDEV) None)
+     = Some (mkStatPin (r1_chr_stat (S_IFCHR + 438) DEVNULL_RDEV) None false)
   /\ r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 0)) r1_l_m3 = CheckReject
   /\ r1_call r1_close_step r1_l_m3
      = CheckOk (with_fds (fd_remove (m_fds r1_l_m3) 3) r1_l_m3) [].

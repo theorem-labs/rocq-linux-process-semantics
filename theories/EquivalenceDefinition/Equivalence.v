@@ -1475,9 +1475,8 @@ End SPEC_VA_ANY.
     exists for the inputs on which the model declines and a binary's
     statement can therefore not hold: a walk that ends at "proc" or
     "sys" looked up at the root, by any spelling or link, is outside
-    the model ([Fs.ROutside]), and so is a device entry away from its
-    own name ([Sys.Fs.Open.dev_at_home]); [Run.valid_input] admits an
-    argv operand that leads to either.  It is never a way to drop an
+    the model ([Fs.ROutside]), and [Run.valid_input] admits an argv
+    operand that leads there.  It is never a way to drop an
     input a proof finds inconvenient: the generator
     ([tools/gen_checker.py]) lets an example ascribe [SPEC_ON] only from
     an allowlist that names the example, the hypothesis and the reason,

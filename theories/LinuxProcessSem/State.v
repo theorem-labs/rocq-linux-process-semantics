@@ -3274,9 +3274,11 @@ Definition ino_held (fds : list (word * FdEntry)) (i : Fs.ino) : bool :=
                     | None => false
                     end) fds.
 
-(** The key of the device node a device descriptor was opened from.  A
-    device descriptor is opened only from the node at its device's own
-    key ([Fs.Open.dev_at_home]), so that key is the one. *)
+(** The own name of a device descriptor's kind: the key whose pin a
+    stat of the descriptor reads when the node there is the image's one
+    node of the kind ([Fs.Stat.fstat_devfd_spec]).  The descriptor may
+    have been opened from a node at any key ([Fs.Open.open_devnull]);
+    this names the kind's key, not that node's. *)
 Definition entry_dev_key (e : FdEntry) : option Fs.path :=
   match e with
   | FdDevNull _ _ => Some Fs.devnull_key
@@ -4170,7 +4172,7 @@ Record FsState := mkFsState { fsst_image : Fs.Fs; fsst_cwd : Fs.path }.
     asked between identities that admits whatever Linux reports for
     them.  Each holds its own link count ([Fs.Stat.stat_pin_held]), so
     the removal of a link name, which may lower the count another link
-    identity holds, lets every link's pin go
+    identity holds, RELEASES every link's count and [st_ctime]
     ([statpins_release_links]). *)
 Inductive StatId :=
   | IdIno (i : Fs.ino)
@@ -4189,15 +4191,25 @@ Definition stat_id_eqb (a b : StatId) : bool :=
     counting its subfolders, or fixed. *)
 Inductive DirRule := DirCounting | DirFixed.
 
-(** ONE PIN: the bytes, and for a folder the RULE its count follows once
-    a stat has told the two apart.  A folder's two counts are equal until
-    a subfolder is made or removed under it ([Fs.fs_dir_links]); the
-    first stat at which they differ chooses one, by the [st_nlink] it
-    delivers, and every later stat of the folder must follow the same
-    rule.  That is "chosen at the first change and kept" observed from
-    outside: before the counts differ no stat can tell which rule the
-    folder follows. *)
-Record StatPin := mkStatPin { sp_bytes : list byte ; sp_rule : option DirRule }.
+(** ONE PIN: the bytes, for a folder the RULE its count follows once a
+    stat has told the two apart, and whether the members a link name's
+    removal may move are RELEASED.
+
+    A folder's two counts are equal until a subfolder is made or removed
+    under it ([Fs.fs_dir_links]); the first stat at which they differ
+    chooses one, by the [st_nlink] it delivers, and every later stat of
+    the folder must follow the same rule.  That is "chosen at the first
+    change and kept" observed from outside: before the counts differ no
+    stat can tell which rule the folder follows.
+
+    [sp_released] is set on a LINK's pin when a link name is removed
+    ([statpins_release_links]): the removed name may have been another
+    name of this link's inode, whose link count it lowered and whose
+    [st_ctime] it set.  The next stat of the link may then deliver any
+    count and ctime, holds every other member it held, and becomes the
+    pin with the flag clear ([Fs.Stat.pinned_after]). *)
+Record StatPin := mkStatPin
+  { sp_bytes : list byte ; sp_rule : option DirRule ; sp_released : bool }.
 
 (** The process's UNIX credentials.  Six ids, in the kernel's own
     grouping ([include/linux/cred.h], [struct cred]): the REAL id, which
@@ -4658,7 +4670,9 @@ Record ProcState := mkProcState {
        of a counter that wraps in its 32-bit mode ([shmem_reserve_inode],
        mm/shmem.c:362-376), and an image may hold several file systems.
 
-       A FOLDER'S RULE is pinned here too ([sp_rule]): see [StatPin].
+       A FOLDER'S RULE is pinned here too ([sp_rule]), and whether a
+       LINK's count and ctime are released ([sp_released]): see
+       [StatPin].
 
        NOT IN [Fs], DELIBERATELY.  [Fs.Fs] is [ExitEv]'s payload and is
        compared with [=] (Fs.v, CANONICAL FORM), so a nondeterministic
@@ -5177,9 +5191,10 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
     alive while a name or a row of the inode table keeps it (a file a
     descriptor holds keeps its row, [Fs.fs_unlink_file]); a folder and a
     link while their key holds one; a device node while its key holds a
-    device or a descriptor holds the device ([FdDevNull] and [FdUrandom]
-    are opened only from the node at the device's own key,
-    [Fs.Open.dev_at_home]). *)
+    device or a descriptor of the device's kind is open ([entry_dev_key]:
+    such a descriptor's stat reads the pin of the kind's own name, when
+    the node there is the image's one node of the kind,
+    [Fs.Stat.fstat_devfd_spec]). *)
 Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId)
     : bool :=
   match id with
@@ -5212,8 +5227,9 @@ Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId
     row is gone ([Fs.fs_fresh_ino]), which is when this drops the pin.
     Every writer that keeps the identity -- a write, a truncate, an
     O_TRUNC open, the removal of one of a file's two names -- leaves the
-    filter inert for it.  A LINK's pin goes on one more occasion, when a
-    link name is removed ([statpins_release_links]). *)
+    filter inert for it.  The removal of a link name RELEASES part of
+    every link's pin, the count and ctime, without dropping it
+    ([statpins_release_links]). *)
 Definition statpins_restrict (fs : Fs.Fs) (fds : list (word * FdEntry))
     (ps : list (StatId * StatPin)) : list (StatId * StatPin) :=
   List.filter (fun e => stat_id_alive fs fds (fst e)) ps.
@@ -5223,22 +5239,27 @@ Definition fs_link_count (fs : Fs.Fs) : nat :=
   length (List.filter (fun ke => match snd ke with Fs.ELink _ => true | _ => false end)
                       (Fs.fs_tree fs)).
 
-(** LET EVERY LINK'S PIN GO WHEN A LINK NAME GOES: drop the pin of every
-    link identity ([IdLink]) when the new image [fs] holds fewer links
-    than the old one [fs0], and keep every other pin.  It is a filter
-    over [ps] either way, so a model with no pin keeps none by
-    computation.
+(** RELEASE EVERY LINK'S COUNT AND CTIME WHEN A LINK NAME GOES: when the
+    new image [fs] holds fewer links than the old one [fs0], set
+    [sp_released] on the pin of every link identity ([IdLink]), and keep
+    every pin as it was otherwise.  It is a map over [ps] either way, so
+    a model with no pin keeps none by computation.
 
-    A link's pin holds its link count and [st_ctime]
-    ([Fs.Stat.stat_pin_held]), and the image cannot show two names of
-    one link as one identity ([StatId]), so the removed name may have
-    been a name of any link the run has pinned: [vfs_unlink] lowers the
-    count of the inode the name held and sets its ctime
-    ([simple_unlink], fs/libfs.c:787-795, and [shmem_unlink],
-    mm/shmem.c:4016-4019, Linux v6.18.46).  The image cannot say which
-    link that was, so every link's pin is chosen again at its next stat.
-    That frees the other members of those pins too, a precision loss,
-    and only after a link name is removed.
+    WHAT THE REMOVAL MOVES.  A link's pin holds its link count and
+    [st_ctime] ([Fs.Stat.stat_pin_held]), and the image cannot show two
+    names of one link as one identity ([StatId]), so the removed name
+    may have been another name of any link the run has pinned:
+    [vfs_unlink] lowers the count of the inode the name held and sets
+    its ctime ([simple_unlink], fs/libfs.c:787-795, and [shmem_unlink],
+    mm/shmem.c:4016-4019, Linux v6.18.46).  Those two are all it changes
+    of that inode: the size and mtime it sets are the folder's
+    (mm/shmem.c:4015-4016), and [shmem_free_inode] (:4010-4011) counts
+    the superblock's inodes.  So a surviving name's inode keeps its
+    device, number, mode, owners, block size, [st_blocks] and
+    [st_mtime] ([generic_fillattr], fs/stat.c:88-106), and the release
+    frees the count and the ctime alone: the link's next stat may
+    deliver any of those two, must repeat every other member its pin
+    holds, and becomes the pin ([Fs.Stat.pinned_after]).
 
     A COUNT IS ENOUGH TO SEE THE REMOVAL, because no arm makes a link (the
     model has no [symlinkat], [linkat] or [rename] arm): a step removes a
@@ -5250,7 +5271,11 @@ Definition fs_link_count (fs : Fs.Fs) : nat :=
 Definition statpins_release_links (fs0 fs : Fs.Fs) (ps : list (StatId * StatPin))
     : list (StatId * StatPin) :=
   let gone := Nat.ltb (fs_link_count fs) (fs_link_count fs0) in
-  List.filter (fun e => match fst e with IdLink _ => negb gone | _ => true end) ps.
+  List.map (fun e => match fst e with
+                     | IdLink _ => (fst e, mkStatPin (sp_bytes (snd e)) (sp_rule (snd e))
+                                                 (sp_released (snd e) || gone)%bool)
+                     | _ => e
+                     end) ps.
 
 (** Install the working directory.  [init_model_setter_chain] is its ONE
     caller ([init_model] builds the same field in its one constructor):

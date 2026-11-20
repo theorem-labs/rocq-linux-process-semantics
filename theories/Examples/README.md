@@ -27,10 +27,10 @@ Read [`../Common/README.md`](../Common/README.md) for the proof library.
 `operands_inside_model` in their `Proof.v`: the walk of each operand they
 open does not end outside the model. The model declines an open whose
 walk reaches the name `proc` or `sys` at the root (`Fs.ROutside`: /proc
-and /sys are not in the model), and an open of a device entry that is
-not at its own name (`Sys.Fs.Open.dev_at_home`). `Run.valid_input`
-admits both. Each `Proof.v` proves that the hypothesis is equivalent to
-"the model answers the open of each operand"
+and /sys are not in the model), and `Run.valid_input` admits such an
+input; a device entry is answered at any key. Each `Proof.v` proves
+that the hypothesis is equivalent to "the model answers the open of
+each operand"
 (`operands_inside_model_iff`), and the generated `Checker.v` ascribes
 `Equivalence.SPEC_ON` with this hypothesis and a witness. Only the
 examples in `tools/gen_checker.py`'s `SPEC_ON` list can do this.

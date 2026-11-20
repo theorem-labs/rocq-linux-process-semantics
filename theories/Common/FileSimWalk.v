@@ -125,13 +125,12 @@ Definition open_arm (rd : bool) (fs : Fs.Fs) (cwd p : Fs.path)
   | Fs.ROutside => inr ENOENT
   end.
 
-(** The walk ends the model answers: not outside it, not the O_CREAT end
-    on a read, not a device entry away from its own name. *)
+(** The walk ends the model answers: not outside it, and not the
+    O_CREAT end on a read.  A device entry is answered at any key. *)
 Definition open_answered (rd : bool) (fs : Fs.Fs) (cwd p : Fs.path) : Prop :=
   match fst (fst (Fs.resolve (open_walk rd) fs cwd p)) with
   | Fs.ROutside => False
   | Fs.RParent _ _ => rd = false
-  | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
   | _ => True
   end.
 
@@ -225,13 +224,11 @@ Proof.
 Qed.
 
 (** The hypothesis a program's statement names for an operand (the walk
-    end is not outside the model, a device entry is at its own name) is
-    [open_answered]: the O_RDONLY walk never ends at the O_CREAT end
-    ([FileSim.read_walk_not_parent]). *)
+    end is not outside the model) is [open_answered]: the O_RDONLY walk
+    never ends at the O_CREAT end ([FileSim.read_walk_not_parent]). *)
 Lemma open_answered_of_inside : forall (rd : bool) fs cwd p,
   match fst (fst (Fs.resolve (open_walk rd) fs cwd p)) with
   | Fs.ROutside => False
-  | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
   | _ => True
   end ->
   open_answered rd fs cwd p.
@@ -309,9 +306,8 @@ Proof.
     destruct r as [k e|par nm|k|pre| | |dd nm]; cbv beta iota in Hans |- *;
       try reflexivity; try contradiction; try discriminate Hans.
     destruct e as [i| |dk|b]; cbv beta iota in Hans |- *; try reflexivity.
-    destruct dk; cbv beta iota in Hans |- *;
-      [ unfold Open.check_open_devnull | unfold Open.check_open_urandom ];
-      rewrite Hans; cbn [negb]; reflexivity.
+    all: destruct dk; cbv beta iota in Hans |- *;
+      [ unfold Open.check_open_devnull | unfold Open.check_open_urandom ]; reflexivity.
   - rewrite open_walk_mode_wr. revert Hans.
     destruct (Fs.resolve (Fs.WalkCreate true) (m_fs m) (m_cwd m) p)
       as [[r lk] ts].
@@ -322,9 +318,8 @@ Proof.
     destruct r as [k e|par nm|k|pre| | |dd nm]; cbv beta iota in Hans |- *;
       try reflexivity; try contradiction.
     destruct e as [i| |dk|b]; cbv beta iota in Hans |- *; try reflexivity.
-    destruct dk; cbv beta iota in Hans |- *;
-      [ unfold Open.check_open_devnull | unfold Open.check_open_urandom ];
-      rewrite Hans; cbn [negb]; reflexivity.
+    all: destruct dk; cbv beta iota in Hans |- *;
+      [ unfold Open.check_open_devnull | unfold Open.check_open_urandom ]; reflexivity.
 Qed.
 
 Lemma check_random_write_no_unmodeled : forall n l led eff m,

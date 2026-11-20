@@ -54,11 +54,14 @@
     builds, never fires the clone arm, and looks like a model disagreement.
 
     [set_fsys] below is NOT [State.with_fs].  [State.with_fs] additionally
-    applies [statpins_restrict], dropping the stat pin of every path the new
-    image does not have -- which is right for a syscall that replaces the
-    image and WRONG for a splice, where the image is the one the entry
-    already had and the pins must survive untouched.  The splice therefore
-    uses the plain record rebuild below.  A port that reuses the model's
+    rewrites the stat pins: [statpins_release_links] releases the link
+    count and [st_ctime] of every link's pin when the new image holds
+    fewer link names, and [statpins_restrict] drops the pin of every
+    identity [stat_id_alive] no longer finds (a name, a descriptor or an
+    inode row) -- which is right for a syscall that replaces the image and
+    WRONG for a splice, where the image is the one the entry already had
+    and the pins must survive untouched.  The splice therefore uses the
+    plain record rebuild below.  A port that reuses the model's
     image-installing setter silently loses stat pins at every step.
 
     BUILD ORDER.  [pstep_single] and [pstep_instr_single] below are proved

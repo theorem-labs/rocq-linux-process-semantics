@@ -534,21 +534,6 @@ Definition open_write_existing (m : Model) (i : Fs.ino) (s : Sys SyscallEffect)
     : Sys SyscallEffect :=
   if ino_write_held (m_fds m) i then s else alt (err_ret ETXTBSY) s.
 
-(** IS THE DEVICE ENTRY AT [k] AT ITS OWN NAME?  A device descriptor
-    carries no key ([State.FdDevNull], [State.FdUrandom]), so [fstat]
-    on one can only name the device by its kind, and
-    [Fs.Stat.fstat_chrdev_spec] keeps one pin per kind, under
-    [Uapi.devnull_path] or [Uapi.urandom_path].  Two device nodes are
-    two inodes in Linux, so a descriptor minted from a second node of
-    the same kind would be held to the first node's [st_ino].  The open
-    arms mint a device descriptor only from the entry at the device's
-    own name and decline every other, which keeps the pin one inode's. *)
-Definition dev_at_home (k : Fs.path) (d : DevKind) : bool :=
-  match d with
-  | DevNull => path_eqb k devnull_path
-  | DevUrandom => path_eqb k urandom_path
-  end.
-
 (** The success shape every admitted /dev/null word shares: the
     injectable errno, or the lowest free fd bound to the entry with the
     granted access mode.
@@ -558,7 +543,13 @@ Definition dev_at_home (k : Fs.path) (d : DevKind) : bool :=
     reach the same entry as "/dev/null" because the walk consumes both
     spellings to one key, and an image that puts a regular file at that
     key simply has a file there and takes the file arms.  A null device
-    at any other key declines ([dev_at_home]).
+    at ANY key answers the same way: Linux opens a character device
+    through its inode's device number, whatever the name
+    ([init_special_inode], fs/inode.c:2552-2577, sets [def_chr_fops];
+    [chrdev_open], fs/char_dev.c:373-424, Linux v6.18.46, finds the
+    driver by [i_rdev]), and the descriptor carries no key, so [k] does
+    not choose the answer.  What a stat of such a descriptor may then
+    hold is [Fs.Stat.fstat_devnull_spec]'s concern.
 
     THE ENVIRONMENT ASSUMPTION the kind carries, unchanged and now
     stated of the ENTRY rather than of the name: an [Fs.EDev DevNull] is
@@ -607,10 +598,8 @@ Definition dev_at_home (k : Fs.path) (d : DevKind) : bool :=
     make that mistake again. *)
 Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
     : Sys SyscallEffect :=
-  if negb (dev_at_home k DevNull) then unmodeled   (* a second null-device node *)
-  else
-    open_result_spec m
-      (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
+  open_result_spec m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdDevNull rd wr))).
 
 (** The success shape for /dev/urandom: the injectable errno, or the
     lowest free fd bound to the entry with the granted access mode.
@@ -619,7 +608,8 @@ Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
     is the random device, character major 1 minor 9, whose operations
     are [urandom_fops] (drivers/char/random.c).  Issue #696 records the
     ruling and bugs/openat-urandom-assumed-random-device.md records the
-    premise.  A random device at any other key declines ([dev_at_home]).
+    premise.  A random device at any key answers the same way, as the
+    null device does.
 
     WHAT THE BYTES ARE.  Not a choice: the run's [State.in_urandom]
     declares them, in order, and [ReadWrite.read_urandom] hands them out
@@ -645,10 +635,8 @@ Definition open_devnull (k : Fs.path) (m : Model) (rd wr : bool)
     read through a write-only one is [vfs_read]'s -EBADF. *)
 Definition open_urandom (k : Fs.path) (m : Model) (rd wr : bool)
     : Sys SyscallEffect :=
-  if negb (dev_at_home k DevUrandom) then unmodeled   (* a second random-device node *)
-  else
-    open_result_spec m
-      (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
+  open_result_spec m
+    (fun fd => with_fds (fd_insert (m_fds m) fd (FdUrandom rd wr))).
 
 (* -------------------------------------------------------------------------
    The argv premise, which outlives the arms that used to read it

@@ -4725,9 +4725,13 @@ Definition standard_root_premise (fs : Fs.Fs) : Prop :=
     WHAT IT BUYS.  An argv operand resolved from a working directory
     outside /dev never names a device, so a whole-program example whose
     working directory is an ordinary folder meets no device arm through
-    its operands.  [Sys.Fs.Open.dev_at_home] declines a device at any
-    key but its own name in any case, so a device outside /dev could
-    only ever be declined, never answered wrongly.
+    its operands.  A device node at any key is answered as at its own
+    name ([Sys.Fs.Open.open_devnull], [Sys.Fs.Open.open_urandom]), and
+    a stat of its descriptor holds nothing unless the node at the
+    kind's own name is the image's one node of the kind
+    ([Sys.Fs.Stat.fstat_devfd_spec]), so a device outside /dev would be
+    answered, not declined: the clause is not what keeps such a device
+    from being answered wrongly.
 
     THE BOOLEAN IS THE STATEMENT and the [Prop] is derived, because a
     fixture has to decide this by computation and a proof has to consume

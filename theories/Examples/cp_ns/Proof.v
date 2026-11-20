@@ -60,14 +60,14 @@ Open Scope bv_scope.
     Both binaries open argv[1] with O_RDONLY (the walk
     [Fs.WalkFull true false]) and then argv[2] with
     O_WRONLY|O_CREAT|O_TRUNC (the walk [Fs.WalkCreate true]), each from
-    the working folder.  The model declines such an open on exactly two
-    walk ends: [Fs.ROutside] -- the name proc or sys looked up at the
+    the working folder.  The model declines such an open on exactly one
+    walk end: [Fs.ROutside] -- the name proc or sys looked up at the
     root, by any spelling or link, because /proc and /sys are outside
-    the model -- and a device entry at a key other than the device's
-    own name ([dev_at_home]).  [Run.valid_input] admits both: the root
-    as working folder beside an operand proc, a link whose body leads
-    there, an extra device node under /dev.  On such an input the
-    source run is declined and no equivalence can be stated of it.
+    the model.  A device entry is answered at any key.
+    [Run.valid_input] admits such an input: the root as working folder
+    beside an operand proc, or a link whose body leads there.  On such
+    an input the source run is declined and no equivalence can be
+    stated of it.
 
     The hypothesis excludes those inputs and nothing else: an operand
     that is empty or does not fit in PATH_MAX is answered before any
@@ -84,7 +84,6 @@ Definition operands_inside_model (inp : ProcInput) : Prop :=
     (length (nth i (in_argv inp) []) < State.path_max)%nat ->
     match fst (fst (Fs.resolve md (in_fs inp) (in_cwd inp) (nth i (in_argv inp) []))) with
     | Fs.ROutside => False
-    | Fs.RFound k (Fs.EDev d) => dev_at_home k d = true
     | _ => True
     end.
 

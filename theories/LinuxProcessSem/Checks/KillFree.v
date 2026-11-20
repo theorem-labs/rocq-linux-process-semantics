@@ -943,8 +943,9 @@ Qed.
 (** The two stat arms open [Stat.file_pin_after]'s [if] at the leaf:
     it reads the delivered bytes, which stay bound until [kf_step] has
     taken the effect apart, so the verdict's model still carries it when
-    [kf_step] injects the [CheckOk].  [dir_pin_after]'s [if] reads only
-    the pin and is split in [H] before that. *)
+    [kf_step] injects the [CheckOk].  [dir_pin_after]'s and
+    [pinned_after]'s [if]s read only the pin and are split in [H] before
+    that. *)
 Lemma check_newfstatat_kf : forall i dirfd pathp statbuf flag eff m m' evs,
   check_newfstatat i dirfd pathp statbuf flag eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
@@ -952,7 +953,7 @@ Proof.
   unfold check_newfstatat, Stat.check_newfstatat_body, check_stat_entry,
     check_fstat_file, check_fstat_dir, check_fstat_devnull, check_fstat_urandom,
     check_fstat_chrdev, check_fstat_link, check_fstat_pinned, check_fstat_deliver_gen,
-    dir_pin_after, file_pin_after in H.
+    dir_pin_after, file_pin_after, pinned_after in H.
   cbv beta iota zeta in H.
   repeat (kf_step H || kf_done H Hoff Hk);
     repeat (match goal with |- context [if ?b then _ else _] => destruct b end);
@@ -964,8 +965,9 @@ Lemma check_fstat_kf : forall i fd statbuf eff m m' evs,
 Proof.
   intros i fd statbuf eff m m' evs H Hoff Hk.
   unfold check_fstat, check_fstat_file, check_fstat_dir, check_fstat_devnull,
-    check_fstat_urandom, check_fstat_chrdev, check_fstat_pinned, check_fstat_deliver_gen,
-    dir_pin_after, file_pin_after in H.
+    check_fstat_urandom, check_fstat_devfd, check_fstat_unpinned, check_fstat_chrdev,
+    check_fstat_pinned, check_fstat_deliver_gen,
+    dir_pin_after, file_pin_after, pinned_after in H.
   cbv beta iota zeta in H.
   repeat (kf_step H || kf_done H Hoff Hk);
     repeat (match goal with |- context [if ?b then _ else _] => destruct b end);

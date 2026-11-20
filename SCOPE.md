@@ -980,7 +980,14 @@ not apply.
   driver-core device is registered (`devtmpfs_create_node`,
   `drivers/base/devtmpfs.c:129-154`), and a pty open makes one under
   `/dev/pts` (`devpts_pty_new`, `fs/devpts/inode.c:512-547`). A run in
-  which a device appears makes this assumption false.
+  which a device appears makes this assumption false. A node of the null
+  or urandom device at a key other than the device's own name opens as
+  the device (`Fs.Open.open_devnull`, `Fs.Open.open_urandom`), and a stat
+  of its descriptor holds nothing unless the node at the device's own
+  name is the image's one node of the kind (`Fs.Stat.fstat_devfd_spec`):
+  this answers the open `bugs/valid-image-excludes-a-device-outside-dev.md`
+  names as declined, though `Run.valid_image` still keeps every device
+  node under `/dev`.
 - No inode of the launch file system carries the append-only or the
   immutable attribute (`FS_APPEND_FL`, `FS_IMMUTABLE_FL`, which
   `chattr +a` and `chattr +i` set; with tmpfs built in, devtmpfs is a
@@ -1088,10 +1095,11 @@ not apply.
   streams, so a stream that the write changed in Linux is still one of
   the launches the statements cover.
 - No tracer (`ptrace`) or other outside agent changes the process.
-- No device cgroup refuses the process an open of `/dev/null` or
-  `/dev/urandom`: the process runs in no cgroup whose BPF device
-  programs or v1 devices controller answer such an open with anything
-  but 0. The model's opens of either node (`Fs.Open.open_devnull`,
+- No device cgroup refuses the process an open of a node of the null or
+  urandom device, wherever its name: the process runs in no cgroup whose
+  BPF device programs or v1 devices controller answer such an open with
+  anything but 0. The model's opens of such a node, at any key
+  (`Fs.Open.open_devnull`,
   `Fs.Open.open_urandom`) answer the descriptor or a refusal Linux gives
   without the device cgroup (`Fs.Open.openat_errnos`, the walk's own
   refusals, and `do_open`'s -EEXIST for `O_CREAT|O_EXCL` and -ENOTDIR
