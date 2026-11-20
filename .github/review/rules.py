@@ -139,19 +139,22 @@ check run and each label comment of an outside pull request hold (import_marker)
 JSON string, or null when it is not given. The JSON writes each character outside ASCII, <, > and & as a \\u escape,
 so that the line holds no line break and no --> before its end.
 
-verdict: "<verdict> <state>" on standard output for <head> of the pull request <number> (review_verdict), from the
-comments of github-actions[bot]: <verdict> is the verdict of the marker
+verdict: "<verdict> <state> <why>" on standard output for <head> of the pull request <number> (review_verdict), from
+the comments of github-actions[bot]: <verdict> is the verdict of the marker
 <!-- review-verdict <head> <verdict>[ will-fix] --> of the newest review comment that names <head>, or - when none
 does. A review comment of <head> is screened when it holds <!-- review-screened <head> --> as the next marker line, so
 that the screen passed <head> in the run of that review. <state> is held when a hold comment of the screen that names
 <head> is newer than the newest screened review comment, or when no review comment of <head> is screened and such a
 hold comment exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is
-screened, earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). A relabel
-records the import check run only for screened, and withdraws it for held. For earlier with the verdict pass, its
-decision is hand. A review by hand with no screen records none. The post job's decision is hand for screened or
-earlier when <verdict> is pass, and screened when <verdict> is blocking or person: the review of this run has not
-posted yet. It is held for held (and the run withdraws the check run, as a relabel does), and screen for unscreened.
-For the decision hand, the label step counts an import check run of <head> that still stands as recorded.
+screened, earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is
+the reason for which a relabel or a review by hand withdraws each import check run of <head> that stands: screen for
+held; else blocking or person, of the newest review comment newer than the newest screened one that gives one, or of
+the newest screened review comment when it does not pass; else -. A relabel records the import check run only for
+screened with the verdict pass. For earlier with the verdict pass and no <why>, its decision is hand. A review by
+hand with no screen records none. Its post job's decision is hand for screened or earlier with no <why>, and
+screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for unscreened. For
+the decision hand, the label step counts an import check run of <head> that still stands, for the value of the
+variable now, as recorded.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a later review of <head>, or screen, a later
@@ -256,13 +259,13 @@ REFUSALS = ("", "review", "answer", "fix")
 # by hand with no screen read the review comments of the head (review_verdict). The decision is held when a hold
 # comment of the screen is newer than each review comment whose run screened the head. For a review by hand, a run
 # with no screen that records no check run, the decision is hand or screened when the run of an earlier review
-# screened the head and no hold comment of the screen is newer (the states screened and earlier). It is hand when the
-# newest review comment of the head gives the verdict pass, and so is a relabel's in the state earlier with that
-# verdict. For the decision hand, the label step counts an import check run of the head that still stands as recorded
-# (the post job's standing), so its state is import or decide as that check run gives. It is screened when that
-# comment gives a blocking finding or the verdict person: no check run of the head stands after that review, and this
-# run withdraws each one that still does. So the state follows the verdict of this run, and a pass gets PASSED. Empty
-# when the job gave none.
+# screened the head and no hold comment of the screen is newer (the states screened and earlier). It is screened when
+# review_verdict gives a reason to withdraw (its why: the newest screened review comment does not pass, or one newer
+# than it gives a blocking finding or the verdict person), and this run withdraws each check run of the head that
+# still stands. So the state follows the verdict of this run, and a pass gets PASSED. Else it is hand, and so is a
+# relabel's in the state earlier with the verdict pass and no such reason. For the decision hand, the label step counts
+# an import check run of the head that still stands, for the value of the variable now, as recorded (the post job's
+# standing), so its state is import or decide as that check run gives. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened")
 
@@ -1249,38 +1252,51 @@ def withdrawal(number, head, why, text):
                        "summary": f"{first} So this check is no longer an approval for the import.", "text": text}}
 
 
+# The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
+WITHDRAWING = ("blocking", "person")
+
+
 def review_verdict(comments, head):
-    """(verdict, state) of head, from comments, the item's comments as the API lists them (issues/<n>/comments, with
-    updated_at). verdict is the verdict of the review comment of BOT that names head, the last one when more name it
-    ("" when none names head). A review comment of head is screened when it holds the marker
-    <!-- review-screened <head> --> after its verdict, so that the screen passed head in the run of that review (R12).
-    state is held when a hold comment of BOT of the screen (hold_fact screen_held) that names head is newer than the
-    newest screened review comment of head, or when no review comment of head is screened and such a hold comment
-    exists: a later screen held the head. Else it is screened when the newest review comment of head is screened,
-    earlier when an older one is screened but the newest is not (a review by hand runs no screen), and unscreened when
-    none is. So a review by hand after a screened review gives the state earlier, and its verdict: a relabel records
-    the import check run only for screened (OSSV-221's architect, 2026-11-20 21:33Z). Only the markers at the start of
-    a review comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert). The
-    marker of a hold comment is the workflow's own: its text is fixed."""
-    verdict, screened, held, newest = "", None, "", False
+    """(verdict, state, why) of head, from comments, the item's comments as the API lists them (issues/<n>/comments,
+    with updated_at): the one rule by which a run that reads the head, a relabel or a review by hand, records or
+    withdraws its import check run (R12; OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). verdict is the verdict of
+    the review comment of BOT that names head, the last one when more name it ("" when none names head). A review
+    comment of head is screened when it holds the marker <!-- review-screened <head> --> after its verdict, so that the
+    screen passed head in the run of that review. state is held when a hold comment of BOT of the screen (hold_fact
+    screen_held) that names head is newer than the newest screened review comment of head, or when no review comment
+    of head is screened and such a hold comment exists: a later screen held the head. Else it is screened when the
+    newest review comment of head is screened, earlier when an older one is screened but the newest is not (a review by
+    hand runs no screen), and unscreened when none is. Such a run records the check run only for the state screened
+    with the verdict pass: the newest review comment is a screened pass. why is the reason for which it withdraws each
+    check run of head that stands (WITHDRAWN): screen for held; else the verdict blocking or person of the newest review
+    comment newer than the newest screened one (of any review comment of head when none is screened) that gives one;
+    else that of the newest screened review comment when it does not pass; else "". So an unscreened pass newer than a
+    screened pass neither records nor withdraws, and a check run that stands stays. Only the markers at the start of a
+    review comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert). The marker
+    of a hold comment is the workflow's own: its text is fixed."""
+    reviews, screened, held = [], None, ""
     for c in comments:
         if not of_bot(c):
             continue
         body, at = c.get("body") or "", c.get("updated_at") or ""
         m = REVIEWED.match(body)
         if m and m.group(1) == head:
-            verdict, newest = m.group(2), bool(m.group(4))
-            if newest:
+            reviews.append((m.group(2), bool(m.group(4))))
+            if m.group(4):
                 screened = max(screened or "", at)
         elif body.startswith("<!-- review-held -->"):
             m = HELD_HEAD.search(body)
             if m and m.group(1) == head and hold_fact(body) == "screen_held":
                 held = max(held, at)
+    verdict = reviews[-1][0] if reviews else ""
     if held and (screened is None or held > screened):
-        return verdict, "held"
-    if screened is None:
-        return verdict, "unscreened"
-    return verdict, "screened" if newest else "earlier"
+        return verdict, "held", "screen"
+    last = max((i for i, (_v, marked) in enumerate(reviews) if marked), default=-1)
+    newer = [v for v, _marked in reviews[last + 1:] if v in WITHDRAWING]
+    why = newer[-1] if newer else reviews[last][0] if last >= 0 and reviews[last][0] in WITHDRAWING else ""
+    if last < 0:
+        return verdict, "unscreened", why
+    return verdict, "screened" if last == len(reviews) - 1 else "earlier", why
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
@@ -2032,8 +2048,8 @@ def main(argv):
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
-            verdict, state = review_verdict(comments, argv[2])
-            print(f"{verdict or '-'} {state}")
+            verdict, state, why = review_verdict(comments, argv[2])
+            print(f"{verdict or '-'} {state} {why or '-'}")
             return 0
         if len(argv) == 6 and argv[0] == "withdrawal":
             number, head, why, path, directory = argv[1:]

@@ -10423,8 +10423,10 @@ class ScheduleTest(Scheduled):
         blocking finding or the verdict person, and its post job failed at the PATCH that withdraws the check run. (a)
         After that review, the last try of a review names HEAD: one relabel an hour after that run ended. (b) A hold of
         the screen that names HEAD is older than a review whose run screened and passed HEAD (Sami's rescreen by hand,
-        say), and the later review asks for a change: one relabel too. When a newer review of HEAD passed, a relabel
-        would record the check run: the pass tries no App write of HEAD again."""
+        say), and the later review asks for a change: one relabel too. (c) As (a), and then a review by hand with no
+        screen passed HEAD: the relabel still withdraws, for the blocking finding (OSSV-221's architect, 2026-11-20
+        22:21Z), so one relabel too. When a newer review of HEAD passed in a run that screened it, a relabel would
+        record the check run: the pass tries no App write of HEAD again."""
         refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
                             MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
         last_try = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
@@ -10446,6 +10448,8 @@ class ScheduleTest(Scheduled):
                  "person", relabel),
                 ("(b)", [screen_hold, review_of(HEAD, at=ago(300)), review_of(HEAD, "blocking", at=ago(200), id_=31)],
                  "blocking", relabel),
+                ("(c)", [recorded, review_of(HEAD, "blocking", at=ago(300), id_=31, screened=False),
+                         review_of(HEAD, at=ago(250), id_=32, screened=False), last_try], "blocking", relabel),
                 ("a newer review passed", [screen_hold, review_of(HEAD, "blocking", at=ago(300), id_=31),
                                            review_of(HEAD, at=ago(200), id_=32)], None, [])):
             with self.subTest(case=case):
@@ -10457,7 +10461,7 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
                 if verdict:
-                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and the newest review of {HEAD} "
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and a review of {HEAD} "
                                   f"{why[verdict]}. So the rescreen pass tries again only one App write of {HEAD}: the "
                                   "withdrawal of its import check run.", out)
                 else:
@@ -14582,7 +14586,11 @@ class ImportCheckTest(ReaderRunner):
         request. When the newest review comment is the screened one, the relabel records the check run. When a hold
         comment of the screen comes between the two review comments, the relabel records no check run (the decision is
         held), and withdraws the one that is still success, because a later screen held the head. Its label comment
-        says that a screen held the head after the screened review, not that no screen passed it."""
+        says that a screen held the head after the screened review, not that no screen passed it. OSSV-221's
+        architect's ruling of 2026-11-20 22:21Z: when the newest screened review comment gave a blocking finding, or a
+        review comment newer than it did, and the withdrawal of that run failed, a pass by hand after it does not stop
+        the withdrawal: the relabel withdraws the check run that still stands, for that blocking finding (the decision
+        screened), and the label comment says that the screen and the review passed the pull request."""
         listed, _others = self.recorded()
         screened = review_of(HEAD, at=ago(90))
         by_hand = review_of(HEAD, at=ago(30), id_=31, screened=False)
@@ -14591,6 +14599,8 @@ class ImportCheckTest(ReaderRunner):
                         "request, so the automated review did not run. You do not need to do anything.\n\n"
                         f"<!-- review-held-head {HEAD} -->"}
         title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later screen held it"
+        asks = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later review asks for a change"
+        blocked = review_of(HEAD, "blocking", at=ago(60), id_=32, screened=False)
         for case, comments, checks, decision, withdrawn in (
                 ("a screened review, then a review by hand, with the check run", [screened, by_hand], [listed], "hand",
                  []),
@@ -14598,7 +14608,12 @@ class ImportCheckTest(ReaderRunner):
                 ("a review by hand, then a screened review", [dict(by_hand, created_at=ago(120), updated_at=ago(120)),
                                                               screened], [listed], "record", []),
                 ("a screened review, a hold of the screen, then a review by hand", [screened, hold, by_hand], [listed],
-                 "held", [(f"repos/{REPO}/check-runs/901", title)])):
+                 "held", [(f"repos/{REPO}/check-runs/901", title)]),
+                ("a screened blocking finding, then a review by hand",
+                 [review_of(HEAD, "blocking", at=ago(90)), by_hand], [listed], "screened",
+                 [(f"repos/{REPO}/check-runs/901", asks)]),
+                ("a screened pass, a blocking finding with no screen, then a review by hand",
+                 [screened, blocked, by_hand], [listed], "screened", [(f"repos/{REPO}/check-runs/901", asks)])):
             with self.subTest(case=case):
                 # The relabel starts after each comment, as the rescreen pass starts it: a hold newer than the run's
                 # start would keep the labels.
@@ -14616,6 +14631,14 @@ class ImportCheckTest(ReaderRunner):
                 elif decision == "hand":
                     self.assertEqual((got["result"], got["writes"], got["post"]["standing"]), ("success", [], "false"),
                                      self.logs)
+                    body = self.assertWaits(got, self.SOME, rules.PASSED, value=self.LPS)
+                    self.assertNotIn("No automated screen", body)
+                elif decision == "screened":
+                    self.assertEqual((got["result"], [w[:3] for w in got["writes"] if w[1] == "POST"]),
+                                     ("success", []), self.logs)
+                    self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, "
+                                  f"because a review of {HEAD} before this run asks for a change.",
+                                  "\n".join(self.logs))
                     body = self.assertWaits(got, self.SOME, rules.PASSED, value=self.LPS)
                     self.assertNotIn("No automated screen", body)
                 else:
@@ -14645,9 +14668,10 @@ class ImportCheckTest(ReaderRunner):
         the state of the verdict. When the screened review of HEAD gave a blocking finding instead (#7 waits on its
         author), a pass by hand gets the decision screened: it records nothing, withdraws a check run of HEAD that still
         stands (its withdrawal failed, say) for the blocking finding of the review before this run, and #7 waits on
-        Sami, with a label comment that says that the screen and the review passed it. With no review comment of HEAD
-        whose run screened it, a pass gets the decision screen, and the label comment says that no screen passed the
-        head. review-held comes off in each case."""
+        Sami, with a label comment that says that the screen and the review passed it. So does a pass by hand after a
+        screened pass, a blocking finding with no screen whose withdrawal failed, and a pass by hand (OSSV-221's
+        architect, 2026-11-20 22:21Z). With no review comment of HEAD whose run screened it, a pass gets the decision
+        screen, and the label comment says that no screen passed the head. review-held comes off in each case."""
         listed, _others = self.recorded()
         marker = rules.import_marker(HEAD, self.LPS)
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
@@ -14658,6 +14682,8 @@ class ImportCheckTest(ReaderRunner):
         conflict = [review_of(HEAD, at=ago(120)), dict(old, body=rules.label_comment("conflict", "", [marker],
                                                                                      OTHER_HEAD))]
         blocked = [review_of(HEAD, "blocking", at=ago(90)), changed]
+        later = [review_of(HEAD, at=ago(150)), review_of(HEAD, "blocking", at=ago(120), id_=31, screened=False),
+                 review_of(HEAD, at=ago(90), id_=32, screened=False), changed]
         held, author = ("review-held",), ("review-held", AUTHOR_LABEL)
         moved = [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)]
         stands, neutral = [listed], [dict(listed, conclusion="neutral")]
@@ -14678,6 +14704,8 @@ class ImportCheckTest(ReaderRunner):
                  "screened", [], moved, "decide"),
                 ("a pass after a screened review with a blocking finding whose withdrawal failed", "pass", blocked,
                  author, stands, "screened", [f"{title}asks for a change"], moved, "decide"),
+                ("a pass after a screened pass, a blocking finding with no screen and a pass by hand", "pass", later,
+                 author, stands, "screened", [f"{title}asks for a change"], moved, "decide"),
                 ("a pass with no screened review", "pass", [review_of(HEAD, at=ago(90), screened=False), old], held,
                  stands, "screen", [], [("+", THEOREM_LABEL)], "decide")):
             with self.subTest(case=case):
@@ -14693,14 +14721,15 @@ class ImportCheckTest(ReaderRunner):
                                   f"no check run, but a screen passed {HEAD} in the run of an earlier review).", logs)
                     self.assertEqual(got["post"]["standing"], "true" if checks and not withdrawn else "false")
                 if decision == "screened":
+                    newest = re.findall(rf"<!-- review-verdict {HEAD} (\w+)", "\n".join(c["body"] for c in comments))
                     self.assertIn(f"#7 at {HEAD}: the decision on the import check is screened (the newest review of "
-                                  f"{HEAD} gives the verdict blocking, and a screen passed the head in an earlier "
+                                  f"{HEAD} gives the verdict {newest[-1]}, and a screen passed the head in an earlier "
                                   "run).", logs)
                     self.assertIn(rules.PASSED, got["comments"][0])
                     self.assertNotIn(rules.UNSCREENED, got["comments"][0])
-                    said = (f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because the "
+                    said = (f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because a "
                             f"review of {HEAD} before this run asks for a change." if withdrawn else
-                            f"#7: the review of {HEAD} before this run asks for a change, but {HEAD} has no import "
+                            f"#7: a review of {HEAD} before this run asks for a change, but {HEAD} has no import "
                             "check run to withdraw.")
                     self.assertIn(said, logs)
                 if not withdrawn:
@@ -14714,6 +14743,31 @@ class ImportCheckTest(ReaderRunner):
                 if state == "decide" and decision == "hand":
                     self.assertIn(rules.PASSED, body)
                 self.assertIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"], gh_calls(self.api))
+
+    def test_a_check_run_recorded_for_another_value_of_the_variable_does_not_stand_for_a_review_by_hand(self):
+        """The fresh reader of round 11 (e, finding A): the screened run of mallory's #7 passed HEAD and recorded the
+        check run while REPO_PAIRS_IMPORT_PATHS was not set, so its output text holds the marker line of R12 with null.
+        The variable is then set to theories/**, and #7 also changes tools/x.py. Then alice reviews HEAD by hand with no
+        screen, and the review passes it: the decision is hand. The post job counts a check run as standing only when
+        its output text holds the marker line for the value now (rules.py import-marker). So that check run does not
+        stand: #7 gets the state decide, waits-on-theorem, and the steps of the import, not import. A check run recorded
+        for theories/** stands, and #7 gets the state import with no state label."""
+        listed, _others = self.recorded()
+        value = "theories/**"
+        for case, recorded, standing in (("recorded with no variable", None, "false"),
+                                         ("recorded for the value now", value, "true")):
+            with self.subTest(case=case):
+                check = dict(listed, output=dict(listed["output"], text=rules.import_marker(HEAD, recorded)))
+                got = self.judge(["theories/NOTES.md", "tools/x.py"], "pass", value,
+                                 trust=dict(self.BY_HAND, started=ago(1)), event="workflow_dispatch",
+                                 comments=[review_of(HEAD, at=ago(90))], listed=[check])
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["standing"], got["writes"]),
+                                 ("success", "hand", standing, []), self.logs)
+                if standing == "true":
+                    self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+                else:
+                    body = self.assertWaits(got, self.SOME, rules.PASSED, rules.IMPORT_STEPS, value=value)
+                    self.assertNotIn("The automated import copies the head commit", body)
 
     def test_a_passing_review_by_hand_after_a_newer_screen_hold_of_the_head_withdraws_its_check_run(self):
         """The fresh reader of round 11 (b, finding 2): the CI run of mallory's #7 screened and reviewed HEAD, and its

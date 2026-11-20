@@ -203,13 +203,14 @@ no_key_of() {
     | startswith("<!-- review-label -->") and test("\n<!-- review-no-key " + $ENV.SHA + " -->(\n|$)")))'
 }
 # relabel_withdraws <number> <head>: why a relabel of <head> withdraws the import check run of <head>, from the
-# comments of github-actions[bot] on <number>, as the post job of that relabel reads them (rules.py verdict).
-# screen when a hold comment of the screen that names <head> (its text holds "The automated screen held ", and it
-# has no marker of a hold that is tried again) is newer than each review comment of <head> whose run screened it
-# (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state held. Else
-# blocking or person, when the newest review comment of <head> gives that verdict. Else -: then a relabel of
-# <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
-# marker and passes (rules.py verdict, screened). A relabel that withdraws records none.
+# comments of github-actions[bot] on <number>, by the rule that the post job of that relabel reads (rules.py
+# verdict, its why). screen when a hold comment of the screen that names <head> (its text holds "The automated screen
+# held ", and it has no marker of a hold that is tried again) is newer than each review comment of <head> whose run
+# screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
+# held. Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any,
+# when none is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then
+# a relabel of <head> withdraws nothing. It records an import check run only when the newest review comment of <head>
+# holds the marker and passes (rules.py verdict, screened). A relabel that withdraws records none.
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
@@ -219,6 +220,8 @@ relabel_withdraws() {
         | ($l[2] // "" | capture("^<!-- review-verdict " + $ENV.SHA + " (?<v>pass|blocking|person)( will-fix)? -->$"))
         | {at: $at, verdict: .v, screened: ($l[3] == "<!-- review-screened " + $ENV.SHA + " -->")}] as $reviews
     | ([$reviews[] | select(.screened) | .at] | max // "") as $screened
+    | ([range(0; $reviews | length) | select($reviews[.].screened)] | last) as $last
+    | ([$reviews[(($last // -1) + 1):][] | .verdict | select(IN("blocking", "person"))] | last) as $newer
     | ([$ours[] | select(.body | startswith("<!-- review-held -->")
           and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")
           and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+"
@@ -226,7 +229,9 @@ relabel_withdraws() {
           and contains("The automated screen held "))
         | .at] | max // "") as $held
     | if $held != "" and $held > $screened then "screen"
-      else $reviews | last | .verdict // "-" | if IN("blocking", "person") then . else "-" end end'
+      elif $newer != null then $newer
+      elif $last != null and ($reviews[$last].verdict | IN("blocking", "person")) then $reviews[$last].verdict
+      else "-" end'
 }
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
@@ -1347,19 +1352,20 @@ consider() {
   [ -z "$taken" ] || return 0
   # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
   # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
-  # head after each review that screened it, or the newest review of the head gives a blocking finding or the verdict
-  # person. Such a relabel records no import check run. So the App's retry (due_retry) still takes a run of the head
-  # whose post job failed: one relabel an hour after that run ended. After REVIEW_TRIES failed tries, head_stopped
-  # import stops it, and the hold of that stop, which names the head, ends the retry. While a relabel of the head can
-  # record an import check run, no App write of the head is tried again.
+  # head after each review that screened it, the newest screened review of the head does not pass, or a review newer
+  # than it gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's
+  # retry (due_retry) still takes a run of the head whose post job failed: one relabel an hour after that run ended.
+  # After REVIEW_TRIES failed tries, head_stopped import stops it, and the hold of that stop, which names the head,
+  # ends the retry. While a relabel of the head can record an import check run, no App write of the head is tried
+  # again.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
         || { echo "::error::the comments of #$number could not be read."; return 1; }
       case $withdraws in
         screen) because="a screen held $head" ;;
-        blocking) because="the newest review of $head asks for a change" ;;
-        person) because="the newest review of $head has questions for Sami" ;;
+        blocking) because="a review of $head asks for a change" ;;
+        person) because="a review of $head has questions for Sami" ;;
       esac
       if [ -n "$because" ]; then
         echo "#$number: a hold that is not tried again names $head, and $because. So the rescreen pass tries again" \

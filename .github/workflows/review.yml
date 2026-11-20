@@ -2777,26 +2777,23 @@ jobs:
       # the files, and the comment job gives the item no outside label (R5). A review or a rescreen records the check
       # run only when the screen of this run passed the head, also in a run by hand that asked for the screen. A
       # relabel takes the verdict from the markers of the newest review comment that names the head, also for another
-      # author, as the step that withdraws a check run reads it. It records a check run only when the screen passed the
-      # head in the run of the newest review (rules.py verdict, screened): the newest review comment of the head holds
-      # the marker <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer. A
-      # review by hand with no screen writes no such marker, so after it no relabel records a check run, whatever its
-      # verdict, until a screened review passes the head (OSSV-221's architect, 2026-11-20 21:33Z). When an older
-      # review comment holds the marker and the newest does not (earlier), and the newest passes, the decision is hand.
-      # When such a hold comment is newer (held), a later screen held the head: the decision is held, so that the label
-      # comment says so, and a later step withdraws its check run. A review by hand with no screen (a review or a
-      # rescreen whose route is not screen) records no check run, as no screen ran in its run. It reads the state of
-      # the head in the same way, and keeps its own verdict. For screened or earlier, the verdict of the newest review
-      # comment of the head (this run's has not posted yet) gives the decision. After a pass, it is hand. After a
-      # blocking finding or the verdict person, it is screened: no check run of the head stands after that review, and
-      # a later step withdraws each one that still does (output earlier), for that review's reason. For held, the
-      # decision is held, and a later step withdraws the check run, as for a relabel. Else it is screen, and the label
-      # comment says that no screen passed the head in a run that also reviewed it. A run whose decision is hand
-      # records nothing, and reads whether an import check run of the head with the conclusion success still stands
-      # (output standing). The comment job counts such a check run as recorded, unless a later step of this job
-      # withdraws it: so the state is import when one stands while the variable is set, and decide when none does.
-      # The state of the decision screened follows this run's verdict, and for a pass the label comment says that the
-      # screen and the review passed the pull request.
+      # author, as the step that withdraws a check run reads it. A relabel and a review by hand with no screen follow
+      # one rule (rules.py verdict; OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). A relabel records a check run
+      # only when the newest review comment of the head is a screened pass: it holds the marker
+      # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer (screened).
+      # Each run withdraws each check run of the head that still stands when the newest screened review comment does
+      # not pass, or one newer than it gives a blocking finding or the verdict person (output earlier, with that
+      # reason). When such a hold comment is newer (held), a later screen held the head: the decision is held, so that
+      # the label comment says so, and a later step withdraws its check run. A review by hand with no screen (a review
+      # or a rescreen whose route is not screen) records no check run, as no screen ran in its run, and keeps its own
+      # verdict. For screened or earlier, its decision is screened when the rule withdraws, and hand when it does not.
+      # So is a relabel's in the state earlier with the verdict pass. Else the decision is screen, and the label comment
+      # says that no screen passed the head in a run that also reviewed it. A run whose decision is hand records and
+      # withdraws nothing, and reads whether an import check run of the head with the conclusion success, for the value
+      # of the variable now, still stands (output standing). The comment job counts such a check run as recorded,
+      # unless a later step of this job withdraws it: so the state is import when one stands while the variable is set,
+      # and decide when none does. The state of the decision screened follows this run's verdict, and for a pass the
+      # label comment says that the screen and the review passed the pull request.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2835,28 +2832,34 @@ jobs:
             exit 0
           }
           # standing: for the decision hand, the output standing: true when an import check run of the OSS Verify App
-          # with conclusion success, for this pull request (external_id <number>:<head>), stands on the head.
+          # with conclusion success, for this pull request (external_id <number>:<head>), stands on the head, and its
+          # output text holds the marker line of R12 for the value of the variable now (rules.py import-marker). One
+          # that rested on another value does not count.
           standing() {
-            local found
+            local found marker values=()
+            [ -z "$IMPORT_PATHS" ] || values=("$IMPORT_PATHS")
+            marker=$(python3 .github/review/rules.py import-marker "$HEAD" "${values[@]}")
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            found=$(SHA=$HEAD gh api --method GET --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+            found=$(SHA=$HEAD MARKER=$marker gh api --method GET --paginate "repos/$REPO/commits/$HEAD/check-runs" \
               -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
                 | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
                          and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
-                         and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success") | .id') \
+                         and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success"
+                         and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id') \
               || { echo "::error::the import check runs of $HEAD could not be read."; exit 1; }
             if [ -n "$found" ]; then echo "standing=true"; else echo "standing=false"; fi >> "$GITHUB_OUTPUT"
           }
-          # relabeled: for a relabel, the verdict of the newest review comment that names the head (rules.py verdict),
-          # and screen true only when that comment holds the marker <!-- review-screened <head> --> and no hold comment
-          # of the screen that names the head is newer (screened). The outputs verdict and held give them to the step
-          # that withdraws an import check run. A newer hold comment (held) gives the decision held. For an outside
-          # author, an older screened review comment (earlier) with a newest verdict pass gives the decision hand.
+          # relabeled: for a relabel, the verdict of the newest review comment that names the head, its state and why
+          # (rules.py verdict). screen is true only for screened: that comment holds the marker
+          # <!-- review-screened <head> --> and no hold comment of the screen that names the head is newer. The outputs
+          # verdict, held and earlier (why: blocking or person) give them to the step that withdraws an import check
+          # run. A newer hold comment (held) gives the decision held. For an outside author, the state earlier with the
+          # verdict pass gives the decision screened with a why, and hand with none.
           relabeled() {
-            local reviewed state why
+            local reviewed state why said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state <<< "$reviewed"
+            read -r verdict state why <<< "$reviewed"
             [ "$verdict" != - ] || verdict=""
             screen=false
             [ "$state" != screened ] || screen=true
@@ -2865,38 +2868,43 @@ jobs:
               echo "held=true" >> "$GITHUB_OUTPUT"
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
+            [ "$why" = - ] || echo "earlier=$why" >> "$GITHUB_OUTPUT"
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
+              if [ "$why" != - ]; then
+                said="the newest review of $HEAD gives the verdict $verdict"
+                decided screened "$said, and a screen passed the head in an earlier run"
+              fi
               standing
-              why="the newest review of $HEAD passed it with no screen, after a screen passed it in an earlier run"
-              decided hand "$why"
+              said="the newest review of $HEAD passed it with no screen, after a screen passed it in an earlier run"
+              decided hand "$said"
             fi
           }
-          # by_hand: for a review or a rescreen with no screen in this run (a review by hand), the state of the head
-          # that the review comments give (rules.py verdict), as relabeled reads it, and the verdict of the newest
-          # review comment of the head (earlier: this run's review has not posted yet). The run keeps its own verdict,
-          # and records no check run. screened or earlier gives the decision hand after an earlier pass, with the output
-          # standing, and screened after an earlier blocking finding or verdict person, with that verdict as the output
-          # earlier, so that the step that withdraws an import check run withdraws each one that still stands. held
-          # gives the decision held, and the output held, so that the same step withdraws it, as for a relabel. For
-          # unscreened, the import check below gives the decision screen.
+          # by_hand: for a review or a rescreen with no screen in this run (a review by hand), the verdict of the newest
+          # review comment of the head (earlier: this run's review has not posted yet), its state and why (rules.py
+          # verdict), as relabeled reads them. The run keeps its own verdict, and records no check run. held gives the
+          # decision held, and the output held, so that the step that withdraws an import check run withdraws it, as
+          # for a relabel. Else a why (blocking or person) goes to the output earlier, so that the same step withdraws
+          # each check run that still stands for that verdict. screened or earlier gives the decision screened with a
+          # why, and hand with none, with the output standing. For unscreened, the import check below gives the
+          # decision screen.
           by_hand() {
-            local reviewed earlier state why
+            local reviewed earlier state why said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r earlier state <<< "$reviewed"
-            if { [ "$state" = screened ] || [ "$state" = earlier ]; } && [ "$earlier" = pass ]; then
-              standing
-              why="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
-              decided hand "$why"
-            fi
-            if [ "$state" = screened ] || [ "$state" = earlier ]; then
-              echo "earlier=$earlier" >> "$GITHUB_OUTPUT"
-              why="the newest review of $HEAD gives the verdict $earlier"
-              decided screened "$why, and a screen passed the head in an earlier run"
-            fi
+            read -r earlier state why <<< "$reviewed"
             if [ "$state" = held ]; then
               echo "held=true" >> "$GITHUB_OUTPUT"
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
+            fi
+            [ "$why" = - ] || echo "earlier=$why" >> "$GITHUB_OUTPUT"
+            if [ "$state" = screened ] || [ "$state" = earlier ]; then
+              if [ "$why" != - ]; then
+                said="the newest review of $HEAD gives the verdict $earlier"
+                decided screened "$said, and a screen passed the head in an earlier run"
+              fi
+              standing
+              said="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
+              decided hand "$said"
             fi
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -2935,11 +2943,12 @@ jobs:
       # hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or this run's
       # screen held the head, or a relabel or a review by hand with no screen found a hold comment of the screen that
       # names the head and is newer than the newest review comment of the head with the marker
-      # <!-- review-screened <head> --> (the decision's held), whatever the verdict. A review by hand whose decision is
-      # screened withdraws each check run that still stands for the reason of the newest earlier review of the head
-      # (the decision's earlier: a blocking finding or the verdict person), when its own verdict gives none. The if of
-      # this step reads the screen's verdict: a review or a rescreen with no review job that succeeded, and an approval,
-      # run this step only when the screen held the head. The
+      # <!-- review-screened <head> --> (the decision's held), whatever the verdict. A relabel or a review by hand with
+      # no screen also withdraws each check run that still stands when the newest screened review comment of the head
+      # does not pass, or one newer than it gives a blocking finding or the verdict person (the decision's earlier, from
+      # rules.py verdict), for that reason when its own verdict gives none. The if of this step reads the screen's
+      # verdict: a review or a rescreen with no review job that succeeded, and an approval, run this step only when the
+      # screen held the head. The
       # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
@@ -2983,7 +2992,7 @@ jobs:
           VERDICT: ${{ steps.decide.outputs.verdict || needs.review.outputs.verdict }}
           # true for the decision held: a relabel or a review by hand with no screen found a newer hold of the screen.
           HELD: ${{ steps.decide.outputs.held }}
-          # For the decision screened, the verdict of the newest earlier review of the head: blocking or person.
+          # The reason of the rule of rules.py verdict for a relabel or a review by hand: blocking or person.
           EARLIER: ${{ steps.decide.outputs.earlier }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
@@ -2999,11 +3008,11 @@ jobs:
             head=$TRUST_HEAD why=screen
           fi
           [ "${HELD:-}" != true ] || why=screen
-          # who: the review whose verdict withdraws: a review later than the check run, or, for the decision screened
-          # when this run passed, the newest review of the head before this run (EARLIER).
+          # who: the review whose verdict withdraws: a review later than the check run, or, when this run's own verdict
+          # withdraws nothing, a review of the head before this run (EARLIER, from rules.py verdict).
           who="a later review"
           if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ]; then
-            why=$EARLIER who="the review of $head before this run"
+            why=$EARLIER who="a review of $head before this run"
           fi
           # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
           case $why in
