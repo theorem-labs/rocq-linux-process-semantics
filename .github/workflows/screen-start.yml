@@ -54,7 +54,7 @@
 # No loop: review.yml's jobs write their labels, comments and reviews with github.token, and an event that
 # github.token makes starts no run of this file (GitHub's docs, "Events that trigger workflows": its workflow_dispatch
 # and repository_dispatch start runs, and so does a pull request that it opens or pushes to, which review.yml never
-# does). The OSS Verify App's reopen of a catch-up is an event of the pull request, and starts this file again: the
+# does). The Theorem Verify App's reopen of a catch-up is an event of the pull request, and starts this file again: the
 # run of the pass with the number of the pull request takes only its conflict or the approval of its held runs, and
 # starts no catch-up. So an event starts no loop of screens. Its cost: one job of up to 2 minutes for each event, on a
 # standard runner, whose minutes GitHub does not bill in a public repository.

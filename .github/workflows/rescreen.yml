@@ -74,10 +74,14 @@ concurrency:
 # jobs do.
 env:
   POST_REVIEW: "true"
-  APPS: "sjawhar-agent[bot],oss-verify[bot],legion-reviewer[bot],legion-implementer[bot]"
+  APPS: "sjawhar-agent[bot],oss-verify[bot],theorem-verify-placeholder[bot],legion-reviewer[bot],legion-implementer[bot]"
   OUTSIDE_HOURLY_LIMIT: "3"
   HELD_LABEL: review-held
   REVIEW_TRIES: "3"
+  # The Theorem Verify App's id and login, which .github/review/held.sh reads (the top of review.yml says how). They are
+  # placeholders until dispatch://INFRA-3395 gives the real values, once the App is made.
+  THEOREM_VERIFY_APP_ID: "0"
+  THEOREM_VERIFY_APP_LOGIN: "theorem-verify-placeholder[bot]"
 
 jobs:
   # The rescreen pass, in the public repository alone. At each run it starts, on main, the runs of review.yml that the
@@ -121,7 +125,7 @@ jobs:
   #   catchup   an outside pull request whose head no review, no hold comment and no run of this workflow names, whose
   #             head repository is still there, and whose newest CI run of that head ended over an hour ago, with none
   #             still to finish (a CI run that GitHub holds for a person's approval has not finished): the post job
-  #             closes and reopens it with the OSS Verify App's token, so that GitHub starts CI on it and the review
+  #             closes and reopens it with the Theorem Verify App's token, so that GitHub starts CI on it and the review
   #             follows. Once for each head: the comment job of that run records the head in the label comment
   #             (<!-- review-catchup <head> -->), which this pass reads, however long ago the catch-up ran. A pull
   #             request whose head repository is gone is never closed: GitHub cannot reopen it.
@@ -209,14 +213,14 @@ jobs:
   # Each reason is a function due_<reason> of .github/review/held.sh, which consider calls for each open item. A failed
   # read or start for one item leaves that item for the next run: the job goes on with the others, and fails at the end.
   # Its token's actions: write starts the runs of review.yml and runs the failed jobs of a review run again (above),
-  # and nothing else: it approves no held run (review.yml's post job does, with the OSS Verify App's token, and only
-  # that job holds the App's key). A run that this token starts starts no run of another workflow when it ends, and
-  # none needs to: an approval and a reopen start CI with the App's token, in the post job. Beside it, the token only
-  # reads: issues and pull-requests (the items, their comments and reviews, and the pull requests), checks (the check
-  # runs of a head: the value of REPO_PAIRS_IMPORT_PATHS that the import check recorded) and contents (the checkout).
-  # It holds no model. It checks out .github/review/held.sh alone, at the commit of main whose workflow file runs, and
-  # its step sources that file: it runs no other file of the repository. Its cost: one job of a few seconds for each
-  # event, on a standard runner, whose minutes GitHub does not bill in a public repository.
+  # and nothing else: it approves no held run (review.yml's post job does, with the Theorem Verify App's token, and
+  # only that job holds the App's key). A run that this token starts starts no run of another workflow when it ends,
+  # and none needs to: an approval and a reopen start CI with the App's token, in the post job. Beside it, the
+  # token only reads: issues and pull-requests (the items, their comments and reviews, and the pull requests), checks
+  # (the check runs of a head: the value of REPO_PAIRS_IMPORT_PATHS that the import check recorded) and contents (the
+  # checkout). It holds no model. It checks out .github/review/held.sh alone, at the commit of main whose workflow file
+  # runs, and its step sources that file: it runs no other file of the repository. Its cost: one job of a few seconds
+  # for each event, on a standard runner, whose minutes GitHub does not bill in a public repository.
   rescreen:
     if: >-
       github.ref == 'refs/heads/main'

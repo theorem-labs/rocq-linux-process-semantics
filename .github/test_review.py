@@ -83,8 +83,12 @@ FORK_OWNER = "bob"          # the account that owns that repository: bob's fork,
 REPO_ID = 444               # the id of REPO
 BRANCH = "patch-1"          # its head branch in that repository
 APP_TOKEN = "actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510"
-MINT_A = "Sign in as the OSS Verify App"
-MINT_B = "Sign in as the OSS Verify App to approve"
+MINT_A = "Sign in as the Theorem Verify App"
+MINT_B = "Sign in as the Theorem Verify App to approve"
+# The inputs of each sign-in step that name the Theorem Verify App: its client id, from the env at the top of
+# review.yml, and its key, a secret of the environment post.
+VERIFY_CLIENT_ID = "${{ env.THEOREM_VERIFY_APP_CLIENT_ID }}"
+VERIFY_KEY = "${{ secrets.THEOREM_VERIFY_APP_PRIVATE_KEY }}"
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 AUTHOR_LABEL, THEOREM_LABEL = "waits-on-author", "waits-on-theorem"
 BOT = "github-actions[bot]"   # the account of this workflow's comments and reviews, and of the runs the pass starts
@@ -162,6 +166,10 @@ def load(path=WORKFLOW):
 WF = load()
 JOBS = WF["jobs"]
 APPS = WF["env"]["APPS"]
+# The Theorem Verify App, the identity of the post job's writes, from the env at the top of review.yml: its id, as a
+# check run names its App, and its login, as an event names its actor.
+VERIFY_APP_ID = int(WF["env"]["THEOREM_VERIFY_APP_ID"])
+VERIFY_APP_LOGIN = WF["env"]["THEOREM_VERIFY_APP_LOGIN"]
 CI = load(CI_WORKFLOW)
 RESCREEN = load(RESCREEN_WORKFLOW)
 SCREEN_START = load(SCREEN_START_WORKFLOW)
@@ -428,8 +436,10 @@ class Runner(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
         # A run of this workflow on main of REPO, as GitHub sets GITHUB_REF and GITHUB_REPOSITORY_ID for each of its
         # events there. GITHUB_WORKSPACE is the job's checkout, from which the trust step and the rescreen pass's step
-        # source .github/review/held.sh: here the root of this repository, which holds that file.
+        # source .github/review/held.sh: here the root of this repository, which holds that file. APPS and the Theorem
+        # Verify App's id and login are values of the workflow's env, which each step gets.
         self.env.update(PATH=bin_dir + os.pathsep + os.environ["PATH"], FAKE_GH=self.api, REPO=REPO, APPS=APPS,
+                        THEOREM_VERIFY_APP_ID=str(VERIFY_APP_ID), THEOREM_VERIFY_APP_LOGIN=VERIFY_APP_LOGIN,
                         GH_TOKEN="stand-in", RUNNER_TEMP=self.temp, GITHUB_OUTPUT=self.output,
                         GITHUB_REF="refs/heads/main", GITHUB_REPOSITORY_ID=str(REPO_ID),
                         GITHUB_WORKSPACE=os.path.dirname(GITHUB_DIR))
@@ -668,9 +678,18 @@ class TrustTest(Runner):
     def test_the_apps_of_the_organisation_count_and_others_are_screened(self):
         self.assertReview("review", "workflow_run", "sjawhar-agent[bot]", "sjawhar-agent[bot]")
         self.assertReview("review", "issues", "oss-verify[bot]", "oss-verify[bot]")
+        self.assertReview("review", "issues", VERIFY_APP_LOGIN, VERIFY_APP_LOGIN)
         self.assertReview("review", "issues", "legion-reviewer[bot]", "legion-reviewer[bot]")
         self.assertReview("screen", "workflow_run", "dependabot[bot]", "dependabot[bot]")
         self.assertReview("screen", "issues", "github-actions[bot]", "github-actions[bot]")
+
+    def test_the_apps_of_each_workflow_hold_the_login_of_the_theorem_verify_app(self):
+        """The CI run that a catch-up's reopen starts has the Theorem Verify App as its actor. Without its login in
+        APPS, that run counts toward the hourly limit as the run of an outside account. An env value cannot read
+        another, so APPS holds the login as text: it must hold the login of its own workflow's env."""
+        for name, workflow in (("review.yml", WF), ("rescreen.yml", RESCREEN)):
+            with self.subTest(workflow=name):
+                self.assertIn(workflow["env"]["THEOREM_VERIFY_APP_LOGIN"], workflow["env"]["APPS"].split(","))
 
     def test_a_ci_run_is_matched_to_its_pull_request_by_head_and_head_repository(self):
         """Ruling 1: GitHub names no pull request in a CI run of a fork's pull request, so the number and the author
@@ -2670,8 +2689,7 @@ class HoldingsTest(unittest.TestCase):
     def test_only_the_post_job_reads_a_secret_and_only_the_apps_key_in_its_sign_in_steps(self):
         with open(WORKFLOW) as f:
             text = f.read()
-        self.assertEqual(re.findall(r"\$\{\{[^}]*\bsecrets\b[^}]*\}\}", text),
-                         ["${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}"] * 2)
+        self.assertEqual(re.findall(r"\$\{\{[^}]*\bsecrets\b[^}]*\}\}", text), [VERIFY_KEY] * 2)
         self.assertNotIn("secrets", json.dumps({k: v for k, v in WF.items() if k != "jobs"}))
         for name, job in JOBS.items():
             with self.subTest(job=name):
@@ -2680,7 +2698,48 @@ class HoldingsTest(unittest.TestCase):
                     self.assertEqual("secrets" in json.dumps(s), name == "post" and s.get("name") in (MINT_A, MINT_B),
                                      s.get("name"))
         for name in (MINT_A, MINT_B):
-            self.assertEqual(step("post", name)["with"]["private-key"], "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}")
+            self.assertEqual(step("post", name)["with"]["private-key"], VERIFY_KEY)
+
+    def test_the_theorem_verify_app_is_named_once_in_the_env_and_each_sign_in_uses_its_client_id_and_key(self):
+        """R10, R12: the post job's writes are the Theorem Verify App's. The env at the top of review.yml names its
+        id, its client id and its login once each, and no job names the client id or the login itself. Each read of a
+        check run by its App compares .app.id with the id of the env. Each sign-in step takes the client id from the
+        env and the key THEOREM_VERIFY_APP_PRIVATE_KEY, and no app-id. No file under .github/ but this one names the
+        OSS Verify App's id or key in code: a comment that names one must say that it names the old App. This file
+        names them to look for them, and one test of it serves a check run of the old App's id."""
+        with open(WORKFLOW) as f:
+            text = f.read()
+        for name in ("THEOREM_VERIFY_APP_ID", "THEOREM_VERIFY_APP_CLIENT_ID", "THEOREM_VERIFY_APP_LOGIN"):
+            with self.subTest(name=name):
+                self.assertEqual(len(re.findall(rf"^  {name}: ", text, re.M)), 1)
+                self.assertTrue(WF["env"][name])
+        for name in ("THEOREM_VERIFY_APP_CLIENT_ID", "THEOREM_VERIFY_APP_LOGIN"):
+            with self.subTest(value=name):
+                self.assertNotIn(WF["env"][name], json.dumps(JOBS))
+                self.assertNotIn(WF["env"][name], held_sh())
+        for path, body in ((WORKFLOW, text), (HELD_SH, held_sh())):
+            with self.subTest(reads=path):
+                reads = re.findall(r"\.app\.id\b.*", body)
+                self.assertTrue(reads)
+                self.assertEqual(set(reads), {".app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID"})
+        for name in (MINT_A, MINT_B):
+            with self.subTest(step=name):
+                given = step("post", name)["with"]
+                self.assertEqual((given.get("client-id"), given.get("private-key")), (VERIFY_CLIENT_ID, VERIFY_KEY))
+                self.assertNotIn("app-id", given)
+        old, found = ("5447700", "OSS_VERIFY_APP_PRIVATE_KEY"), []
+        for root, dirs, files in os.walk(GITHUB_DIR):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for file in files:
+                path = os.path.join(root, file)
+                if path == os.path.abspath(__file__):
+                    continue
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    for number, line in enumerate(f, 1):
+                        history = line.lstrip().startswith("#") and "the old App" in line
+                        if any(o in line for o in old) and not history:
+                            found.append(f"{os.path.relpath(path, GITHUB_DIR)}:{number}")
+        self.assertEqual(found, [])
 
     def test_the_screen_job_holds_no_write_token(self):
         job = JOBS["screen"]
@@ -2748,9 +2807,9 @@ class HoldingsTest(unittest.TestCase):
             with self.subTest(step=name):
                 s = dict(step("post", name)["with"])
                 self.assertEqual(step("post", name)["uses"], APP_TOKEN)
-                self.assertEqual({k: s.pop(k) for k in ("app-id", "owner", "repositories", "private-key")},
-                                 {"app-id": 5447700, "owner": "theorem-labs", "repositories": "rocq-linux-process-semantics",
-                                  "private-key": "${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}"})
+                self.assertEqual({k: s.pop(k) for k in ("client-id", "owner", "repositories", "private-key")},
+                                 {"client-id": VERIFY_CLIENT_ID, "owner": "theorem-labs",
+                                  "repositories": "rocq-linux-process-semantics", "private-key": VERIFY_KEY})
                 self.assertEqual(s, rights)
         b = step("post", MINT_B)["if"]
         for task, verdict, runs, want in (("approve", "clean", "61 62", True), ("approve", "held", "61 62", False),
@@ -3657,8 +3716,8 @@ class ApproveTest(Holding):
     """b8 (R10): a first-time contributor's pull request whose runs GitHub holds (status action_required), taken by a
     run by hand on main with its number: the trust job's step, the jobs that run (each job's if), a stand-in verdict
     of the screen, and the post job's own steps against the stand-in gh, with a stand-in token from each sign-in step.
-    When the screen passes, the OSS Verify App approves the held runs of the screened head with token B. When it does
-    not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
+    When the screen passes, the Theorem Verify App approves the held runs of the screened head with token B. When it
+    does not, nothing is approved, token B is never minted, and the hold comment says that the screen held the pull
     request. When the head adds, changes or deletes a file under .github/, nothing is approved either, whatever the
     screen says: the comment job gives the pull request waits-on-theorem, with a label comment that says that a person
     at Theorem approves its runs and that records the head."""
@@ -7908,7 +7967,8 @@ class RescreenTrustTest(Held):
         functions itself. Each of the two jobs checks out that file alone before the step, at github.sha, the commit of
         main whose workflow file runs: no head and no ref of a pull request. Both count with the same values: a pass
         that counted the limit or the tries with another value than review.yml's jobs would start runs that their trust
-        job refuses, or stops that it never takes."""
+        job refuses, or stops that it never takes. Both read the same id and login of the Theorem Verify App, the
+        App of the import check run and of the close of a catch-up."""
         functions = set(re.findall(r"^([a-z_]+)\(\) \{", held_sh(), re.M))
         self.assertLessEqual({"consider", "consider_closed", "waiting", "held_account"}, functions)
         for job, name in ((JOBS["trust"], TRUST), (RESCREEN["jobs"]["rescreen"], RESCREEN_JOB)):
@@ -7924,7 +7984,8 @@ class RescreenTrustTest(Held):
                 checkouts = [s for s in job["steps"] if "uses" in s]
                 self.assertEqual([(s["uses"], s["with"]) for s in checkouts], [(CHECKOUT, HELD_CHECKOUT)])
                 self.assertLess(job["steps"].index(checkouts[0]), job["steps"].index(the))
-        for name in ("POST_REVIEW", "APPS", "OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES"):
+        for name in ("POST_REVIEW", "APPS", "OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES",
+                     "THEOREM_VERIFY_APP_ID", "THEOREM_VERIFY_APP_LOGIN"):
             with self.subTest(name=name):
                 self.assertEqual(RESCREEN["env"][name], WF["env"][name])
 
@@ -9686,10 +9747,10 @@ CATCH_UP = "Close and reopen the pull request"
 
 
 class CatchUpScheduleTest(Scheduled):
-    """b1 (R6, D16): an outside pull request whose head no run of this workflow met is closed and reopened by the OSS
-    Verify App, so that GitHub starts a CI run of the head and its review follows; a head whose review is in the form
-    of before the move off pull_request_target gets a review from the API, with no close and no reopen. Each run that
-    the schedule starts goes on through the trust job and the post job where a case says so."""
+    """b1 (R6, D16): an outside pull request whose head no run of this workflow met is closed and reopened by the
+    Theorem Verify App, so that GitHub starts a CI run of the head and its review follows; a head whose review is in
+    the form of before the move off pull_request_target gets a review from the API, with no close and no reopen. Each
+    run that the schedule starts goes on through the trust job and the post job where a case says so."""
 
     # A review of HEAD in the older form, which names the head only in its text: no marker of its head.
     OLD_REVIEW = {"id": 2, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
@@ -9938,7 +9999,7 @@ class LeftClosedTest(Scheduled):
     UNSIGNED = post_job({MINT_A: "failure"})
     CANCELLED = dict(post_job({MINT_A: "success", CATCH_UP: "cancelled"}), conclusion="cancelled")
 
-    def closing(self, at, by="oss-verify[bot]"):
+    def closing(self, at, by=VERIFY_APP_LOGIN):
         """#7, mallory's pull request at HEAD, closed at the time at by by and not merged: in the list of the closed
         pull requests, with that close as its newest, and as the API says of it now, with that close as its newest
         closed event."""
@@ -10034,12 +10095,12 @@ class LeftClosedTest(Scheduled):
         self.dispatched("catchup", want=False)
 
     def test_a_pull_request_closed_outside_every_catchup_run_or_by_someone_else_is_never_reopened(self):
-        """oss-verify[bot] closed it before the catchup run started, or after it ended; its author closed it; or the
-        catchup run's post job passed: no catchup, and the trust job refuses one."""
-        for case, at, by, jobs in (("before the run started", ago(300), "oss-verify[bot]", self.FAILED),
-                                   ("after the run ended", ago(100), "oss-verify[bot]", self.FAILED),
+        """The Theorem Verify App closed it before the catchup run started, or after it ended; its author closed it; or
+        the catchup run's post job passed: no catchup, and the trust job refuses one."""
+        for case, at, by, jobs in (("before the run started", ago(300), VERIFY_APP_LOGIN, self.FAILED),
+                                   ("after the run ended", ago(100), VERIFY_APP_LOGIN, self.FAILED),
                                    ("by its author", ago(200), "mallory", self.FAILED),
-                                   ("in a run whose post job passed", ago(200), "oss-verify[bot]",
+                                   ("in a run whose post job passed", ago(200), VERIFY_APP_LOGIN,
                                     post_job({MINT_A: "success", CATCH_UP: "success"}))):
             with self.subTest(case=case):
                 self.tearDown()
@@ -11029,8 +11090,8 @@ class HeadScheduleTest(Scheduled):
 class VariableScheduleTest(Scheduled):
     """b10 (R12, D16): the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of each open outside
     pull request (the newer of the label comment's marker line and the output text of the head's check run
-    repo-pairs/import-approved by the OSS Verify App), against the value now: a head whose value is not the value now
-    gets a relabel run, which screens nothing and counts toward no limit."""
+    repo-pairs/import-approved by the Theorem Verify App), against the value now: a head whose value is not the value
+    now gets a relabel run, which screens nothing and counts toward no limit."""
 
     # The pair's import_paths (GlobTest, below).
     LPS = property(lambda self: GlobTest.LPS)
@@ -11043,7 +11104,7 @@ class VariableScheduleTest(Scheduled):
                 "body": rules.label_comment("decide", markers=[rules.import_marker(head, value)])}
 
     @staticmethod
-    def check(head, value, at, app=5447700, number=7):
+    def check(head, value, at, app=VERIFY_APP_ID, number=7):
         """The check run repo-pairs/import-approved of pull request number at head, of the App app, that recorded value
         at at."""
         return {"name": "repo-pairs/import-approved", "head_sha": head, "external_id": f"{number}:{head}",
@@ -11076,9 +11137,9 @@ class VariableScheduleTest(Scheduled):
         self.assertEqual((got["task"], got["route"], got["outsider"]), ("relabel", "review", "mallory"))
 
     def test_the_value_recorded_is_the_newer_marker_and_a_head_with_a_review_and_neither_is_relabelled(self):
-        """A head with a review and neither marker line: a relabel. A check run of the OSS Verify App newer than the
-        label comment records the value, and one of another App counts for nothing; a label comment newer than the
-        check run records it. A relabel of the head that ended under an hour ago puts the next one off."""
+        """A head with a review and neither marker line: a relabel. A check run of the Theorem Verify App newer than
+        the label comment records the value, and one of another App counts for nothing; a label comment newer than
+        the check run records it. A relabel of the head that ended under an hour ago puts the next one off."""
         self.item(kind="pr", comments=[review_of(HEAD)])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
@@ -11104,9 +11165,9 @@ class VariableScheduleTest(Scheduled):
 
     def test_a_check_run_of_another_pull_request_of_the_same_commit_records_nothing_for_this_one(self):
         """A check run belongs to a commit, and so shows on each pull request of that commit: the value of #7 is the
-        one that a check run whose external_id is 7:<head> records. The OSS Verify App's check run of #8 at #7's head,
-        newer than #7's label comment, counts for nothing for #7, so #7 keeps its label comment's value; the same check
-        run of #7 records #7's value."""
+        one that a check run whose external_id is 7:<head> records. The Theorem Verify App's check run of #8 at #7's
+        head, newer than #7's label comment, counts for nothing for #7, so #7 keeps its label comment's value; the same
+        check run of #7 records #7's value."""
         self.item(kind="pr", comments=[review_of(HEAD), self.label(HEAD, None, at=ago(300))])
         for number, value, want in ((8, None, []), (8, self.LPS, [("7", "relabel", "", HEAD, "")]),
                                     (7, self.LPS, []), (7, None, [("7", "relabel", "", HEAD, "")])):
@@ -11749,14 +11810,14 @@ class ConflictTest(Runner):
 
 class CatchupTest(Held):
     """A catchup run of a closed pull request is taken only as the reopen of a catch-up left closed: one that is not
-    merged, whose newest close is oss-verify[bot]'s and falls within another catchup run of it whose post job failed
-    or was cancelled."""
+    merged, whose newest close is the Theorem Verify App's and falls within another catchup run of it whose post job
+    failed or was cancelled."""
 
     def setUp(self):
         super().setUp()
         self.runs()
 
-    def closed(self, days_ago=0, by="oss-verify[bot]", merged=False, post="failure", started=-5, ended=5, title=None,
+    def closed(self, days_ago=0, by=VERIFY_APP_LOGIN, merged=False, post="failure", started=-5, ended=5, title=None,
                run=60):
         """#7 closed days_ago (and an hour) ago by by; the catchup run, of title, started and ended that many minutes
         from the close, and its post job's conclusion. The close's time."""
@@ -12771,7 +12832,7 @@ class ImportCheckTest(ReaderRunner):
                 ("pulls/7", {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD, "repo": {"id": FORK_ID}},
                              "base": {"ref": "main"}, "mergeable": True, "mergeable_state": "clean"}),
                 (f"commits/{HEAD}/check-runs",
-                 {"check_runs": [dict(check, app={"id": 5447700}, completed_at="2026-11-02T10:05:00Z")]})):
+                 {"check_runs": [dict(check, app={"id": VERIFY_APP_ID}, completed_at="2026-11-02T10:05:00Z")]})):
             self.serve(f"repos/{REPO}/{endpoint}", data)
         self.serve("graphql", closed_pulls())
         self.checkout()
@@ -13024,13 +13085,13 @@ class ImportCheckTest(ReaderRunner):
                "started": PostLabelTest.STARTED}
 
     def recorded(self):
-        """The check run that the review of #7 at HEAD recorded, as GitHub lists it (id 901, of the OSS Verify App),
-        and three that a withdrawal leaves: one of #8 at the same commit, one of another App, and one that is neutral
-        already."""
+        """The check run that the review of #7 at HEAD recorded, as GitHub lists it (id 901, of the Theorem Verify
+        App), and three that a withdrawal leaves: one of #8 at the same commit, one of another App, and one that is
+        neutral already."""
         got = self.judge(["README.md"], value=self.LPS)
         self.assertRecorded(got, self.LPS)
         (_token, body), = got["checks"]
-        listed = dict(body, id=901, app={"id": 5447700})
+        listed = dict(body, id=901, app={"id": VERIFY_APP_ID})
         return listed, [dict(listed, id=902, external_id=f"8:{HEAD}"), dict(listed, id=903, app={"id": 1}),
                         dict(listed, id=904, conclusion="neutral")]
 

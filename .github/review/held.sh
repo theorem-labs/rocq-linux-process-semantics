@@ -1034,7 +1034,7 @@ due_conflict() {
 # due_catchup: the catch-up of an outside pull request whose head no review, no hold comment and no run of
 # this workflow names (no run met it), whose head repository is still there, and whose newest CI run of the
 # head ended over an hour ago, with none still to finish: a catchup run, whose post job closes and reopens it
-# with the OSS Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows.
+# with the Theorem Verify App's token. GitHub then starts CI on the head, and the review of that CI run follows.
 # A hold comment names its head whatever the age of the run that held it, which can be older than the 8 days
 # of runs that this pass reads. Once for each head: the comment job of the run that closed and reopened the
 # pull request records the head in the label comment (<!-- review-catchup <head> -->, caught), and that
@@ -1191,7 +1191,7 @@ due_unreviewed() {
 }
 # due_variable: the value of REPO_PAIRS_IMPORT_PATHS that the workflow recorded for the head of an outside
 # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
-# the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App,
+# the same line in the output text of the head's check run repo-pairs/import-approved, by the Theorem Verify App,
 # of this pull request: a check run belongs to a commit, so only one whose external_id is <number>:<head>
 # counts, and one of another pull request of the same commit does not. When it is not the value now
 # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
@@ -1209,7 +1209,8 @@ due_variable() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   checks=$(SHA=$head NUMBER=$number gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
     -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
-      | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA and .app.id == 5447700
+      | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
+               and (.app.id | tostring) == $ENV.THEOREM_VERIFY_APP_ID
                and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
       | (.completed_at // .started_at // "-") as $at | .output.text // "" | split("\n")[]
       | capture("^<!-- repo-pairs-import-paths (?<h>[0-9a-f]{40}): (?<v>.*) -->$")
@@ -1317,12 +1318,12 @@ consider() {
 }
 # consider_closed: a catch-up left closed, the one closed item that this pass takes: #number, a pull request
 # of an outside author that is not merged, whose newest close (at and by, of the list of the closed pull
-# requests) is oss-verify[bot]'s and falls between the start and the end of a catchup run of it whose post job
-# failed or was cancelled (the closing run), as the trust job tells it (left_closed). Its workflow_dispatch runs
-# are read back to the day before the close. It is due a catchup run, which only reopens it, once an hour after
-# the newest catchup run of it ended. Each catchup run since the closing run counts, whatever its outcome, but
-# one that failed at a sign-in: after REVIEW_TRIES of them it is not tried again (left_stopped), and nothing
-# more of it is read (gave_up).
+# requests) is the Theorem Verify App's (THEOREM_VERIFY_APP_LOGIN) and falls between the start and the end of
+# a catchup run of it whose post job failed or was cancelled (the closing run), as the trust job tells it
+# (left_closed). Its workflow_dispatch runs are read back to the day before the close. It is due a catchup run,
+# which only reopens it, once an hour after the newest catchup run of it ended. Each catchup run since the
+# closing run counts, whatever its outcome, but one that failed at a sign-in: after REVIEW_TRIES of them it is
+# not tried again (left_stopped), and nothing more of it is read (gave_up).
 consider_closed() {
   local head="" given closing="" made="" created ended run started f post count=0 newest=""
   if [ -n "${running[$number]:-}" ]; then
@@ -1331,7 +1332,7 @@ consider_closed() {
   fi
   access_of "$author" || return 1
   (( ${access[$author]} != 0 )) || return 0
-  [ "${by:-}" = 'oss-verify[bot]' ] || return 0
+  [ "${by:-}" = "$THEOREM_VERIFY_APP_LOGIN" ] || return 0
   [[ ${at:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] || return 0
   given=$(gave_up "$number") || { echo "::error::the comments of #$number could not be read."; return 1; }
   if [ "$given" = true ]; then
