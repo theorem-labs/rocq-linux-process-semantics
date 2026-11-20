@@ -104,9 +104,10 @@ A `person` verdict keeps each blocking finding in the list.
 ## Outside items and labels
 
 An outside item is a pull request or an issue whose author has no write
-access to this repository and is not a GitHub App. Treat a pull request as
-an outside pull request unless the prompt says that its author has write
-access.
+access to this repository and is not one of the GitHub Apps that the
+workflow's `APPS` list names. Any other GitHub App is an outside author too.
+Treat a pull request as an outside pull request unless the prompt says that
+the workflow does not treat its author as an outside author.
 
 The workflow, not the review, keeps one label on each outside item:
 

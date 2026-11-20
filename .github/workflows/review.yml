@@ -241,7 +241,11 @@
 # takes it. review-held, the mark of a hold, stays beside the state label. Each write of an item's state label and
 # label comment runs in one concurrency group of the item, label-<n>, queued and never cancelled: the comment job and
 # the hold job are in it, and the comment job writes the label of a stop and of an approval whose held runs the post
-# job did not approve.
+# job did not approve. The trust job decides once whether the item's author is an outside author (its outputs outside
+# and kind), and each step reads the answer of the author-kind table of .github/review/rules.py: only an outside
+# author's item gets a state label, an approval of its held runs and the import check run of R12. Any other item gets no
+# state label, and when GitHub did not say whether its author has write access, its state label and its label comment
+# stay as they are.
 #
 # No job runs code of a pull request. The gather job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
@@ -456,11 +460,17 @@ jobs:
       # For the route limit, true when the account counts as at its limit because the trust job did not read every
       # run of the last hour that could count on it (earlier), which the hold says; else empty.
       uncounted: ${{ steps.trust.outputs.uncounted }}
+      # The account that the screen is for: the account without write access whose action the run is, or else the
+      # author. For a relabel, the author when kind is outsider. Empty on every other route.
       outsider: ${{ steps.trust.outputs.outsider }}
-      # True when the item's author has no write access and is not one of the APPS (an outside item), as GitHub gives
-      # it now, else false; empty when the trust job does not know it with no call of the API (route, below). The
-      # account of outsider can be another one: the pusher of a writer's pull request. The import check run of R12 is
-      # for an outside pull request alone.
+      # The kind of the item's author, which the trust job decides once (route, from trusted): writer (write access, or
+      # one of the APPS), outsider (no write access, an App that the APPS list does not name, or no GitHub login) or
+      # unknown (GitHub did not say). Only the label steps read it (.github/review/rules.py label): for unknown they
+      # change no state label and no label comment. Empty only for a run with no item (a measurement).
+      kind: ${{ steps.trust.outputs.kind }}
+      # true when kind is outsider (an outside item, R5), false when it is writer or unknown; empty only with no item.
+      # The author-kind table reads it (.github/review/rules.py answers): only an outside author's item gets a state
+      # label, an approval of its held runs and the import check run of R12. The label answer also reads kind.
       outside: ${{ steps.trust.outputs.outside }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on (an account with write access has none), which the
       # name of the screen job gives: earlier and held_account read it back from there.
@@ -734,31 +744,37 @@ jobs:
           # neither the author nor the pusher has write access); uncounted: true when earlier did not read every run
           # that could count on that account, which then counts as at its limit.
           task="" head="" comment="" of="" tries=0 origin=$RUN_ID account=$ACTOR uncounted=""
+          # kind_of_author: author_kind, the kind of the item's author AUTHOR, decided once in this step from trusted:
+          # writer when trusted gives 0 (write access, or one of the APPS), outsider for 1 (no write access, an App that
+          # the APPS list does not name, or no GitHub login) and unknown for 2 (GitHub did not say). A later call asks
+          # GitHub nothing.
+          author_kind=""
+          kind_of_author() {
+            local rc=0
+            [ -z "$author_kind" ] || return 0
+            trusted "$AUTHOR" || rc=$?
+            case $rc in
+              0) author_kind=writer ;;
+              1) author_kind=outsider ;;
+              *) author_kind=unknown ;;
+            esac
+          }
           # route <route> <outsider>: the outputs, and the end of this step. Its notice names the item, so that the
           # rescreen pass tells which pull request a CI run reviewed when more than one into main has its head
-          # (reviewed). The output outside is true when the item's author has no write access and is not one of the
-          # APPS (trusted, which asks GitHub at most once for each login in this step), and false when it has. For a
-          # review or a rescreen that the screen reads first, and for a relabel, the step asks GitHub when it did not
-          # yet, and outside is false also when GitHub could not say: the import check run of R12 needs an author that
-          # GitHub names outside. On any other route, outside is given only when trusted answers for the author with no
-          # call of the API (an App, or a login that this step asked of already), and else it is empty: a writer's run
-          # by hand asks GitHub nothing of the author.
+          # (reviewed). On every route of an item with an author, the output kind is the kind of the author
+          # (kind_of_author), and the output outside is true for an outsider and false for a writer or unknown. A run
+          # with no author (a measurement) gives both empty.
           route() {
             local outside=""
-            case $task:$1 in
-              review:screen|rescreen:screen|relabel:*)
-                outside=false; trusted "$AUTHOR" || [ $? != 1 ] || outside=true ;;
-              *)
-                if [ -n "$AUTHOR" ]; then
-                  if [[ -n ${permission_of[$AUTHOR]+set} || $AUTHOR == *'[bot]' ]]; then
-                    outside=false; trusted "$AUTHOR" || outside=true
-                  fi
-                fi ;;
-            esac
+            if [ -n "$AUTHOR" ]; then
+              kind_of_author
+              outside=false
+              [ "$author_kind" != outsider ] || outside=true
+            fi
             echo "::notice::#$NUMBER: the task $task, the route $1."
             { echo "task=$task"; echo "route=$1"; echo "outsider=$2"; echo "number=$NUMBER"; echo "head=$head"
               echo "account=$account"; echo "comment=$comment"; echo "origin=$origin"; echo "tries=$tries"
-              echo "uncounted=$uncounted"; echo "outside=$outside"
+              echo "uncounted=$uncounted"; echo "kind=$author_kind"; echo "outside=$outside"
               echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } >> "$GITHUB_OUTPUT"
             exit 0
           }
@@ -1292,11 +1308,13 @@ jobs:
                   fi
                   route review "" ;;
                 # The import check run of R12 and the label of the head, set again from what the workflow wrote of the
-                # head: no screen and no model. The outsider is the author when the author has no write access, as the
-                # import check run is for an outside pull request alone, whose review came after a screen that passed.
-                # The rescreen pass's run needs GitHub to know whether the head has a merge conflict, and a review, a
-                # hold comment or a recorded merge conflict of the workflow that names the head. The rescreen pass
-                # starts a relabel that is refused here again at its next run.
+                # head: no screen and no model. The outsider is the author when the author is an outsider
+                # (kind_of_author), as the import check run is for an outside pull request alone, whose review came
+                # after a screen that passed. When GitHub does not say whether the author has write access, the relabel
+                # goes on with no outsider: it records no check run and changes no label, but it can withdraw a check
+                # run (.github/review/rules.py answers). The rescreen pass's run needs GitHub to know whether the head
+                # has a merge conflict, and a review, a hold comment or a recorded merge conflict of the workflow that
+                # names the head. The rescreen pass starts a relabel that is refused here again at its next run.
                 relabel)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
@@ -1306,9 +1324,8 @@ jobs:
                     [[ $reviewed == new || $named == true || $conflicted == true ]] \
                       || stop "no review, hold comment or merge conflict of the workflow names $pr_head."
                   fi
-                  a=0
-                  known "$AUTHOR" || a=$?
-                  (( a != 0 )) || route review ""
+                  kind_of_author
+                  [ "$author_kind" = outsider ] || route review ""
                   [[ $AUTHOR =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || stop "$AUTHOR is not a GitHub login."
                   route review "$AUTHOR" ;;
               esac ;;
@@ -1336,9 +1353,6 @@ jobs:
       kind: ${{ steps.what.outputs.kind }}
       number: ${{ steps.what.outputs.number }}
       digest: ${{ steps.keep.outputs.digest }}
-      # true for an outside item: its author has no write access and is not one of the APPS. The review's prompt says
-      # which it is (.github/review.md, "Outside items and labels"), and the soundness rule reads it (SOUNDNESS_HOLD).
-      outside: ${{ steps.gather.outputs.outside }}
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -1399,10 +1413,6 @@ jobs:
           # with their suggested changes. They tell the answer the next step and whom the item waits on. The screen
           # reads none of them (.github/screen.py, own_accounts). The others are counted in omitted.txt, and never read.
           author=$(gh api "repos/$REPO/issues/$NUMBER" --jq .user.login)
-          # outside: true when trusted does not pass the author, also when GitHub could not say (status 2).
-          outside=false
-          trusted "$author" || outside=true
-          echo "outside=$outside" >> "$GITHUB_OUTPUT"
           gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq '.[] | {id, author: .user.login, created_at, updated_at, body}' > "$RUNNER_TEMP/comments.jsonl"
           : > "$RUNNER_TEMP/reviews.jsonl"
@@ -2078,8 +2088,8 @@ jobs:
             "deny": ["Read(//home/runner/work/_temp/**)", "Read(//proc/**)"]}}
           # The first two of the three steps of .github/review.md: the repository's rules, and the whole copies of the
           # two skills to write by, with their reference and example files. The third, the fresh reader, is the step
-          # after the next. The prompt says whether the author has write access (the gather job's outside), and the
-          # schema is the same for a writer's item and an outside one.
+          # after the next. The prompt says whether the workflow treats the author as an outside author (the trust job's
+          # outside), and the schema is the same for every item.
           prompt: >-
             Read .github/review.md: it is the rules of this review. Before you write, read the whole of the two skill
             copies that it names, with their reference and example files. These are
@@ -2089,9 +2099,12 @@ jobs:
             .github/review/skills/ce-noslop/references/terminology.md. Review
             ${{ needs.gather.outputs.kind == 'pr' && 'pull request' || 'issue' }} #${{ needs.gather.outputs.number }}
             of this repository as .github/review.md says, from what .review/ holds.
-            ${{ needs.gather.outputs.outside == 'false' && 'Its author has write access to this repository.'
-            || 'Its author has no write access to this repository.' }} Give the comment, the verdict, will_fix and the
-            list of items as the structured output (.github/review.md, "What the review gives").
+            ${{ needs.trust.outputs.outside == 'false' && 'The workflow does not treat its author as an outside author:
+            the author has write access to this repository, is one of the GitHub Apps that the workflow''s APPS list
+            names, or GitHub did not say.' || 'The workflow treats its author as an outside author: the author has no
+            write access to this repository, or is a GitHub App that the workflow''s APPS list does not name.' }} Give
+            the comment, the verdict, will_fix and the list of items as the structured output (.github/review.md, "What
+            the review gives").
           claude_args: >-
             --tools Read,Glob,Grep --permission-mode dontAsk --model claude-opus-5-5 --effort xhigh --max-turns 300
             --json-schema '{"type": "object", "additionalProperties": false,
@@ -2212,7 +2225,7 @@ jobs:
       # The third of the three steps of .github/review.md, and the comment as it is posted. The model gives its
       # comment, its verdict, will_fix and its list. First comes the soundness rule of R8, whatever the model wrote
       # (.github/review/rules.py soundness): while SOUNDNESS_HOLD is true, the review of an outside pull request (the
-      # gather job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
+      # trust job's outside) that can change a proof gets the verdict person, a question on soundness in its list when
       # the list has none, and the section on soundness. The gather job's soundness.json says which changed paths
       # count (a .v file, any other file that is not a Markdown file, or a Markdown file that a dune, dune-project or
       # dune-workspace* file of the head or of main makes count, by the rule of .github/review.md), from every page of
@@ -2256,7 +2269,7 @@ jobs:
           RESULT: ${{ steps.review.outputs.execution_file }}
           RULES: ${{ github.server_url }}/${{ github.repository }}/blob/main/.github/review.md
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          OUTSIDE: ${{ needs.gather.outputs.outside }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
           STARTED: ${{ needs.trust.outputs.started }}
           ROUTE: ${{ needs.trust.outputs.route }}
           SCREENED: ${{ needs.screen.outputs.verdict }}
@@ -2456,7 +2469,7 @@ jobs:
         if: needs.trust.outputs.task != 'draft'
         env:
           TASK: ${{ needs.trust.outputs.task }}
-          OUTSIDE: ${{ needs.gather.outputs.outside }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
           KIND: ${{ needs.gather.outputs.kind }}
           NUMBER: ${{ needs.gather.outputs.number }}
           VERDICT: ${{ steps.result.outputs.verdict }}
@@ -2648,12 +2661,14 @@ jobs:
   # (R10): while the key is empty (APP_KEY_SET), the job skips the two sign-ins and each step that needs the App or
   # that only finds work for it, ends with success, and says so in its summary. A key that GitHub refuses fails the
   # sign-ins alone. Its own token can only read (actions: read lists a head's held runs, and checks: read the check
-  # runs of a head). It holds no identity token and no model. For the review of an outside pull request and for a
-  # relabel, it decides the import check run of R12 on the head (.github/review/rules.py import-check) and records
-  # repo-pairs/import-approved, with conclusion success, when the rule holds. When a later review of the head gives a
-  # blocking finding or the verdict person, or a later screen holds the head, it updates that check run to the
-  # conclusion neutral (R12). For an approval, it reads the files of the head too (.github/review/rules.py steering).
-  # It checks out main's .github/ for those, and runs nothing else from it. Its outputs: recorded, true when it
+  # runs of a head). It holds no identity token and no model. Its first step after the checkout reads the answers of
+  # the author-kind table for the task and the trust job's outside (.github/review/rules.py answers), and the steps
+  # after it read them. For the review and the relabel of an outside author's pull request, it decides the import
+  # check run of R12 on the head (.github/review/rules.py import-check) and records repo-pairs/import-approved, with
+  # conclusion success, when the rule holds. When a later review of the head gives a blocking finding or the verdict
+  # person, or a later screen holds the head, it updates that check run to the conclusion neutral (R12), whoever the
+  # author is. For an approval, it reads the files of the head too (.github/review/rules.py steering). It checks out
+  # main's .github/ for those, and runs nothing else from it. Its outputs: recorded, true when it
   # recorded that check run at the head; decision, what it decided for that check run: record, or the first rule of
   # R12 that does not hold; caught, the head of a pull request that a catch-up closed and reopened, or only reopened,
   # which the comment job records in the label comment; steering, the head of an approval that changes a file under
@@ -2661,17 +2676,16 @@ jobs:
   # approve, as the environment post holds no key. The comment job records each of the last two in the label comment.
   post:
     needs: [trust, gather, screen, review]
-    # The review or the rescreen of a pull request whose review succeeded, when the screen passed it or its author is
-    # outside (a writer's review by hand of an outside pull request, which runs no screen); a relabel; a catch-up; an
-    # approval whose screen passed; and a review, a rescreen or an approval of a pull request whose screen held its
-    # head, which only withdraws the import check run of that head. The hold job holds such a head, and holds no key
-    # of the App. GitHub's implicit success() would skip this job when a job it needs was skipped: the gather, screen
-    # and review jobs of a relabel or a catch-up, and the review job of an approval or of a held screen.
+    # The review or the rescreen of a pull request whose review succeeded, whoever its author is and whatever the route
+    # (a review by hand runs no screen, and its review can withdraw the import check run of the head); a relabel; a
+    # catch-up; an approval whose screen passed; and a review, a rescreen or an approval of a pull request whose screen
+    # held its head, which only withdraws the import check run of that head. The hold job holds such a head, and holds
+    # no key of the App. GitHub's implicit success() would skip this job when a job it needs was skipped: the gather,
+    # screen and review jobs of a relabel or a catch-up, and the review job of an approval or of a held screen.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-               && needs.gather.outputs.kind == 'pr' && needs.review.result == 'success'
-               && (needs.trust.outputs.route == 'screen' || needs.gather.outputs.outside == 'true'))
+               && needs.gather.outputs.kind == 'pr' && needs.review.result == 'success')
               || ((needs.trust.outputs.task == 'relabel' || needs.trust.outputs.task == 'catchup')
                   && needs.trust.result == 'success')
               || (needs.trust.outputs.task == 'approve' && needs.screen.result == 'success'
@@ -2706,23 +2720,38 @@ jobs:
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
-        if: >-
-          needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-          || needs.trust.outputs.task == 'relabel' || needs.trust.outputs.task == 'approve'
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+      # The answers of the author-kind table for the task of this run and the trust job's outside alone
+      # (.github/review/rules.py answers): approve, record, withdraw and retry, which the steps below read. The author
+      # is outside when that outside is true, and only then: the trust job's outsider is read for no answer, and its
+      # kind only by the label steps of the comment and hold jobs.
+      - name: Read the author-kind table
+        id: answers
+        env:
+          TASK: ${{ needs.trust.outputs.task }}
+          NUMBER: ${{ needs.trust.outputs.number }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
+        run: |
+          set -euo pipefail
+          answers=$(python3 .github/review/rules.py answers "$TASK" "$OUTSIDE" "$OUTSIDER") \
+            || { echo "::error::the author-kind table gives no answers for the task $TASK."; exit 1; }
+          echo "#$NUMBER: the author-kind table gives, for the task $TASK and outside=$OUTSIDE:" \
+            "$(tr '\n' ' ' <<< "$answers")"
+          printf '%s\n' "$answers" >> "$GITHUB_OUTPUT"
       # The decision of R12 on the import check run at the head, with this job's own token, only on a run of
-      # workflow_run or workflow_dispatch: for the review of a head whose screen passed, with the review's verdict after
-      # the soundness rule, and for a relabel, which runs no model. It is for an outside pull request alone, whose
-      # author has no write access: a run whose trust job gave no outsider (a writer's pull request, also one that a
-      # run by hand screened) gets no check run. Nor does a writer's pull request whose head an outsider pushed (the
-      # trust job's outside is false; the outsider of a relabel is its author, or none): its decision is writer. It is
-      # no outside item, so the comment job gives it no outside label (R5). A relabel takes the verdict from the markers
-      # of the newest review comment that names the head. It records a check run only when the screen passed the head
-      # in the run of a review (rules.py verdict, screened): a review comment of the head holds the marker
-      # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer than the newest
-      # such review comment. A writer's review by hand with no screen writes no such marker. When such a hold comment
-      # is newer (held), a later screen held the head: the decision is held, so that the label comment says so, and the
-      # step after this one withdraws its check run.
+      # workflow_run or workflow_dispatch: for each review or rescreen whose review succeeded, with the review's verdict
+      # after the soundness rule, and for a relabel, which runs no model. The check run is for an outside author's pull
+      # request alone (the author-kind table's record): for any other author, the decision is writer, with no read of
+      # the files, and the comment job gives the item no outside label (R5). A review or a rescreen records the check
+      # run only when the screen of this run passed the head, also in a run by hand that asked for the screen; a review
+      # by hand with no screen gives the decision screen. A relabel takes the verdict from the markers of the newest
+      # review comment that names the head, also for another author, as the step that withdraws a check run reads it.
+      # It records a check run only when the screen passed the head in the run of a review (rules.py verdict,
+      # screened): a review comment of the head holds the marker <!-- review-screened <head> -->, and no hold comment of
+      # the screen that names the head is newer than the newest such review comment. A review by hand with no screen
+      # writes no such marker. When such a hold comment is newer (held), a later screen held the head: the decision is
+      # held, so that the label comment says so, and a later step withdraws its check run.
       # When the head is no longer the pull request's, the decision is moved, and the new head waits for a pass of its
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
@@ -2732,15 +2761,16 @@ jobs:
         if: >-
           (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-               && needs.screen.outputs.verdict == 'clean')
+               && needs.review.result == 'success')
               || needs.trust.outputs.task == 'relabel')
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TASK: ${{ needs.trust.outputs.task }}
           NUMBER: ${{ needs.trust.outputs.number }}
-          OUTSIDER: ${{ needs.trust.outputs.outsider }}
-          OUTSIDE: ${{ needs.trust.outputs.outside }}
+          # The author-kind table's answer record (the first step of this job), and the route of this run.
+          RECORD: ${{ steps.answers.outputs.record }}
+          ROUTE: ${{ needs.trust.outputs.route }}
           # The head that the review read, or the head of a relabel, which the trust job read.
           HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
           VERDICT: ${{ needs.review.outputs.verdict }}
@@ -2759,14 +2789,37 @@ jobs:
             echo "imports=$(jq -acn --arg v "$IMPORT_PATHS" 'if $v == "" then null else $v end')" >> "$GITHUB_OUTPUT"
             exit 0
           }
+          # relabeled: for a relabel, the verdict of the newest review comment that names the head (rules.py verdict),
+          # and screen true only when a review comment of the head holds the marker <!-- review-screened <head> --> and
+          # no hold comment of the screen that names the head is newer than the newest such comment (screened). The
+          # outputs verdict and held give them to the step that withdraws an import check run. A newer hold comment
+          # (held) gives the decision held.
+          relabeled() {
+            local reviewed state
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            read -r verdict state <<< "$reviewed"
+            [ "$verdict" != - ] || verdict=""
+            screen=false
+            [ "$state" != screened ] || screen=true
+            echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+            if [ "$state" = held ]; then
+              echo "held=true" >> "$GITHUB_OUTPUT"
+              decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
+            fi
+          }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha"
-          # A writer's pull request whose head an outsider pushed was screened for that account, and the trust job's
-          # outside is false: its decision is writer, with no read of its files.
-          if [ "$TASK" != relabel ] && [ "${OUTSIDE:-}" != true ] && [ -n "$OUTSIDER" ]; then
-            decided writer "the author of #$NUMBER has write access"
+          # The screen of this run passed the head when the route is screen: the review job, which this step needs to
+          # have succeeded, runs on that route only after a screen that passed. A review by hand with no screen has the
+          # route review.
+          screen=false verdict=$VERDICT
+          [ "$ROUTE" != screen ] || screen=true
+          if [ "$RECORD" != true ]; then
+            [ "$TASK" != relabel ] || relabeled
+            decided writer "the author of #$NUMBER is not an outside author: it has write access, or GitHub did not say"
           fi
           [[ $count =~ ^[0-9]+$ ]] || { echo "::error::#$NUMBER gives no count of changed files."; exit 1; }
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
@@ -2775,27 +2828,7 @@ jobs:
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
-          screen=true verdict=$VERDICT
-          # A relabel's verdict comes from the newest review comment that names the head (rules.py verdict). The screen
-          # passed the head only when a review comment of the head holds the marker <!-- review-screened <head> --> and
-          # no hold comment of the screen that names the head is newer than the newest such comment (screened). The
-          # outputs verdict and held give them to the step that withdraws an import check run. A newer hold comment
-          # (held) gives the decision held.
-          if [ "$TASK" = relabel ]; then
-            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
-              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state <<< "$reviewed"
-            [ "$verdict" != - ] || verdict=""
-            [ "$state" = screened ] || screen=false
-            echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
-            if [ "$state" = held ]; then
-              echo "held=true" >> "$GITHUB_OUTPUT"
-              decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
-            fi
-          fi
-          # The import check run is for an outside pull request alone, which the screen passed before its review: its
-          # author has no write access.
-          [ -n "$OUTSIDER" ] || screen=false
+          [ "$TASK" != relabel ] || relabeled
           # The variable's text, given only when it is set: an empty value is no variable.
           imports=()
           [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
@@ -2806,31 +2839,32 @@ jobs:
       # The import check run of the head that a later review or screen withdraws (R12): with this job's own token, each
       # check run repo-pairs/import-approved of the OSS Verify App on the head, with conclusion success, whose
       # external_id is <number>:<head>. A check run belongs to a commit, so one of another pull request of the same
-      # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a writer's
-      # review by hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or
-      # this run's screen held the head, or a relabel found a hold comment of the screen that names the head and is
-      # newer than the newest review comment of the head with the marker <!-- review-screened <head> --> (the decision's
-      # held). The if of this step reads the screen's verdict, as no other part of this job does: a review or a rescreen
-      # with no review job that succeeded, and an approval, run this step only when the screen held the head. The
+      # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a review by
+      # hand, or the review comment that a relabel reads) gave a blocking finding or the verdict person, or this run's
+      # screen held the head, or a relabel found a hold comment of the screen that names the head and is newer than the
+      # newest review comment of the head with the marker <!-- review-screened <head> --> (the decision's held). The if
+      # of this step reads the screen's verdict: a review or a rescreen with no review job that succeeded, and an
+      # approval, run this step only when the screen held the head. The
       # request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal): the
       # conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
       # withdrawn and no token is minted. While the environment post holds no key (APP_KEY_SET), no step can withdraw
-      # what this step finds, so it does not run. A read that fails fails the job. The rescreen pass's retry of the
-      # App's writes (a relabel, held.sh due_retry) withdraws the check run again, an hour or more after this run ends.
-      # After a hold that is not tried again names the head, that relabel is the one App write that the pass tries
-      # again for the head, and only when the relabel withdraws: a screen held the head after each review that
-      # screened it, or the newest review of the head gives a blocking finding or the verdict person (held.sh,
-      # consider). Such a relabel records no check run. After REVIEW_TRIES failed tries, this run among them, the head
-      # is not tried again, and the label comment names the next step for Sami (held.sh, head_stopped). So the error
-      # says so. The step runs only for a pull request whose author has no write access (the trust job's outside is
-      # not false: true, or empty when the trust job does not know it). The workflow records the check run for no
-      # other pull request, and the rescreen pass tries no App write of a writer's pull request again (held.sh,
-      # consider), so the error would promise a retry that never comes.
+      # what this step finds, so it does not run. A read that fails fails the job. The step runs when the author-kind
+      # table's withdraw holds (the first step of this job), for every author: a check run of R12 that an earlier run
+      # recorded may stand on the head, whatever the trust job says of the author now. The error of a read that fails,
+      # and of a withdrawal that GitHub refuses (the step after the sign-in), follows the table's retry. For an outside
+      # author, the rescreen pass's retry of the App's writes (a relabel, held.sh due_retry) withdraws the check run
+      # again, an hour or more after this run ends. After a hold that is not tried again names the head, that relabel is
+      # the one App write that the pass tries again for the head, and only when the relabel withdraws: a screen held the
+      # head after each review that screened it, or the newest review of the head gives a blocking finding or the
+      # verdict person (held.sh, consider). Such a relabel records no check run. After REVIEW_TRIES failed tries, this
+      # run among them, the head is not tried again, and the label comment names the next step for Sami (held.sh,
+      # head_stopped). So the error says so. The pass tries no App write of another author's pull request again
+      # (held.sh, consider and access_of), so for such an author the error says to re-run this run.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
-          env.APP_KEY_SET == 'true' && needs.trust.outputs.outside != 'false'
+          env.APP_KEY_SET == 'true' && steps.answers.outputs.withdraw == 'true'
           && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && (needs.review.result == 'success'
@@ -2850,6 +2884,8 @@ jobs:
           # The verdict of the review comment that a relabel reads (the decision's), or else of this run's review.
           VERDICT: ${{ steps.decide.outputs.verdict || needs.review.outputs.verdict }}
           HELD: ${{ steps.decide.outputs.held }}
+          # The author-kind table's answer retry (the first step of this job).
+          RETRY: ${{ steps.answers.outputs.retry }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -2868,9 +2904,13 @@ jobs:
             *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
-          again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-          again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next step"
-          again+=" for Sami."
+          # again: what the error of a read that fails says comes next (the author-kind table's retry).
+          again=" Re-run this run."
+          if [ "$RETRY" = true ]; then
+            again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
+            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
+            again+=" step for Sami."
+          fi
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
@@ -2935,20 +2975,26 @@ jobs:
       # The withdrawal of the import check runs that the step "Find the import check runs that a later review or screen
       # withdraws" found, with token A, each with its request: the conclusion neutral, so that the import no longer
       # reads it as the approval of the pull request. A call that fails fails the job, with an error that names the
-      # head and the import check run, and says when the rescreen pass tries it again (the comment of the step that
-      # found it says how).
+      # head and the import check run, and says what comes next: the retry of the rescreen pass when the author-kind
+      # table's retry holds (the comment of the step that found it says how), else a re-run of this run.
       - name: Withdraw the import check runs of the head
-        if: env.APP_KEY_SET == 'true' && needs.trust.outputs.outside != 'false' && steps.withdraw.outputs.checks != ''
+        if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.checks != ''
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           CHECKS: ${{ steps.withdraw.outputs.checks }}
           HEAD: ${{ steps.withdraw.outputs.head }}
+          # The author-kind table's answer retry (the first step of this job).
+          RETRY: ${{ steps.answers.outputs.retry }}
         run: |
           set -euo pipefail
-          again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-          again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next step"
-          again+=" for Sami."
+          # again: what the error of a withdrawal that fails says comes next (the author-kind table's retry).
+          again=" Re-run this run."
+          if [ "$RETRY" = true ]; then
+            again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
+            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
+            again+=" step for Sami."
+          fi
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
             [[ $id =~ ^[1-9][0-9]*$ ]] || { echo "::error::not the id of an import check run: $id"; exit 1; }
@@ -3020,23 +3066,26 @@ jobs:
           echo "::error::#$NUMBER is closed, and 3 tries to reopen it failed. The rescreen pass tries again an hour later."
           exit 1
 
-      # An approval whose screen passed. With this job's own token: the pull request now, and the runs that GitHub
-      # holds of the head that the screen read (with the status action_required, or with the status completed and the
-      # conclusion action_required, as GitHub lists a held run). When the head moved since the trust job read it, the
-      # screen did not read the new head: nothing is approved, and the new head's held runs wait for a run of their
-      # own. Only a run of the event pull_request at that head, from the pull request's head repository and head
-      # branch, is approved, and no other run of the same commit (OSSV-679's decision 7). No run is approved when the
-      # head adds, changes or deletes a file under .github/ (R10), even when the screen passed: such a file steers the
-      # workflows, and an approved run of such a head could misuse the runners. The step reads each path from every
-      # page of the files of the pull request at the head: the path of each file, and the path that it had before a
-      # rename (.github/review/rules.py steering). It reads them after the runs and before a second check of the head.
-      # For such a head, the output steering names the head, and the comment job records it. A read that fails fails
-      # this step, and so does a list that does not hold each changed file (GitHub lists at most 3,000): no run is
-      # approved. While the environment post holds no key, this step still runs, and the last step of this job names
-      # the head whose held runs it found (no_key).
+      # An approval whose screen passed, for an outside author (the author-kind table's approve, the first step of this
+      # job): no run of another author's pull request is approved. With this job's own token: the pull request now,
+      # and the runs that GitHub holds of the head that the screen read (with the status action_required, or with the
+      # status completed and the conclusion action_required, as GitHub lists a held run). When the head moved since the
+      # trust job read it, the screen did not read the new head: nothing is approved, and the new head's held runs wait
+      # for a run of their own. Only a run of the event pull_request at that head, from the pull request's head
+      # repository and head branch, is approved, and no other run of the same commit (OSSV-679's decision 7). No run is
+      # approved when the head adds, changes or deletes a file under .github/ (R10), even when the screen passed: such a
+      # file steers the workflows, and an approved run of such a head could misuse the runners. The step reads each path
+      # from every page of the files of the pull request at the head: the path of each file, and the path that it had
+      # before a rename (.github/review/rules.py steering). It reads them after the runs and before a second check of
+      # the head. For such a head, the output steering names the head, and the comment job records it. A read that
+      # fails fails this step, and so does a list that does not hold each changed file (GitHub lists at most 3,000): no
+      # run is approved. While the environment post holds no key, this step still runs, and the last step of this job
+      # names the head whose held runs it found (no_key).
       - name: The held runs of the screened head
         id: held
-        if: needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+        if: >-
+          needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
+          && steps.answers.outputs.approve == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -3104,13 +3153,13 @@ jobs:
           listed=$(grep -c . "$files" || true)
           [ "$listed" = "$count" ] || refuse "GitHub lists $listed of the $count changed files of #$NUMBER."
           echo "runs=$ids" >> "$GITHUB_OUTPUT"
-      # Token B: for the approval of the runs that the step before found, only when the screen passed and the
-      # environment post holds the App's key.
+      # Token B: for the approval of the runs that the step before found, only when the screen passed, the author-kind
+      # table's approve holds, and the environment post holds the App's key.
       - name: Sign in as the OSS Verify App to approve
         id: approver
         if: >-
           env.APP_KEY_SET == 'true' && needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
-          && steps.held.outputs.runs != ''
+          && steps.answers.outputs.approve == 'true' && steps.held.outputs.runs != ''
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
         with:
           client-id: ${{ env.OSS_VERIFY_APP_CLIENT_ID }}
@@ -3371,8 +3420,10 @@ jobs:
       # another work than this run's is one that the rescreen pass tries again and that work posted nothing since: the
       # rescreen pass takes that work again, and a rescreen needs the label. An answer also leaves the label on for a
       # hold of another work that is not tried again (the screen's, which waits on Sami), until that work posts. Then
-      # the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind, whether
-      # this run took an outsider's path (so the screen passed it) for an outside item, the review's verdict, the two
+      # the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind, the
+      # trust job's outside, outsider and kind as they are (the author-kind table: an outside author's item gets its
+      # state label; the item of an author whose write access GitHub did not give keeps its state label and its label
+      # comment as they are; any other item gets no state label), the review's verdict, the two
       # stops of the fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import
       # check run at the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
       # waits-on-theorem), the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author), and the text
@@ -3406,11 +3457,12 @@ jobs:
           # The post job's result: success, failure, cancelled, or skipped when it did not run.
           POSTED: ${{ needs.post.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
+          # The trust job's outputs as they are, which .github/review/rules.py reads (outside_author and the author-kind
+          # table): outside true is an outside author, whose item gets its state label (R5); kind unknown changes no
+          # state label and no label comment; any other author's item gets no state label.
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
-          # The trust job's outside: false when the author has write access, true when the author has none, and empty
-          # when the trust job does not know it with no call of the API (a writer's run by hand). A writer's pull
-          # request, also one whose head an outsider pushed, is no outside item, so it gets no outside state (R5).
           OUTSIDE: ${{ needs.trust.outputs.outside }}
+          AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
           VERDICT: ${{ needs.review.outputs.verdict }}
           WILL_FIX: ${{ needs.review.outputs.will_fix }}
           FIX_STOP: ${{ needs.review.outputs.fix_stop }}
@@ -3521,10 +3573,6 @@ jobs:
               take_off
             fi
           fi
-          # An outside item whose run took an outsider's path. Not a writer's pull request whose head an outsider
-          # pushed (OUTSIDE is false): it is no outside item, so it gets no outside state.
-          outsider=false
-          [ -z "$OUTSIDER" ] || [ "${OUTSIDE:-}" = false ] || outsider=true
           # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
           # the import check at the head, the state rests on the value that its decision read (IMPORTS), not on this
           # step's read: the variable can change between the two jobs, and the label comment records that value.
@@ -3534,44 +3582,44 @@ jobs:
               <<< "$IMPORTS" && printf .) || { echo "::error::the post job gave no value of the import's paths"; exit 1; }
             paths=${paths%.}
           fi
-          imports=()
           facts=()
-          if [ -n "$paths" ]; then
-            imports=("$paths")
-            facts=("import_paths=$paths")
-          fi
-          if [ "$KIND" = pr ] && [ "$outsider" = true ] && [[ $HEAD =~ ^[0-9a-f]{40}$ ]]; then
-            marker=$(python3 .github/review/rules.py import-marker "$HEAD" "${imports[@]}") \
-              || { echo "::error::no marker line of the import's paths at $HEAD"; exit 1; }
-            markers+=("marker=$marker")
-          fi
-          # A writer's item (OUTSIDE is false) gets no state label in any state, as in the hold job (R5). A pull request
-          # with the review's verdict and no outside state gets the state reviewed (rules.py), whoever started the run.
-          writer=false
-          [ "${OUTSIDE:-}" != false ] || writer=true
+          [ -z "$paths" ] || facts=("import_paths=$paths")
+          # The trust job's outputs as they are: rules.py reads the kind of the author from them (outside_author and
+          # the author-kind table). The head names the marker line of R12 in the label comment of an outside pull
+          # request (rules.py import-marker). A pull request with the review's verdict and no outside state gets the
+          # state reviewed (rules.py), whoever started the run.
+          run=(outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}")
           if [ "${TASK:-}" = relabel ]; then
-            python3 .github/review/rules.py relabel "$NUMBER" "$HEAD" kind="$KIND" outsider="$outsider" \
-              recorded="$RECORDED" decision="$DECISION" writer="$writer" "${facts[@]}" "${markers[@]}"
+            python3 .github/review/rules.py relabel "$NUMBER" "$HEAD" "${run[@]}" kind="$KIND" recorded="$RECORDED" \
+              decision="$DECISION" "${facts[@]}" "${markers[@]}"
             exit
           fi
-          python3 .github/review/rules.py label "$NUMBER" kind="$KIND" outsider="$outsider" verdict="$verdict" \
+          heads=()
+          [[ ! $HEAD =~ ^[0-9a-f]{40}$ ]] || heads=("head=$HEAD")
+          python3 .github/review/rules.py label "$NUMBER" task="${TASK:-}" "${run[@]}" kind="$KIND" verdict="$verdict" \
             will_fix="$will_fix" fix_stop="$fix_stop" fix_posted="$fix_posted" recorded="$RECORDED" \
             decision="$DECISION" draft_stored="$draft_stored" reply_posted="$reply_posted" refused="${REFUSED:-}" \
-            writer="$writer" "${facts[@]}" "${markers[@]}"
+            "${heads[@]}" "${facts[@]}" "${markers[@]}"
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
           && needs.review.outputs.refused != 'review'
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
       # A pull request with a merge conflict starts no CI run, and so no review: its author resolves the conflict, and
-      # the next push starts both. One comment for each head, which says so, and the label waits-on-author, which takes
-      # the place of waits-on-theorem, with a label comment that holds <!-- review-conflict-state <head> -->
-      # (.github/review/rules.py). The comment stays as the record of the conflict; the label comment's line goes
-      # when a later state of the item takes its place.
+      # the next push starts both. One comment for each head, which says so, and a label comment that holds
+      # <!-- review-conflict-state <head> --> (.github/review/rules.py), with the trust job's outputs as they are (the
+      # author-kind table): an outside author's pull request gets waits-on-author, which takes the place of
+      # waits-on-theorem; any other pull request gets no state label; and when GitHub did not say whether the author has
+      # write access, the comment on the conflict posts, but the state labels and the label comment stay as they are.
+      # The comment stays as the record of the conflict; the label comment's line goes when a later state of the item
+      # takes its place.
       - name: Ask the author to resolve the merge conflict
         if: needs.trust.outputs.task == 'conflict'
         env:
           HEAD: ${{ needs.trust.outputs.head }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -3592,20 +3640,27 @@ jobs:
           else
             gh api --method POST "repos/$REPO/issues/$NUMBER/comments" -f body="$body" --jq .html_url
           fi
-          python3 .github/review/rules.py label "$NUMBER" conflict=true head="$HEAD"
+          python3 .github/review/rules.py label "$NUMBER" task=conflict outside="${OUTSIDE:-}" \
+            outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" conflict=true head="$HEAD"
       # A stop of the rescreen pass (rescreen.yml): the work of the item that the trust job decided again is not tried
       # again. First the state label of the stop's fact (tries_used_up, or left_closed for a pull request that a
-      # catch-up closed and could not reopen), with Sami's next step in the label comment (.github/review/rules.py),
-      # then the hold comment of the stop, which names the head of a pull request, in the place of the hold comment of
-      # its work that the trust job read, or as a new one. A label that could not be set leaves the hold comment and
-      # its marker as they are, so the next rescreen pass decides the stop again, and so does a hold comment that could
-      # not be written. Nothing is written when a comment of the workflow on the item changed after the trust job read
-      # it (a hold, a review, an answer or the label comment of another run): the next rescreen pass decides from it.
+      # catch-up closed and could not reopen), with Sami's next step in the label comment (.github/review/rules.py, with
+      # the trust job's outputs as they are: the author-kind table gives the state label to an outside author's item,
+      # none to any other, and no change of the state label or the label comment when GitHub did not say whether the
+      # author has write access), then the hold comment of the stop, which names the head of a pull request, in the
+      # place of the hold comment of its work that the trust job read, or as a new one. A label that could not be set
+      # leaves the hold comment and its marker as they are, so the next rescreen pass decides the stop again, and so
+      # does a hold comment that could not be written. Nothing is written when a comment of the workflow on the item
+      # changed after the trust job read it (a hold, a review, an answer or the label comment of another run): the next
+      # rescreen pass decides from it.
       - name: Say that the work of the item is not tried again
         if: needs.trust.outputs.task == 'stop'
         env:
           STOP: ${{ needs.trust.outputs.stop }}
           STARTED: ${{ needs.trust.outputs.started }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -3627,7 +3682,8 @@ jobs:
               "run writes nothing. The next rescreen pass decides again."
             exit 0
           fi
-          python3 .github/review/rules.py label "$NUMBER" "$fact=true" \
+          python3 .github/review/rules.py label "$NUMBER" task=stop outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
+            author="${AUTHOR_KIND:-}" "$fact=true" \
             || { echo "::error::the label of #$NUMBER could not be set. The next rescreen pass decides the stop again."; exit 1; }
           body=$(printf '%s\n%s\n\n%s' '<!-- review-held -->' "**$title**" "$text")
           [ -z "$head" ] || body+=$'\n\n'"<!-- review-held-head $head -->"
@@ -3660,12 +3716,17 @@ jobs:
       # environment post held no key of the OSS Verify App (the post job's no_key, the head that the screen read)
       # gets waits-on-theorem the same way, with a label comment that says that the workflow cannot approve the checks
       # yet, and the line <!-- review-no-key <head> -->, which the rescreen pass reads (held.sh, due_approve). Nothing
-      # is written when the pull request moved on from the head: the new head gets an approval of its own.
+      # is written when the pull request moved on from the head: the new head gets an approval of its own. The label
+      # call gives the trust job's outputs as they are (the author-kind table): the post job approves the held runs of
+      # an outside author's pull request alone, so only such an approval comes here.
       - name: Say that a person at Theorem approves the runs of the head
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task == 'approve'
         env:
           STEERING: ${{ needs.post.outputs.steering }}
           NO_KEY: ${{ needs.post.outputs.no_key }}
+          OUTSIDE: ${{ needs.trust.outputs.outside }}
+          OUTSIDER: ${{ needs.trust.outputs.outsider }}
+          AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -3678,7 +3739,8 @@ jobs:
           [ "$now" = "$head" ] \
             || { echo "#$NUMBER moved from $head to $now, so the workflow changes neither its labels nor its" \
                    "label comment."; exit 0; }
-          python3 .github/review/rules.py label "$NUMBER" "$fact=true" head="$head"
+          python3 .github/review/rules.py label "$NUMBER" task=approve outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
+            author="${AUTHOR_KIND:-}" "$fact=true" head="$head"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
@@ -3699,14 +3761,16 @@ jobs:
   # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, or by
   # its screen, whose hold says that the checks of the pull request have not run. A hold that is not tried again (the
   # screen's, or the last try of a review, an answer or a draft) gives waits-on-theorem and a label comment that names
-  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). A writer's pull request (the trust
-  # job's outside is false: its author has write access), as when the screen of an outsider's push to it held it, is
-  # no outside item: it gets that label comment, with its marker <!-- waits-on-theorem: Sami -->, but no state label
-  # (R5). Each hold of a pull request also names the head that the run read, in the marker
-  # <!-- review-held-head <head> -->, by which the pass tells which head a hold stops. A cancelled screen holds nothing,
-  # nor a screened review or answer that a newer run of the same item and task cancelled: that run decides. Nor a run
-  # whose sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of its
-  # jobs. Such a run judged nothing of the item, so it gets no comment, no label and no try, and the rescreen pass
+  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). The label call gives the trust job's
+  # outside, outsider and kind as they are (the author-kind table). Only an outside author's item gets the state label
+  # (R5). Any other item, as a writer's pull request whose head an outsider pushed and whose screen held it, gets that
+  # label comment, with its marker <!-- waits-on-theorem: Sami -->, but no state label. When GitHub did not say whether
+  # the author has write access, the state labels and the label comment stay as they are, but review-held and the hold
+  # comment go on, as they are the hold's. Each hold of a pull request also names the head that the run read, in the
+  # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops. A cancelled screen holds
+  # nothing, nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
+  # Nor a run whose sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of
+  # its jobs. Such a run judged nothing of the item, so it gets no comment, no label and no try, and the rescreen pass
   # takes the item again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in
   # starts this job, which reads this attempt's jobs first and stops.
   hold:
@@ -3741,10 +3805,10 @@ jobs:
       NUMBER: ${{ needs.trust.outputs.number }}
       TASK: ${{ needs.trust.outputs.task }}
       ROUTE: ${{ needs.trust.outputs.route }}
+      # The trust job's outputs as they are, which the label call gives .github/review/rules.py (the author-kind table).
       OUTSIDER: ${{ needs.trust.outputs.outsider }}
-      # The trust job's outside: false when the item's author has write access, true when the author has none, and
-      # empty when the trust job does not know it with no call of the API.
       OUTSIDE: ${{ needs.trust.outputs.outside }}
+      AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
       # The account whose OUTSIDE_HOURLY_LIMIT the run counts on, which a hold at the limit names: the item's author,
       # or the account of the latest event.
       ACCOUNT: ${{ needs.trust.outputs.account }}
@@ -4036,7 +4100,7 @@ jobs:
             echo "#$NUMBER: the answer is held and tried again, so its state label stays."
             exit 0
           fi
-          # A writer's item (OUTSIDE is false) is no outside item, so it gets no state label: only the label comment.
-          writer=false
-          [ "${OUTSIDE:-}" != false ] || writer=true
-          python3 .github/review/rules.py label "$NUMBER" "$fact=true" writer="$writer"
+          # The state label and the label comment of the hold's fact, by the author-kind table for the hold job and the
+          # trust job's outputs as they are: only an outside author's item gets the state label.
+          python3 .github/review/rules.py label "$NUMBER" task=hold outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
+            author="${AUTHOR_KIND:-}" "$fact=true"

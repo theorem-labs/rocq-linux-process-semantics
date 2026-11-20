@@ -821,33 +821,41 @@ class TrustTest(Runner):
 
     def test_a_request_by_hand_reviews_anyones(self):
         """GitHub lets only an account with write access start workflow_dispatch: the job asks the API nothing of the
-        account."""
+        account that started the run. It asks once of the item's author, whose kind it gives (round 11)."""
         self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
-        self.assertFalse(any("collaborators" in c for c in self.calls()), self.calls())
+        self.assertEqual([c for c in self.calls() if "collaborators" in c],
+                         [f"repos/{REPO}/collaborators/mallory/permission"])
         self.assertReview("review", "workflow_dispatch", "", "oss-verify[bot]")
         self.assertReview(None, "workflow_dispatch", "", "dependabot[bot]")
 
-    def test_outside_is_given_on_each_route_where_the_author_is_known_with_no_new_call(self):
-        """Fresh reader round 10 (N-M1): the output outside is true for an author with no write access that is not one
-        of the APPS, and false for a writer or an App of APPS. The job gives it on each route where it asked GitHub of
-        the author already, or where the author is an App, which needs no call: a writer's own push or issue (route
-        review), an outsider's push or issue (route screen, the task draft too), and an App's item. A writer's run by
-        hand asks GitHub nothing of the author, so its outside is empty; for an App's item it is false all the same."""
+    def test_outside_and_kind_are_given_on_each_route_with_one_call_for_the_author(self):
+        """Round 11 (the author-kind table): the trust job decides the kind of the item's author once, on every route
+        of an item with an author. Its output kind is writer for a writer or an App of APPS, outsider for an author
+        with no write access or an App that APPS does not name, and unknown when GitHub does not say; its output
+        outside is true for an outsider alone. The job asks GitHub at most once of the author: a writer's own push or
+        issue (route review), an outsider's push or issue (route screen, the task draft too), an App's item, and a
+        writer's run by hand, which asks of the author and of no other account."""
         self.permissions(alice="write", mallory="read")
-        for event, author, route, outside in (
-                ("workflow_run", "alice", "review", "false"), ("issues", "alice", "review", "false"),
-                ("workflow_run", "mallory", "screen", "true"), ("issues", "mallory", "screen", "true"),
-                ("workflow_run", "sjawhar-agent[bot]", "review", "false")):
+        for event, author, route, kind in (
+                ("workflow_run", "alice", "review", "writer"), ("issues", "alice", "review", "writer"),
+                ("workflow_run", "mallory", "screen", "outsider"), ("issues", "mallory", "screen", "outsider"),
+                ("workflow_run", "sjawhar-agent[bot]", "review", "writer")):
             with self.subTest(event=event, author=author):
+                self.forget()
                 _out, got = self.assertReview(route, event, author, author)
-                self.assertEqual(got["outside"], outside)
-        self.serve_item(7, "mallory")
-        self.forget()
-        _out, got = self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
-        self.assertEqual((got["outside"], [c for c in self.calls() if "collaborators" in c]), ("", []))
-        self.serve_item(7, "sjawhar-agent[bot]")
-        _out, got = self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
-        self.assertEqual(got["outside"], "false")
+                self.assertEqual((got["kind"], got["outside"]), (kind, "true" if kind == "outsider" else "false"))
+                asked = [c for c in self.calls() if c == f"repos/{REPO}/collaborators/{author}/permission"]
+                self.assertLessEqual(len(asked), 1, self.calls())
+        for author, kind, outside, asked in (
+                ("mallory", "outsider", "true", ["mallory"]), ("alice", "writer", "false", ["alice"]),
+                ("carol", "unknown", "false", ["carol"]), ("sjawhar-agent[bot]", "writer", "false", []),
+                ("dependabot[bot]", "outsider", "true", [])):
+            with self.subTest(by_hand=author):
+                self.serve_item(7, author)
+                self.forget()
+                _out, got = self.assertReview("review", "workflow_dispatch", "", "alice", want_task="review")
+                self.assertEqual((got["kind"], got["outside"], [c for c in self.calls() if "collaborators" in c]),
+                                 (kind, outside, [f"repos/{REPO}/collaborators/{a}/permission" for a in asked]))
 
     def test_a_request_by_hand_can_ask_for_the_screen_first(self):
         self.assertReview("screen", "workflow_dispatch", "", "alice", screen="true")
@@ -929,8 +937,8 @@ class TrustTest(Runner):
         self.assertEqual(job["permissions"], {"actions": "read", "contents": "read", "issues": "read",
                                               "pull-requests": "read", "checks": "read"})
         self.assertEqual([(s["uses"], s["with"]) for s in job["steps"] if "uses" in s], [(CHECKOUT, HELD_CHECKOUT)])
-        names = ("task", "route", "uncounted", "outsider", "outside", "account", "number", "head", "comment", "origin",
-                 "tries", "started", "stop")
+        names = ("task", "route", "uncounted", "outsider", "kind", "outside", "account", "number", "head", "comment",
+                 "origin", "tries", "started", "stop")
         self.assertEqual(set(job["outputs"]), set(names))
         for name in names:
             self.assertEqual(job["outputs"][name], "${{ steps.trust.outputs.%s }}" % name)
@@ -1054,14 +1062,23 @@ class CommentsTest(Runner):
             self.assertEqual([c["body"] for c in json.load(f)], ["a1", "b2"])
 
     def test_the_author_is_outside_unless_it_has_write_access_or_is_one_of_the_apps(self):
-        """The review's prompt says whether the author has write access (the gather job's output outside). An author
-        that GitHub does not say of reads as outside, as .github/review.md asks."""
-        self.assertEqual(JOBS["gather"]["outputs"]["outside"], "${{ steps.gather.outputs.outside }}")
-        for author, want in (("alice", "false"), ("bob", "false"), ("sjawhar-agent[bot]", "false"),
-                             ("mallory", "true"), ("dependabot[bot]", "true"), ("carol", "true")):
+        """The review's prompt says whether the workflow treats the author as an outside author: the trust job's output
+        outside, which it decides once with its output kind (round 11, the author-kind table). The gather job gives no
+        outside of its own, and asks GitHub nothing of the author. An author that GitHub does not say of is unknown,
+        and not outside: no outside label, no approval and no import check run come of it."""
+        self.assertNotIn("outside", JOBS["gather"]["outputs"])
+        self.gather("pr", "mallory")
+        self.assertNotIn("outside", outputs(self.output))
+        self.assertNotIn(f"repos/{REPO}/collaborators/mallory/permission", self.calls())
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        for author, kind, want in (("alice", "writer", "false"), ("bob", "writer", "false"),
+                                   ("sjawhar-agent[bot]", "writer", "false"), ("mallory", "outsider", "true"),
+                                   ("dependabot[bot]", "outsider", "true"), ("carol", "unknown", "false")):
             with self.subTest(author=author):
-                self.gather("pr", author)
-                self.assertEqual(outputs(self.output)["outside"], want)
+                self.serve_item(7, author, kind="pr", head=HEAD)
+                rc, out, got = self.run_trust("workflow_dispatch", actor="alice")
+                self.assertEqual((rc, got.get("route"), got.get("kind"), got.get("outside")),
+                                 (0, "review", kind, want), out)
 
     # The workflow's own comments of an item, as GitHub lists them: its review (edited in place at each review), its
     # label comment, an answer, and a comment of another kind.
@@ -1798,23 +1815,20 @@ def run_graph(trust, results=None, outputs=None, github=None, trust_result="succ
 class RouteTest(unittest.TestCase):
     """Which jobs run, for each task, route and answer of the screen."""
 
-    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7"}
+    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7", "outside": "true"}
 
     def ran(self, trust, results=None, outputs=None, **kwargs):
         """The jobs that run, but the trust job."""
         return ran_jobs(run_graph(trust, results, outputs, **kwargs)) - {"trust"}
 
     def test_a_writers_item_is_reviewed_without_a_screen(self):
-        """A writer's review by hand of an outside pull request (the gather job's outside) runs no screen either, and
-        the App's job follows it, to withdraw the import check run of the head when the review does not pass it
-        (R12). Not for a writer's pull request or an outside issue."""
-        writer = {"task": "review", "route": "review", "number": "7"}
-        self.assertEqual(self.ran(writer), {"gather", "review", "comment"})
-        self.assertEqual(self.ran(writer, outputs={"gather": {"kind": "pr", "number": "7", "digest": "0" * 64,
-                                                              "outside": "true"}}),
-                         {"gather", "review", "post", "comment"})
-        self.assertEqual(self.ran(writer, outputs={"gather": {"kind": "issue", "number": "7", "digest": "0" * 64,
-                                                              "outside": "true"}}),
+        """A writer's review, and a writer's review by hand of an outside pull request, runs no screen. The App's job
+        follows the review of each pull request (round 11), whoever its author is, to withdraw the import check run of
+        the head when the review does not pass it (R12). Not the review of an issue."""
+        writer = {"task": "review", "route": "review", "number": "7", "outside": "false"}
+        self.assertEqual(self.ran(writer), {"gather", "review", "post", "comment"})
+        self.assertEqual(self.ran(dict(writer, outside="true")), {"gather", "review", "post", "comment"})
+        self.assertEqual(self.ran(writer, outputs={"gather": {"kind": "issue", "number": "7", "digest": "0" * 64}}),
                          {"gather", "review", "comment"})
 
     def test_an_outsiders_clean_item_is_reviewed_with_no_person(self):
@@ -2887,8 +2901,9 @@ class HoldingsTest(unittest.TestCase):
 
     def test_the_app_signs_in_for_this_repository_alone_and_approves_only_after_a_passed_screen(self):
         """Token A: checks: write and pull-requests: write; token B: actions: write alone, minted only for the task
-        approve when the screen's verdict is clean and the step before it found held runs of the screened head. Each
-        is minted only while the environment post holds the App's key (APP_KEY_SET is true, R10)."""
+        approve when the screen's verdict is clean, the author-kind table's approve holds (an outside author), and the
+        step before it found held runs of the screened head. Each is minted only while the environment post holds the
+        App's key (APP_KEY_SET is true, R10)."""
         for name, rights in ((MINT_A, {"permission-checks": "write", "permission-pull-requests": "write"}),
                              (MINT_B, {"permission-actions": "write"})):
             with self.subTest(step=name):
@@ -2899,14 +2914,17 @@ class HoldingsTest(unittest.TestCase):
                                   "repositories": "rocq-linux-process-semantics", "private-key": VERIFY_KEY})
                 self.assertEqual(s, rights)
         b = step("post", MINT_B)["if"]
-        for task, verdict, runs, want in (("approve", "clean", "61 62", True), ("approve", "held", "61 62", False),
-                                          ("approve", "", "61 62", False), ("approve", "clean", "", False),
-                                          ("approve", "clean", None, False), ("review", "clean", "61 62", False),
-                                          ("catchup", "clean", "61 62", False)):
+        for task, verdict, runs, approve, want in (
+                ("approve", "clean", "61 62", "true", True), ("approve", "held", "61 62", "true", False),
+                ("approve", "", "61 62", "true", False), ("approve", "clean", "", "true", False),
+                ("approve", "clean", None, "true", False), ("approve", "clean", "61 62", "false", False),
+                ("approve", "clean", "61 62", None, False), ("review", "clean", "61 62", "true", False),
+                ("catchup", "clean", "61 62", "true", False)):
             for key in ("true", "false"):
-                with self.subTest(task=task, verdict=verdict, runs=runs, key=key):
+                with self.subTest(task=task, verdict=verdict, runs=runs, approve=approve, key=key):
                     self.assertEqual(bool(evaluate(b, {"needs.trust.outputs.task": task,
                                                        "needs.screen.outputs.verdict": verdict,
+                                                       "steps.answers.outputs.approve": approve,
                                                        "steps.held.outputs.runs": runs, "env.APP_KEY_SET": key})),
                                      want and key == "true")
         # Token A: for a catch-up, and for the import check run when the post job's decision is to record it.
@@ -3031,7 +3049,7 @@ class Holding(Runner):
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
                  uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
                  labels=("review-held",), comment="", head="", total=None, run_jobs=None, account=None, author=None,
-                 unread=False, outside=""):
+                 unread=False, outside="true", author_kind="outsider"):
         """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
         capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
         before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
@@ -3041,7 +3059,9 @@ class Holding(Runner):
         them; comment: the comment that an answer answers; head: the head that the trust job gave; account: the account
         whose limit the run counts on, as the trust job gave it (outsider when None); author: the item's author, as the
         API gives it (none when None); unread: the trust job's output uncounted, true when it did not read every run
-        that could count on the account; outside: the trust job's output outside (false: the author has write access).
+        that could count on the account; outside and author_kind: the trust job's outputs outside and kind (true and
+        outsider by default, as for mallory's item; false and writer: the author has write access; false and unknown:
+        GitHub did not say).
         posts are the calls that post or edit the hold comment, and body the first."""
         n = number
         self.checkout()
@@ -3073,7 +3093,7 @@ class Holding(Runner):
         summary = os.path.join(self.dir, "summary")
         open(summary, "w").close()
         rc, out, _ = self.run_script(step("hold", self.STEP)["run"], NUMBER=str(n), TASK=task, ROUTE=route,
-                                     OUTSIDER=outsider, OUTSIDE=outside,
+                                     OUTSIDER=outsider, OUTSIDE=outside, AUTHOR_KIND=author_kind,
                                      ACCOUNT=outsider if account is None else account,
                                      UNCOUNTED="true" if unread else "",
                                      REVIEW=review, ORIGIN=origin, TRIES=tries, COMMENT=comment, HEAD=head,
@@ -3109,7 +3129,7 @@ class Holding(Runner):
         self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
 
     # A screened item's run, its trust job's outputs, and the jobs of its attempt before the screen.
-    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7"}
+    OUTSIDER = {"task": "review", "route": "screen", "outsider": "mallory", "number": "7", "outside": "true"}
 
     def gathered(self):
         return [attempt_job("trust"), attempt_job("gather")]
@@ -3158,7 +3178,7 @@ class HoldTest(Holding):
                 self.setUp()
                 labels = ("review-held", THEOREM_LABEL) if author == "alice" else ("review-held",)
                 calls, _post, body = self.hold("screen", outsider="eve", author=author, outside=outside, head=HEAD,
-                                               labels=labels)
+                                               labels=labels, author_kind="writer" if author == "alice" else "outsider")
                 self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
                                "--jq", ".[].name"], calls)
                 self.assertEqual(body, "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held "
@@ -3173,6 +3193,25 @@ class HoldTest(Holding):
                 self.assertEqual(label, "<!-- review-label -->\n**Next step:** Sami starts the work that the hold "
                                         "comment names, by hand.\n\nYou do not need to do anything.\n\n"
                                         "<!-- waits-on-theorem: Sami -->")
+
+    def test_a_hold_of_an_item_whose_authors_access_github_does_not_give_changes_no_state_label(self):
+        """OSSV-221's architect's ruling of 2026-11-20 14:35Z (the author-kind table): for an author whose write access
+        GitHub cannot say (the trust job's kind unknown, and outside false), the label steps change nothing on the
+        item. The screen of eve's push to carol's #7 holds it, while GitHub does not say whether carol has write
+        access. The hold job still labels #7 review-held and posts the screen's hold comment, as they are the hold's,
+        but it adds and takes off no state label and writes no label comment, and its log says why."""
+        old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("person")}
+        rc, out, posts, body = self.run_hold("screen", outsider="eve", author="carol", outside="false",
+                                             author_kind="unknown", head=HEAD, labels=("review-held", THEOREM_LABEL),
+                                             comments=[old])
+        self.assertEqual((rc, len(posts)), (0, 1), out)
+        self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
+                       "--jq", ".[].name"], gh_calls(self.api))
+        self.assertTrue(body.startswith("<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held "
+                                        "this pull request"), body)
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
+                      "neither its state label nor its label comment.", out)
 
     # A hold that is tried again says first from when, and which events start the run that takes it again (there is
     # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why. The events
@@ -3508,8 +3547,9 @@ class HoldTest(Holding):
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
-        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "ACCOUNT",
-                                  "UNCOUNTED", "REVIEW", "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID", "RUN_ATTEMPT"})
+        self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
+                                  "ACCOUNT", "UNCOUNTED", "REVIEW", "ORIGIN", "TRIES", "COMMENT", "HEAD", "RUN_ID",
+                                  "RUN_ATTEMPT"})
         self.assertEqual(e["REVIEW"], "${{ needs.review.result }}")
         self.assertTrue(all(v.startswith(("${{ needs.trust.", "${{ github.", "${{ needs.review.result"))
                             for v in e.values()))
@@ -4037,7 +4077,7 @@ class ApproveTest(Holding):
                 open(summary, "w").close()
                 steps = self.post(trust, "clean", given=empty)
                 self.assertEqual([n for n, o in steps.items() if o != "skipped"],
-                                 ["Run actions/checkout", self.HELD, NO_KEY], self.logs)
+                                 ["Run actions/checkout", "Read the author-kind table", self.HELD, NO_KEY], self.logs)
                 self.assertEqual((self.approvals(), writes(self.api)), ([], []))
                 self.assertEqual(set(gh_tokens(self.api)), {self.RUN_TOKEN})
                 with open(summary, encoding="utf-8") as f:
@@ -4119,11 +4159,14 @@ class ApproveTest(Holding):
 
     def test_a_pull_request_whose_runs_are_not_held_gets_no_approval(self):
         """Held runs of another head only, or runs that GitHub does not hold: a run by hand with the number alone is a
-        review, which runs no post job. A run by hand that asks for the task approve is screened, and when the screen
-        passes, its post job finds no held run of the head: it mints no token B and approves nothing."""
+        review. Its post job runs, as for the review of each pull request (round 11), but the task is no approval, so
+        it approves nothing. A run by hand that asks for the task approve is screened, and when the screen passes, its
+        post job finds no held run of the head: it mints no token B and approves nothing."""
         self.runs(*[r for r in self.RUNS if r[0] in (63, 67)])
         trust = self.by_hand(want=("review", "review"))
-        self.assertNotIn("post", self.jobs(trust))
+        self.assertIn("post", self.jobs(trust))
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        self.assertFalse(evaluate(step("post", self.HELD)["if"], ctx))
         trust = self.by_hand(task="approve")
         self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}}), {"trust", "gather", "screen", "post"})
         steps = self.post(trust, "clean")
@@ -4183,7 +4226,8 @@ class PostLabelTest(Runner):
 
     def take_off(self, head="", now=None, held=(), labels=(), comments=(), **env):
         """held: the updated_at of each hold comment on the issue or pull request; labels: the item's labels;
-        comments: its other comments. The DELETE calls."""
+        comments: its other comments. The step runs for the review of mallory's pull request (the task review, and
+        the trust job's outside true and kind outsider) unless env says otherwise. The DELETE calls."""
         s = step("comment", self.STEP)
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
@@ -4195,6 +4239,7 @@ class PostLabelTest(Runner):
             self.serve(f"repos/{REPO}/pulls/7", {"head": {"sha": now}})
         rc, out, _ = self.run_script(s["run"], **{"NUMBER": "7", "HELD_LABEL": "review-held", "HEAD": head,
                                                   "STARTED": self.STARTED, "KIND": "pr", "OUTSIDER": "mallory",
+                                                  "TASK": "review", "OUTSIDE": "true", "AUTHOR_KIND": "outsider",
                                                   "VERDICT": "", "WILL_FIX": "", "RECORDED": "false", "DECISION": "",
                                                   "IMPORT_PATHS": "", **env})
         self.assertEqual(rc, 0, out)
@@ -4297,8 +4342,8 @@ class PostLabelTest(Runner):
         self.serve(f"repos/{REPO}/issues/7/comments", [])
         self.serve(f"repos/{REPO}/issues/7/labels", [])
         rc, out, _ = self.run_script(s["run"], NUMBER="7", HELD_LABEL="review-held", HEAD="", STARTED=self.STARTED,
-                                     KIND="issue", OUTSIDER="", VERDICT="pass", WILL_FIX="false", RECORDED="false",
-                                     DECISION="", IMPORT_PATHS="")
+                                     KIND="issue", TASK="review", OUTSIDER="", VERDICT="pass", WILL_FIX="false",
+                                     RECORDED="false", DECISION="", IMPORT_PATHS="")
         self.assertEqual(rc, 0, out)
 
     def test_no_start_time_stops_it(self):
@@ -4964,8 +5009,8 @@ class ReaderRunner(Runner):
         stand-in's whole answer), for the head that .review/commits.txt names (HEAD when the test gathered nothing), or
         for an issue (kind issue), of which the gather job writes no commits.txt. When the test wrote no
         soundness.json, the step reads the one that the gather job writes for a whole list of changed files of which
-        none can change a proof. The step's env is the one that the workflow gives it, for the gather job's outside,
-        the trust job's started and route, and the screen's verdict screen, with SOUNDNESS_HOLD hold (None: not set).
+        none can change a proof. The step's env is the one that the workflow gives it, for the trust job's outside,
+        started and route, and the screen's verdict screen, with SOUNDNESS_HOLD hold (None: not set).
         The step's exit status, output and outputs."""
         self.reader = reader or (200, self.answer(trimmed))
         path = os.path.join(self.dir, "result.json")
@@ -4984,7 +5029,7 @@ class ReaderRunner(Runner):
         rc, out, _ = self.sign_in()
         self.assertEqual(rc, 0, out)
         s = step("review", self.STEP)
-        given = {"needs.gather.outputs.outside": outside, "needs.trust.outputs.started": started,
+        given = {"needs.trust.outputs.outside": outside, "needs.trust.outputs.started": started,
                  "needs.trust.outputs.route": route, "needs.screen.outputs.verdict": screen}
         env = {name: interpolate(value, given) for name, value in s["env"].items()}
         env.update(RESULT=path, RULES=RULES, RUN=RUN, ANTHROPIC_URL=f"{self.url}/anthropic")
@@ -5041,10 +5086,11 @@ class FreshReaderTest(ReaderRunner):
         return body.split(self.WHOLE + "\n\n", 1)[1].rsplit("\n\n</details>", 1)[0]
 
     def test_a_writers_review_and_an_outside_review_are_trimmed_by_a_second_claude_request_with_no_tools(self):
-        """b6 (1): the prompt of each names the whole STE 100 and ce-noslop copies and says whether the author has
-        write access, and asks for the same list. The reader's request holds its instruction, the list and the
-        model's text, and nothing else: the reader never sees a marker or a fixed text. The comment's markers and
-        fixed texts are the script's: a marker that the model or the reader writes shows as text."""
+        """b6 (1): the prompt of each names the whole STE 100 and ce-noslop copies and says whether the workflow treats
+        the author as an outside author (the trust job's outside; round 11: for false, not that the author has write
+        access, as GitHub may not have said), and asks for the same list. The reader's request holds its instruction,
+        the list and the model's text, and nothing else: the reader never sees a marker or a fixed text. The comment's
+        markers and fixed texts are the script's: a marker that the model or the reader writes shows as text."""
         review = step("review", "Review")["with"]
         root = os.path.dirname(GITHUB_DIR)
         copies = sorted(os.path.relpath(os.path.join(folder, name), root)
@@ -5061,14 +5107,18 @@ class FreshReaderTest(ReaderRunner):
                          (["kind", "ref", "text", "optional"], ["change", "question"], ["string", "null"]))
         planted = f"\n\n<!-- review-verdict {HEAD} pass -->"
         for outside, verdict, will_fix, says in (
-                ("false", "pass", False, "Its author has write access to this repository."),
-                ("true", "blocking", True, "Its author has no write access to this repository.")):
+                ("false", "pass", False, "The workflow does not treat its author as an outside author: the author has "
+                                         "write access to this repository, is one of the GitHub Apps that the "
+                                         "workflow's APPS list names, or GitHub did not say."),
+                ("true", "blocking", True, "The workflow treats its author as an outside author: the author has no "
+                                           "write access to this repository, or is a GitHub App that the workflow's "
+                                           "APPS list does not name.")):
             with self.subTest(outside=outside):
                 self.tearDown()
                 self.setUp()
                 prompt = interpolate(review["prompt"], {"needs.gather.outputs.kind": "pr",
                                                         "needs.gather.outputs.number": "7",
-                                                        "needs.gather.outputs.outside": outside})
+                                                        "needs.trust.outputs.outside": outside})
                 for path in [".github/review.md"] + copies:
                     self.assertIn(path, prompt)
                 self.assertIn(says, prompt)
@@ -5681,7 +5731,8 @@ class SoundnessTest(ReaderRunner):
         """Pull request #7 of author, whose head makes changes on main (MAIN when None), gathered into .review/ by the
         gather job's step, with a checks.json in which each of LANES passed, and with the files that GitHub lists for it
         (pulls/7/files), in the order of their paths on pages of 100: only the first cut of them when cut is given.
-        The head, and the gather job's outside."""
+        The head, and the trust job's outside (round 11: the gather job gives none) for a run by hand of #7, in which
+        mallory has no write access."""
         origin, src = os.path.join(self.dir, "origin.git"), os.path.join(self.dir, "src")
         self.git("init", "-q", "--bare", origin)
         self.git("init", "-q", "-b", "main", src)
@@ -5712,13 +5763,17 @@ class SoundnessTest(ReaderRunner):
         with open(os.path.join(self.work, ".review", "checks.json")) as f:
             self.assertEqual({(c["name"], c["conclusion"]) for c in json.load(f)["statusCheckRollup"]},
                              {(name, "SUCCESS") for name in self.LANES})
-        return head, got["outside"]
+        self.permissions(mallory="read")
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        rc, out, trust = self.run_trust("workflow_dispatch", actor="alice")
+        self.assertEqual(rc, 0, out)
+        return head, trust["outside"]
 
     def review(self, changes, verdict="person", items=None, review=REVIEW, trimmed=TRIMMED, author="mallory",
                main=None, cut=None, **kwargs):
         """The gather job's step (gather, with main and cut), then the comment step on a stand-in model's review with
         verdict and items (ASKED when None), which the reader trims to trimmed: the head, the step's outputs, the
-        visible part of the comment, the list that the run's summary holds, and the gather job's outside."""
+        visible part of the comment, the list that the run's summary holds, and the trust job's outside."""
         head, outside = self.gather(changes, author, main, cut)
         rc, out, got = self.post(review, [self.ASKED] if items is None else items, trimmed, verdict, outside=outside,
                                  **kwargs)
@@ -5733,6 +5788,7 @@ class SoundnessTest(ReaderRunner):
         label comments."""
         s = step("comment", PostLabelTest.STEP)
         ctx = {"needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
+               "needs.trust.outputs.task": "review", "needs.trust.outputs.outside": "true",
                "needs.trust.outputs.started": PostLabelTest.STARTED, "needs.gather.outputs.kind": "pr",
                "needs.review.outputs.head": got["head"], "needs.review.outputs.verdict": got["verdict"],
                "needs.review.outputs.will_fix": got["will_fix"], "needs.post.result": "success",
@@ -6685,7 +6741,7 @@ class AnswerFixTest(ReaderRunner):
     CTX = {"github.server_url": "https://github.com", "github.repository": REPO, "github.run_id": "1",
            "needs.trust.outputs.number": "7", "needs.trust.outputs.outsider": "mallory",
            "needs.trust.outputs.started": PostLabelTest.STARTED,
-           "needs.gather.outputs.number": "7",
+           "needs.gather.outputs.number": "7", "needs.trust.outputs.outside": "true",
            "needs.gather.outputs.kind": "pr", "needs.gather.outputs.outside": "true", "needs.post.result": "skipped"}
     # The diff of pull request #7: one hunk of theories/A.v, whose right side is its lines 1 to 5.
     MAIN_A = "Lemma a : True.\nProof.\n  exact I.\nQed.\n"
@@ -7458,12 +7514,14 @@ class DraftReplyTest(ReaderRunner):
     CTX = {"github.event_name": "issues", "github.server_url": "https://github.com", "github.repository": REPO,
            "github.run_id": "1", "github.run_attempt": "1", "needs.trust.outputs.number": "7",
            "needs.trust.outputs.outsider": "mallory", "needs.trust.outputs.route": "screen",
-           "needs.trust.outputs.started": PostLabelTest.STARTED, "needs.gather.outputs.number": "7",
-           "needs.gather.outputs.kind": "issue", "needs.gather.outputs.outside": "true", "needs.post.result": "skipped",
+           "needs.trust.outputs.started": PostLabelTest.STARTED, "needs.trust.outputs.outside": "true",
+           "needs.gather.outputs.number": "7", "needs.gather.outputs.kind": "issue",
+           "needs.gather.outputs.outside": "true", "needs.post.result": "skipped",
            "env.POST_REVIEW": WF["env"]["POST_REVIEW"]}
     # A run by hand of the task reply.
     REPLY_CTX = {"github.event_name": "workflow_dispatch", "needs.trust.outputs.task": "reply",
                  "needs.trust.outputs.route": "review", "needs.trust.outputs.outsider": "",
+                 "needs.trust.outputs.outside": "true",
                  "needs.gather.outputs.kind": "", "needs.gather.outputs.number": "", "needs.gather.outputs.outside": "",
                  "inputs.reply": APPROVED}
 
@@ -7853,7 +7911,7 @@ class FixRuleTest(unittest.TestCase):
             one = (2, "", "::error::rules.py: JSON that nests too deep to read\n")
             for args in (("fixes", write("commits.jsonl", deep + "\n"), reviews, self.H2),
                          ("suggestions", write("fix.json", deep), diff), ("verdict", "7", self.H2),
-                         ("relabel", "7", self.H2)):
+                         ("relabel", "7", self.H2, "outside=true", "outsider=mallory", "author=outsider")):
                 with self.subTest(command=args[0]):
                     self.assertEqual(run(*args), one)
             rc, out, err = run("make-label", "review-held")
@@ -8768,8 +8826,9 @@ class RescreenJobTest(Held):
     def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
         """The hold comment stops promising an automatic try: the pass writes nothing itself and starts the stop's run
         of review.yml, whose comment job replaces the hold with fixed words that name no maintainer, with no marker of a
-        hold that is tried again, and gives the item waits-on-theorem with the label comment's step for Sami (b1, the
-        third end of tries). That pass fails; the next one finds no hold that is tried again, starts nothing, writes
+        hold that is tried again, and gives the item the label comment's step for Sami (b1, the third end of tries).
+        alice, the author, has write access, so the item gets no state label and loses the one that it had (round 11,
+        the author-kind table). That pass fails; the next one finds no hold that is tried again, starts nothing, writes
         nothing and passes."""
         tries = int(WF["env"]["REVIEW_TRIES"])
         hours_ago = (datetime.datetime.now(datetime.timezone.utc)
@@ -8789,7 +8848,7 @@ class RescreenJobTest(Held):
                          [["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]])
         steps = self.stop()
         self.assertEqual(steps[STOP_STEP], "success", self.logs)
-        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)])
+        self.assertEqual(state_labels(self.api), [("-", AUTHOR_LABEL)])
         (method, _endpoint, label), = label_comments(self.api)
         self.assertEqual(method, "POST")
         self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** Sami starts again, by hand, the work "
@@ -9955,8 +10014,8 @@ class ScheduleTest(Scheduled):
                                  "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean",
                                  APP_KEY: ""})
         steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
-        self.assertEqual([n for n, o in steps.items() if o != "skipped"], ["Run actions/checkout", self.HELD, NO_KEY],
-                         self.logs)
+        self.assertEqual([n for n, o in steps.items() if o != "skipped"],
+                         ["Run actions/checkout", "Read the author-kind table", self.HELD, NO_KEY], self.logs)
         self.assertEqual(writes(self.api), [])
         post = filled(JOBS["post"]["outputs"], ctx)
         self.assertEqual(post["no_key"], HEAD)
@@ -10431,10 +10490,10 @@ class CatchUpScheduleTest(Scheduled):
 
     def test_with_no_key_a_catch_up_closes_and_reopens_nothing_and_succeeds(self):
         """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
-        Verify App. The post job of a catchup run mints no token A, neither closes nor reopens the pull request, makes
-        no call of the API, ends with success, and says so in its summary. It names no head that it caught up, so the
-        comment job does not run, and the next run of the pass starts no second catch-up of the head while that run
-        names it."""
+        Verify App. The post job of a catchup run reads the author-kind table from its checkout of main's .github/
+        (round 11: for each task), mints no token A, neither closes nor reopens the pull request, makes no call of the
+        API, ends with success, and says so in its summary. It names no head that it caught up, so the comment job does
+        not run, and the next run of the pass starts no second catch-up of the head while that run names it."""
         summary = os.path.join(self.dir, "summary.md")
         self.env["GITHUB_STEP_SUMMARY"] = summary
         self.item(kind="pr")
@@ -10445,7 +10504,8 @@ class CatchUpScheduleTest(Scheduled):
         self.forget()
         ctx = self.ctx(trust, **{APP_KEY: ""})
         steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
-        self.assertEqual([n for n, o in steps.items() if o != "skipped"], [NO_KEY], self.logs)
+        self.assertEqual([n for n, o in steps.items() if o != "skipped"],
+                         ["Run actions/checkout", "Read the author-kind table", NO_KEY], self.logs)
         self.assertEqual((self.patches(), writes(self.api), self.calls()), ([], [], []))
         with open(summary, encoding="utf-8") as f:
             self.assertEqual(f.read(), NO_KEY_LINE + "\n")
@@ -10594,7 +10654,7 @@ class CatchUpScheduleTest(Scheduled):
         self.serve(f"repos/{REPO}/commits", [history(HEAD, OTHER_HEAD)])
         s = step("review", AnswerFixTest.FIXABLE)
         rc, out, fixable = self.run_script(s["run"], **filled(s["env"], dict(self.ctx(trust), **{
-            "needs.gather.outputs.kind": "pr", "needs.gather.outputs.outside": "true",
+            "needs.gather.outputs.kind": "pr",
             "needs.gather.outputs.number": "7", "steps.result.outputs.verdict": "blocking",
             "steps.result.outputs.will_fix": "false"})))
         self.assertEqual((rc, fixable.get("fix")), (0, "true"), out)
@@ -12414,16 +12474,27 @@ class ConflictTest(Runner):
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
         self.serve_item(7, "mallory", kind="pr", head=HEAD, mergeable="dirty")
         self.serve(f"repos/{REPO}/issues/7/comments", [])
+        # The outputs of the trust job that this test ran last (run_trust), which comment maps into the step's env.
+        self.trusted = {}
 
-    def comment(self, head, comments=(), labels=()):
-        """The comment job's step on #7, which has comments and labels; the bodies of the comments it posted on the
-        conflict."""
+    def run_trust(self, *args, **kwargs):
+        rc, out, got = super().run_trust(*args, **kwargs)
+        self.trusted = got
+        return rc, out, got
+
+    def comment(self, head, comments=(), labels=(), trust=None):
+        """The comment job's step on #7, which has comments and labels, with the env that the workflow maps from the
+        trust job's outputs trust (by default those of the trust job that this test ran last, and none before it):
+        the bodies of the comments it posted on the conflict. self.out is the step's output."""
         self.forget()
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
-        rc, out, _ = self.run_script(step("comment", self.STEP)["run"], NUMBER="7", HEAD=head,
-                                     POST_REVIEW=WF["env"]["POST_REVIEW"])
+        s = step("comment", self.STEP)
+        trust = self.trusted if trust is None else trust
+        env = filled(s["env"], {f"needs.trust.outputs.{k}": v for k, v in trust.items()})
+        rc, out, _ = self.run_script(s["run"], **dict(env, NUMBER="7", HEAD=head, POST_REVIEW=WF["env"]["POST_REVIEW"]))
         self.assertEqual(rc, 0, out)
+        self.out = out
         return [a[len("body="):] for c in gh_calls(self.api) if c[:2] == ["--method", "POST"] for a in c
                 if a.startswith("body=<!-- review-conflict ")]
 
@@ -12471,6 +12542,28 @@ class ConflictTest(Runner):
         self.assertTrue(label.startswith("<!-- review-label -->\n**Next step:** You resolve the merge conflict"), label)
         self.assertIn(f"<!-- review-conflict-state {HEAD} -->", label)
 
+    def test_a_conflict_of_an_author_whose_access_github_does_not_give_changes_no_label(self):
+        """OSSV-221's architect's ruling of 2026-11-20 14:35Z (the author-kind table): for an author whose write access
+        GitHub cannot say (the trust job's kind unknown, and outside false), the label steps change nothing on the item.
+        carol has #7 with a merge conflict, and GitHub's permission API does not answer for carol. A run by hand takes
+        the task conflict. The comment on the conflict posts, but the conflict step adds and takes off no state label
+        and writes no label comment, and its log says why."""
+        self.serve_item(7, "carol", kind="pr", head=HEAD, mergeable="dirty")
+        self.forget()
+        rc, out, got = self.run_trust("workflow_dispatch", actor="alice")
+        self.assertEqual((rc, got.get("task"), got.get("kind"), got.get("outside")),
+                         (0, "conflict", "unknown", "false"), out)
+        old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("person")}
+        bodies = self.comment(got["head"], [old], labels=("review-held", THEOREM_LABEL))
+        self.assertEqual(len(bodies), 1, gh_calls(self.api))
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
+                      "neither its state label nor its label comment.", self.out)
+
+    # The trust job's outputs of a conflict run of mallory's #7: an outside author, and no screen.
+    MALLORY = {"task": "conflict", "route": "review", "outsider": "", "kind": "outsider", "outside": "true",
+               "head": HEAD}
+
     def test_one_comment_for_each_head(self):
         """The author's next comment, or the next scheduled run, posts no second comment on the same head, and the
         label and the label comment stay as they are; a new head that conflicts again gets its own comment, and the
@@ -12478,10 +12571,10 @@ class ConflictTest(Runner):
         workflow's."""
         posted = {"id": 31, "user": {"login": BOT}, "body": f"<!-- review-conflict {HEAD} -->\n**Merge conflict**"}
         label = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("conflict", head=HEAD)}
-        self.assertEqual(self.comment(HEAD, [posted, label], labels=(AUTHOR_LABEL,)), [])
+        self.assertEqual(self.comment(HEAD, [posted, label], labels=(AUTHOR_LABEL,), trust=self.MALLORY), [])
         self.assertEqual(writes(self.api), [])
         forged = {"id": 32, "user": {"login": "mallory"}, "body": f"<!-- review-conflict {OTHER_HEAD} -->"}
-        bodies = self.comment(OTHER_HEAD, [posted, forged, label], labels=(AUTHOR_LABEL,))
+        bodies = self.comment(OTHER_HEAD, [posted, forged, label], labels=(AUTHOR_LABEL,), trust=self.MALLORY)
         self.assertEqual(len(bodies), 1)
         self.assertTrue(bodies[0].startswith(f"<!-- review-conflict {OTHER_HEAD} -->\n"))
         self.assertEqual(state_labels(self.api), [])
@@ -12828,12 +12921,53 @@ class LabelRuleTest(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(ValueError):
                 rules.label_state(**rules.parse(args)[0])
 
+    def test_the_author_kind_table_reads_outside_alone_but_for_the_label_of_an_unknown_author(self):
+        """Round 11 (the author-kind table, and OSSV-221's architect's rulings of 2026-11-20 14:29Z and 14:35Z): the
+        author is outside when the trust job's outside is true, and only then: an empty or missing outside is not
+        outside, whatever the outsider. Only an outside author's item gets a state label, an approval of its held runs
+        (the task approve) and the import check run (a review, a rescreen and a relabel). Every author withdraws in a
+        review, a rescreen, an approval and a relabel, and only an outside author's error promises the rescreen pass's
+        retry. Each answer but label reads outside alone: an unknown author gets the answers of any other author, but
+        the label unchanged. The command prints the answers as lines for $GITHUB_OUTPUT."""
+        self.assertEqual([rules.outside_author(v) for v in ("true", "false", "", None, "TRUE")],
+                         [True, False, False, False, False])
+        withdrawing = ("review", "rescreen", "approve", "relabel")
+        for task in rules.TASKS:
+            with self.subTest(task=task):
+                outside = rules.answers(task, "true", "")
+                self.assertEqual(rules.answers(task, "true", "mallory", "outsider"), outside)
+                other = rules.answers(task, "false", "eve", "writer")
+                for empty in (rules.answers(task, "", "mallory"), rules.answers(task, "", "", "")):
+                    self.assertEqual(empty, other)
+                unknown = rules.answers(task, "false", "", "unknown")
+                self.assertEqual((outside["label"], other["label"], unknown["label"]), ("set", "off", "unchanged"))
+                self.assertEqual(dict(unknown, label="off"), other)
+                self.assertEqual((outside["approve"], outside["record"]),
+                                 (task == "approve", task in ("review", "rescreen", "relabel")))
+                self.assertEqual((other["approve"], other["record"], other["retry"]), (False, False, False))
+                self.assertEqual((outside["withdraw"], other["withdraw"], outside["retry"]), (task in withdrawing,) * 3)
+        for args in (("build", "true", ""), ("review", "yes", ""), ("review", "true", "not a login"),
+                     ("review", "false", "", "maybe")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                rules.answers(*args)
+        for args, status, printed in ((("review", "false", "eve"), 0,
+                                       "label=off\napprove=false\nrecord=false\nwithdraw=true\nretry=false\n"),
+                                      (("approve", "true", "mallory"), 0,
+                                       "label=set\napprove=true\nrecord=false\nwithdraw=true\nretry=true\n"),
+                                      (("review", "yes", "eve"), 2, "")):
+            with self.subTest(args=args):
+                r = subprocess.run([sys.executable, RULES_PY, "answers", *args], capture_output=True, text=True)
+                self.assertEqual((r.returncode, r.stdout), (status, printed), r.stderr)
+
 
 class LabelTest(Runner):
     """rules.py label and make-label, as the comment, hold and rescreen jobs run them, against the stand-in gh: one
     state label at a time, the label comment edited in place, and the labels made with their descriptions."""
 
     DESCRIBED = {name: description for name, (_color, description) in rules.LABELS.items()}
+    # The arguments of a label call that give the run, as the comment job gives them for a review of mallory's item:
+    # the task and the trust job's outputs outside, outsider and kind (an outside author).
+    RUN = ("task=review", "outside=true", "outsider=mallory", "author=outsider")
 
     def setUp(self):
         super().setUp()
@@ -12841,11 +12975,14 @@ class LabelTest(Runner):
         self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": "https://github.com/acme/model/pull/7#c40"})
 
-    def rule(self, *args, labels=(), comments=()):
-        """rules.py with args, for #7 with labels and comments: its exit status and output."""
+    def rule(self, *args, labels=(), comments=(), run=RUN):
+        """rules.py with args, for #7 with labels and comments: its exit status and output. A label call gets run
+        after its number."""
         self.forget()
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        if args[:1] == ("label",):
+            args = (*args[:2], *run, *args[2:])
         rc, out, _ = self.run_script("python3 .github/review/rules.py " + shlex.join(args) + "\n")
         return rc, out
 
@@ -12862,8 +12999,7 @@ class LabelTest(Runner):
     def test_after_a_fix_review_posts_the_item_waits_on_its_author(self):
         """b1, driven by the facts that the fix (t8) gives: waits-on-theorem comes off, waits-on-author goes on, and
         the label comment names the author's next step."""
-        rc, out = self.rule("label", "7", "kind=pr", "outsider=true", "verdict=blocking", "fix_posted=true",
-                            labels=(THEOREM_LABEL,))
+        rc, out = self.rule("label", "7", "kind=pr", "verdict=blocking", "fix_posted=true", labels=(THEOREM_LABEL,))
         self.assertEqual(rc, 0, out)
         self.assertEqual(state_labels(self.api), [("-", THEOREM_LABEL), ("+", AUTHOR_LABEL)])
         (method, _endpoint, body), = label_comments(self.api)
@@ -12969,6 +13105,41 @@ class LabelTest(Runner):
             with self.subTest(args=args):
                 rc, out = self.rule(*args)
                 self.assertEqual((rc, writes(self.api)), (2, []), out)
+        # A label call that does not give the run, or gives it twice or with values that the trust job never gives.
+        for run in ((), self.RUN[:3], (*self.RUN, "outside=true"), ("task=build", *self.RUN[1:]),
+                    (self.RUN[0], "outside=yes", *self.RUN[2:]), (*self.RUN[:2], "outsider=not a login", self.RUN[3]),
+                    (*self.RUN[:3], "author=maybe")):
+            with self.subTest(run=run):
+                rc, out = self.rule("label", "7", "held=true", labels=(THEOREM_LABEL,), run=run)
+                self.assertEqual((rc, self.calls()), (2, []), out)
+
+    def test_the_label_answer_of_the_author_kind_table_tells_what_label_writes(self):
+        """Round 11 (the author-kind table, and OSSV-221's architect's ruling of 2026-11-20 14:35Z): rules.py label
+        gives an outside author's item (outside true) the state label of its state. For any other author (a writer, or
+        a run that gives no kind) it takes each state label off but writes the label comment of the state. For an
+        author whose write access GitHub did not give (kind unknown) it reads and writes nothing, and a notice says
+        why. An empty outside is not outside, and an empty kind is not unknown."""
+        old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("working")}
+        for case, run, labels, written in (
+                ("an outside author", ("task=hold", "outside=true", "outsider=eve", "author=outsider"),
+                 [("-", AUTHOR_LABEL), ("+", THEOREM_LABEL)], True),
+                ("a writer", ("task=hold", "outside=false", "outsider=eve", "author=writer"), [("-", AUTHOR_LABEL)],
+                 True),
+                ("no outside and no kind", ("task=hold", "outside=", "outsider=", "author="), [("-", AUTHOR_LABEL)],
+                 True),
+                ("an unknown author", ("task=hold", "outside=false", "outsider=eve", "author=unknown"), [], False)):
+            with self.subTest(case=case):
+                rc, out = self.rule("label", "7", "screen_held=true", labels=("review-held", AUTHOR_LABEL),
+                                    comments=[old], run=run)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(state_labels(self.api), labels)
+                if written:
+                    self.assertEqual(label_comments(self.api), [("PATCH", f"repos/{REPO}/issues/comments/40",
+                                                                 rules.label_comment("screen", old["body"]))])
+                    continue
+                self.assertEqual(self.calls(), [])
+                self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow "
+                              "changes neither its state label nor its label comment.", out)
 
 
 class GlobTest(unittest.TestCase):
@@ -13140,9 +13311,9 @@ class ImportCheckTest(ReaderRunner):
         value (None: not set, so GitHub gives an empty value). #7's head is now (then, when given, from its second read
         on), and its files are paths, each a path or (the path, the path before a rename), on pages of per_page files;
         its changed_files is changed, their count by default. comments and labels are #7's own, outside the gather
-        job's outside, and listed the check runs of the trust job's head as GitHub lists them. A sign-in step of the
-        App fails when mint is False, and the environment post holds no key of the App when key is False (its secret
-        is empty).
+        job's outside of before round 11 (no step reads it now: the trust job's outside is trust's), and listed the
+        check runs of the trust job's head as GitHub lists them. A sign-in step of the App fails when mint is False,
+        and the environment post holds no key of the App when key is False (its secret is empty).
         What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
         it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
         and the label comments posted or edited."""
@@ -13323,7 +13494,8 @@ class ImportCheckTest(ReaderRunner):
         on a file that the import takes waits on Sami's approval of the head for the import; a screen hold runs a post
         job that only looks for an import check run of the head to withdraw (there is none here), and its decision step
         would not run; a file under .github/, or one renamed from there, waits on a copy by hand. A writer's pull
-        request that a run by hand screened (no outsider) is no outside pull request, and gets no check run either."""
+        request that a run by hand screened (no outsider, and outside false) is no outside pull request, and gets no
+        check run either: its decision is writer."""
         got = self.judge(["README.md"], "blocking", self.LPS)
         self.assertNotRecorded(got, "verdict")
         self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
@@ -13342,9 +13514,9 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(paths, "pass", self.LPS)
                 self.assertNotRecorded(got, "steering")
                 self.assertWaits(got, self.COPY, "This pull request changes a file under `.github/`.", value=self.LPS)
-        got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.REVIEWED, outsider=""),
+        got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.REVIEWED, outsider="", outside="false"),
                          event="workflow_dispatch")
-        self.assertNotRecorded(got, "screen")
+        self.assertNotRecorded(got, "writer")
         self.assertEqual(got["labels"], [])
 
     def test_with_no_variable_a_markdown_only_change_under_github_gets_no_check_run(self):
@@ -13529,7 +13701,7 @@ class ImportCheckTest(ReaderRunner):
         no check run, mints no token and withdraws nothing. With the key, the same runs record and withdraw."""
         got = self.judge(["README.md"], value=self.LPS, key=False)
         self.assertEqual([n for n, o in got["steps"].items() if o != "skipped"],
-                         ["Run actions/checkout", self.DECIDE, NO_KEY], self.logs)
+                         ["Run actions/checkout", "Read the author-kind table", self.DECIDE, NO_KEY], self.logs)
         self.assertEqual((got["result"], got["post"]["recorded"], got["post"]["decision"]),
                          ("success", "false", "record"))
         self.assertNotRecorded(got)
@@ -13541,7 +13713,7 @@ class ImportCheckTest(ReaderRunner):
         listed, others = self.recorded()
         got = self.judge(["README.md"], "blocking", self.LPS, listed=[listed, *others], key=False)
         self.assertEqual([n for n, o in got["steps"].items() if o != "skipped"],
-                         ["Run actions/checkout", self.DECIDE, NO_KEY], self.logs)
+                         ["Run actions/checkout", "Read the author-kind table", self.DECIDE, NO_KEY], self.logs)
         self.assertEqual((got["result"], got["writes"], got["withdrawn"]), ("success", [], []))
         self.assertNotIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
         self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
@@ -13609,7 +13781,7 @@ class ImportCheckTest(ReaderRunner):
         rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="relabel", head=HEAD)
         self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider")),
                          (0, "relabel", "review", "mallory"), out)
-        relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+        relabel = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
         got = self.judge(paths, value=self.LPS, trust=relabel, event="workflow_dispatch", comments=comments,
                          labels=("review-held", THEOREM_LABEL))
         self.assertNotRecorded(got, "outside")
@@ -13697,7 +13869,7 @@ class ImportCheckTest(ReaderRunner):
             self.serve_item(7, "mallory", kind="pr", head=HEAD)
             rc, out, trust = self.run_trust("workflow_dispatch", actor=BOT, task="relabel", head=HEAD)
             self.assertEqual((rc, trust.get("task"), trust.get("outsider")), (0, "relabel", "mallory"), out)
-            relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+            relabel = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
             got = self.judge(paths, value=self.LPS, trust=relabel, event="workflow_dispatch", comments=comments,
                              labels=("review-held", *sorted(labels)))
             self.assertNotRecorded(got, "outside")
@@ -13777,8 +13949,8 @@ class ImportCheckTest(ReaderRunner):
         post job takes the verdict from the marker of the review comment that names the head. A pass records the check
         run, and a person verdict gives the person's step and the approval for the import, with review-held left on.
         A head that no review names and a review comment that is not the workflow's record nothing, and their labels
-        stay. A writer's pull request records nothing either, and loses waits-on-theorem: a writer's item has no state
-        label."""
+        stay. A writer's pull request records nothing either (its decision is writer), and loses waits-on-theorem: a
+        writer's item has no state label."""
         self.permissions(alice="write", mallory="read")
         self.serve_item(7, "mallory", kind="pr", head=HEAD)
         rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task="relabel", head=HEAD)
@@ -13789,7 +13961,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((rc, writer.get("task"), writer.get("outsider")), (0, "relabel", ""), out)
         self.assertEqual(ran_jobs(run_graph(trust, github={"github.event_name": "workflow_dispatch"})),
                          {"trust", "post", "comment"})
-        relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+        relabel = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
         got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                          comments=[review_of(HEAD)])
         self.assertRecorded(got, self.LPS)
@@ -13802,12 +13974,12 @@ class ImportCheckTest(ReaderRunner):
         for case, trusted, comments in (
                 ("no review", relabel, []),
                 ("another account's markers", relabel, [review_of(HEAD, login="mallory")]),
-                ("a writer's pull request", dict(relabel, outsider=writer["outsider"]),
+                ("a writer's pull request", dict(relabel, outsider=writer["outsider"], outside=writer["outside"]),
                  [review_of(HEAD)])):
             with self.subTest(case=case):
                 got = self.judge(["README.md"], value=self.LPS, trust=trusted, event="workflow_dispatch",
                                  comments=comments, labels=("review-held", THEOREM_LABEL))
-                self.assertNotRecorded(got, "screen")
+                self.assertNotRecorded(got, "writer" if case == "a writer's pull request" else "screen")
                 want = [("-", THEOREM_LABEL)] if case == "a writer's pull request" else []
                 self.assertEqual((got["labels"], got["comments"]), (want, []))
 
@@ -13826,7 +13998,7 @@ class ImportCheckTest(ReaderRunner):
                          (0, "review", "review", ""), out)
         rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task="relabel", head=HEAD)
         self.assertEqual((rc, trust.get("task"), trust.get("outsider")), (0, "relabel", "mallory"), out)
-        relabel = {k: trust[k] for k in ("task", "route", "outsider", "number", "head", "started")}
+        relabel = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
         for route, screen, screened in ((by_hand["route"], "", False), ("screen", "clean", True)):
             with self.subTest(route=route):
                 rc, out, made = self.post("No blocking finding.", [], "No blocking finding.", "pass", route=route,
@@ -14064,8 +14236,9 @@ class ImportCheckTest(ReaderRunner):
         """Fresh reader round 10 (N-M1, a writer's own push): an earlier screen of eve's push held alice's #7, so #7 has
         a label comment with Sami's step and no state label. Then alice pushes herself: the trust job asked GitHub of
         alice already, so its outside is false, although the route is review, with no screen. The review gives each
-        verdict, and the comment job's label step writes the state reviewed in the place of that label comment, with
-        no state label: never that the workflow tries again."""
+        verdict. The post job runs for the review of each pull request (round 11), and its decision is writer: no check
+        run. The comment job's label step writes the state reviewed in the place of that label comment, with no state
+        label: never that the workflow tries again."""
         self.permissions(alice="write")
         self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
         self.serve_item(7, "alice", kind="pr", head=HEAD)
@@ -14078,7 +14251,8 @@ class ImportCheckTest(ReaderRunner):
         for verdict in ("pass", "blocking", "person"):
             with self.subTest(verdict=verdict):
                 got = self.judge(["README.md"], verdict, trust=trust, outside="false", comments=[old])
-                self.assertEqual((got["result"], got["labels"]), ("skipped", []), got["log"])
+                self.assertEqual((got["result"], got["post"].get("decision"), got["labels"]), ("success", "writer", []),
+                                 got["log"])
                 self.assertEqual(got["comments"], [rules.label_comment("reviewed", old["body"])], got["log"])
 
     def test_a_pull_request_reviewed_by_hand_says_that_its_review_names_the_next_step(self):
@@ -14096,7 +14270,7 @@ class ImportCheckTest(ReaderRunner):
             self.serve_item(7, author, kind="pr", head=HEAD)
             rc, out, trust = self.run_trust("workflow_dispatch", actor="alice")
             self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"), trust.get("outside")),
-                             (0, "review", "review", "", ""), out)
+                             (0, "review", "review", "", "false"), out)
             trust = {k: trust[k] for k in ("task", "route", "outsider", "outside", "number", "head", "started")}
             for verdict in ("pass", "blocking", "person"):
                 with self.subTest(author=author, verdict=verdict):
@@ -14121,37 +14295,82 @@ class ImportCheckTest(ReaderRunner):
         old = {"id": 40, "user": {"login": BOT}, "body": body}
         for verdict, want in (("blocking", {AUTHOR_LABEL}), ("person", {THEOREM_LABEL}), ("pass", {THEOREM_LABEL})):
             with self.subTest(verdict=verdict):
-                got = self.judge(["README.md"], verdict, trust=dict(self.BY_HAND, outside=""),
+                got = self.judge(["README.md"], verdict, trust=dict(self.BY_HAND, outside="true"),
                                  event="workflow_dispatch", comments=[old], labels=("review-held", THEOREM_LABEL))
                 have = {THEOREM_LABEL}
                 for change, name in got["labels"]:
                     (have.add if change == "+" else have.discard)(name)
                 self.assertEqual(have, want, got["log"])
 
-    def test_a_writers_pull_request_reads_no_import_check_run_to_withdraw(self):
-        """Fresh reader round 11 (R11-M2): the workflow records the import check run for an outside pull request
-        alone, and the rescreen pass tries no App write of a writer's pull request again. So the post job of a
-        writer's pull request (the trust job's outside is false: eve pushed to alice's #7, and the screen passed)
-        neither reads nor withdraws a check run after a blocking finding or the verdict person: no error promises a
-        retry, here while GitHub refuses the read of the check runs. The review of an outside pull request (outside
-        true), and alice's review by hand of mallory's #7 (outside empty: the trust job does not know it), still read
-        them, and fail at the refused read with that error."""
+    def test_a_withdrawal_that_fails_promises_the_retry_of_the_rescreen_pass_for_an_outside_author_alone(self):
+        """Round 11 (the author-kind table: withdraw for every author, retry for an outside author alone) and test
+        v10 b7 (review.yml's errors of a withdrawal): the post job withdraws the import check run of a head for every
+        author, as a check run that an earlier run recorded may stand on it. The rescreen pass tries no App write of
+        another author's pull request again (held.sh, consider and access_of), so only the error of an outside
+        author's pull request says that the pass tries the withdrawal again, and any other says "Re-run this run.".
+        GitHub refuses the read of the check runs of HEAD, then the PATCH of the check run 901, after a blocking finding
+        or the verdict person, for: a writer's pull request (eve pushed to alice's #7, and the screen passed); alice's
+        review by hand of mallory's #7 while GitHub does not say whether mallory has write access (outside false); the
+        review of mallory's #7; and alice's review by hand of it (outside true)."""
+        listed, _others = self.recorded()
         find = "Find the import check runs that a later review or screen withdraws"
-        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
-        writer = dict(self.REVIEWED, outsider="eve", outside="false")
-        for case, trust, event, outside, step_ran in (
-                ("a writer's pull request", writer, "workflow_run", "false", "skipped"),
-                ("an outside pull request", self.REVIEWED, "workflow_run", "true", "failure"),
-                ("a review by hand of an outside pull request", dict(self.BY_HAND, outside=""), "workflow_dispatch",
-                 "true", "failure")):
-            for verdict in ("blocking", "person"):
-                with self.subTest(case=case, verdict=verdict):
-                    start = len(self.logs)
-                    got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event=event, outside=outside)
-                    logs = "\n".join(self.logs[start:])
-                    self.assertEqual(got["steps"].get(find, "skipped"), step_ran, logs)
-                    self.assertEqual(got["result"], "success" if step_ran == "skipped" else "failure", logs)
-                    self.assertEqual("could not be read, so none of them is withdrawn" in logs, step_ran == "failure")
+        withdraw = "Withdraw the import check runs of the head"
+        retry = (" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
+                 f" run ends. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment"
+                 " names the next step for Sami.")
+        cases = (("a writer's pull request", dict(self.REVIEWED, outsider="eve", outside="false"), "workflow_run",
+                  False),
+                 ("a review by hand while GitHub does not say of the author", dict(self.BY_HAND, outside="false"),
+                  "workflow_dispatch", False),
+                 ("an outside pull request", self.REVIEWED, "workflow_run", True),
+                 ("a review by hand of an outside pull request", self.BY_HAND, "workflow_dispatch", True))
+        for refused, name, error in (
+                (f"repos/{REPO}/commits/{HEAD}/check-runs", find,
+                 f"::error::the import check runs of {HEAD} could not be read, so none of them is withdrawn."),
+                (f"repos/{REPO}/check-runs/901", withdraw, f"::error::the import check run 901 of {HEAD} could not be "
+                                                           "withdrawn.")):
+            self.refuse(refused, 502, "Bad Gateway")
+            for case, trust, event, promised in cases:
+                for verdict in ("blocking", "person"):
+                    with self.subTest(step=name, case=case, verdict=verdict):
+                        start = len(self.logs)
+                        got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event=event, listed=[listed])
+                        logs = "\n".join(self.logs[start:])
+                        self.assertEqual((got["steps"].get(name), got["result"]), ("failure", "failure"), logs)
+                        self.assertIn(error + (retry if promised else " Re-run this run.") + "\n", logs)
+                        self.assertEqual("The rescreen pass tries" in logs, promised, logs)
+            os.remove(os.path.join(self.api, refused.replace("/", "_") + ".fail"))
+
+    def test_the_label_step_changes_nothing_for_an_author_whose_access_github_does_not_give(self):
+        """OSSV-221's architect's ruling of 2026-11-20 14:35Z (the author-kind table): for an author whose write access
+        GitHub cannot say (the trust job's kind unknown, and outside false), the label steps change nothing on the
+        item. alice reviews mallory's #7 by hand, and relabels its head, while GitHub's permission API does not answer
+        for mallory. #7 has waits-on-theorem and the label comment of an earlier review. After each verdict of the
+        review, and after the relabel of a review comment with the verdict person, the comment job's label step adds
+        and takes off no state label and writes no label comment, and its log says why. review-held still comes off
+        after the review, as it belongs to the hold. The post job records no check run: its decision is writer."""
+        self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
+        self.serve_item(7, "mallory", kind="pr", head=HEAD)
+        keys = ("task", "route", "outsider", "kind", "outside", "number", "head", "started")
+        runs = []
+        for task in ("review", "relabel"):
+            rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", task=task, head=HEAD)
+            self.assertEqual((rc, trust.get("task"), trust.get("route"), trust.get("outsider"), trust.get("kind"),
+                              trust.get("outside")), (0, task, "review", "", "unknown", "false"), out)
+            runs.append({k: trust[k] for k in keys})
+        old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("person")}
+        notice = ("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
+                  "neither its state label nor its label comment.")
+        for trust, verdict, comments in ((runs[0], "pass", [old]), (runs[0], "blocking", [old]),
+                                         (runs[0], "person", [old]), (runs[1], "", [review_of(HEAD, "person"), old])):
+            with self.subTest(task=trust["task"], verdict=verdict):
+                got = self.judge(["README.md"], verdict, self.LPS, trust=trust, event="workflow_dispatch",
+                                 comments=comments, labels=("review-held", THEOREM_LABEL))
+                self.assertNotRecorded(got, "writer")
+                self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+                self.assertIn(notice, got["log"])
+                held_off = ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"] in gh_calls(self.api)
+                self.assertEqual(held_off, trust["task"] == "review", got["log"])
 
     def test_a_relabel_reads_each_screened_review_comment_of_the_head_and_the_screen_holds_after_it(self):
         """R12 (review round 1): the screen passed HEAD in the run of a review, whose review comment holds the marker

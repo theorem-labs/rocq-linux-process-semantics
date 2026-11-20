@@ -2,7 +2,8 @@
 """The rules of the review workflow that code applies, whatever the model wrote (.github/review.md, "Outside items and
 labels").
 
-    python3 .github/review/rules.py label <number> [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
+    python3 .github/review/rules.py label <number> task=<task> outside=<outside> outsider=<outsider> author=<kind>
+        [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line>
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
@@ -16,32 +17,39 @@ labels").
     python3 .github/review/rules.py verdict <number> <head>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <checks.jsonl> <directory>
     python3 .github/review/rules.py steering <files.jsonl>
-    python3 .github/review/rules.py relabel <number> <head> [<fact>=<value> ...] [marker=<line> ...]
+    python3 .github/review/rules.py relabel <number> <head> outside=<outside> outsider=<outsider> author=<kind>
+        [<fact>=<value> ...] [marker=<line> ...]
+    python3 .github/review/rules.py answers <task> <outside> <outsider> [<kind>]
 
 label: the state of the pull request or issue <number> after the event of this run (label_state, from the facts of
-FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The state label is
-waits-on-author when the next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in
-the states steering and no-key), and none while the workflow works on the item. Setting one label takes the other off.
-review-held, the mark of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the
-item, edited in place (label_comment). Its first line is <!-- review-label -->, its text names the next step and who
-takes it, and with a state label its last line is the marker <!-- waits-on-author --> or
-<!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds, and a marker=<line> of the same kind
-takes the place of that line. It holds <!-- review-conflict-state <head> --> while it gives the head waits-on-author
-for a merge conflict, and loses that line with any other state. The state steering (the fact steering=true, with
-head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the
-post job approves none of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact
-no_key=true, with head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head,
-but the environment post held no key of the OSS Verify App, so the post job approved none of its runs, and the
-rescreen pass starts no approval of it. In a state with no state label (working, reviewed or import), an item that has
-a label comment gets the text of its state, and an item that has none gets none. For an outside pull request (the facts
-kind=pr and outsider=true) in the state decide or person, the text also names the step of R12 for the import into the
-internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
-given only when it is set, and decision, the post job's decision (DECISIONS). A writer's item (the fact writer=true:
-its author has write access) gets no state label and loses each one that it has, but its label comment is the one of
-its state, with the marker of the state's label. A pull request whose review gave a verdict, and that no rule before
-it takes (a conflict, a hold, a stop of the post job, a refusal, or the outcome of an outside path), is in the state
-reviewed, whoever started the run: its review names the next step. GH_TOKEN and REPO come from the job's
-environment, as for gh in the workflow.
+FACTS that the job gives), and on GitHub its one state label and its label comment (apply). The job also gives the
+task of the run, one of TASKS, and the trust job's outputs outside, outsider and kind as they are (author=<kind>).
+The answer label of the author-kind table (answers) tells what this does. For an outside author (outside_author: the
+trust job's outside is true) it gives the item the state label of its state. For an author whose write access GitHub
+did not give (author=unknown) it changes nothing: no state label goes on or off, the label comment stays as it is, and
+a notice says why. For any other author, the item gets no state label and loses each one that it has, but its label
+comment is the one of its state, with the marker of the state's label. The state label is waits-on-author when the
+next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in the states steering and
+no-key), and none while the workflow works on the item. Setting one label takes the other off. review-held, the mark
+of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the item, edited in place
+(label_comment). Its first line is <!-- review-label -->, its text names the next step and who takes it, and with a
+state label its last line is the marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps each
+marker line of KEPT that it holds, and a marker=<line> of the same kind takes the place of that line. It holds
+<!-- review-conflict-state <head> --> while it gives the head waits-on-author for a merge conflict, and loses that line
+with any other state. The state steering (the fact steering=true, with head=<commit>) records
+<!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the post job approves none
+of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact no_key=true, with
+head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head, but the environment
+post held no key of the OSS Verify App, so the post job approved none of its runs, and the rescreen pass starts no
+approval of it. In a state with no state label (working, reviewed or import), an item that has a label comment gets
+the text of its state, and an item that has none gets none. For an outside pull request (the fact kind=pr, and an
+outside author) in the state decide or person, the text also names the step of R12 for the import into the internal
+repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS, given only
+when it is set, and decision, the post job's decision (DECISIONS). With head=<commit>, the label comment of an outside
+pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose review
+gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
+outcome of an outside author's item), is in the state reviewed, whoever started the run: its review names the next
+step. GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -72,7 +80,7 @@ dune file that the job cannot read goes on the list of such files.
 soundness: the soundness rule of R8 (.github/review.md, "Soundness of a Rocq proof"), which code applies whatever the
 model wrote. Stock Rocq accepts three public proofs of False (ISSUES), and this repository's CI lanes check the proofs
 on stock Rocq, as the checks that the import's copy must pass do. So a pass of the checks does not show a proof sound.
-The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the gather job's outside,
+The rule holds while <hold> (SOUNDNESS_HOLD) is true, for an outside pull request (<outside>, the trust job's outside,
 is not false) that changes a path that soundness.json counts or a .v file under head/, or whose list of changed paths
 is not whole: the job cannot show then that no proof changed. Then <output.json>, the review's output {comment,
 verdict, will_fix, items}, gets the verdict person whatever the model gave, and QUESTION when its list has no question
@@ -150,12 +158,19 @@ files as the API lists them on every page of pulls/<n>/files, one {filename, pre
 when the path of a file, or the path that it had before a rename, is one, else false, on standard output. The post
 job approves no held run of such a head (R10). The status is 2 when a line is not such a file.
 
-relabel: label (above) for the head <head> of the pull request <number>, with the facts that the workflow wrote of
-that head (relabel_facts) beside the facts and the marker lines of the job: the verdict and will-fix of the review
-comment that names <head>, an answer at <head> whose author said they will make the change, the fix reviews of
-<head> and the count of fix reviews since the author's last own push, or the hold comment that names <head> when it
-is newer than all of those. When the workflow wrote nothing of <head> but the conflict-state line of its label
-comment, the item gets no state label and the line goes. When it wrote nothing of <head>, nothing changes.
+relabel: label (above) for the head <head> of the pull request <number>, for the task relabel (the job gives no
+task=), with the facts that the workflow wrote of that head (relabel_facts) beside the facts and the marker lines of
+the job: the verdict and will-fix of the review comment that names <head>, an answer at <head> whose author said they
+will make the change, the fix reviews of <head> and the count of fix reviews since the author's last own push, or the
+hold comment that names <head> when it is newer than all of those. When the workflow wrote nothing of <head> but the
+conflict-state line of its label comment, the item gets no state label and the line goes. When it wrote nothing of
+<head>, nothing changes.
+
+answers: the answers of the author-kind table (TABLE) for <task>, one of TASKS, as <answer>=<value> lines for
+$GITHUB_OUTPUT: label (set, off or unchanged), then approve, record, withdraw and retry (true or false). <outside> and
+<outsider> are the trust job's outputs of those names, and <kind> is its output kind, which only a label step gives.
+The author is outside when <outside> is true, and only then (outside_author). <outsider> is a GitHub login or empty,
+and no answer reads it. The status is 2 when an argument is not one of these.
 
 The standard library of Python 3 alone.
 """
@@ -181,14 +196,11 @@ LABELS = {
                     "The review workflow held this pull request or issue. Its hold comment tells what happens next."),
 }
 
-# The facts of a run that the rule reads, with their values when a job does not give them.
+# The facts of a run that the rule reads, with their values when a job does not give them. label_state's outsider is
+# no fact of a job: set_state reads it from the trust job's outside (outside_author).
 FACTS = {
     # pr or issue.
     "kind": "",
-    # The run took an outsider's path (the trust job's outsider) for an outside item: it screened the item first, so
-    # its review ran only after the screen passed. A writer's pull request whose head an outsider pushed is no outside
-    # item: the comment job gives it false.
-    "outsider": False,
     # The review's verdict at the head: pass, blocking or person.
     "verdict": "",
     # A fix review posted for a blocking finding: suggested changes (R2).
@@ -228,19 +240,15 @@ FACTS = {
     "import_paths": None,
     # The post job's decision on the import check run at the head, one of DECISIONS.
     "decision": "",
-    # The item's author has write access (the trust job's outside is false): it is no outside item, so it gets no
-    # state label (R5). This fact changes no state (label_state does not read it): the label comment still names the
-    # next step, with the marker of the state's label, so that Theorem's view lists an item that waits on Sami.
-    "writer": False,
 }
 VERDICTS = ("", "pass", "blocking", "person")
 # The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
 REFUSALS = ("", "review", "answer", "fix")
 # The post job's decisions on the import check run at a head: record, or the first rule of R12 that does not hold
-# (import_decision), or moved when the pull request moved on from the head, or writer when its author has write access
-# (the screen was for the account without write access that pushed the head), or held when a relabel finds a hold
-# comment of the screen that is newer than each review comment whose run screened the head (review_verdict). Empty
-# when the job gave none.
+# (import_decision), or moved when the pull request moved on from the head, or writer when its author is no outside
+# author (it has write access, or GitHub did not say: the author-kind table's record is false), or held when a relabel
+# finds a hold comment of the screen that is newer than each review comment whose run screened the head
+# (review_verdict). Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held")
 
@@ -250,7 +258,7 @@ DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread",
 # paths that the pull request changes.
 PASSED = "The automated screen and the automated review passed this pull request."
 # The decision screen of an outside pull request whose review passed: no screen passed its head in the run of a review
-# (a writer's review by hand runs none), so the text says so in the place of PASSED.
+# (a review by hand with no screen runs none), so the text says so in the place of PASSED.
 UNSCREENED = ("The automated review passed this pull request. No automated screen passed its head commit in a run that "
               "also reviewed it, so the workflow did not record the check `repo-pairs/import-approved`.")
 # The decision held: a screen held the head after each review whose run screened it, so the text says so in the place
@@ -349,10 +357,9 @@ STATES = {
     "working": (
         None, "The workflow tries again.",
         "You do not need to do anything. When a hold comment gives a time, the workflow tries again from that time."),
-    # A pull request whose review gave a verdict, with no state of an outside pull request: a writer's, or one that a
-    # person reviewed by hand with no screen. The review names the next step. Nothing in this workflow tries the review
-    # of the head again, but for an outside pull request the rescreen pass can relabel the head (held.sh, due_variable),
-    # which gives it its outside state.
+    # A pull request whose review gave a verdict, with no state of an outside pull request: its author is no outside
+    # author (outside_author). The review names the next step, and nothing in this workflow tries the review of the
+    # head again.
     "reviewed": (
         None, "The automated review of the head commit names the next step and who takes it.",
         "After a push, the automated review runs again."),
@@ -381,8 +388,8 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
                 conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, steering=False,
                 no_key=False, held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
                 decision=""):
-    """The state of an item after the event of a run, a key of STATES, from the facts of FACTS. The first rule that
-    holds gives it."""
+    """The state of an item after the event of a run, a key of STATES, from the facts of FACTS, and outsider, true for
+    the item of an outside author (outside_author). The first rule that holds gives it."""
     if kind not in ("", "pr", "issue"):
         raise ValueError(f"not a kind of item: {kind!r}")
     if verdict not in VERDICTS:
@@ -413,7 +420,7 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
     # A text that the fresh reader refused never posts: Sami writes it, whoever wrote the item.
     if refused:
         return f"refused-{refused}"
-    # The review's outcome, for an item whose review followed a screen that passed.
+    # The review's outcome, for the item of an outside author.
     if outsider:
         if kind == "pr":
             if will_fix:
@@ -430,9 +437,9 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         # post job recorded the import check run at its head, which it does only when the import takes each path.
         if kind == "pr" and verdict == "pass":
             return "import" if recorded and import_paths is not None else "decide"
-    # A pull request whose review gave a verdict and that no rule above takes: a writer's, or one that a person
-    # reviewed by hand with no screen. Its review names the next step, and nothing tries the review of the head again,
-    # so the text does not say that the workflow tries again.
+    # A pull request whose review gave a verdict and that no rule above takes: its author is no outside author. Its
+    # review names the next step, and nothing tries the review of the head again, so the text does not say that the
+    # workflow tries again.
     if kind == "pr" and verdict:
         return "reviewed"
     return "working"
@@ -608,9 +615,9 @@ def make_label(name):
 def apply(number, state, markers=(), head="", imports=None, labels=None, labelled=True):
     """Gives the item number the state label of state, takes the other one off, and writes its label comment
     (label_comment, with imports). labels are the item's label comments of BOT, each {id, body}, when the caller read
-    them already; else this reads them. When labelled is False (a writer's item), the item gets no state label and
-    loses each one that it has, but its label comment is the state's all the same, with the marker of the state's
-    label."""
+    them already; else this reads them. When labelled is False (the label answer off of the author-kind table), the
+    item gets no state label and loses each one that it has, but its label comment is the state's all the same, with
+    the marker of the state's label."""
     repo = os.environ["REPO"]
     want = label_of(state) if labelled else None
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
@@ -688,31 +695,148 @@ def mark(number, line):
     print(f"#{number}: its label comment holds {line}.")
 
 
-def set_state(number, facts, markers=(), head="", labels=None):
-    """Gives the item number the state that facts give (label_state), with its state label and its label comment
-    (apply, with labels): for an outside pull request, with the steps of R12 for the import. The fact writer keeps the
-    state label off (apply). The label comment is made once before any write, so that a marker or a head that it
-    refuses changes nothing on GitHub."""
-    facts = dict(facts)
-    writer = facts.pop("writer", False)
-    state = label_state(**facts)
+# --- the author-kind table ------------------------------------------------------------------------------------------
+# What the workflow does for the item of a run, by the kind of its author. The trust job decides the kind once
+# (trusted): its output outside is true for an outside author, and its output kind is writer, outsider or unknown
+# (GitHub did not say whether the author has write access). Each step of review.yml reads its answer here (answers):
+# the post job's steps read approve, record, withdraw and retry, and the label steps read label.
+#
+# - label: set gives the item the state label of its state. off takes each state label off, and the label comment is
+#   the state's all the same. unchanged writes nothing of the state: no state label goes on or off, and the label
+#   comment stays as it is. review-held belongs to a hold, and no answer of this table names it.
+# - approve: the post job approves the held runs of the head when the screen of this run passed the head (R10).
+# - record: the post job decides on the import check run of the head, and records it when the rules of R12 hold.
+# - withdraw: the post job withdraws the import check runs of the head when this run gives a reason (R12): a review of
+#   the head with a blocking finding or the verdict person, a screen that held the head, or a relabel that finds such
+#   a review or a later hold of the screen.
+# - retry: the error of a withdrawal that GitHub refused, or that could not be read, says that the rescreen pass tries
+#   it again. The pass tries no App write of the item of another author again (held.sh, consider and access_of), so
+#   for such an author the error says "Re-run this run." instead.
+#
+# The tasks are the trust job's (the top of review.yml), and hold is the hold job. The hold job makes no App write: in
+# the same run, the post job withdraws the import check runs of a head that the screen held, by the row of the task.
+TASKS = ("review", "rescreen", "approve", "relabel", "answer", "draft", "reply", "conflict", "stop", "catchup", "hold")
+# The classes of an author (author_class): outside, unknown, and other (a writer, or a kind that the step did not give).
+CLASSES = ("outside", "unknown", "other")
+ANSWERS = ("label", "approve", "record", "withdraw", "retry")
+# For each class, the answers of each task, in the order of ANSWERS. An unknown author gets the answers of other but
+# label: each answer but label reads outside alone.
+TABLE = {
+    # (task, class)            label        approve record withdraw retry
+    ("review", "outside"):     ("set",       False,  True,  True,    True),
+    ("review", "unknown"):     ("unchanged", False,  False, True,    False),
+    ("review", "other"):       ("off",       False,  False, True,    False),
+    ("rescreen", "outside"):   ("set",       False,  True,  True,    True),
+    ("rescreen", "unknown"):   ("unchanged", False,  False, True,    False),
+    ("rescreen", "other"):     ("off",       False,  False, True,    False),
+    ("approve", "outside"):    ("set",       True,   False, True,    True),
+    ("approve", "unknown"):    ("unchanged", False,  False, True,    False),
+    ("approve", "other"):      ("off",       False,  False, True,    False),
+    ("relabel", "outside"):    ("set",       False,  True,  True,    True),
+    ("relabel", "unknown"):    ("unchanged", False,  False, True,    False),
+    ("relabel", "other"):      ("off",       False,  False, True,    False),
+    ("answer", "outside"):     ("set",       False,  False, False,   False),
+    ("answer", "unknown"):     ("unchanged", False,  False, False,   False),
+    ("answer", "other"):       ("off",       False,  False, False,   False),
+    ("draft", "outside"):      ("set",       False,  False, False,   False),
+    ("draft", "unknown"):      ("unchanged", False,  False, False,   False),
+    ("draft", "other"):        ("off",       False,  False, False,   False),
+    ("reply", "outside"):      ("set",       False,  False, False,   False),
+    ("reply", "unknown"):      ("unchanged", False,  False, False,   False),
+    ("reply", "other"):        ("off",       False,  False, False,   False),
+    ("conflict", "outside"):   ("set",       False,  False, False,   False),
+    ("conflict", "unknown"):   ("unchanged", False,  False, False,   False),
+    ("conflict", "other"):     ("off",       False,  False, False,   False),
+    ("stop", "outside"):       ("set",       False,  False, False,   False),
+    ("stop", "unknown"):       ("unchanged", False,  False, False,   False),
+    ("stop", "other"):         ("off",       False,  False, False,   False),
+    ("catchup", "outside"):    ("set",       False,  False, False,   False),
+    ("catchup", "unknown"):    ("unchanged", False,  False, False,   False),
+    ("catchup", "other"):      ("off",       False,  False, False,   False),
+    ("hold", "outside"):       ("set",       False,  False, False,   False),
+    ("hold", "unknown"):       ("unchanged", False,  False, False,   False),
+    ("hold", "other"):         ("off",       False,  False, False,   False),
+}
+# The values of the trust job's outputs outside and kind, and the form of a GitHub login, which its output outsider
+# is when it is not empty.
+OUTSIDE_VALUES = ("", "true", "false")
+KINDS = ("", "writer", "outsider", "unknown")
+LOGIN = re.compile(r"[A-Za-z0-9-]+(?:\[bot\])?")
+# The arguments of label that give the run: its task, and the trust job's outputs outside, outsider and kind (author).
+RUN = ("task", "outside", "outsider", "author")
+
+
+def outside_author(outside):
+    """Whether the item's author is an outside author, from the trust job's output outside: true, and only then. The
+    trust job gives true when trusted gives 1 for the author (no write access, an App that the workflow's APPS list
+    does not name, or no GitHub login), and false when it gives 0 (write access, or one of the APPS) or 2 (GitHub did
+    not say). An empty or missing value is not outside, so that it gives no state label, approves no held run and
+    records no import check run. The trust job's output outsider is never read for it: a review by hand of an outside
+    pull request screens no account, and its outsider is empty."""
+    return outside == "true"
+
+
+def author_class(outside, kind=""):
+    """The class of CLASSES of the item's author: outside when outside_author holds, unknown when the trust job's output
+    kind is unknown, and other for any other author. An empty or missing kind is not unknown."""
+    if outside_author(outside):
+        return "outside"
+    return "unknown" if kind == "unknown" else "other"
+
+
+def answers(task, outside, outsider, kind=""):
+    """{answer: value} of TABLE for task and the class of the author (author_class) that the trust job's outputs
+    outside and kind give. outsider is checked and read for no answer. A ValueError when task is not one of TASKS,
+    outside is not one of OUTSIDE_VALUES, outsider is neither empty nor a GitHub login, or kind is not one of KINDS."""
+    if task not in TASKS:
+        raise ValueError(f"not a task of the author-kind table: {task!r}")
+    if outside not in OUTSIDE_VALUES:
+        raise ValueError(f"the trust job's outside is true, false or empty, not {outside!r}")
+    if outsider and not LOGIN.fullmatch(outsider):
+        raise ValueError(f"the trust job's outsider is a GitHub login or empty, not {outsider!r}")
+    if kind not in KINDS:
+        raise ValueError(f"the trust job's kind is writer, outsider, unknown or empty, not {kind!r}")
+    return dict(zip(ANSWERS, TABLE[(task, author_class(outside, kind))]))
+
+
+def set_state(number, run, facts, markers=(), head="", labels=None):
+    """Gives the item number the state that facts give (label_state), as the label answer of the author-kind table for
+    run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice.
+    label_state's outsider is outside_author of the trust job's outside. For an outside pull request, the label comment
+    names the steps of R12 for the import, and holds the marker line of R12 for head when head is given (import_marker).
+    The label comment is made once before any write, so that a marker or a head that it refuses changes nothing on
+    GitHub."""
+    label = answers(run["task"], run["outside"], run["outsider"], run["author"])["label"]
+    if label == "unchanged":
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so the workflow changes "
+              "neither its state label nor its label comment.")
+        return
+    outsider = outside_author(run["outside"])
+    state = label_state(outsider=outsider, **facts)
     imports = None
-    if facts.get("kind") == "pr" and facts.get("outsider"):
+    if facts.get("kind") == "pr" and outsider:
         imports = (facts.get("import_paths"), facts.get("decision", ""))
+        if head:
+            markers = [*markers, import_marker(head, imports[0])]
     label_comment(state, "", markers, head, imports)
-    apply(number, state, markers, head, imports, labels, labelled=not writer)
+    apply(number, state, markers, head, imports, labels, labelled=label == "set")
 
 
-def parse(args):
-    """The facts, the marker lines and the head of label's arguments: <fact>=<value> for each fact of FACTS (true or
-    false, or empty for false, for each fact that is one or the other), head=<commit>, and marker=<line>. The job gives
-    import_paths=<text> only when the variable is set."""
-    facts, markers, head = {}, [], ""
+def parse(args, run=()):
+    """The facts, the marker lines, the head and the run of label's arguments: <fact>=<value> for each fact of FACTS
+    (true or false, or empty for false, for each fact that is one or the other), head=<commit>, marker=<line>, and
+    <name>=<value> for each name of run, which each must be given once. The job gives import_paths=<text> only when the
+    variable is set."""
+    facts, markers, head, given = {}, [], "", {}
     for arg in args:
         name, eq, value = arg.partition("=")
         if not eq:
             raise ValueError(f"not <name>=<value>: {arg!r}")
-        if name == "marker":
+        if name in run:
+            if name in given:
+                raise ValueError(f"{name} is given twice")
+            given[name] = value
+        elif name == "marker":
             marker_kind(value)
             markers.append(value)
         elif name == "head":
@@ -727,7 +851,10 @@ def parse(args):
             facts[name] = value == "true"
         else:
             facts[name] = value
-    return facts, markers, head
+    missing = [name for name in run if name not in given]
+    if missing:
+        raise ValueError(f"the label rule needs {', '.join(f'{name}=' for name in missing)}")
+    return facts, markers, head, given
 
 
 # --- the import check (R12) ---------------------------------------------------------------------------------------
@@ -1793,8 +1920,12 @@ def main(argv):
             make_label(argv[1])
             return 0
         if len(argv) >= 2 and argv[0] == "label" and NUMBER.fullmatch(argv[1]):
-            facts, markers, head = parse(argv[2:])
-            set_state(argv[1], facts, markers, head)
+            facts, markers, head, run = parse(argv[2:], RUN)
+            set_state(argv[1], run, facts, markers, head)
+            return 0
+        if len(argv) in (4, 5) and argv[0] == "answers":
+            for name, value in answers(*argv[1:]).items():
+                print(f"{name}={str(value).lower() if isinstance(value, bool) else value}")
             return 0
         if len(argv) == 3 and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
             mark(argv[1], argv[2])
@@ -1882,9 +2013,10 @@ def main(argv):
             return 0
         if len(argv) >= 3 and argv[0] == "relabel" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
             number, head = argv[1], argv[2]
-            facts, markers, given = parse(argv[3:])
+            facts, markers, given, run = parse(argv[3:], RUN[1:])
             if given:
                 raise ValueError("relabel names its head before the facts, not as head=")
+            run["task"] = "relabel"
             repo = os.environ["REPO"]
             comments = gh_objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
@@ -1903,7 +2035,7 @@ def main(argv):
             # The label comments that apply would read again: nothing between the two reads writes a comment.
             labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
                       if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
-            set_state(number, facts, markers, head, labels)
+            set_state(number, run, facts, markers, head, labels)
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)
