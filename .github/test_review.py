@@ -10384,6 +10384,29 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
                 self.assertIn("so its hold is settled", out)
 
+    def test_a_held_run_after_the_approval_that_settled_its_hold_gets_review_tries_of_its_own(self):
+        """OSSV-221's architect (2026-11-21 00:40Z): a held run of the head made after the head's last approval gets a
+        new approve run, within the caps. Approve run 10 settled the hold of the approval at the limit: its post job
+        approved the held runs. GitHub then holds runs 61 and 62, made after run 10, and REVIEW_TRIES - 1 approve runs
+        of them failed at the approval itself. Those are the only tries since the approval, as with no hold
+        (due_approve, failures): the pass, with no number and with the number of #7, starts one more approve run of
+        the head, and no stop whose hold comment says that no try finished. Run 10 counts no try of the hold."""
+        approved = post_job({self.HELD: "success", MINT_B: "success", self.APPROVE: "success"})
+        refused = post_job({self.HELD: "success", MINT_B: "success", self.APPROVE: "failure"})
+        self.origin(50, BOT, event="workflow_dispatch", title=f"approve #7 at {HEAD} of mallory")
+        self.item(kind="pr", labels=("review-held",), comments=[
+            limit_hold(50, at=ago(400), tries=0, task="approve", head=HEAD)])
+        self.ran(10, f"approve #7 at {HEAD} of mallory", made=300,
+                 jobs=[attempt_job("gather"), self.screened(), approved])
+        self.held_runs(made=200)
+        for i in range(self.TRIES - 1):
+            self.ran(20 + i, f"approve #7 at {HEAD} of mallory", made=180 - 70 * i,
+                     jobs=[attempt_job("gather"), self.screened(), refused])
+        for number in (None, 7):
+            with self.subTest(number=number):
+                rc, out, runs = self.started(number=number)
+                self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+
     def test_a_review_whose_post_job_could_not_sign_in_gets_one_relabel_after_an_hour(self):
         """D16 (the App's retry): the workflow_run review of an outside head whose post job failed at token A's mint
         gets one relabel run of that head, which records the import check run with no model, an hour after that run
