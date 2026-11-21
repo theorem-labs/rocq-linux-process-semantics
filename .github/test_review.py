@@ -15619,6 +15619,27 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((got["post"]["decision"], got["post"]["standing"]), ("hand", "true"), self.logs)
         self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
 
+    def test_a_success_under_a_newer_withdrawn_check_run_of_the_same_name_still_stands_for_a_pass_by_hand(self):
+        """Round 14, item 6 (OSSV-221's architect, 2026-11-21 14:43Z: every read of the head's check runs that decides
+        the standing state passes filter=all). Check run 901 of mallory's #7 at HEAD, with conclusion success, stands
+        under 905, a newer one of the same name that a withdrawal made neutral. alice's pass by hand with no screen
+        replaced the screened pass's review comment in place, and a relabel of HEAD reads the state. Its decision step
+        must find that 901 stands (standing) and keep #7 in the state import, as with 901 alone. A read of the newest
+        check run of each name alone would find 905 alone, and give the state decide while 901 stands."""
+        listed, _others = self.recorded()
+        older = dict(listed, completed_at=ago(120))
+        newer = dict(listed, id=905, conclusion="neutral", completed_at=ago(60))
+        by_hand = review_of(HEAD, at=ago(30), screened=False)
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        for case, runs in (("901 alone", [older]), ("901 under a newer withdrawn 905", [newer, older])):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                                 event="workflow_dispatch", comments=[by_hand, old], listed=runs)
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["standing"]),
+                                 ("success", "hand", "true"), self.logs)
+                self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+
     def test_a_relabel_after_a_pass_by_hand_over_a_screened_blocking_review_withdraws_what_stands(self):
         """Ruling 2 of OSSV-221's architect (2026-11-20 07:33Z: a refused withdrawal is retried by the rescreen pass)
         and the author-kind table, section 8, item 18 (22:21Z: a run that reads a head withdraws a standing success
