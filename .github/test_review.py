@@ -10519,6 +10519,28 @@ class ScheduleTest(Scheduled):
                 named = f"\n\n<!-- review-held-head {HEAD} -->" if pr else ""
                 self.assertEqual(posts, [f"<!-- review-held -->\n**{held}**\n\n{text}{named}"])
 
+    def test_a_stop_after_a_run_that_recorded_the_import_check_but_posted_no_review_never_says_a_try_finished_it(self):
+        """b7 fresh reader of round 12: rescreen run 10 of pull request #7 recorded the import check of its head, which
+        settles the hold of the review (facts: settled), but its comment job failed to post the review. Then
+        REVIEW_TRIES runs settled nothing. The stop's hold comment must not say that a later try finished the automated
+        review: no try posted it."""
+        title = f"rescreen #7 at {HEAD} of mallory"
+        recorded = post_job({"Record the import check of the head": "success"})
+        failed = attempt_job("comment", failed="Post the review, or replace the one posted before")
+        self.origin(50, "mallory", event="workflow_dispatch", title=f"review #7 at {HEAD}")
+        self.item(kind="pr", labels=("review-held",), comments=[limit_hold(50, at=ago(400), tries=0)])
+        self.ran(10, title, made=300, jobs=[attempt_job("gather"), self.screened(),
+                                           attempt_job("review", name="review (screened)"), recorded, failed])
+        for i in range(self.TRIES):
+            self.ran(20 + i, title, made=180 - 50 * i)
+        rc, out, started = self.started()
+        self.assertEqual((rc, started), (1, [("7", "stop", "", HEAD, "hold-review")]), out)
+        _trust, steps = write_stop(self, "hold-review", head=HEAD)
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
+        posts = [a[len("body="):] for c in writes(self.api) for a in c if a.startswith("body=<!-- review-held -->")]
+        self.assertEqual(len(posts), 1, posts)
+        self.assertNotIn("a later try finished the automated review", posts[0])
+
     def test_a_review_whose_post_job_could_not_sign_in_gets_one_relabel_after_an_hour(self):
         """D16 (the App's retry): the workflow_run review of an outside head whose post job failed at token A's mint
         gets one relabel run of that head, which records the import check run with no model, an hour after that run
