@@ -4005,6 +4005,26 @@ class HoldTest(Holding):
         self.assertIn(label, calls)
         self.assertTrue(body.endswith("\n\n<!-- review-held-transient 50 2 -->"), body)
 
+    def test_a_screen_hold_is_held_when_the_post_job_that_the_hold_job_needs_could_not_sign_in(self):
+        """Round 14 (the hold job needs the post job): the screen of a review, a rescreen or an approval of mallory's
+        #7 held HEAD, and the post job, which withdraws the import check run of HEAD for that screen, failed at its
+        sign-in as the OSS Verify App. The hold job starts only after the post job ended, so the jobs of this attempt
+        that it reads always list that failed step. The screen judged the item: the hold job posts the hold of the
+        screen and sets review-held, as for a run whose sign-ins passed (test_a_run_that_signed_in_is_held)."""
+        self.assertIn("post", JOBS["hold"]["needs"])
+        ran = run_graph(self.OUTSIDER, results={"post": "failure"}, outputs={"screen": {"verdict": "held"}})
+        self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "post", "hold"})
+        label = ["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held", "--jq", ".[].name"]
+        for task in ("review", "rescreen", "approve"):
+            with self.subTest(task=task):
+                self.tearDown()
+                self.setUp()
+                rc, out, posts, _body = self.run_hold("screen", task=task, head=HEAD, jobs=self.gathered() + [
+                    attempt_job("screen", name="screen mallory"), attempt_job("post", MINT_A)])
+                self.assertEqual((rc, len(posts)), (0, 1), out)
+                self.assertIn(label, gh_calls(self.api))
+                self.assertNotIn("is not held", out)
+
     def test_a_check_of_the_count_that_failed_is_a_review_that_did_not_finish_not_the_cap(self):
         """The step "Check the count and the cap" fails before the cap's step, which is then skipped: the hold counts a
         try, and does not say that the cap was reached."""
