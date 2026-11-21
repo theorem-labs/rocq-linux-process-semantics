@@ -15017,6 +15017,43 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((got["post"]["decision"], got["post"]["standing"]), ("hand", "true"), self.logs)
         self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
 
+    def test_a_relabel_after_a_pass_by_hand_over_a_screened_blocking_review_withdraws_what_stands(self):
+        """Ruling 2 of OSSV-221's architect (2026-11-20 07:33Z: a refused withdrawal is retried by the rescreen pass)
+        and the author-kind table, section 8, item 18 (22:21Z: a run that reads a head withdraws a standing success
+        check run whenever the newest screened review of the head does not pass). The screened run of mallory's #7
+        recorded check run 901 on HEAD; a later screened review of HEAD gave a blocking finding, and GitHub refused its
+        withdrawal of 901, which still stands. alice then reviews HEAD by hand with no screen, and the review passes:
+        its post job finds the blocking review and tries to withdraw 901, and GitHub refuses that too, so its error
+        says that the rescreen pass tries the withdrawal again in a relabel of HEAD. The comment job posts alice's pass
+        in the place of the blocking review comment (30). That relabel must still withdraw 901, not read the standing
+        check run as the record of a screened pass and keep #7 in the state import."""
+        listed, _others = self.recorded()
+        blocking = review_of(HEAD, "blocking", at=ago(90))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
+                         event="workflow_dispatch", comments=[blocking, old], listed=[listed], named=HEAD)
+        self.assertEqual(got["result"], "failure", self.logs)
+        self.assertIn("The rescreen pass tries this withdrawal again in a relabel of this head", "\n".join(self.logs))
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
+        # The comment job posts alice's review: it replaces comment 30, the blocking review comment.
+        by_hand = review_of(HEAD, at=ago(0), screened=False)
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [blocking, old])
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        rc, out, _ = self.run_script(step("comment", "Post the review, or replace the one posted before")["run"],
+                                     NUMBER="7", BODY=by_hand["body"])
+        self.assertEqual(rc, 0, out)
+        # The item's comments after the post: a PATCH of comment 30 replaces its body, a POST adds a comment.
+        after = [by_hand, old]
+        if [c[:3] for c in writes(self.api)] != [["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]:
+            after = [blocking, by_hand, old]
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                         event="workflow_dispatch", comments=after, listed=[listed])
+        self.assertEqual([(t, e) for t, e, _b in got["withdrawn"]], [("token-A", f"repos/{REPO}/check-runs/901")],
+                         (got["post"].get("decision"), got["post"].get("standing"), got["log"]))
+
     def test_a_second_pass_by_hand_over_a_pass_by_hand_keeps_the_state_import_while_the_check_run_stands(self):
         """Round 12, item 3 (the author-kind table, section 8, items 17 and 18): the CI run of mallory's #7 screened
         HEAD, its review passed it, and its post job recorded the check run 901. alice then passed HEAD by hand with no
