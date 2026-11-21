@@ -5508,6 +5508,20 @@ class FreshReaderTest(ReaderRunner):
         self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
         self.assertNotIn(trim.NONE_ASKED, shown)
 
+    def test_a_bare_person_line_never_says_that_a_question_is_below_when_only_the_collapsed_copy_holds_it(self):
+        """b7 fresh reader of round 12 (ruling 2026-11-21 04:09Z: the line must be true where it posts). The model gives
+        the verdict person with no question item, and its first line is a bare "Questions for Sami:" with its question
+        on the lines after it. The reader's LIST names no question, so it may drop that question with the line. The
+        result line that goes back must not say that any question of this review is in the text below: only the
+        collapsed copy holds the question."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        question = "Does `fork` keep the parent's signal mask on Linux? The review cannot run Linux."
+        review = f"Questions for Sami:\n\n- {question}\n\nThe change fails the bar."
+        posted = trim.comment(review, "The change fails the bar.", [], head, "", "The foot.", verdict="person")
+        shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+        self.assertNotIn(question, shown)
+        self.assertNotIn("is in the text below", shown)
+
     def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
         """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends
         with the colon of "Questions for Sami:", which would open an empty list, so that the next lines would read as
