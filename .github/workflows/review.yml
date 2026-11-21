@@ -4029,8 +4029,9 @@ jobs:
                      and (.updated_at // "") >= $ENV.STARTED) | .id') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           if [ -n "$changed" ]; then
-            echo "#$NUMBER: a comment of the workflow on it changed at or after $STARTED, the time that the trust job" \
-              "took before it read the comments. So this run writes nothing. The next rescreen pass decides again."
+            echo "#$NUMBER: a comment of the workflow on it changed at or after $STARTED. The trust job read the" \
+              "clock at that time, before it read the comments. So this run writes nothing. The next rescreen pass" \
+              "decides again."
             exit 0
           fi
           rc=0

@@ -1358,10 +1358,10 @@ def first_line(text):
 
 
 def has_word(text):
-    """Whether text holds a word: a letter or a digit, after each list number at the start of a line ("1", "1." or
-    "1)") is taken out. "_" is markup, as "*" is, and not a part of a word. So "1. **", "- __" and "- **`" hold no
-    word, and "- 42" and "42 lemmas" each hold one."""
-    return bool(re.search(r"[^\W_]", re.sub(r"(?m)^\s*\d+[.)]?(?=\s|$)", "", text)))
+    """Whether text holds a word: a letter. A digit is no word, so no form of a list number ("1.", "(1)", "**1.**")
+    counts, and "_" is markup, as "*" is. So "1. **", "(1) **", "**1.**", "- __", "- **`" and "- 42" hold no word,
+    and "- **D" holds one. A cut copy with no word points to the run's summary, which holds the whole review."""
+    return bool(re.search(r"[^\W\d_]", text))
 
 
 def result_of(line):
@@ -1466,8 +1466,9 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
     the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
     its end when the comment would be over MAX_COMMENT characters. When the cut copy then keeps no word of the review
-    under its first line (has_word: only white space, list numbers, or markup such as "- **" and "_"), ASKED_SUMMARY
-    takes the place of ASKED_WHOLE in the result line (with_result), and the copy is cut again for that longer line."""
+    under its first line (has_word: no letter of the review, only white space, digits such as a list number, or markup
+    such as "- **" and "_"), ASKED_SUMMARY takes the place of ASKED_WHOLE in the result line (with_result), and the
+    copy is cut again for that longer line."""
     def build(whole, kept=True):
         shown = with_result(review, closed(inert(trimmed)), head, verdict, items, kept)
         return (framed((head, shown, section, added(missing(items, shown))), foot)
