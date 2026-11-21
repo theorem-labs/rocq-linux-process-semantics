@@ -15564,6 +15564,27 @@ class KindTableTest(Scheduled, ReaderRunner):
                     self.assertEqual(self.app_writes(), [("token-A", "PATCH", f"repos/{REPO}/check-runs/901")],
                                      got["log"])
 
+    def test_an_app_that_apps_does_not_name_is_an_outside_author_and_an_app_of_apps_a_writer(self):
+        """Spec v81, Definitions: an outside item's author has no write access and is not one of the Apps that APPS
+        names; any other App is an outside author, and its items are screened. The author-kind table, section 1:
+        outsider is also a bot outside APPS, and writer one of the APPS. Each cell of a CI review and of a relabel, with
+        renovate[bot] (not in APPS) in mallory's place and sjawhar-agent[bot] (in APPS) in alice's: the trust job gives
+        renovate[bot]'s pull request the kind outsider and outside true, the screen runs on it, and each step does what
+        the cell gives for mallory; sjawhar-agent[bot]'s pull request is a writer's, with no screen."""
+        apps = {"outsider": "renovate[bot]", "writer": "sjawhar-agent[bot]"}
+        for route, case, kind, w in self.CELLS:
+            if kind not in apps or route not in ("ci", "relabel"):
+                continue
+            with self.subTest(route=route, case=case, author=apps[kind]):
+                self.tearDown()
+                self.doCleanups()
+                self.setUp()
+                self.AUTHORS = dict(KindTableTest.AUTHORS, **apps)
+                got = self.run_cell(route, case, kind, w)
+                if route == "ci":
+                    self.assertEqual("screen" in got["ran"], kind == "outsider", got["log"])
+                self.assertCell(route, case, kind, w, got)
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
