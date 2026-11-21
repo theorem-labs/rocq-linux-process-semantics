@@ -3847,6 +3847,7 @@ class HoldTest(Holding):
         ctx.update({"needs.screen.result": "success", "needs.screen.outputs.verdict": "held",
                     "needs.post.outputs.owed": "", "needs.post.outputs.withdrawn": "",
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+        hold_screened(self, ctx)
         s = step("hold", "Record a withdrawal that this run owes")
         started = {f"env.{k}": v for k, v in filled(JOBS["hold"]["env"], ctx).items()}
         self.assertTrue(evaluate(s["if"], {**started, **ctx}))
@@ -4198,6 +4199,18 @@ def run_job(test, job, ctx, tokens, mint=True):
         failed = failed or outcome == "failure"
         outcomes[name] = outcome
     return outcomes
+
+
+def hold_screened(test, ctx):
+    """The hold job's step "Mark a hold of the screen of this run", as GitHub runs it in the contexts ctx: when its if
+    holds, its output held joins ctx, where the next step reads it. The result is ctx."""
+    s = step("hold", "Mark a hold of the screen of this run")
+    started = {f"env.{k}": v for k, v in filled(JOBS["hold"].get("env", {}), ctx).items()}
+    if evaluate(s["if"], {**started, **ctx}):
+        rc, out, got = test.run_script(s["run"])
+        test.assertEqual(rc, 0, out)
+        ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
+    return ctx
 
 
 class ApproveTest(Holding):
@@ -15979,6 +15992,7 @@ class ImportCheckTest(ReaderRunner):
                 ctx.update({"needs.screen.result": screen[0], "needs.screen.outputs.verdict": screen[1],
                             "needs.post.outputs.owed": "", "needs.post.outputs.withdrawn": withdrawn,
                             "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+                hold_screened(self, ctx)
                 started = {f"env.{k}": v for k, v in filled(JOBS["hold"]["env"], ctx).items()}
                 if not evaluate(s["if"], {**started, **ctx}):
                     self.assertIsNone(want)

@@ -2899,12 +2899,11 @@ jobs:
             echo "imports=$(jq -acn --arg v "$IMPORT_PATHS" 'if $v == "" then null else $v end')" >> "$GITHUB_OUTPUT"
             exit 0
           }
-          # write_owed <why>: the output owed, "<head> <why>", as soon as this step reads a reason to withdraw the
-          # import check runs of the head from the comments of the item (held, or the why of rules.py verdict): a
-          # command after it that fails leaves that output. It writes only while the step that finds the check runs can
-          # run (APP_KEY_SET and the table's withdraw), and with the reason of that step: screen for held, else the
-          # verdict blocking or person of this run's review or of the newest review comment of a relabel (verdict), else
-          # <why>.
+          # write_owed <why>: the output owed, "<head> <why>", as soon as this step reads from the comments of the item
+          # why the import check runs of the head are withdrawn (held, or the why of rules.py verdict): a command after
+          # it that fails leaves that output. It writes only while the step that finds the check runs can run
+          # (APP_KEY_SET and the table's withdraw), and with the why of that step: screen for held, else the verdict
+          # blocking or person of this run's review or of the newest review comment of a relabel (verdict), else <why>.
           write_owed() {
             local why=$1
             if [ "$why" != screen ] && { [ "$verdict" = blocking ] || [ "$verdict" = person ]; }; then why=$verdict; fi
@@ -4190,40 +4189,46 @@ jobs:
       # main's .github/, for .github/review/rules.py and .github/review/held.sh; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+      # A screen of this run that held the head, in a review, a rescreen or an approval: the tasks whose post job
+      # withdraws for a held screen (the author-kind table's withdraw). The if alone reads the screen, and the step
+      # writes only the literal output held=true, which the next step reads: no step of this job reads anything else
+      # of the screen.
+      - name: Mark a hold of the screen of this run
+        id: screened
+        if: >-
+          (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
+           || needs.trust.outputs.task == 'approve')
+          && needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean'
+        run: echo "held=true" >> "$GITHUB_OUTPUT"
       # The withdrawal of the import check runs of a head that this run owes (R12), in the line
       # <!-- withdraw-owed <head> <why> --> of the label comment (.github/review/rules.py owed), as the comment job's
       # step "Record a withdrawal that the post job owes" records it: the post job's outputs owed and withdrawn,
       # whatever that job's result. In a review, a rescreen or an approval, a screen of this run that held the head of a
       # pull request owes that withdrawal too: these are the tasks whose post job withdraws for a held screen (the
-      # author-kind table's withdraw), and an answer or a draft withdraws nothing. So this step writes the line
-      # <head> screen itself for them, unless the post job's output withdrawn names that head. In some runs the post job
-      # does not run, or does not finish its withdrawal. A later run that finds no import check run of the head with
-      # conclusion success takes the line out. The step runs before the label step, which can fail. A record of an owed
-      # withdrawal never makes a label comment: for an item with none, rules.py writes nothing (status 3), and this step
-      # gives the line to the label step (its output line), which gives it to the label comment that its label call
-      # writes (marker=<line>). When the label step writes no label comment (it stops before its label call: a failed
-      # sign-in, a newer run, a stale hold, an answer's hold that is tried again, or an error), the line of an item with
-      # no label comment is not recorded.
+      # author-kind table's withdraw), and an answer or a draft withdraws nothing. So for such a screen (the output held
+      # of the step before) this step writes the line <head> screen itself, unless the post job's output withdrawn names
+      # that head. In some runs the post job does not run, or does not finish its withdrawal. A later run that finds no
+      # import check run of the head with conclusion success takes the line out. The step runs before the label step,
+      # which can fail. A record of an owed withdrawal never makes a label comment: for an item with none, rules.py
+      # writes nothing (status 3), and this step gives the line to the label step (its output line), which gives it to
+      # the label comment that its label call writes (marker=<line>). When the label step writes no label comment (it
+      # stops before its label call: a failed sign-in, a newer run, a stale hold, an answer's hold that is tried again,
+      # or an error), the line of an item with no label comment is not recorded.
       - name: Record a withdrawal that this run owes
         id: owed
         if: >-
           env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != ''
-          || ((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-               || needs.trust.outputs.task == 'approve')
-              && needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean'))
+          || steps.screened.outputs.held == 'true')
         env:
           OWED: ${{ needs.post.outputs.owed }}
           WITHDRAWN: ${{ needs.post.outputs.withdrawn }}
-          # true when the screen of this run held the head in a review, a rescreen or an approval.
-          SCREEN_HELD: >-
-            ${{ (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
-            || needs.trust.outputs.task == 'approve') && needs.screen.result == 'success'
-            && needs.screen.outputs.verdict != 'clean' && 'true' || 'false' }}
+          # true when the screen of this run held the head in a review, a rescreen or an approval (the step before).
+          SCREEN_HELD: ${{ steps.screened.outputs.held }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           owed=${OWED:-}
-          if [ "$SCREEN_HELD" = true ] && [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] && [ "${WITHDRAWN:-}" != "$HEAD" ]; then
+          if [ "${SCREEN_HELD:-}" = true ] && [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] && [ "${WITHDRAWN:-}" != "$HEAD" ]; then
             owed="$HEAD screen"
           fi
           [ -n "$owed" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
