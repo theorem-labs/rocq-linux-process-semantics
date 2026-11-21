@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "The Tests `suite` job was still running when this review gathered its data, so this review does not include its result."
+  },
+  {
+    "kind": "change",
+    "ref": "tools/check_links.py:774",
+    "text": "The commit message says an empty list \"made every recorded compile ... read as instrumented\". On `main`, `if not wanted` (`tools/check_links.py:774`) already decided nothing for an empty list. The hole was a non-empty list with no `-fsanitize=` word. For an empty list, this change only adds the note."
+  }
+]

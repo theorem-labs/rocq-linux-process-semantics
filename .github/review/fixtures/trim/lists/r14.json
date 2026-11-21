@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_text.c:163-168",
+    "text": "`fuzz/fuzz_text.c:163-168`, `check_timecode`: on `MACKIE_E_SPACE`, also require that `out` still holds its `0xa5` fill (`fuzz_all`). Today the check reads only the return code."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_map.c:207-212",
+    "text": "`fuzz/fuzz_map.c:207-212`, `check_usable`: compare the assignment CCs with `assignment_cc + 1` and `assignment_cc`, not only with the 7-bit limit."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_map.c:213-223",
+    "text": "`fuzz/fuzz_map.c:213-223`, `check_usable`: compare each timecode CC with `timecode_cc + digits - 1 - i`, not only with the map's range."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_sysex.c:115-116",
+    "text": "`fuzz/fuzz_sysex.c:115-116`, `check_version`: compute `reply` from the bytes, with the frame test of `check_handshake` and `msg[5] == 0x14`, not from `mackie_handshake_decode`."
+  },
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "For 1 to 3, add a `mutant:` and `input:` record with the change and the seed input that the block below gives."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

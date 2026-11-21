@@ -1,0 +1,47 @@
+[
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "For each, add the input to the seed corpus, and the change as a `mutant:` record or as a patch in `fuzz/sabotage`, so that the stronger check fires on it."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_protocol.c:78",
+    "text": "`fuzz/fuzz_protocol.c:78` `check_called` runs only when no word holds a `%` or `...` (`exact`, `:131-133`), but `protocol_parse()` reads such a word as text: `is_wildcard()` reads only the pattern's word (`src/protocol.c:378`). With `src/protocol.c:378` `is_wildcard(g_commands[i].list[j])` -> `is_wildcard(g_commands[i].list[j]) && !is_wildcard(proto.list[j])`, `param_set 1 a%b 0.5` gets `not found` and runs no callback, and no check reads it. Drop the `exact` gate."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_protocol.c:90",
+    "text": "`fuzz/fuzz_protocol.c:90` `check_reply` has the same gate, and the same change and input pass it. Drop the gate here too."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_dispatch.c:289",
+    "text": "`fuzz/fuzz_dispatch.c:289` `check_value` skips the same words (`:334-335`), so every `add` of a percent-encoded `clap:` uri (`include/plugin-hostd/protocol.h:441-447`), and each command of 8 words or more (`words[8]`, `:324`, `:331`). The change of item 1 answers `\\002param_set 1 a%b 0.5` (the first byte is the salt) with `not found`, which `check_shape` accepts. Drop the word gate, and size `words` from the message, as `fuzz_protocol.c:126` does."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_dispatch.c:183",
+    "text": "`fuzz/fuzz_dispatch.c:183` takes the instance word of `add` from `phd_add_uri()`, which `add_cb()` calls too (`src/host-dispatch.c:73`). With `include/plugin-hostd/protocol.h:412` `*next = 2;` -> `*next = 1;`, `\\002add urn:x 5` gets `resp 0`, not `resp 5`, and the harness expects `resp 0`. Find that word in the harness itself, from the rule that `include/plugin-hostd/protocol.h:401-405` gives."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_session.c:266",
+    "text": "`fuzz/fuzz_session.c:266` `many_model()` builds what `check_many` expects from the calls the library made, not from the symbols of the line. With `src/host-dispatch.c:186` `proto->list[j]` -> `proto->list[2]`, the line `param_get_many 3 gain xbad gain` of the seed `many` gets `resp 0 1.0000 1.0000 1.0000`, not `resp -103`, and `check_many` passes; a library that makes no call leaves nothing checked (`:269`). Build the answer from the line's symbols, with the backend's rule (`:74-75`) and its store."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_session.c:142",
+    "text": "`fuzz/fuzz_session.c:142` `check_set_many` checks only a refused line, not that a line answered `resp 0` sets each value. With `src/host-dispatch.c:258` `g_backend->param_set(instance, proto->list[2 + 2 * k], (float)atof(proto->list[3 + 2 * k]))` -> `SUCCESS`, the line `param_set_many 3 a 0.1 bb 2000` of the seed `setmany` gets `resp 0` and sets nothing, not `resp -207 2`, and no check fires. Also check that each value of an accepted line is stored."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_session.c:260",
+    "text": "`fuzz/fuzz_session.c:260` `with_word()` takes the error word from `g_reply_words` of `src/reply-words.h` (included at `:17`), a private header that `error_word()` reads too (`src/protocol.c:244`). With `src/reply-words.h:9` `{ -3,` -> `{ -4,`, neither side adds `reply.host.instance-non-exists` after `resp -3` (seed `errors`), and `check_errors` stays true. Write the pairs that `protocol/plugin-hostd-protocol.json:127` (`reply_codes`) declares in the harness itself."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

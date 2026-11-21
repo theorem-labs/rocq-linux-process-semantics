@@ -1,0 +1,27 @@
+[
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_mux.c:297",
+    "text": "To close the gap, check the frame that the session gets. For example: for each e0 or e1 of 33 body bytes or more, to the interface's MAC or to broadcast, that reaches an attached session, require one `DIGINET_MUX_N_SESSION` notice of kind `DIGINET_N_DESK` whose frame carries that announce's body."
+  },
+  {
+    "kind": "change",
+    "ref": "transport/src/diginet_mux.c:179",
+    "text": "Add this record:\n\n```\nmutant: transport/src/diginet_mux.c:179 `frame, len` -> `frame, 0`\ninput: auto-attach\n```"
+  },
+  {
+    "kind": "change",
+    "ref": "line 148",
+    "text": "Also add a breakage for line 148, with a seed input that routes an announce to an attached desk."
+  },
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "When the change is in `Open-Mixer/libdiginet`, set `repo` to that commit in this pull request."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

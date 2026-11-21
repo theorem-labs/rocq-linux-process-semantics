@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_motor.c:138",
+    "text": "**`fuzz/fuzz_motor.c:138`, `check_event_position`.** Its comment says \"a move is raw / fader_max\", but the check tests only that the position is within 0..1. With `src/surface.c:283` `.position = pos,` -> `.position = 1 - pos,` each move reports the mirrored position and no check fires. Check that a move's position is `min(raw, fader_max) / fader_max`, from the raw that `do_fader` reported, and add that change as a `mutant:` record. The seed `report-edges` catches it. A release's position (\"where the hand left it\") is also checked only for its range."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_board.c:268",
+    "text": "**`fuzz/fuzz_board.c:268`, `check_create`.** Its comment says that the new surface's geometry \"is the one it was given\", but the check compares only `strips` and `fader_max`. With `src/surface.c:92` `s->g = c->geometry;` -> `s->g = c->geometry; s->g.meter_keepalive_ms = 0;` no check of `fuzz_board` fires. Compare each field of `surface_geometry_of(s)` with the given geometry, and add that change as a record. The seed `online-blank` (an X-Touch preset) catches it."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_bank.c:198",
+    "text": "**`fuzz/fuzz_bank.c:198`, `check_meters`.** The claim is that \"a call that moved nothing clears nothing\", but `do_set` does not run the check after a refused list. With `src/bank.c:54` `return SURFACE_E_ARG;` -> `return meters_reset(s), SURFACE_E_ARG;` a refused list clears the steps, and the next operation's `meters_prime()` hides it. Call `check_meters(meters_probe(), 0)` after a refused set, and add that change as a record. The seed `set-refusal` then catches it."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_motor.c:515",
+    "text": "**`fuzz/fuzz_motor.c:515`, the V-Pot target in `check_passthrough`.** The expected target comes from `surface_strip_target()`, the function that `surface_in_vpot()` uses for the event (`src/surface.c:315`). With `src/bank.c:113` `return i < s->nlist ? s->list[i] : 0;` -> `return i + 1 < s->nlist ? s->list[i + 1] : 0;` both sides change and no check of `fuzz_motor` fires (`fuzz_bank`'s `check_targets` does). Compute the expected target from the list and the steps that `fuzz_motor` itself makes, as `m_target()` of `fuzz_bank` does, and add that change as a record with a seed that turns a V-Pot on a bank strip."
+  }
+]

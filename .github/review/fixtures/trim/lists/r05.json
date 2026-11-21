@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "The description has none of the boxes of today's [pull request template](https://github.com/theorem-labs/oss-verify/blob/main/.github/PULL_REQUEST_TEMPLATE.md). Copy its checklist into the description, with `<name>` as `cjson`, and tick each box that is true."
+  },
+  {
+    "kind": "change",
+    "ref": "docs/build-contract.md",
+    "text": "Move the change to `docs/build-contract.md` into a pull request of its own."
+  },
+  {
+    "kind": "change",
+    "ref": "projects/cjson/cjson_read_fuzzer_seed_corpus.zip",
+    "text": "Add `projects/cjson/cjson_read_fuzzer_seed_corpus.zip`. Each input must be longer than 4 bytes, start with four bytes that are each `0` or `1`, and end with a `0x00` byte ([`fuzzing/cjson_read_fuzzer.c`, lines 22–27](https://github.com/DaveGamble/cJSON/blob/c859b25da02955fef659d658b8f324b5cde87be3/fuzzing/cjson_read_fuzzer.c#L22-L27)). Between them, put JSON that `cJSON_ParseWithOpts` accepts, because line 36 returns when the parse fails. Which inputs to add is in the block below."
+  }
+]

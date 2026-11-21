@@ -1,0 +1,7 @@
+[
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "The pull request changes two files outside `projects/cjson/`: `tools/tests/fixtures/cjson/Dockerfile` and `tools/tests/fixtures/cjson/build.sh`. A pull request that changes a project must change nothing else ([CONTRIBUTING.md](https://github.com/theorem-labs/oss-verify/blob/main/CONTRIBUTING.md), line 6). Move the two fixture changes to a separate pull request, which gets a change review. Keep only `projects/cjson/cjson_read_fuzzer_seed_corpus.zip` in this one."
+  }
+]

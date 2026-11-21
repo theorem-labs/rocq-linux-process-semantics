@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "A finding was sent for private review."
+  },
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "`docs/threat-model.md` lists two parsers of untrusted input that no fuzz target reads: the Turtle scanner in `src/manifest.c`, which reads each `manifest.ttl` of the search path, and the JSON parser in `src/json.c`, which reads the store's layer files and the `put` bodies. A fuzz target for either one is welcome."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

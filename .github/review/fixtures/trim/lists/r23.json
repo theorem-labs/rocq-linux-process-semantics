@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "change",
+    "ref": "projects/zstd/zstd_frame_info/proofs/ubsan_halts/Proof.v:4",
+    "text": "The `Modified by` line of `ubsan_halts/Proof.v` is not true of the file (requirement 7 of `docs/adding-a-proof.md`). Line 4 mentions only the renamed hypothesis (`Hinp` → `Heither`). Requirement 7 counts a change of numbers or module names as a change. Fix: name both changes on line 4, for example \"…UbsanMain.v, line 24, with the module path written in full and a hypothesis renamed; the facts it passes are those of proofs/lib/Spec/ModelOK.v, line 55, with `lim_p` (Spec/ImgFacts.v, line 32) for `lim_u`, at the source budget…\"."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "No `pr` workflow results. `.review/checks.json` lists only jobs of the `review` workflow (`trust`, `screen`, `hold`, …) and no run of the `pr` workflow. So the review cannot report whether either proof compiles or whether its assumptions are in `toolchain/allowed-axioms.txt`. A maintainer needs to look at that run."
+  },
+  {
+    "kind": "question",
+    "ref": "plain_halts/Proof.v:7,9",
+    "text": "`plain_halts/Proof.v:7,9` and `ubsan_halts/Proof.v:8,10` are `HaltsAsanB.v:7,11` with their modules changed, but the `Modified by` lines call them new. Whether these count as taken lines is for a maintainer to decide."
+  }
+]
