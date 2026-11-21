@@ -1,16 +1,19 @@
 # shellcheck shell=bash
-# held.sh: the functions and values of the rescreen pass. Two steps source this file, each at one place of its script:
+# held.sh: the functions and values of the rescreen pass. Three steps source this file, each at one place of its script:
 # - the step "Start the runs that the open items are due" of .github/workflows/rescreen.yml, the rescreen pass;
 # - the trust job's step "Whether the author and the account that started the run have write access" of
 #   .github/workflows/review.yml. With these functions, the trust job of each run that the pass starts reads again why
-#   the pass started it.
-# Before that step, each of the two jobs checks out this file alone, at the commit whose workflow file runs (github.sha,
-# a commit of main). So the file of that commit runs, and never a file of a pull request.
-# Before the source line, each step sets seen, a directory that the step makes for itself, and defines the function
-# trusted. After it, each step defines restart, which rerun calls. The functions and jq filters of the file read REPO,
-# HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment of the step, and RUN_ID, which the trust step alone
-# sets. The source line sets values, defines functions, and makes $seen/due and $seen/stops empty. It reads nothing
-# from GitHub.
+#   the pass started it;
+# - the hold job's step "Label it and say that it was held" of review.yml, which calls replaced_hold alone: the one rule
+#   of each writer of a hold comment.
+# Before each of the first two steps, its job checks out this file alone, at the commit whose workflow file runs
+# (github.sha, a commit of main). The hold job checks out main's .github/. So a file of main runs, and never a file of a
+# pull request.
+# Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
+# define the function trusted before it, and restart after it, which rerun calls. The functions and jq filters of the
+# file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment of the step, and RUN_ID, which the
+# trust step alone sets. The source line sets values, defines functions, and makes $seen/due and $seen/stops empty. It
+# reads nothing from GitHub.
 # In the comments below, "this step" is the step that sources the file, and "this workflow" is review.yml.
 
 # titled: the names of the runs that the rescreen pass starts and that name an account (run-name):
@@ -65,6 +68,28 @@ limit_hold() {
   local found
   found=$(holds "$1") || return 1
   awk -v w="$2" '$1 == w { sub(/^[^ ]+ /, ""); print }' <<< "$found"
+}
+# replaced_hold <number> <work> <screen> <head>: the one rule of each writer of a hold comment: the hold job of this
+# workflow, and halt (stopped, head_stopped, left_stopped and answer_stopped), whose stop the comment job writes. The
+# id of the hold comment of github-actions[bot] on <number> that a new hold of <work> (works) replaces, or nothing:
+# then the new hold posts a comment of its own. <screen> is true for a new hold of the screen, and <head> is the head
+# that the new hold names (empty for none). A hold of the screen (its text holds "The automated screen held ", and it
+# has no marker of a hold that is tried again) names the head that the screen held, or none on an issue. A relabel and
+# a review by hand read it (rules.py verdict, relabel_withdraws). So only a new hold of the screen that names the same
+# head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of its own, and so does
+# each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of the holds of <work>
+# that the new hold may replace, it replaces the newest (by when GitHub last changed it, as holds reads them). A hold
+# of other work stays as it is.
+replaced_hold() {
+  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+  comments "$1" | W=$2 SCREEN=$3 SHA=$4 jq -rs "$works"'[.[] | select(.user.login == "github-actions[bot]"
+      and ((.body // "") | startswith("<!-- review-held -->")))
+    | {at: (.updated_at // "-"), id, body: (.body // "")} | select((.body | work) == $ENV.W)
+    | (.body | contains("The automated screen held ")
+        and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+") | not)) as $screen
+    | select(($screen | not) or ($ENV.SCREEN == "true"
+        and ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "") == $ENV.SHA))]
+    | if length > 0 then max_by(.at) | .id else empty end'
 }
 # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
 # <author> on <number> (a pull request when <kind> is pr) that waits for an answer, oldest first, as the gather
@@ -207,10 +232,13 @@ no_key_of() {
 # verdict, its why). screen when a hold comment of the screen that names <head> (its text holds "The automated screen
 # held ", and it has no marker of a hold that is tried again) is newer than each review comment of <head> whose run
 # screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
-# held. Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any,
-# when none is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then
-# a relabel of <head> withdraws nothing. It records an import check run only when the newest review comment of <head>
-# holds the marker and passes (rules.py verdict, screened). A relabel that withdraws records none.
+# held. Else the reason of a withdrawal of the import check runs of <head> that a run owes, as GitHub refused it or the
+# run failed before it, while a label comment holds its marker line <!-- withdraw-owed <head> <why> -->: <why>,
+# whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out. Else
+# blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none is
+# screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel of
+# <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
+# marker <!-- review-screened <head> --> and passes, with no such line (rules.py verdict, screened).
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
@@ -228,7 +256,10 @@ relabel_withdraws() {
             + "( [0-9]+( [a-z]+( [1-9][0-9]*)?)?)? -->(\n|$)") | not)
           and contains("The automated screen held "))
         | .at] | max // "") as $held
+    | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
+        | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) -->$") | .w] | last) as $owed
     | if $held != "" and $held > $screened then "screen"
+      elif $owed != null then $owed
       elif $newer != null then $newer
       elif $last != null and ($reviews[$last].verdict | IN("blocking", "person")) then $reviews[$last].verdict
       else "-" end'
@@ -617,13 +648,16 @@ waits_of() {
 # comment job the stop as halt wrote it to $seen/stops: the state label of <fact> (tries_used_up, or
 # left_closed for a catch-up left closed), with Sami's next step in the label comment, then the hold comment
 # with <title> and <text>, which names the head of a pull request and holds no marker of a hold that is tried
-# again, in the place of the newest hold comment of <work> (works) that it read, or as a new one: never in
-# the place of a hold of other work. The run of the pass fails for it.
+# again. It is no hold of the screen: its text never holds "The automated screen held ". It goes in the place of
+# the hold comment of <work> (works) that replaced_hold picks for it, or as a new one: never in the place of a
+# hold of other work, nor of a hold of the screen. The run of the pass fails for it.
 halt() {
   local line at id
   failed=1
   line=$(limit_hold "$number" "$3") || { echo "::error::the comments of #$number could not be read."; return 1; }
-  read -r at _ _ _ _ _ id _ <<< "$line"
+  read -r at _ <<< "$line"
+  id=$(replaced_hold "$number" "$3" false "${head:-}") \
+    || { echo "::error::the comments of #$number could not be read."; return 1; }
   jq -nc --arg stop "$1" --arg fact "$2" --arg id "${id:-}" --arg title "$4" --arg text "$5" \
     --arg head "${head:-}" '{stop: $stop, fact: $fact, id: $id, title: $title, text: $text, head: $head}' \
     >> "$seen/stops"
@@ -631,11 +665,13 @@ halt() {
 }
 # stopped <task> <tries> [<run> <how>]: the work of the hold that held_work read is not tried again, after <tries>
 # tries: runs of <task> since the hold, or since <run>, the newest run that settled the hold, that settled nothing
-# (halt, with the stop hold-<work>). <how> is started when the post job of <run> approved held runs or recorded the
-# import check run, else finished. waits-on-theorem, with the label comment's step "Sami starts again, by hand, the
-# work that the hold comment names", and a hold comment that says so in the place of that hold. With <run>, that
-# comment says that a try finished the work, or started the checks, before the tries that did not finish. The hold
-# comment of other work stays as it is.
+# (halt, with the stop hold-<work>). <how> is finished when the comment job of <run> posted (its review, its answer,
+# or the label comment of its draft or of its approval), else started: the post job of <run> approved held runs or
+# recorded the import check run, and its comment job posted nothing. waits-on-theorem, with the label comment's step
+# "Sami starts again, by hand, the work that the hold comment names", and a hold comment that says so in the place of
+# that hold, the newest of its work, which is no hold of the screen (replaced_hold). With <run>, that comment says that
+# a try finished the work, started the checks, or recorded the import check of the head, before the tries that did
+# not finish. The hold comment of other work stays as it is.
 stopped() {
   local title work what tried began of=$1 runs=$1 from="since its hold at $h_at"
   [ "$of" != rescreen ] || of=review runs="rescreen or review"
@@ -653,7 +689,9 @@ stopped() {
   if [ -n "$work" ] && [ -z "${3:-}" ]; then
     tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
   elif [ -n "$work" ]; then
-    tried="The workflow held $what, and a later try finished $work. After that, the workflow tried $work again"
+    began="finished $work"
+    [ "${4:-}" != started ] || began="recorded the import check of its head commit"
+    tried="The workflow held $what, and a later try $began. After that, the workflow tried $work again"
     tried+=" $2 times, and none of these tries finished."
   elif [ -z "${3:-}" ]; then
     tried="The workflow held the start of the checks of $what. Then it tried $2 times to start them, and no try"
@@ -670,9 +708,10 @@ stopped() {
 # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
 # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts again, by hand, the
 # work that the hold comment names", then a hold comment that says so and names the head, in the place of the
-# newest hold comment of that work (works), and never of a hold of other work, which the rescreen pass still
-# takes again. That hold stops each later try of the head, and no other reason takes the head in this run
-# (taken).
+# newest hold comment of that work (works) that is not a hold of the screen (replaced_hold), or as a new one. It
+# never takes the place of a hold of other work, which the rescreen pass still takes again, nor of a hold of the
+# screen, which a relabel and a review by hand read. That hold stops each later try of the head, and no other reason
+# takes the head in this run (taken).
 head_stopped() {
   local title text of=catchup commit="the head commit ${head:0:12}"
   taken=1
@@ -695,7 +734,8 @@ head_stopped() {
 # left_stopped <tries>: the catch-up that closed #number could not reopen it after <tries> runs that only
 # reopen it, and is not tried again (halt, with the stop reopen): waits-on-theorem, with the label comment's
 # step "Sami reopens the pull request", then a hold comment that says so, in the place of the newest hold
-# comment of a catch-up. That comment ends each later read of the item's runs (gave_up).
+# comment of a catch-up (replaced_hold), or as a new one. That comment ends each later read of the item's runs
+# (gave_up).
 left_stopped() {
   echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
     "tried again, and the label comment will name the next step for Sami."
@@ -783,16 +823,17 @@ held_work() {
   [ "$task" != rescreen ] || pattern='rescreen|review'
   since=$(runs_of "$pattern" "" workflow_dispatch | awk -v at="$h_at" '$1 >= at')
   # Each run of the task since the hold, oldest first: the facts of the newest stay. A run that settled the hold
-  # ends the count of the runs before it (how: started when its post job approved held runs or recorded the import
-  # check run), and each later run but one that could not sign in counts a try.
+  # ends the count of the runs before it (how: finished when its comment job posted, else started, as its post job
+  # approved held runs or recorded the import check run), and each later run but one that could not sign in counts a
+  # try.
   while read -r created _ run; do
     [ -n "${run:-}" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
     read -r signin _ _ settled early _ commented _ <<< "$f"
     newest=$created latest=$run ended=""
     if [ "$settled" = settled ] || { [ "$commented" = success ] && [ "$early" = - ]; }; then
-      ended=1 settler=$run tries=0 how=finished
-      [ "$settled" != settled ] || how=started
+      ended=1 settler=$run tries=0 how=started
+      { [ "$commented" != success ] || [ "$early" != - ]; } || how=finished
     elif [ "$signin" != signin ]; then
       tries=$((tries + 1))
     fi
@@ -839,8 +880,8 @@ held_work() {
 # answer_stopped <comment> <tries>: the comment job of <tries> answer runs of <comment> failed, so its answer
 # is not tried again (halt, with the stop answer-post): waits-on-theorem, with the label comment's step "Sami
 # starts again, by hand, the work that the hold comment names", then a hold comment that says so, in the place of
-# the newest hold comment of an answer. That hold is not tried again, so the comments before it wait for no
-# answer (waiting).
+# the newest hold comment of an answer that is not a hold of the screen (replaced_hold), or as a new one. That hold
+# is not tried again, so the comments before it wait for no answer (waiting).
 answer_stopped() {
   local what="this issue"
   [ "$kind" != pr ] || what="this pull request"
@@ -1377,8 +1418,9 @@ consider() {
   [ -z "$taken" ] || return 0
   # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
   # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
-  # head after each review that screened it, the newest screened review of the head does not pass, or a review newer
-  # than it gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's
+  # head after each review that screened it, a label comment holds the line <!-- withdraw-owed <head> <why> --> of a
+  # withdrawal that a run owes, the newest screened review of the head does not pass, or a review newer than it
+  # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's
   # retry (due_retry) still takes a run of the head whose post job failed: one relabel an hour after that run ended.
   # After REVIEW_TRIES failed tries, head_stopped import stops it, and the hold of that stop, which names the head,
   # ends the retry. While a relabel of the head can record an import check run, no App write of the head is tried

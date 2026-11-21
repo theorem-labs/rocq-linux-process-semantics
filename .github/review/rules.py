@@ -5,6 +5,8 @@ labels").
     python3 .github/review/rules.py label <number> task=<task> outside=<outside> outsider=<outsider> author=<kind>
         [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line>
+    python3 .github/review/rules.py owed <number> owed=<head and why> withdrawn=<head> task=<task> outside=<outside>
+        outsider=<outsider> author=<kind>
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <kind> <section>
@@ -57,6 +59,14 @@ mark: records the marker line <line> of KEPT in the label comment of <number>, a
 state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working.
 The comment job of a catch-up records the line <!-- review-catchup <head> --> with it. The rescreen pass reads that
 line, so that each head gets one catch-up.
+
+owed: records in the label comment of <number> the withdrawal of the import check runs of a head that the post job
+owes (owe), and changes nothing else. owed=<head> <why> (the post job's output owed: a withdrawal that it found a
+reason for and did not finish) gives the line <!-- withdraw-owed <head> <why> --> of KEPT (OWED), as mark does.
+withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as it found no import check run of the
+head with conclusion success or withdrew each one) takes the line of that head out. The run's task and the trust job's
+outputs outside, outsider and kind are given as for label: when the author-kind table's answer label is unchanged, this
+writes nothing, and a notice says why.
 
 make-label: makes the label <name> of LABELS with its colour and description, or sets its description when the label
 is there with another one. It reads the label first, and writes only what differs. A failure only warns: adding a
@@ -146,12 +156,15 @@ does. A review comment of <head> is screened when it holds <!-- review-screened 
 that the screen passed <head> in the run of that review. <state> is held when a hold comment of the screen that names
 <head> is newer than the newest screened review comment, or when no review comment of <head> is screened and such a
 hold comment exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is
-screened, earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is
-the reason for which a relabel or a review by hand withdraws each import check run of <head> that stands: screen for
-held; else blocking or person, of the newest review comment newer than the newest screened one that gives one, or of
-the newest screened review comment when it does not pass; else -. A relabel records the import check run only for
-screened with the verdict pass. For earlier with the verdict pass and no <why>, its decision is hand. A review by
-hand with no screen records none. Its post job's decision is hand for screened or earlier with no <why>, and
+screened, and earlier when only an older one is. It is earlier also when none is but a label comment holds the line
+<!-- withdraw-owed <head> <why> --> (OWED): only a screened pass records an import check run, and that line owes the
+withdrawal of one. Else it is unscreened (a review by hand runs no screen). <why> is the reason for which a relabel or
+a review by hand withdraws each import check run of <head> that stands: screen for held; else the <why> of that line
+of OWED, whatever the newest review says; else blocking or person, of the newest review comment newer than the newest
+screened one that gives one, or of the newest screened review comment when it does not pass; else -. A relabel
+records the import check run only for screened with the verdict pass and no <why>: with a <why> (OWED), its decision
+is screened. For earlier with the verdict pass, its decision is hand with no <why>, and screened with one. A review
+by hand with no screen records none. Its post job's decision is hand for screened or earlier with no <why>, and
 screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for unscreened. For
 the decision hand, the label step counts an import check run of <head> that still stands, for the value of the
 variable now, as recorded.
@@ -260,12 +273,14 @@ REFUSALS = ("", "review", "answer", "fix")
 # comment of the screen is newer than each review comment whose run screened the head. For a review by hand, a run
 # with no screen that records no check run, the decision is hand or screened when the run of an earlier review
 # screened the head and no hold comment of the screen is newer (the states screened and earlier). It is screened when
-# review_verdict gives a reason to withdraw (its why: the newest screened review comment does not pass, or one newer
-# than it gives a blocking finding or the verdict person), and this run withdraws each check run of the head that
-# still stands. So the state follows the verdict of this run, and a pass gets PASSED. Else it is hand, and so is a
-# relabel's in the state earlier with the verdict pass and no such reason. For the decision hand, the label step counts
-# an import check run of the head that still stands, for the value of the variable now, as recorded (the post job's
-# standing), so its state is import or decide as that check run gives. Empty when the job gave none.
+# review_verdict gives a reason to withdraw (its why: the newest screened review comment does not pass, one newer
+# than it gives a blocking finding or the verdict person, or a label comment holds the line of OWED of the head), and
+# this run withdraws each check run of the head that still stands. So the state follows the verdict of this run, and a
+# pass gets PASSED. Else it is hand, and so is a relabel's in the state earlier with the verdict pass and no such
+# reason. A relabel's decision is screened also in the state screened with the verdict pass and a line of OWED: such a
+# relabel withdraws, and records no check run. For the decision hand, the label step counts an import check run of the
+# head that still stands, for the value of the variable now, as recorded (the post job's standing), so its state is
+# import or decide as that check run gives. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened")
 
@@ -389,12 +404,20 @@ HEAD = re.compile(r"[0-9a-f]{40}")
 NUMBER = re.compile(r"[1-9][0-9]*")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
 # (R12), the stored draft of an issue's reply, the approved reply that posted, the head that a catch-up closed and
-# reopened the pull request at (D16 (a): once for each head), and the head whose runs the post job did not approve,
+# reopened the pull request at (D16 (a): once for each head), the head whose runs the post job did not approve,
 # because it changes a file under .github/ or because the environment post held no key of the OSS Verify App
-# (R10: the rescreen pass starts no approval of it again).
+# (R10: the rescreen pass starts no approval of it again), and the withdrawal of the import check runs of a head
+# that the post job owes (OWED).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
-                  r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->")
+                  r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->"
+                  r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|screen) -->")
+# The marker line of a withdrawal of the import check runs of a head (R12) that GitHub refused, or that the post job
+# did not reach after it found a reason for it: the head, and why (WITHDRAWN). A relabel and a review by hand of that
+# head withdraw for why while the line stands, whatever the newest review says (review_verdict). Only a run that
+# finished the withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew
+# each one) takes the line out (owe). Each head has a line of its own (marker_kind).
+OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) -->")
 
 
 def marker_line(line):
@@ -471,11 +494,13 @@ def label_of(state):
 
 def marker_kind(line):
     """The kind of a marker line of KEPT: repo-pairs-import-paths, issue-draft, issue-reply-posted, review-catchup,
-    review-steering or review-no-key."""
+    review-steering or review-no-key, and "withdraw-owed <head>" for the line of OWED of head: a withdrawal owed for
+    one head never takes the place of the line of another head."""
     m = KEPT.fullmatch(line)
     if not m:
         raise ValueError(f"not a marker line that the label comment keeps: {line!r}")
-    return next(g for g in m.groups() if g)
+    owed = OWED.fullmatch(line)
+    return f"withdraw-owed {owed.group(1)}" if owed else next(g for g in m.groups() if g)
 
 
 def import_steps(state, value, decision):
@@ -717,6 +742,31 @@ def mark(number, line):
     print(f"#{number}: its label comment holds {line}.")
 
 
+def without_marker(body, kind):
+    """The label comment body with no marker line of KEPT of kind (marker_kind) in its last part, which holds the marker
+    lines. A last part with no other line goes, with the gap before it. The rest of body stays as it is."""
+    text, gap, last = body.rpartition("\n\n")
+    lines = last.split("\n")
+    if not gap or not all(marker_line(m) for m in lines):
+        return body
+    kept = [m for m in lines if not (KEPT.fullmatch(m) and marker_kind(m) == kind)]
+    return text + gap + "\n".join(kept) if kept else text
+
+
+def unmark(number, kind):
+    """Takes the marker line of KEPT of kind (marker_kind) out of the label comment of the item number
+    (without_marker), and writes nothing else: the state label and the text of the label comment stay as they are.
+    Nothing is written when no label comment holds such a line."""
+    labels = read_labels(number)
+    old = labels[-1] if labels else None
+    body = old["body"] if old else ""
+    if old is None or without_marker(body, kind) == body:
+        print(f"#{number}: its label comment holds no line {kind}.")
+        return
+    write_label(number, old, without_marker(body, kind))
+    print(f"#{number}: its label comment no longer holds the line {kind}.")
+
+
 # --- the author-kind table ------------------------------------------------------------------------------------------
 # What the workflow does for the item of a run, by the kind of its author. The trust job decides the kind once
 # (trusted): its output outside is true for an outside author, and its output kind is writer, outsider or unknown
@@ -856,6 +906,29 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
             markers = [*markers, import_marker(head, imports[0])]
     label_comment(state, "", markers, head, imports)
     apply(number, state, markers, head, imports, labels, labelled=label == "set")
+
+
+def owe(number, run, owed="", withdrawn=""):
+    """Records in the label comment of the item number the withdrawal of the import check runs of a head that the post
+    job owes (OWED), from its outputs: owed, "<head> <why>" of a withdrawal that it found a reason for and did not
+    finish, gives the line <!-- withdraw-owed <head> <why> --> (mark). withdrawn, a head whose withdrawal the job
+    finished, takes the line of that head out (unmark), and then owed is not read. The state label and the text of
+    the label comment stay as they are. As for set_state, the label answer of the author-kind table for run unchanged
+    writes nothing, and gives a notice."""
+    head, _, why = owed.partition(" ")
+    line = f"<!-- withdraw-owed {head} {why} -->" if owed else ""
+    if owed and not OWED.fullmatch(line):
+        raise ValueError(f"not a head commit and a reason to withdraw: {owed!r}")
+    if withdrawn and not HEAD.fullmatch(withdrawn):
+        raise ValueError(f"not a head commit: {withdrawn!r}")
+    if answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged":
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so the workflow changes "
+              "neither its state label nor its label comment.")
+        return
+    if withdrawn:
+        unmark(number, f"withdraw-owed {withdrawn}")
+    elif line:
+        mark(number, line)
 
 
 def parse(args, run=()):
@@ -1266,15 +1339,18 @@ def review_verdict(comments, head):
     screen_held) that names head is newer than the newest screened review comment of head, or when no review comment
     of head is screened and such a hold comment exists: a later screen held the head. Else it is screened when the
     newest review comment of head is screened, earlier when an older one is screened but the newest is not (a review by
-    hand runs no screen), and unscreened when none is. Such a run records the check run only for the state screened
-    with the verdict pass: the newest review comment is a screened pass. why is the reason for which it withdraws each
-    check run of head that stands (WITHDRAWN): screen for held; else the verdict blocking or person of the newest review
-    comment newer than the newest screened one (of any review comment of head when none is screened) that gives one;
-    else that of the newest screened review comment when it does not pass; else "". So an unscreened pass newer than a
-    screened pass neither records nor withdraws, and a check run that stands stays. Only the markers at the start of a
-    review comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert). The marker
-    of a hold comment is the workflow's own: its text is fixed."""
-    reviews, screened, held = [], None, ""
+    hand runs no screen), and unscreened when none is. A label comment of BOT that holds the line of OWED of head
+    makes unscreened earlier: only a screened pass records a check run, and that line owes the withdrawal of one. Such a
+    run records the check run only for the state screened with the verdict pass and no why: the newest review comment
+    is a screened pass. why is the reason for which it withdraws each check run of head that stands (WITHDRAWN): screen
+    for held; else the why of that line of OWED, whatever the newest review says, as an edit of a review comment in
+    place can hide the review that gave it; else the verdict blocking or person of the newest review comment newer than
+    the newest screened one (of any review comment of head when none is screened) that gives one; else that of the
+    newest screened review comment when it does not pass; else "". So an unscreened pass newer than a screened pass
+    neither records nor withdraws, and a check run that stands stays, unless such a line stands. Only the markers at the
+    start of a review comment count: no marker of the model's or the reader's text reaches a comment (trim.py inert).
+    The marker of a hold comment and the lines of a label comment are the workflow's own."""
+    reviews, screened, held, owed = [], None, "", ""
     for c in comments:
         if not of_bot(c):
             continue
@@ -1288,14 +1364,19 @@ def review_verdict(comments, head):
             m = HELD_HEAD.search(body)
             if m and m.group(1) == head and hold_fact(body) == "screen_held":
                 held = max(held, at)
+        elif body.startswith(FIRST):
+            for line in body.split("\n"):
+                m = OWED.fullmatch(line)
+                if m and m.group(1) == head:
+                    owed = m.group(2)
     verdict = reviews[-1][0] if reviews else ""
     if held and (screened is None or held > screened):
         return verdict, "held", "screen"
     last = max((i for i, (_v, marked) in enumerate(reviews) if marked), default=-1)
     newer = [v for v, _marked in reviews[last + 1:] if v in WITHDRAWING]
-    why = newer[-1] if newer else reviews[last][0] if last >= 0 and reviews[last][0] in WITHDRAWING else ""
+    why = owed or (newer[-1] if newer else reviews[last][0] if last >= 0 and reviews[last][0] in WITHDRAWING else "")
     if last < 0:
-        return verdict, "unscreened", why
+        return verdict, "earlier" if owed else "unscreened", why
     return verdict, "screened" if last == len(reviews) - 1 else "earlier", why
 
 
@@ -1975,6 +2056,13 @@ def main(argv):
         if len(argv) >= 2 and argv[0] == "label" and NUMBER.fullmatch(argv[1]):
             facts, markers, head, run = parse(argv[2:], RUN)
             set_state(argv[1], run, facts, markers, head)
+            return 0
+        if len(argv) >= 2 and argv[0] == "owed" and NUMBER.fullmatch(argv[1]):
+            facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn"))
+            if facts or markers or head:
+                raise ValueError("owed takes the run, owed= and withdrawn= alone")
+            owed, withdrawn = given.pop("owed"), given.pop("withdrawn")
+            owe(argv[1], given, owed, withdrawn)
             return 0
         if len(argv) in (4, 5) and argv[0] == "answers":
             for name, value in answers(*argv[1:]).items():

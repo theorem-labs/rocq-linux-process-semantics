@@ -3596,6 +3596,95 @@ class HoldTest(Holding):
                 self.assertEqual(post[:3], new if want is None
                                  else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
 
+    def halted(self, call, kind, comments):
+        """The stop that call, a function of held.sh that calls halt, gives for #7 (a pull request at HEAD, or an issue)
+        with comments as #7's comments: the stop as halt writes it to $seen/stops, which the comment job's step
+        STOP_STEP writes in the place of the hold comment that it names (id), or as a new one."""
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        head = HEAD if kind == "pr" else ""
+        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{SOURCE_HELD}'
+                                     f"number=7 kind={kind} head={head} h_at={OLD}\n{call}\n"
+                                     'cat "$seen/stops"\n', REVIEW_TRIES=WF["env"]["REVIEW_TRIES"])
+        self.assertEqual(rc, 0, out)
+        (stop,) = [json.loads(line) for line in out.split("\n") if line.startswith('{"stop"')]
+        return stop
+
+    def test_every_writer_of_a_hold_comment_keeps_a_hold_of_the_screen_but_for_a_later_one_of_the_same_head(self):
+        """Round 13, item 1 (OSSV-221's architect, 2026-11-21 04:57Z): one rule for every writer of a hold comment,
+        held.sh replaced_hold. A hold of the screen of a head is replaced only by a later hold of the screen of that
+        same head. Any other hold, and a hold of the screen of another head, replaces the newest hold of its work that
+        is not the screen's, or posts a comment of its own. The writers, found by grep: each step of the workflows
+        whose script writes a body that starts with <!-- review-held --> (the hold job, and the comment job's step
+        that writes the stop that halt gave the trust job), and each function of held.sh that calls halt. A writer
+        that this test does not name fails it. For each work that it writes, each writer keeps the screen's hold of
+        that work, and replaces an older hold of that work at the limit (or the last try of an import check or of a
+        catch-up). Only a later hold of the screen of the same head takes the place of the screen's hold."""
+        functions = dict(re.findall(r"(?ms)^([a-z_]+)\(\) \{\n(.*?)^\}", held_sh()))
+        self.assertEqual({name for name, body in functions.items() if re.search(r"(?m)^ *halt ", body)},
+                         {"stopped", "head_stopped", "left_stopped", "answer_stopped"})
+        self.assertIn('id=$(replaced_hold "$number" "$3" false "${head:-}")', functions["halt"])
+        self.assertNotRegex(held_sh(), r"--method (POST|PATCH)")
+        writers = {(job, s["name"]) for wf in (WF, RESCREEN, SCREEN_START, CI) for job, value in wf["jobs"].items()
+                   for s in value.get("steps", []) if "'<!-- review-held -->'" in s.get("run", "")}
+        self.assertEqual(writers, {("hold", self.STEP), ("comment", STOP_STEP)})
+        self.assertIn('id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head")', step("hold", self.STEP)["run"])
+        stop = step("comment", STOP_STEP)["run"]
+        self.assertIn("id=$(field id)", stop)
+        self.assertEqual(re.findall(r"--method PATCH \S+", stop), ['--method PATCH "repos/$REPO/issues/comments/$id"'])
+        # The screen's hold of each work, as the hold job writes it: of HEAD on pull request #7, and of issue #7, which
+        # names no head, for a draft.
+        kinds = {"review": "pr", "answer": "pr", "approve": "pr", "draft": "issue"}
+        screened = {}
+        for task, kind in kinds.items():
+            self.tearDown()
+            self.setUp()
+            _calls, _post, body = self.hold("screen", task=task, kind=kind, head=HEAD if kind == "pr" else "")
+            self.assertIn(rules.SCREEN_HELD, body)
+            screened[task] = {"id": 50, "user": {"login": BOT}, "updated_at": ago(60), "body": body}
+
+        def older(work, kind):
+            """A hold of work that is older than the screen's hold (41): at the limit, or the last try of an import
+            check or of a catch-up, which no screen holds."""
+            if work in kinds:
+                return limit_hold(41, at=ago(120), tries=0, task="" if work == "review" else work,
+                                  comment="901" if work == "answer" else "", head=HEAD if kind == "pr" else "")
+            title = {"import": "Automated check for the import held.", "catchup": "Automated close and reopen held."}
+            return {"id": 41, "user": {"login": BOT}, "updated_at": ago(120),
+                    "body": f"<!-- review-held -->\n**{title[work]}**\n\nNo try finished.\n\n"
+                            f"<!-- review-held-head {HEAD} -->"}
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        # The hold job: a hold at the limit, a hold of the screen of the same head, and one of another head.
+        for task, kind in kinds.items():
+            screen, head = screened[task], HEAD if kind == "pr" else ""
+            cases = [("limit", head, [screen], None), ("limit", head, [older(task, kind), screen], 41),
+                     ("screen", head, [screen], 50)]
+            if kind == "pr":
+                cases += [("screen", OTHER_HEAD, [screen], None),
+                          ("screen", OTHER_HEAD, [older(task, kind), screen], 41)]
+            for route, named, comments, want in cases:
+                with self.subTest(writer="hold", task=task, route=route, head=named, of=[c["id"] for c in comments]):
+                    self.tearDown()
+                    self.setUp()
+                    for c in (41, 50):
+                        self.serve(f"repos/{REPO}/issues/comments/{c}", {"html_url": "https://github.com/acme/model"})
+                    _calls, post, _body = self.hold(route, task=task, kind=kind, head=named, comments=comments,
+                                                    comment="901" if task == "answer" else "")
+                    self.assertEqual(post[:3], new if want is None
+                                     else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
+        # halt, for each function of held.sh that calls it: the stop that the comment job writes.
+        for call, work, kind in (("stopped review 3", "review", "pr"), ("stopped rescreen 3", "review", "pr"),
+                                 ("stopped answer 3", "answer", "pr"), ("stopped draft 3", "draft", "issue"),
+                                 ("stopped approve 3", "approve", "pr"), ("head_stopped review 3", "review", "pr"),
+                                 ("head_stopped approval 3", "approve", "pr"), ("answer_stopped 901 3", "answer", "pr"),
+                                 ("head_stopped import 3", "import", "pr"), ("head_stopped catchup 3", "catchup", "pr"),
+                                 ("left_stopped 3", "catchup", "pr")):
+            screen = screened.get(work, screened["review"])
+            for comments, want in (([screen], ""), ([older(work, kind), screen], "41")):
+                with self.subTest(writer=call, of=[c["id"] for c in comments]):
+                    self.tearDown()
+                    self.setUp()
+                    self.assertEqual(self.halted(call, kind, comments)["id"], want)
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
@@ -5521,6 +5610,29 @@ class FreshReaderTest(ReaderRunner):
         shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
         self.assertNotIn(question, shown)
         self.assertNotIn("is in the text below", shown)
+
+    def test_a_bare_person_line_goes_back_only_when_the_text_below_holds_each_question_under_it(self):
+        """Round 13, item 3 (OSSV-221's architect, 2026-11-21 04:57Z, who ruled no line where it would not be true):
+        under the verdict person with no question item, a bare "Questions for Sami:" that the reader dropped goes back
+        as "Questions for Sami: any question of this review is in the text below." only when the trimmed text holds
+        each question that the model put under it (trim.py asked_under). Else no result line goes back, and the comment
+        starts with the trimmed text. Two questions are under the line, the second on two lines; the reader keeps both,
+        the first alone, or neither. The comment as it posts: the head, the result line when there is one, the trimmed
+        text, the section and the foot."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
+        review = (f"Questions for Sami:\n\n1. {first}\n2. Is the change useful\n   for the goal of the work?\n\n"
+                  "The change fails the bar.")
+        self.assertEqual([" ".join(q.split()) for q in trim.asked_under(review)], [first, second])
+        line = f"Questions for Sami: {trim.ASKED_ANY}\n\n"
+        for case, trimmed, result in (("both", f"- {first}\n- {second}\n\nThe change fails the bar.", line),
+                                      ("the first alone", f"- {first}\n\nThe change fails the bar.", ""),
+                                      ("neither", "The change fails the bar.", "")):
+            with self.subTest(case=case):
+                posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertEqual(shown, f"{head}\n\n{result}{trimmed}\n\n{section}\n\n---\n{foot}")
 
     def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
         """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends
@@ -10577,6 +10689,39 @@ class ScheduleTest(Scheduled):
         self.assertEqual(len(posts), 1, posts)
         self.assertNotIn("a later try finished the automated review", posts[0])
 
+    def test_the_stop_after_a_review_run_that_settled_its_hold_says_what_that_run_did(self):
+        """Round 13, item 4 (OSSV-221's architect, 2026-11-21 04:57Z): held_work counts a rescreen run that recorded the
+        import check of its head as a run that settled the hold of the review, also when its comment job posted no
+        review (how: started). The stop's hold comment then says that a later try recorded the import check of the head
+        commit. A run whose comment job posted the review (how: finished) finished it, also when it recorded the check
+        too. Then REVIEW_TRIES runs settled nothing, and the pass starts the stop of the review."""
+        title = f"rescreen #7 at {HEAD} of mallory"
+        recorded = post_job({"Record the import check of the head": "success"})
+        after = (f"After that, the workflow tried the automated review again {self.TRIES} times, and none of these "
+                 "tries finished. The workflow does not try it again. You do not need to do anything.")
+        for case, comment, did in (
+                ("posted no review", attempt_job("comment", failed="Post the review, or replace the one posted before"),
+                 "recorded the import check of its head commit"),
+                ("posted the review", attempt_job("comment"), "finished the automated review")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.origin(50, "mallory", event="workflow_dispatch", title=f"review #7 at {HEAD}")
+                self.item(kind="pr", labels=("review-held",), comments=[limit_hold(50, at=ago(400), tries=0)])
+                self.ran(10, title, made=300, jobs=[attempt_job("gather"), self.screened(),
+                                                    attempt_job("review", name="review (screened)"), recorded, comment])
+                for i in range(self.TRIES):
+                    self.ran(20 + i, title, made=180 - 50 * i)
+                rc, out, started = self.started()
+                self.assertEqual((rc, started), (1, [("7", "stop", "", HEAD, "hold-review")]), out)
+                _trust, steps = write_stop(self, "hold-review", head=HEAD)
+                self.assertEqual(steps[STOP_STEP], "success", self.logs)
+                posts = [a[len("body="):] for c in writes(self.api) for a in c
+                         if a.startswith("body=<!-- review-held -->")]
+                self.assertEqual(posts, ["<!-- review-held -->\n**Automated review held.**\n\nThe workflow held this "
+                                         f"pull request, and a later try {did}. {after}\n\n"
+                                         f"<!-- review-held-head {HEAD} -->"])
+
     def test_a_review_whose_post_job_could_not_sign_in_gets_one_relabel_after_an_hour(self):
         """D16 (the App's retry): the workflow_run review of an outside head whose post job failed at token A's mint
         gets one relabel run of that head, which records the import check run with no model, an hour after that run
@@ -10701,6 +10846,46 @@ class ScheduleTest(Scheduled):
                 if verdict:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and a review of {HEAD} "
                                   f"{why[verdict]}. So the rescreen pass tries again only one App write of {HEAD}: the "
+                                  "withdrawal of its import check run.", out)
+                else:
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
+                                  "tried again.", out)
+
+    def test_a_refused_withdrawal_whose_line_stands_is_tried_again_whatever_the_newest_review_says(self):
+        """Round 13, item 2 (OSSV-221's architect, 2026-11-21 04:57Z): the rescreen pass reads the line
+        <!-- withdraw-owed <head> <why> --> of the label comment as the post job of a relabel reads it (held.sh
+        relabel_withdraws, rules.py verdict), so that it owes the relabel that withdraws. The review of mallory's #7
+        recorded the check run on HEAD, and GitHub refused a later withdrawal of it for a blocking finding: the label
+        comment holds the line. The newest review comment of HEAD is a pass with no screen, which gives no reason to
+        withdraw, and the last try of a review names HEAD. The newest run of HEAD failed at the withdrawal too. While
+        the line stands, the pass starts one relabel of HEAD an hour after that run ended. With no line, a relabel of
+        HEAD would withdraw nothing, so the pass tries no App write of HEAD again."""
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        last_try = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
+                    "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated review did not finish "
+                            f"after {self.TRIES} tries. The workflow does not try it again. This pull request comes "
+                            "from an account without write access to this repository. The automated screen passed "
+                            f"this pull request.\n\n<!-- review-held-head {HEAD} -->"}
+        passed = review_of(HEAD, at=ago(250), screened=False)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                 "body": rules.label_comment("import", "", [rules.import_marker(HEAD, None)])}
+        marked = dict(label, body=rules.with_marker(label["body"], f"<!-- withdraw-owed {HEAD} blocking -->"))
+        for case, comments, why, want in (("the line stands", [passed, last_try, marked], "blocking",
+                                           [("7", "relabel", "", HEAD, "")]),
+                                          ("no line", [passed, last_try, label], "", [])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(rules.review_verdict(comments, HEAD)[2], why)
+                self.item(kind="pr", labels=("review-held",), comments=comments)
+                self.ran(10, f"review {HEAD} by mallory", made=101, ended=61, event="workflow_run", jobs=[
+                    attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), refused])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if why:
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and a review of {HEAD} asks for a "
+                                  f"change. So the rescreen pass tries again only one App write of {HEAD}: the "
                                   "withdrawal of its import check run.", out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
@@ -13803,7 +13988,8 @@ class ImportCheckTest(ReaderRunner):
         marker line of value in its output text: recorded is true, standing is false (it is for the decision hand), the
         output imports gives the comment job value as JSON, and the job caught up no head (caught is empty) and names no
         head that changes a file under .github/ (steering is empty) and none whose held runs it did not approve for want
-        of the App's key (no_key is empty), so the comment job records none of them."""
+        of the App's key (no_key is empty), so the comment job records none of them. It owes and finished no withdrawal
+        of import check runs (owed and withdrawn are empty)."""
         self.assertEqual(got["result"], "success", self.logs)
         (token, body), = got["checks"]
         self.assertEqual(token, "token-A")
@@ -13820,7 +14006,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
                          {"recorded": "true", "decision": "record", "standing": "false", "caught": "", "steering": "",
-                          "no_key": ""})
+                          "no_key": "", "owed": "", "withdrawn": ""})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -15053,6 +15239,143 @@ class ImportCheckTest(ReaderRunner):
                          event="workflow_dispatch", comments=after, listed=[listed])
         self.assertEqual([(t, e) for t, e, _b in got["withdrawn"]], [("token-A", f"repos/{REPO}/check-runs/901")],
                          (got["post"].get("decision"), got["post"].get("standing"), got["log"]))
+
+    def test_a_review_with_no_screen_never_replaces_a_screened_review_of_its_head_that_withdraws(self):
+        """Round 13, item 2 (OSSV-221's architect accepted it at 2026-11-21 05:10Z): the step "Post the review, or
+        replace the one posted before" replaces the newest review comment of the workflow, but a review with no screen
+        in its run never replaces a screened review comment of the same head that gives a blocking finding or the
+        verdict person: it posts a comment of its own, so that a relabel and a review by hand still read that review.
+        A screened review, a review of another head, and a review in the place of a screened pass or of a review with no
+        screen replace the newest review comment as before."""
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        for case, newest, posted, want in (
+                ("over a screened blocking review", review_of(HEAD, "blocking"), review_of(HEAD, screened=False), new),
+                ("over a screened person review", review_of(HEAD, "person"), review_of(HEAD, screened=False), new),
+                ("over a screened will-fix review", review_of(HEAD, "blocking", will_fix=True),
+                 review_of(HEAD, "person", screened=False), new),
+                ("a screened review", review_of(HEAD, "blocking"), review_of(HEAD), None),
+                ("of another head", review_of(OTHER_HEAD, "blocking"), review_of(HEAD, screened=False), None),
+                ("over a screened pass", review_of(HEAD), review_of(HEAD, "blocking", screened=False), None),
+                ("over a review with no screen", review_of(HEAD, "blocking", screened=False),
+                 review_of(HEAD, screened=False), None)):
+            with self.subTest(case=case):
+                self.forget()
+                self.serve(f"repos/{REPO}/issues/7/comments", [newest])
+                self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+                post = step("comment", "Post the review, or replace the one posted before")["run"]
+                rc, out, _ = self.run_script(post, NUMBER="7", BODY=posted["body"])
+                self.assertEqual((rc, [c[:3] for c in writes(self.api)]),
+                                 (0, [want or ["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]), out)
+
+    OWE = "Record a withdrawal that the post job owes"
+
+    def owe(self, got, trust, comments):
+        """The comment job's step OWE after the post job that judge ran gave got, with the trust job's outputs trust and
+        #7's comments: the label comments that it posted or edited, or None when its if does not hold. Its if and its
+        env read the post job's outputs whatever that job's result, as GitHub fills in the outputs of a job that failed
+        too (judge's got["post"])."""
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.post.result": got["result"],
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        s = step("comment", self.OWE)
+        if not evaluate(s["if"], ctx):
+            return None
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+        rc, out, _ = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+        self.assertEqual(rc, 0, out)
+        return [body for _method, _endpoint, body in label_comments(self.api)]
+
+    def test_a_relabel_withdraws_while_the_line_of_a_refused_withdrawal_stands_whatever_the_newest_review_says(self):
+        """Round 13, item 2 (OSSV-221's architect, 2026-11-21 04:57Z): a withdrawal that GitHub refuses leaves the line
+        <!-- withdraw-owed <head> <why> --> in the label comment, and a relabel or a review by hand of that head
+        withdraws for its why while it stands, whatever the newest review says. The screened CI run of mallory's #7
+        recorded check run 901 on HEAD. alice reviews HEAD by hand with no screen and gives a blocking finding, and
+        GitHub refuses the withdrawal of 901. The post job fails, and its output owed, which GitHub gives the comment
+        job also for a job that failed, names HEAD and blocking: the comment job records the line. alice's review
+        replaces the screened pass, which gives no reason to withdraw. alice then passes HEAD by hand: that review
+        withdraws for the line, and GitHub refuses again, so the line stays. Her pass replaces her blocking review. Now
+        no review comment of HEAD gives a reason to withdraw, and 901 stands. With no line, a relabel would read 901 as
+        the record of a screened pass and keep #7 in the state import. With the line, it withdraws 901, for blocking,
+        and records no check run."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        marked = dict(old, updated_at=ago(60),
+                      body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking -->"))
+        by_hand = dict(self.BY_HAND, started=ago(1))
+        post = step("comment", "Post the review, or replace the one posted before")["run"]
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=by_hand, event="workflow_dispatch",
+                         comments=[screened, old], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]),
+                         ("failure", f"{HEAD} blocking", ""), self.logs)
+        self.assertEqual(self.owe(got, by_hand, [screened, old]), [marked["body"]])
+        # The comment job posts alice's blocking review: it replaces the screened pass (30).
+        blocked = review_of(HEAD, "blocking", at=ago(30), screened=False)
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [screened, marked])
+        rc, out, _ = self.run_script(post, NUMBER="7", BODY=blocked["body"])
+        self.assertEqual((rc, [c[:3] for c in writes(self.api)]),
+                         (0, [["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]), out)
+        got = self.judge(["README.md"], "pass", self.LPS, trust=by_hand, event="workflow_dispatch",
+                         comments=[blocked, marked], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["decision"], got["post"]["owed"]),
+                         ("failure", "screened", f"{HEAD} blocking"), self.logs)
+        self.assertEqual(self.owe(got, by_hand, [blocked, marked]), [])
+        # The comment job posts alice's pass: it replaces her blocking review (30), which had no screen.
+        passed = review_of(HEAD, at=ago(0), screened=False)
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [blocked, marked])
+        rc, out, _ = self.run_script(post, NUMBER="7", BODY=passed["body"])
+        self.assertEqual((rc, [c[:3] for c in writes(self.api)]),
+                         (0, [["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]), out)
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
+        relabel = dict(self.RELABEL, started=ago(-1))
+        for case, label, withdrawn, decision in (("the line stands", marked, [f"repos/{REPO}/check-runs/901"],
+                                                  "screened"),
+                                                 ("no line", old, [], "hand")):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=[passed, label], listed=[listed])
+                self.assertEqual((got["result"], [e for _t, e, _b in got["withdrawn"]], got["post"]["decision"],
+                                  got["steps"][self.RECORD]), ("success", withdrawn, decision, "skipped"), self.logs)
+
+    def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
+        """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose
+        post job failed, which writes neither the labels nor the text of the label comment, and every later write of
+        the label comment keeps the line (KEPT). Only a run that finished the withdrawal of that head takes the line
+        out: one that withdrew each import check run of the head with conclusion success, or that found none. The
+        screened CI run of mallory's #7 recorded check run 901 on HEAD, and a later screened review of HEAD gave a
+        blocking finding. A relabel of HEAD whose withdrawal of 901 GitHub refuses gets the line. A relabel that
+        withdraws 901, and one that finds no such check run, each take it out, and leave the rest of the label comment
+        as it is."""
+        listed, _others = self.recorded()
+        blocking = review_of(HEAD, "blocking", at=ago(90))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("change", "", [rules.import_marker(HEAD, self.LPS)])}
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        marked = dict(old, updated_at=ago(60), body=rules.with_marker(old["body"], line))
+        self.assertIn(line, rules.label_comment("person", marked["body"]).split("\n"))
+        relabel = dict(self.RELABEL, started=ago(-1))
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                         comments=[blocking, old], listed=[listed])
+        self.assertEqual((got["result"], got["post"]["owed"], got["labels"], got["comments"]),
+                         ("failure", f"{HEAD} blocking", [], []), got["log"])
+        self.assertEqual(self.owe(got, relabel, [blocking, old]), [marked["body"]])
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
+        for case, checks in (("901 withdrawn", [listed]), ("none stands", [])):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=[blocking, marked], listed=checks)
+                self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]),
+                                 ("success", "", HEAD), self.logs)
+                self.assertEqual(self.owe(got, relabel, [blocking, marked]), [old["body"]])
 
     def test_a_second_pass_by_hand_over_a_pass_by_hand_keeps_the_state_import_while_the_check_run_stands(self):
         """Round 12, item 3 (the author-kind table, section 8, items 17 and 18): the CI run of mallory's #7 screened
