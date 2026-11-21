@@ -12059,6 +12059,29 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual(rc, 0, out)
         return out, got
 
+    def test_a_stops_start_time_is_taken_before_its_trust_job_reads_the_hold_that_the_stop_replaces(self):
+        """Rule (a) of OSSV-221's architect (2026-11-21 04:57Z): no hold of another kind replaces a hold of the screen
+        of a head. The trust job of a stop picks the hold comment that the stop replaces (halt, replaced_hold) from the
+        comments that it reads, and the comment job writes nothing when a comment of the workflow changed after that
+        read (updated_at at or after started). A hold job of another run, outside the trust job, can make the picked
+        comment a hold of the screen of the head in between: the comment job sees that change only when started, the
+        time that it compares with, is taken before the read. A stand-in date marks where the trust job takes it."""
+        self.approval_tried(self.TRIES)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
+        self.forget()
+        stub = os.path.join(self.dir, "bin", "date")
+        with open(stub, "w") as f:
+            f.write('#!/usr/bin/env bash\n'
+                    '[ "$*" != "-u +%Y-%m-%dT%H:%M:%SZ" ] || echo "date started" >> "$FAKE_GH/calls"\n'
+                    'PATH=/usr/bin:/bin exec date "$@"\n')
+        os.chmod(stub, 0o755)
+        out, got = self.stop_trust()
+        self.assertEqual(json.loads(got["stop"])["stop"], "head-approve", out)
+        calls = self.calls()
+        self.assertIn(f"repos/{REPO}/issues/7/comments", calls, out)
+        self.assertLess(calls.index("date started"), calls.index(f"repos/{REPO}/issues/7/comments"), calls)
+
     def test_a_stop_is_taken_only_from_the_pass_by_its_name_while_the_pass_decides_it_again(self):
         """The trust job takes the stop of the approval of a head that REVIEW_TRIES approve runs could not write, and
         gives the comment job the stop as the pass's functions decided it again. No route, so no job writes: for a run
