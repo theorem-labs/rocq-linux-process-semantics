@@ -5722,6 +5722,12 @@ class FreshReaderTest(ReaderRunner):
                 posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, f"{head}\n\n{line}{trimmed}\n\n{section}\n\n---\n{foot}")
+        # The fresh reader of d43cb879 (finding 1): a bar sentence alone, with an empty list, still gets the line.
+        bar = "The change fails the bar: it models `vfork`, which SCOPE.md leaves out."
+        with self.subTest(case="a bar sentence alone"):
+            posted = trim.comment(f"Questions for Sami:\n\n{bar}", bar, [], head, section, foot, verdict="person")
+            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+            self.assertEqual(shown, f"{head}\n\n{line}{bar}\n\n{section}\n\n---\n{foot}")
 
     def test_a_bare_person_line_counts_every_part_under_it_to_the_end_of_the_review(self):
         """Round 13, part B, F1 (OSSV-221's architect, 2026-11-21 06:38Z), the fresh reader of 58e1d7d5 (findings 1
@@ -5820,6 +5826,14 @@ class FreshReaderTest(ReaderRunner):
         with self.subTest(case="a copy that holds all but the question"):
             cut = trim.closed(review[:review.index(checks)]) + "\n\n" + trim.CUT_WHOLE
             self.assertEqual(trim.with_result(review, trimmed, head, "person", [change], cut), trimmed)
+        # The fresh reader of d43cb879: in the order of .github/review.md:327, the findings and then the question, all
+        # kept. The finding does not count, as it is the text of a change item, and the question does.
+        with self.subTest(case="the findings first, then the question"):
+            kept = f"{findings}\n\n{checks}"
+            posted = trim.comment(f"Questions for Sami:\n\n{kept}", kept, [change], head, section, foot,
+                                  verdict="person")
+            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+            self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
 
     def test_a_dropped_intro_or_heading_under_a_bare_person_line_gets_a_line_that_is_true(self):
         """The fresh reader of 9a45919d, finding 2 (OSSV-221's architect, 2026-11-21 09:39Z): an intro sentence and a
@@ -5844,6 +5858,53 @@ class FreshReaderTest(ReaderRunner):
             with self.subTest(case=case):
                 posted = trim.comment(f"Questions for Sami:\n\n{under}", kept, items, head, section, foot,
                                       verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
+
+    def test_a_bare_person_line_over_findings_alone_gets_no_line_that_says_the_review_asks_them(self):
+        """The fresh reader of d43cb879, finding 1 (OSSV-221's architect's rule of 09:39Z, and its fix): a person
+        verdict whose list holds a change item and no question item, and whose review is the bare "Questions for
+        Sami:", then "Blocking findings." and the finding. The reader drops the bare line. The review asks nothing, so
+        "the review at the end of this comment asks them" would be false. A part whose text is the text of a change
+        item of the list (blocking or optional, both as plain reads them) does not count, and no other part is left.
+        So no result line goes back, and the comment starts with "Blocking findings."."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        optional = {"kind": "change", "ref": "theories/B.v:3", "optional": True,
+                    "text": "`theories/B.v` line 3 can be  shorter."}
+        for case, kept, items in (
+                ("a blocking finding", f"Blocking findings.\n\n- {change['text']}", [change]),
+                ("a blocking and an optional finding",
+                 f"Blocking findings.\n\n- {change['text']}\n- `theories/B.v` line 3\n  can be shorter.",
+                 [change, optional])):
+            with self.subTest(case=case):
+                posted = trim.comment(f"Questions for Sami:\n\n{kept}", kept, items, head, section, foot,
+                                      verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertEqual(shown, f"{head}\n\n{kept}\n\n{section}\n\n---\n{foot}")
+
+    def test_a_link_whose_text_a_line_break_splits_is_read_the_same_in_a_part_and_in_the_copy(self):
+        """The fresh reader of d43cb879, finding 2: a part joins its lines with a space, so plain reads a link whose
+        text a line break splits as a link there. The collapsed copy must be read the same way, with each line break
+        a space, else it never holds that part and no line goes back. The review: the bare "Questions for Sami:", a
+        question, "Blocking findings." and a finding whose link text is on two lines. The list holds a change item
+        whose text is not that line, so the finding counts. Whether the reader drops the question or keeps it,
+        ASKED_WHOLE goes back."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        asked = "Does `fork` keep the parent's signal mask on Linux?"
+        findings = ("Blocking findings.\n\n- `theories/A.v` line 12 admits `foo`. See [the\n  proof]"
+                    "(https://github.com/x/y/blob/main/A.v#L12).")
+        review = f"Questions for Sami:\n\n- {asked}\n\n{findings}"
+        line = ("Questions for Sami: the review at the end of this comment asks them. The text below may not hold all "
+                "of them.")
+        for case, kept in (("the question dropped", findings), ("the question kept", f"- {asked}\n\n{findings}")):
+            with self.subTest(case=case):
+                posted = trim.comment(review, kept, [change], head, section, foot, verdict="person")
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
 
@@ -11137,7 +11198,7 @@ class ScheduleTest(Scheduled):
                 if verdict:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and a review of {HEAD} "
                                   f"{why[verdict]}. So of the App's writes of {HEAD}, the rescreen pass tries again "
-                                  "only the withdrawal of its import check runs.", out)
+                                  "only the withdrawal of the import check runs.", out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
                                   "tried again.", out)
@@ -11179,7 +11240,7 @@ class ScheduleTest(Scheduled):
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}. Its label comment records that "
                                   f"an earlier run did not finish the withdrawal of the import check runs of {HEAD}. "
                                   f"So of the App's writes of {HEAD}, the rescreen pass tries again only the "
-                                  "withdrawal of its import check runs.", out)
+                                  "withdrawal of the import check runs.", out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
                                   "tried again.", out)

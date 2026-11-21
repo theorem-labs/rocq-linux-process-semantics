@@ -1461,7 +1461,7 @@ consider() {
           said="#$number: a hold that is not tried again names $head. Its label comment records that an earlier run did"
           said+=" not finish the withdrawal of the import check runs of $head."
         fi
-        echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of its import" \
+        echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of the import" \
           "check runs."
         due_retry 'review|rescreen|relabel|approve' relabel import
         return

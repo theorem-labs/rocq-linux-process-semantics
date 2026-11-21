@@ -61,12 +61,13 @@ bare form: the colon opens no empty list. When it was the bare form, it is follo
 comment asks them. The text below may not hold all of them." (ASKED_WHOLE). This line goes back only when the
 collapsed copy holds each part that the model put under the bare form. The parts go to the end of the review: each
 list item, heading and paragraph, as a question of .github/review.md needs no question mark. A line that is a result
-form alone, for example "Blocking findings.", is no part. Else no result line goes back, and the text starts with the
-trimmed text. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps the reader's
-"Blocking findings." line and the findings after it, after the result line. The posted result never says another
-verdict than the one of code: for example, a review that the soundness rule made person never starts with "No
-blocking finding.". With no --verdict, the form is the one that the review's first line starts with. An issue's
-review has no fixed form, and its trimmed text stays as the reader gave it.
+form alone, for example "Blocking findings.", is no part. A part whose text is that of a change item of the list does
+not count, as a finding asks Sami nothing, and some other part must be left. Else no result line goes back, and the
+text starts with the trimmed text. So under person, a list with a blocking finding (the soundness rule keeps each
+one) keeps the reader's "Blocking findings." line and the findings after it, after the result line. The posted result
+never says another verdict than the one of code: for example, a review that the soundness rule made person never
+starts with "No blocking finding.". With no --verdict, the form is the one that the review's first line starts with.
+An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -152,9 +153,10 @@ REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # The text after the form of person in a result line that lists no question (with_result): the trimmed text holds
 # each question item of the list, or the list holds no question item. So the colon of the form opens no empty list.
 # ASKED_WHOLE is for a review whose first line was the bare form, which the reader dropped, with no question item. It
-# goes back only when the collapsed copy at the end of the comment holds each part under that line (asked_under).
-# The reader can drop any of these parts, so the line does not say that the text below holds them. Else no result
-# line goes back. NONE_ASKED is for any other review: the model opened no list of questions.
+# goes back only when the collapsed copy at the end of the comment holds each part under that line (asked_under). A
+# part that is the text of a change item of the list does not count, and some other part must be left. The reader
+# can drop any of these parts, so the line does not say that the text below holds them. Else no result line goes
+# back. NONE_ASKED is for any other review: the model opened no list of questions.
 ASKED_BELOW = "each question is in the review below."
 ASKED_WHOLE = "the review at the end of this comment asks them. The text below may not hold all of them."
 NONE_ASKED = "this review lists none."
@@ -1455,12 +1457,14 @@ def with_result(review, trimmed, head, verdict="", items=(), whole=None):
     items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by ASKED_BELOW when items
     hold a question item, and by NONE_ASKED when the line of review was not the bare form. When it was the bare form,
     the form is followed by ASKED_WHOLE only when whole holds each part under it, to the end of review (asked_under).
-    whole is the collapsed copy at the end of the comment, review when None. Each part and the copy are compared as
-    plain reads them, with their white space made one space. Else no result line goes back: the text starts with the
-    first line of trimmed. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps
-    the reader's "Blocking findings." line and what follows it, after the result line. With no verdict, the form is
-    the one that the first line of review starts with, and the verdict is that form's. An issue's review, and a review
-    with no verdict whose first line has no such form, stay as the reader gave them."""
+    A part whose text is the text of a change item of items does not count, as a finding asks Sami nothing. So some
+    other part must be left. whole is the collapsed copy at the end of the comment, review when None. Each part, each
+    change item and the copy are compared as plain reads them, with their white space made one space. A part joins
+    its lines with a space, so each line break of the copy is a space first. Else no result line goes back: the text
+    starts with the first line of trimmed. So under person, a list with a blocking finding (the soundness rule keeps
+    each one) keeps the reader's "Blocking findings." line and what follows it, after the result line. With no
+    verdict, the form is the one that the first line of review starts with, and the verdict is that form's. An
+    issue's review, and a review with no verdict whose first line has no such form, stay as the reader gave them."""
     line = first_line(review)
     form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
@@ -1483,8 +1487,10 @@ def with_result(review, trimmed, head, verdict="", items=(), whole=None):
         elif asked or not bare:
             line = f"{form} {ASKED_BELOW if asked else NONE_ASKED}"
         else:
-            under = [" ".join(plain(inert(q)).split()) for q in asked_under(review)]
-            copy = " ".join(plain(review if whole is None else whole).split())
+            changes = {" ".join(plain(inert(i["text"])).split()) for i in items if i.get("kind") == "change"}
+            parts = (" ".join(plain(inert(q)).split()) for q in asked_under(review))
+            under = [q for q in parts if q not in changes]
+            copy = " ".join(plain(" ".join((review if whole is None else whole).split("\n"))).split())
             line = f"{form} {ASKED_WHOLE}" if under and all(q in copy for q in under) else ""
     return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
