@@ -79,7 +79,8 @@ limit_hold() {
 # head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of its own, and so does
 # each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of the holds of <work>
 # that the new hold may replace, it replaces the newest (by when GitHub last changed it, as holds reads them). A hold
-# of other work stays as it is.
+# of other work stays as it is. Before either writer writes, it checks that <head> is still the head of the pull
+# request (rules.py hold-head): a hold of an older head is stale, and writes no hold comment and changes no label.
 replaced_hold() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | W=$2 SCREEN=$3 SHA=$4 jq -rs "$works"'[.[] | select(.user.login == "github-actions[bot]"
@@ -233,7 +234,7 @@ no_key_of() {
 # held ", and it has no marker of a hold that is tried again) is newer than each review comment of <head> whose run
 # screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
 # held. Else the reason of a withdrawal of the import check runs of <head> that a run owes, as GitHub refused it or the
-# run failed before it, while a label comment holds its marker line <!-- withdraw-owed <head> <why> -->: <why>,
+# run failed before it, while a label comment holds its marker line <!-- withdraw-owed <head> <why> -->: "<why> owed",
 # whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out. Else
 # blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none is
 # screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel of
@@ -259,7 +260,7 @@ relabel_withdraws() {
     | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
         | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) -->$") | .w] | last) as $owed
     | if $held != "" and $held > $screened then "screen"
-      elif $owed != null then $owed
+      elif $owed != null then "\($owed) owed"
       elif $newer != null then $newer
       elif $last != null and ($reviews[$last].verdict | IN("blocking", "person")) then $reviews[$last].verdict
       else "-" end'
@@ -506,22 +507,23 @@ reach() {
   done
 }
 # facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <early> <reviewed>
-# <commented> <held> <counts>", - for none. signin: a step whose name starts with "Sign in" failed in a job of
-# the run, which so judged nothing. screen: the conclusion of its screen job. post: the conclusion of its post
-# job, signin for one that failed at such a step and failure for one that failed at another (a write of the
-# App, say). settled: its post job approved held runs or recorded the import check run. early: stopped when
+# <commented> <held> <posted> <answered> <counts>", - for none. signin: a step whose name starts with "Sign in"
+# failed in a job of the run, which so judged nothing. screen: the conclusion of its screen job. post: the conclusion
+# of its post job, signin for one that failed at such a step and failure for one that failed at another (a write of
+# the App, say). settled: its post job approved held runs or recorded the import check run. early: stopped when
 # its trust job stopped it (the job was skipped, or every job after it was), conflict when the comment job
 # alone ran after it (the task conflict). reviewed: signin when its review job failed at such a step.
 # commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
 # draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job
 # left its answer to a later run (its step of that name ran): another run answered a comment of that answer
 # first, so it posted nothing of its own. held: held when its hold job ran, so the run itself posted nothing.
-# counts: count when the run counts toward the limit of the
-# account that its name ends with, as the trust job's earlier counts it (not a run that its trust job
-# refused, nor one whose screen could not sign in; a run whose screen passed and whose review then could not
-# sign in counts, once: its screen ran, and its failed jobs run again with no new screen), else skip. The job
-# rescreen, which review.yml had before this pass moved to rescreen.yml and which each of its runs skipped, is
-# none of the run's jobs.
+# posted and answered: the conclusions of the comment job's steps "Post the review, or replace the one posted before"
+# and "Post the answer". A review or an answer that the fresh reader refused skips its step, and its comment job still
+# succeeds. counts, the last field, which the rescreen pass reads (pace): count when the run counts toward the limit
+# of the account that its name ends with, as the trust job's earlier counts it (not a run that its trust job refused,
+# nor one whose screen could not sign in; a run whose screen passed and whose review then could not sign in counts,
+# once: its screen ran, and its failed jobs run again with no new screen), else skip. The job rescreen, which
+# review.yml had before this pass moved to rescreen.yml and which each of its runs skipped, is none of the run's jobs.
 facts() {
   local file=$seen/jobs-$1
   jobs_of "$1" || return 1
@@ -547,6 +549,9 @@ facts() {
           elif any($c.steps[]?; .name == "Leave the answer to a later run" and .conclusion == "success")
           then "left" else ($c.conclusion // "running") end),
        (if any(.[]; .name == "hold" and .conclusion == "success") then "held" else "-" end),
+       ((map(select(.name == "comment")) | first) as $c
+        | ("Post the review, or replace the one posted before", "Post the answer") as $n
+        | ([$c.steps[]? | select(.name == $n) | .conclusion] | first) // "-"),
        (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
         elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
         then "skip"
@@ -650,7 +655,9 @@ waits_of() {
 # with <title> and <text>, which names the head of a pull request and holds no marker of a hold that is tried
 # again. It is no hold of the screen: its text never holds "The automated screen held ". It goes in the place of
 # the hold comment of <work> (works) that replaced_hold picks for it, or as a new one: never in the place of a
-# hold of other work, nor of a hold of the screen. The run of the pass fails for it.
+# hold of other work, nor of a hold of the screen. The run of the pass fails for it. The head of the stop is the
+# current head that this step read (read_pulls, or consider_closed for a closed pull request). The comment job's
+# step reads the head again before it writes, and writes nothing for a stale stop (rules.py hold-head).
 halt() {
   local line at id
   failed=1
@@ -666,12 +673,14 @@ halt() {
 # stopped <task> <tries> [<run> <how>]: the work of the hold that held_work read is not tried again, after <tries>
 # tries: runs of <task> since the hold, or since <run>, the newest run that settled the hold, that settled nothing
 # (halt, with the stop hold-<work>). <how> is finished when the comment job of <run> posted (its review, its answer,
-# or the label comment of its draft or of its approval), else started: the post job of <run> approved held runs or
-# recorded the import check run, and its comment job posted nothing. waits-on-theorem, with the label comment's step
-# "Sami starts again, by hand, the work that the hold comment names", and a hold comment that says so in the place of
-# that hold, the newest of its work, which is no hold of the screen (replaced_hold). With <run>, that comment says that
-# a try finished the work, started the checks, or recorded the import check of the head, before the tries that did
-# not finish. The hold comment of other work stays as it is.
+# or the label comment of its draft or of its approval); refused when the fresh reader refused the review or the
+# answer of <run>, so that its comment job succeeded and posted neither; else started: the post job of <run>
+# approved held runs or recorded the import check run, and its comment job posted nothing. waits-on-theorem, with the
+# label comment's step "Sami starts again, by hand, the work that the hold comment names", and a hold comment that
+# says so in the place of that hold, the newest of its work, which is no hold of the screen (replaced_hold). With
+# <run>, that comment says what that try did (finished the work, stopped it, started the checks, or recorded the check
+# repo-pairs/import-approved on the head) before the tries that did not finish. The hold comment of other work stays
+# as it is.
 stopped() {
   local title work what tried began of=$1 runs=$1 from="since its hold at $h_at"
   [ "$of" != rescreen ] || of=review runs="rescreen or review"
@@ -690,7 +699,10 @@ stopped() {
     tried="The workflow tried $work again $2 times after it held $what, and none of these tries finished."
   elif [ -n "$work" ]; then
     began="finished $work"
-    [ "${4:-}" != started ] || began="recorded the import check of its head commit"
+    case ${4:-} in
+      started) began="recorded the check \`repo-pairs/import-approved\` on its head commit" ;;
+      refused) began="stopped $work, so the workflow did not post it" ;;
+    esac
     tried="The workflow held $what, and a later try $began. After that, the workflow tried $work again"
     tried+=" $2 times, and none of these tries finished."
   elif [ -z "${3:-}" ]; then
@@ -790,7 +802,7 @@ due_held() {
 # retaken holds the task of each hold that this takes, which the other reasons leave to it.
 held_work() {
   local task=$h_task pattern since tries=0 newest="" created run latest="" f who from
-  local signin="" settled="" early="" commented="" ended="" settler="" how=""
+  local signin="" settled="" early="" commented="" ended="" settler="" how="" posted="" answered=""
   retaken+=" $task"
   [[ $h_at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || { echo "::error::#$number: its hold has no time."; return 1; }
@@ -823,17 +835,24 @@ held_work() {
   [ "$task" != rescreen ] || pattern='rescreen|review'
   since=$(runs_of "$pattern" "" workflow_dispatch | awk -v at="$h_at" '$1 >= at')
   # Each run of the task since the hold, oldest first: the facts of the newest stay. A run that settled the hold
-  # ends the count of the runs before it (how: finished when its comment job posted, else started, as its post job
+  # ends the count of the runs before it (how: finished when its comment job posted, refused when the fresh reader
+  # refused its review or its answer, so that the step that posts it was skipped, else started, as its post job
   # approved held runs or recorded the import check run), and each later run but one that could not sign in counts a
   # try.
   while read -r created _ run; do
     [ -n "${run:-}" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r signin _ _ settled early _ commented _ <<< "$f"
+    read -r signin _ _ settled early _ commented _ posted answered _ <<< "$f"
     newest=$created latest=$run ended=""
     if [ "$settled" = settled ] || { [ "$commented" = success ] && [ "$early" = - ]; }; then
       ended=1 settler=$run tries=0 how=started
-      { [ "$commented" != success ] || [ "$early" != - ]; } || how=finished
+      if [ "$commented" = success ] && [ "$early" = - ]; then
+        how=finished
+        case $task in
+          rescreen) [ "$posted" != skipped ] || how=refused ;;
+          answer) [ "$answered" != skipped ] || how=refused ;;
+        esac
+      fi
     elif [ "$signin" != signin ]; then
       tries=$((tries + 1))
     fi
@@ -1356,7 +1375,7 @@ consider() {
   local head="" outsider=false limited="" hold=""
   local retaken="" waits="" waits_read="" marks="" marks_read="" taken="" reason
   local review=none held=false conflicted=false caught=false steered=false head_read="" merge=${1:-} ci=""
-  local ci_read="" withdraws="" because=""
+  local ci_read="" withdraws="" because="" from="" said=""
   if [ "$draft" != false ]; then
     echo "#$number: a draft, of which the trust job takes no run."
     return 0
@@ -1429,14 +1448,21 @@ consider() {
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
         || { echo "::error::the comments of #$number could not be read."; return 1; }
+      read -r withdraws from <<< "$withdraws"
       case $withdraws in
         screen) because="a screen held $head" ;;
         blocking) because="a review of $head asks for a change" ;;
         person) because="a review of $head has questions for Sami" ;;
       esac
       if [ -n "$because" ]; then
-        echo "#$number: a hold that is not tried again names $head, and $because. So the rescreen pass tries again" \
-          "only one App write of $head: the withdrawal of its import check run."
+        said="#$number: a hold that is not tried again names $head, and $because."
+        # The reason of the line <!-- withdraw-owed <head> <why> -->, whatever the newest review says.
+        if [ "${from:-}" = owed ]; then
+          said="#$number: a hold that is not tried again names $head. Its label comment records a withdrawal of"
+          said+=" $head that an earlier run did not finish."
+        fi
+        echo "$said So the rescreen pass tries again only one App write of $head: the withdrawal of its import" \
+          "check run."
         due_retry 'review|rescreen|relabel|approve' relabel import
         return
       fi

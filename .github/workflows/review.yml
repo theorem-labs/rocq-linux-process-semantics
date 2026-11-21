@@ -2890,16 +2890,16 @@ jobs:
           # (rules.py verdict). screen is true only for screened: that comment holds the marker
           # <!-- review-screened <head> --> and no hold comment of the screen that names the head is newer. The outputs
           # verdict, held and earlier (why: blocking or person, or the why of the line
-          # <!-- withdraw-owed <head> <why> --> of the label comment) give them to the step that withdraws an import
-          # check run. A newer hold comment (held) gives the decision held. For an outside author, the state screened
-          # with the verdict pass and a why (that line) gives the decision screened: a relabel that withdraws records no
-          # check run. The state earlier with the verdict pass gives the decision screened with a why, and hand with
-          # none. The state unscreened gives replaced.
+          # <!-- withdraw-owed <head> <why> --> of the label comment, with from_owed true) give them to the step that
+          # withdraws an import check run. A newer hold comment (held) gives the decision held. For an outside author,
+          # the state screened with the verdict pass and a why (that line) gives the decision screened: a relabel that
+          # withdraws records no check run. The state earlier with the verdict pass gives the decision screened with a
+          # why, and hand with none. The state unscreened gives replaced.
           relabeled() {
-            local reviewed state why said
+            local reviewed state why from said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state why <<< "$reviewed"
+            read -r verdict state why from <<< "$reviewed"
             [ "$verdict" != - ] || verdict=""
             screen=false
             [ "$state" != screened ] || screen=true
@@ -2909,8 +2909,9 @@ jobs:
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
             [ "$why" = - ] || echo "earlier=$why" >> "$GITHUB_OUTPUT"
+            [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
-              decided screened "a withdrawal of the import check runs of $HEAD is still owed"
+              decided screened "the label comment records a withdrawal that an earlier run did not finish"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
               if [ "$why" != - ]; then
@@ -2927,21 +2928,23 @@ jobs:
           # verdict of the newest review comment of the head (earlier: this run's review has not posted yet), its state
           # and why (rules.py verdict), as relabeled reads them. The run keeps its own verdict, and records no check
           # run. held gives the output held, so that the step that withdraws an import check run withdraws it, as for a
-          # relabel. Else a why (blocking or person) goes to the output earlier, so that the same step withdraws each
+          # relabel. Else a why (blocking or person, or the why of the line <!-- withdraw-owed <head> <why> --> of the
+          # label comment, with from_owed true) goes to the output earlier, so that the same step withdraws each
           # check run that still stands for that verdict. Only for an outside author does the rule give a decision: held
           # gives held, and screened or earlier gives screened with a why, and hand with none, with the output standing.
           # The state unscreened gives replaced, and else the import check below gives the decision screen.
           by_hand() {
-            local reviewed earlier state why said
+            local reviewed earlier state why from said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r earlier state why <<< "$reviewed"
+            read -r earlier state why from <<< "$reviewed"
             if [ "$state" = held ]; then
               echo "held=true" >> "$GITHUB_OUTPUT"
               [ "$RECORD" = true ] || return 0
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
             [ "$why" = - ] || echo "earlier=$why" >> "$GITHUB_OUTPUT"
+            [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
             [ "$RECORD" = true ] || return 0
             if [ "$state" = screened ] || [ "$state" = earlier ]; then
               if [ "$why" != - ]; then
@@ -3045,8 +3048,9 @@ jobs:
           # true when a relabel or a review by hand with no screen found a newer hold of the screen, of any author.
           HELD: ${{ steps.decide.outputs.held }}
           # The reason of the rule of rules.py verdict for a relabel or a review by hand: blocking or person, or the why
-          # of the line <!-- withdraw-owed <head> <why> --> of the label comment.
+          # of the line <!-- withdraw-owed <head> <why> --> of the label comment, and then FROM_OWED is true.
           EARLIER: ${{ steps.decide.outputs.earlier }}
+          FROM_OWED: ${{ steps.decide.outputs.from_owed }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
           # The head that the name of this run gives (the trust job's named), or empty.
@@ -3062,16 +3066,21 @@ jobs:
           fi
           [ "${HELD:-}" != true ] || why=screen
           # who: the review whose verdict withdraws: a review later than the check run, or, when this run's own verdict
-          # withdraws nothing, a review of the head before this run (EARLIER, from rules.py verdict).
-          who="a later review"
+          # withdraws nothing, a review of the head before this run (EARLIER, from rules.py verdict). The why of the
+          # line <!-- withdraw-owed <head> <why> --> (FROM_OWED) comes from a review or a hold that can be older than
+          # the check run, so its texts do not say later (rules.py OWED_WITHDRAWN).
+          who="a later review" owing=()
           if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ]; then
             why=$EARLIER who="a review of $head before this run"
+            [ "${FROM_OWED:-}" != true ] || owing=(owed) who="an automated review of $head"
           fi
           # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
           case $why in
             blocking) because="$who asks for a change" ;;
             person) because="$who has questions for Sami" ;;
-            screen) because="a later screen held $head" ;;
+            screen)
+              because="a later screen held $head"
+              [ ${#owing[@]} -eq 0 ] || because="an automated screen held $head" ;;
             *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit: $head"; exit 1; }
@@ -3094,7 +3103,7 @@ jobs:
             || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
                  exit 1; }
           ids=$(python3 .github/review/rules.py withdrawal "$NUMBER" "$head" "$why" "$RUNNER_TEMP/approved.jsonl" \
-            "$RUNNER_TEMP") \
+            "$RUNNER_TEMP" "${owing[@]}") \
             || { echo "::error::the requests that withdraw the import check runs could not be made."; exit 1; }
           ids=$(tr '\n' ' ' <<< "$ids")
           ids=${ids% }
@@ -3900,6 +3909,9 @@ jobs:
       # its marker as they are, so the next rescreen pass decides the stop again, and so does a hold comment that could
       # not be written. Nothing is written when a comment of the workflow on the item changed after the trust job read
       # it (a hold, a review, an answer or the label comment of another run): the next rescreen pass decides from it.
+      # Nor when the pull request is at another head now than the one that the stop names, which the trust job read
+      # (halt): the stop is stale, and the run's summary says so (.github/review/rules.py hold-head, the one check of
+      # each writer of a hold comment). A stop of an issue names no head.
       - name: Say that the work of the item is not tried again
         if: needs.trust.outputs.task == 'stop'
         env:
@@ -3929,6 +3941,10 @@ jobs:
               "run writes nothing. The next rescreen pass decides again."
             exit 0
           fi
+          rc=0
+          python3 .github/review/rules.py hold-head "$NUMBER" "$head" || rc=$?
+          (( rc != 3 )) || exit 0
+          (( rc == 0 )) || exit 1
           python3 .github/review/rules.py label "$NUMBER" task=stop outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
             author="${AUTHOR_KIND:-}" "$fact=true" \
             || { echo "::error::the label of #$NUMBER could not be set. The next rescreen pass decides the stop again."; exit 1; }
@@ -3995,13 +4011,14 @@ jobs:
   # review (a review or a rescreen), the answer, the draft and the approval each have their own hold comment, so that a
   # hold of one never takes the place of the hold of another, and the rescreen pass takes each again. A hold of the
   # screen of a head is replaced only by a later hold of the screen of that same head: a relabel and a review by hand
-  # read it. The one rule of each writer of a hold comment says so (held.sh replaced_hold). The comment says
-  # nothing of why the screen held it: the screen job's one output is its verdict. A hold that the rescreen pass tries
-  # again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which the pass finds it and the account:
-  # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient, a screened
-  # review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES times. <run> is the run
-  # of the event this hold comes from (a run that takes the hold again keeps it), and <tries> the screened reviews of
-  # it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
+  # read it. The one rule of each writer of a hold comment says so (held.sh replaced_hold). A hold of a pull request
+  # whose head is not its head now is stale: it writes no hold comment and changes no label (rules.py hold-head). The
+  # comment says nothing of why the screen held it: the screen job's one output is its verdict. A hold that the
+  # rescreen pass tries again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which the pass finds it
+  # and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient,
+  # a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES times. <run>
+  # is the run of the event this hold comes from (a run that takes the hold again keeps it), and <tries> the screened
+  # reviews of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
   # <!-- review-held-<kind> <run> <tries> answer <comment id> -->, and the marker of a draft's hold with the task:
   # <!-- review-held-<kind> <run> <tries> draft -->, so that the rescreen pass tries the answer again as the answer of
   # that comment, and the draft as a draft, which posts nothing, and never either as a review. Such a hold gives the
@@ -4045,8 +4062,9 @@ jobs:
     timeout-minutes: 5
     # actions: read for this run's jobs (did a sign-in fail? was the review stopped at the cap?) and this workflow's
     # runs (did a newer run of the item and task cancel it?); pull-requests: write reads the open pull requests too,
-    # which map a head to its pull request; checks: read for the notices of a newer CI run's trust job, which name its
-    # pull request; contents: read for main's .github/, which holds .github/review/rules.py and .github/review/held.sh.
+    # which map a head to its pull request, and the head of this pull request now (is the hold stale?); checks: read
+    # for the notices of a newer CI run's trust job, which name its pull request; contents: read for main's .github/,
+    # which holds .github/review/rules.py and .github/review/held.sh.
     permissions: {contents: read, issues: write, pull-requests: write, actions: read, checks: read}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -4318,6 +4336,18 @@ jobs:
             marker+=$'\n'"<!-- review-held-head $HEAD -->"
           fi
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
+          # A hold of a pull request names the head that the trust job read (HEAD). When the pull request is at another
+          # head now, as GitHub gives it to .github/review/rules.py hold-head, the hold is stale: this job writes no
+          # hold comment and changes no label, and the run's summary says so. So it never takes the place of the hold of
+          # the screen of the current head. That check is the one of each writer of a hold comment. A hold of an issue
+          # (item, as GitHub gives it above) reads no head, and goes on.
+          head="" named=""
+          [[ ! ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] || head=$HEAD
+          [ "$item" != pr ] || named=$head
+          rc=0
+          python3 .github/review/rules.py hold-head "$NUMBER" "$named" || rc=$?
+          (( rc != 3 )) || exit 0
+          (( rc == 0 )) || exit 1
           # Adding a label that does not exist makes it, so a failed creation (two holds at once) only loses its colour
           # and its description.
           python3 .github/review/rules.py make-label "$HELD_LABEL"
@@ -4332,9 +4362,8 @@ jobs:
           # held.sh sets too.
           work=review
           case $TASK in answer|draft|approve) work=$TASK ;; esac
-          screen=false head=""
+          screen=false
           [ "$fact" != screen_held ] || screen=true
-          [[ ! ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] || head=$HEAD
           seen=$(mktemp -d -p "$RUNNER_TEMP")
           source "$GITHUB_WORKSPACE/.github/review/held.sh"
           id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head") \
