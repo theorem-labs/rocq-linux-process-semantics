@@ -4193,7 +4193,7 @@ jobs:
       # withdraws for a held screen (the author-kind table's withdraw). The if alone reads the screen, and the step
       # writes only the literal output held=true, which the next step reads: no step of this job reads anything else
       # of the screen.
-      - name: Mark a hold of the screen of this run
+      - name: Whether the screen of this run held the item in a review, a rescreen or an approval
         id: screened
         if: >-
           (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'

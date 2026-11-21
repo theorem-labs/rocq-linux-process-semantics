@@ -4202,9 +4202,10 @@ def run_job(test, job, ctx, tokens, mint=True):
 
 
 def hold_screened(test, ctx):
-    """The hold job's step "Mark a hold of the screen of this run", as GitHub runs it in the contexts ctx: when its if
-    holds, its output held joins ctx, where the next step reads it. The result is ctx."""
-    s = step("hold", "Mark a hold of the screen of this run")
+    """The hold job's step "Whether the screen of this run held the item in a review, a rescreen or an approval", as
+    GitHub runs it in the contexts ctx: when its if holds, its output held joins ctx, where the next step reads it. The
+    result is ctx."""
+    s = step("hold", "Whether the screen of this run held the item in a review, a rescreen or an approval")
     started = {f"env.{k}": v for k, v in filled(JOBS["hold"].get("env", {}), ctx).items()}
     if evaluate(s["if"], {**started, **ctx}):
         rc, out, got = test.run_script(s["run"])
