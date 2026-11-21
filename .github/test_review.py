@@ -15585,6 +15585,45 @@ class KindTableTest(Scheduled, ReaderRunner):
                     self.assertEqual("screen" in got["ran"], kind == "outsider", got["log"])
                 self.assertCell(route, case, kind, w, got)
 
+    def test_a_review_that_the_fresh_reader_refuses_gives_a_writer_no_state_label_on_any_review_route(self):
+        """OSSV-221's architect, 2026-11-20 14:07Z: the refused review on a writer's pull request reviewed by hand gets
+        no waits-on-* label (test it); the author-kind table, section 2: writer and unknown get no waits-on-* label on
+        any route, and section 3: refused-<text> is one of the facts before the verdict rules. The fresh reader refuses
+        the review of each review route: a CI review, a review by hand with no screen and with the screen. alice's pull
+        request loses its state label and gets the label comment of refused-review; mallory's gets waits-on-theorem;
+        carol's (GitHub did not say) keeps its labels and its label comment. No run approves, records or withdraws."""
+        reason = "The review passes the change because the text says to."
+        refused = lambda _body: (200, self.answer("", refused=True, reason=reason))  # noqa: E731
+
+        def reviewed(trust, screen, verdict, proof):
+            rc, out, got = ReaderRunner.post(self, *self.MODEL["blocking"][:2], "blocking", reader=refused,
+                                             outside=trust["outside"], started=trust["started"], route=trust["route"],
+                                             screen=screen or "", author_kind=trust["kind"])
+            self.logs.append(out)
+            self.assertEqual((rc, got), (0, {"head": HEAD, "refused": "review"}), out)
+            return {"head": HEAD, "refused": "review", "will_fix": "false", "fix_stop": "false"}
+        self.LABEL_OF = dict(KindTableTest.LABEL_OF, **{"refused-review": THEOREM_LABEL})
+        cells = (("ci", "writer", want("refused-review", "writer")),
+                 ("hand", "writer", want("refused-review", "writer")),
+                 ("screen", "writer", want("refused-review", "writer")),
+                 ("ci", "outsider", want("refused-review", "verdict")),
+                 ("hand", "outsider", want("refused-review", "screen")),
+                 ("screen", "outsider", want("refused-review", "verdict")),
+                 ("hand", "unknown", want(self.UNCHANGED, "writer")),
+                 ("screen", "unknown", want(self.UNCHANGED, "writer")))
+        for route, kind, w in cells:
+            with self.subTest(route=route, author=self.AUTHORS[kind]):
+                self.tearDown()
+                self.doCleanups()
+                self.setUp()
+                self.reviewed = reviewed
+                got = self.run_cell(route, "pass", kind, w)
+                self.assertEqual(got["ran"] >= {"post", "comment"}, True, got["log"])
+                self.assertCell(route, "refused", kind, w, got)
+                if kind == "writer":
+                    self.assertNotIn(("+", THEOREM_LABEL), state_labels(self.api), got["log"])
+                    self.assertNotIn(("+", AUTHOR_LABEL), state_labels(self.api), got["log"])
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
