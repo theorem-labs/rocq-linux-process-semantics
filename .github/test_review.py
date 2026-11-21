@@ -3780,6 +3780,48 @@ class HoldTest(Holding):
                  and "<!-- review-held -->" in s.get("run", "")}
         self.assertEqual(found, {("hold", self.STEP), ("comment", STOP_STEP)})
 
+    def test_a_hold_at_the_cap_or_of_the_last_try_keeps_the_screens_hold_of_the_head(self):
+        """Round 13, item 1 (OSSV-221's architect, 2026-11-21 04:57Z), for the routes of the hold job that the writer
+        test above does not drive: a hold at SCREENED_HOURLY_CAP, the hold of the last try (REVIEW_TRIES), and the last
+        try of a screen asked for by hand. Each comes after a screen that passed, so it is no hold of the screen: with
+        the screen's hold of the head (50) as the newest hold of its work, it posts a comment of its own, and with an
+        older hold of that work at the limit (41) it replaces that one. The screen's hold stays. The review job, which
+        the cap and the tries count, runs for the review, the rescreen, the answer and the draft: an approval has
+        neither route."""
+        kinds = {"review": "pr", "rescreen": "pr", "answer": "pr", "draft": "issue"}
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        for task, kind in kinds.items():
+            head, work = HEAD if kind == "pr" else "", "review" if task == "rescreen" else task
+            answered = "901" if task == "answer" else ""
+            self.tearDown()
+            self.setUp()
+            _calls, _post, body = self.hold("screen", task=task, kind=kind, head=head, comment=answered)
+            self.assertIn(rules.SCREEN_HELD, body)
+            screen = {"id": 50, "user": {"login": BOT}, "updated_at": ago(60), "body": body}
+            older = limit_hold(41, at=ago(120), tries=0, task="" if work == "review" else work, comment=answered,
+                               head=head)
+            routes = [("cap", "mallory", {"capped": True, "tries": "1"}, "\n<!-- review-held-cap 50 1"),
+                      ("last try", "mallory", {"tries": str(self.TRIES - 1)}, "The workflow does not try it again.")]
+            if task == "review":
+                routes.append(("by hand", "", {}, "The workflow does not try it again."))
+            for route, outsider, kwargs, words in routes:
+                for comments, want in (([screen], None), ([older, screen], 41)):
+                    with self.subTest(task=task, route=route, of=[c["id"] for c in comments]):
+                        self.tearDown()
+                        self.setUp()
+                        for c in (41, 50):
+                            self.serve(f"repos/{REPO}/issues/comments/{c}",
+                                       {"html_url": "https://github.com/acme/model"})
+                        calls, post, body = self.hold("screen", task=task, kind=kind, head=head, outsider=outsider,
+                                                      review="failure", origin="50", comments=comments,
+                                                      comment=answered, **kwargs)
+                        self.assertIn(words, body)
+                        self.assertNotIn(rules.SCREEN_HELD, body)
+                        self.assertEqual(post[:3], new if want is None
+                                         else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
+                        self.assertNotIn(["--method", "PATCH", f"repos/{REPO}/issues/comments/50"],
+                                         [c[:3] for c in calls])
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
