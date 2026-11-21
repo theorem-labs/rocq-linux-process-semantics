@@ -5756,6 +5756,27 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(question in whole, held)
                 self.assertLessEqual(len(posted), trim.MAX_COMMENT)
 
+    def test_a_bare_person_line_never_points_to_a_copy_that_holds_none_of_the_review(self):
+        """Fresh reader b7 of round 13 (OSSV-221's architect, 2026-11-21 04:09Z: the line must be true where it posts):
+        when the comment is near MAX_COMMENT characters before its copy, comment cuts the collapsed copy to nothing,
+        and the copy holds CUT_WHOLE alone: no word that the model wrote under the bare "Questions for Sami:". The
+        review is then in the run's summary alone. So the result line never says "the review is at the end of this
+        comment" there, and it still starts with the form of person."""
+        head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        question = "Does `fork` keep the parent's signal mask on Linux?"
+        findings = f"Blocking findings.\n\n- {change['text']}"
+        review = (f"Questions for Sami:\n\n- {question}\n\n{findings}\n\n" + "The rest of the review. " * 400).strip()
+        section = "S" * (trim.MAX_COMMENT - 400)
+        posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
+        shown, whole = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
+        self.assertEqual(whole.strip().removesuffix("</details>").strip(), trim.CUT_WHOLE)
+        result = shown.split("\n\n")[1]
+        self.assertTrue(result.startswith("Questions for Sami:"), shown[:300])
+        self.assertNotIn("at the end of this comment", result)
+        self.assertLessEqual(len(posted), trim.MAX_COMMENT)
+
     def test_a_bare_person_line_gets_no_pointer_when_the_reader_kept_it_or_the_list_holds_a_question(self):
         """OSSV-221's architect, 2026-11-21 11:19Z: the line "Questions for Sami: the review is at the end of this
         comment." is only for a bare "Questions for Sami:" that the reader dropped, with no question item. When the
