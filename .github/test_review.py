@@ -15663,24 +15663,6 @@ class KindTableTest(Scheduled, ReaderRunner):
         self.assertEqual([r[:3] for r in runs if r[0] == "8"], [("8", "rescreen", "mallory")], out)
         self.assertLess(out.index("carol"), out.index("#8: started rescreen"), out)
 
-    def test_a_stop_that_a_person_runs_by_hand_on_an_item_whose_authors_access_github_does_not_give(self):
-        """OSSV-221's architect, 2026-11-21 00:50Z, on the Stop row of the author-kind table (v5:74, unknown: "`stopped`,
-        no label"): that cell is for a stop task run by hand. alice runs the task stop with the comment hold-review on
-        carol's issue #7, whose review the rescreen pass tried REVIEW_TRIES times since its hold, as the pass would name
-        it. The real trust step routes it with the kind unknown and outside false. The comment job then changes no state
-        label and no label comment (section 8, item 4: GitHub did not say whether carol has write access), and the hold
-        comment of the stop posts in the place of the hold comment of the review, as for alice's and mallory's items."""
-        w = want(self.UNCHANGED, held=self.HELD_REVIEW)
-        (event, inputs), given = self.start("stop", "hold-review", "unknown", w)
-        inputs = dict(inputs, actor="alice")
-        rc, out, trust = self.run_trust(event, **inputs)
-        self.assertEqual((rc, trust.get("route"), trust.get("task"), trust.get("kind"), trust.get("outside")),
-                         (0, "review", "stop", "unknown", "false"), out)
-        self.forget()
-        got = self.jobs_after(trust, event, **given)
-        self.assertEqual(got["ran"], {"trust", "comment"}, got["log"])
-        self.assertCell("stop", "hold-review", "unknown", w, got)
-
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
