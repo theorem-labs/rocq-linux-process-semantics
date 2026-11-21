@@ -15684,6 +15684,52 @@ class ImportCheckTest(ReaderRunner):
                                  ("success", "", HEAD), self.logs)
                 self.assertEqual(self.owe(got, relabel, [blocking, marked]), [old["body"]])
 
+    def test_a_screen_hold_whose_withdrawal_github_refuses_leaves_the_line_of_the_owed_withdrawal(self):
+        """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z): a refused withdrawal leaves the line
+        <!-- withdraw-owed <head> <why> --> in the label comment. The CI run of mallory's #7 recorded check run 901 on
+        HEAD. A later review, rescreen or approval of HEAD is held by its screen: its post job withdraws 901 for the
+        screen, and GitHub refuses it, so the post job's output owed names HEAD and screen. A job of that run that
+        needs the post job and runs must record the line, as the comment job does for a relabel and a review by hand.
+        The comment job does not run when the screen held the head (its review job was skipped), and the hold job
+        does not need the post job."""
+        listed, _others = self.recorded()
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} screen -->")
+        for task, event in (("review", "workflow_run"), ("rescreen", "workflow_dispatch"),
+                            ("approve", "workflow_dispatch")):
+            with self.subTest(task=task):
+                trust = dict(self.REVIEWED, task=task, started=ago(1))
+                self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+                got = self.judge(["README.md"], value=self.LPS, trust=trust, screen="held", event=event,
+                                 comments=[old], listed=[listed], named=HEAD)
+                self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} screen"), self.logs)
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(trust, named=HEAD).items()}
+                ctx.update({"github.event_name": event, "github.ref": "refs/heads/main",
+                            "needs.trust.result": "success", "needs.gather.result": "success",
+                            "needs.gather.outputs.kind": "pr",
+                            "needs.gather.outputs.digest": "0" * 64, "needs.screen.result": "success",
+                            "needs.screen.outputs.verdict": "held", "needs.review.result": "skipped",
+                            "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                            **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+                bodies = []
+                for name in ("comment", "hold"):
+                    if "post" not in JOBS[name]["needs"] or not evaluate(JOBS[name]["if"], ctx):
+                        continue
+                    started = {f"env.{k}": v for k, v in filled(JOBS[name].get("env", {}), ctx).items()}
+                    for s in JOBS[name]["steps"]:
+                        if "rules.py owed" not in s.get("run", "") or not evaluate(s.get("if", "true"),
+                                                                                    {**started, **ctx}):
+                            continue
+                        self.forget()
+                        self.serve(f"repos/{REPO}/issues/7/comments", [old])
+                        env = filled({**WF["env"], **JOBS[name].get("env", {}), **s.get("env", {})}, ctx)
+                        rc, out, _ = self.run_script(s["run"],
+                                                     **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                        self.assertEqual(rc, 0, out)
+                        bodies += [body for _method, _endpoint, body in label_comments(self.api)]
+                self.assertEqual(bodies, [marked])
+
     def test_the_line_of_a_refused_withdrawal_gives_a_reason_and_never_the_text_that_a_screen_passed_the_head(self):
         """Round 13, part B, F2 (OSSV-221's architect, 2026-11-21 06:38Z): the line <!-- withdraw-owed <head> <why> -->
         gives only the reason to withdraw, never a state. No screen ever passed HEAD of mallory's #7. alice reviews HEAD
