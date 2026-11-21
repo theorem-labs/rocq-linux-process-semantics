@@ -5827,75 +5827,78 @@ class FreshReaderTest(ReaderRunner):
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, "\n\n".join(p for p in (head, line, kept, section) if p) + f"\n\n---\n{foot}")
 
-    def test_a_bare_person_line_points_to_the_review_at_the_end_also_when_the_copy_is_cut(self):
-        """OSSV-221's architect, 2026-11-21 11:19Z: when the comment would be over MAX_COMMENT characters, the
-        collapsed copy loses its end and ends with CUT_WHOLE. The line "Questions for Sami: the review is at the end of
-        this comment." still goes back first, as it does not say that the copy is full. The list holds a blocking
-        finding and no question item; the reader drops the bare line and the question. The copy is cut after the
-        question, or before it: then it keeps no word of the review, and the line points to the run's summary
-        (OSSV-221's architect, 2026-11-21 14:00Z)."""
+    def test_a_bare_person_line_points_to_the_summary_whether_the_cut_copy_keeps_the_question_or_not(self):
+        """OSSV-221's architect, 2026-11-21 19:01Z, in the place of the rules of 11:19Z and 14:00Z: when the comment
+        would be over MAX_COMMENT characters, the collapsed copy loses its end and ends with CUT_WHOLE, and the line of
+        a dropped bare "Questions for Sami:" is "Questions for Sami: the review is in the summary of this workflow
+        run.", whatever the cut copy keeps. The list holds a blocking finding and no question item; the reader drops the
+        bare line and the question. The copy is cut after the question, or before it: both get that line."""
         head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
         question = "Does `fork` keep the parent's signal mask on Linux?"
         findings = f"Blocking findings.\n\n- {change['text']}"
         review = (f"Questions for Sami:\n\n- {question}\n\n{findings}\n\n" + "The rest of the review. " * 400).strip()
-        line = "Questions for Sami: the review is at the end of this comment."
+        line = "Questions for Sami: the review is in the summary of this workflow run."
         for case, section, held in (("a copy cut after the question", "S" * (trim.MAX_COMMENT - 2000), True),
                                     ("a copy cut before the question", "S" * (trim.MAX_COMMENT - 400), False)):
             with self.subTest(case=case):
                 posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
                 shown, whole = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
-                first = line if held else "Questions for Sami: the review is in the summary of this workflow run."
-                self.assertEqual(shown.split("\n\n")[1:3], [first, "Blocking findings."], shown[:300])
-                self.assertIn(trim.CUT_WHOLE, whole)
+                self.assertEqual(shown.split("\n\n")[1:3], [line, "Blocking findings."], shown[:300])
+                self.assertTrue(whole.strip().removesuffix("</details>").strip().endswith(trim.CUT_WHOLE), whole[-200:])
                 self.assertEqual(question in whole, held)
                 self.assertLessEqual(len(posted), trim.MAX_COMMENT)
 
-    def test_a_bare_person_line_points_to_the_summary_when_the_cut_copy_keeps_only_markup(self):
-        """The fresh reader of round 14, finding 2, and of its fix, N2 and M1 (OSSV-221's architect, 2026-11-21 14:00Z:
-        a cut copy that keeps no word of the review): the question item starts with "- **", "1. **", "- __", "(1) **"
-        or "**1.** ". When the cut of the collapsed copy lands in that start ("-", "1.", "- *", "(1) **", "**1.", say),
-        the copy keeps a list mark, a list number or markup, and no word under the bare "Questions for Sami:". The line
-        then points to the run's summary, not to the end of the comment. For each size of the section near the cut that
-        changes the line, the line says "at the end of this comment" only when the copy keeps a letter of the question,
-        and the comment stays at most MAX_COMMENT characters. The rule itself (trim.has_word): a word is a letter, so a
-        digit (a list number in any form, or a number in the text) and "_" or "*" markup are no word."""
-        for text, word in (("1. **", False), ("1", False), ("1) _", False), ("(1) **", False), ("**1.**", False),
-                           ("- __", False), ("- **`", False), ("- 42", False), ("", False), ("- **`t", True),
-                           ("42 lemmas", True), ("- **D", True)):
-            with self.subTest(text=text):
-                self.assertEqual(trim.has_word(text), word)
+    def test_a_bare_person_line_points_to_the_summary_exactly_when_the_copy_is_cut(self):
+        """OSSV-221's architect, 2026-11-21 19:01Z, in the place of the 14:00Z rule and of the test of a cut copy for a
+        word (the fresh readers of round 14): the cut alone chooses the line of a dropped bare "Questions for Sami:"
+        with no question item. When comment cuts the collapsed copy, so that it ends with CUT_WHOLE, the line is
+        "Questions for Sami: the review is in the summary of this workflow run."; when the copy is whole, it is
+        "Questions for Sami: the review is at the end of this comment.". For each start of the question item that the
+        readers used ("- **", "1. **", "(1) **", "a. **", "- <b>"), the sizes of the section are swept across the size
+        that first cuts the copy, and across the sizes at which the cut lands in that start: the line follows the cut,
+        and the comment stays at most MAX_COMMENT characters."""
         head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
         findings = f"Blocking findings.\n\n- {change['text']}"
         at_end = "Questions for Sami: the review is at the end of this comment."
         in_summary = "Questions for Sami: the review is in the summary of this workflow run."
-        for start, end in (("- **", "**"), ("1. **", "**"), ("- __", "__"), ("(1) **", "**"), ("**1.** ", "")):
+        for start, end in (("- **", "**"), ("1. **", "**"), ("(1) **", "**"), ("a. **", "**"), ("- <b>", "</b>")):
             review = (f"Questions for Sami:\n\n{start}Does `fork` keep the parent's signal mask on Linux?{end}\n\n"
                       f"{findings}\n\n" + "The rest of the review. " * 400).strip()
 
             def posted(n):
                 text = trim.comment(review, findings, [change], head, "S" * n, foot, verdict="person")
                 shown, whole = text.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
-                copy = whole.strip().removesuffix("</details>").strip().removesuffix(trim.CUT_WHOLE).strip()
-                return len(text), shown.split("\n\n")[1], copy.partition("\n")[2].strip()
-            low, high = trim.MAX_COMMENT - 2000, trim.MAX_COMMENT - 400
-            self.assertEqual((posted(low)[1], posted(high)[1]), (at_end, in_summary), start)
-            while high - low > 1:
-                mid = (low + high) // 2
-                if posted(mid)[1] == at_end:
-                    low = mid
-                else:
-                    high = mid
-            # The largest section with the line at_end keeps the first letter of the question, and no more.
-            self.assertEqual(posted(low)[2], f"{start}D", start)
-            for n in range(low - 8, high + 8):
+                copy = whole.strip().removesuffix("</details>").strip()
+                cut = copy.endswith(trim.CUT_WHOLE)
+                under = copy.removesuffix(trim.CUT_WHOLE).strip().partition("\n")[2].strip()
+                return len(text), shown.split("\n\n")[1], cut, under
+
+            def last(low, high, holds):
+                # The largest size in [low, high) for which holds is true, as it is at low and not at high.
+                self.assertEqual((holds(low), holds(high)), (True, False), start)
+                while high - low > 1:
+                    mid = (low + high) // 2
+                    low, high = (mid, high) if holds(mid) else (low, mid)
+                return low
+            # The largest section with a whole copy, and the largest whose cut copy keeps the first letter "D".
+            whole_to = last(0, trim.MAX_COMMENT - 400, lambda n: not posted(n)[2])
+            letter_to = last(whole_to + 1, trim.MAX_COMMENT - 400, lambda n: "D" in posted(n)[3])
+            seen, starts = set(), []
+            for n in [*range(whole_to - 8, whole_to + 8), *range(letter_to - 4, letter_to + 12)]:
                 with self.subTest(start=start, section=n):
-                    size, line, under = posted(n)
+                    size, line, cut, under = posted(n)
                     self.assertLessEqual(size, trim.MAX_COMMENT)
-                    self.assertEqual(line, at_end if re.search(r"[A-Za-z]", under) else in_summary, under)
+                    self.assertEqual(line, in_summary if cut else at_end, under)
+                    seen.add(line)
+                    if cut and under and start.startswith(under.split("\n")[0]):
+                        starts.append(under)
+            # The sweep holds whole copies, cut copies, and cut copies that keep only a part of the start.
+            self.assertEqual(seen, {at_end, in_summary}, start)
+            self.assertTrue(starts, start)
 
     def test_a_bare_person_line_never_points_to_a_copy_that_holds_none_of_the_review(self):
         """Fresh reader b7 of round 13 (OSSV-221's architect, 2026-11-21 04:09Z: the line must be true where it posts):
@@ -9573,10 +9576,10 @@ class RescreenJobTest(Held):
                 patches = [c[2] for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
                 if changed:
                     self.assertEqual((patches, writes(self.api)), ([], []), self.logs)
-                    self.assertRegex("".join(self.logs), r"#7: a comment of the workflow on it changed at or after "
-                                     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\. The trust job read the "
-                                     r"clock at that time, before it read the comments\. So this run writes nothing\. "
-                                     r"The next rescreen pass decides again\.\n")
+                    self.assertRegex("".join(self.logs), r"#7: a comment of the workflow on it was posted or changed "
+                                     r"at or after [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\. The trust "
+                                     r"job read the clock at that time, before it read the comments\. So this run "
+                                     r"writes nothing\. The next rescreen pass decides again\.\n")
                 else:
                     self.assertEqual(patches, [f"repos/{REPO}/issues/comments/50"])
 
