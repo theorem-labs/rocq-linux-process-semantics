@@ -1357,6 +1357,13 @@ def first_line(text):
     return next((line for line in text.split("\n") if line.strip()), "")
 
 
+def has_word(text):
+    """Whether text holds a word: a letter or a digit, after each list number at the start of a line ("1", "1." or
+    "1)") is taken out. "_" is markup, as "*" is, and not a part of a word. So "1. **", "- __" and "- **`" hold no
+    word, and "- 42" and "42 lemmas" each hold one."""
+    return bool(re.search(r"[^\W_]", re.sub(r"(?m)^\s*\d+[.)]?(?=\s|$)", "", text)))
+
+
 def result_of(line):
     """The form of RESULTS that line starts with, with its Markdown formatting taken out (plain), or None."""
     start = plain(line).lstrip()
@@ -1459,8 +1466,8 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
     the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
     its end when the comment would be over MAX_COMMENT characters. When the cut copy then keeps no word of the review
-    under its first line (only white space or markup such as "- **"), ASKED_SUMMARY takes the place of ASKED_WHOLE in
-    the result line (with_result), and the copy is cut again for that longer line."""
+    under its first line (has_word: only white space, list numbers, or markup such as "- **" and "_"), ASKED_SUMMARY
+    takes the place of ASKED_WHOLE in the result line (with_result), and the copy is cut again for that longer line."""
     def build(whole, kept=True):
         shown = with_result(review, closed(inert(trimmed)), head, verdict, items, kept)
         return (framed((head, shown, section, added(missing(items, shown))), foot)
@@ -1471,7 +1478,7 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     text = build(review)
     if len(text) > MAX_COMMENT:
         keep = room(text)
-        kept = bool(re.search(r"\w", review[:keep].strip().partition("\n")[2]))
+        kept = has_word(review[:keep].strip().partition("\n")[2])
         if not kept:
             keep = room(build(review, kept))
         text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE, kept)

@@ -957,8 +957,9 @@ def owe(number, run, owed="", withdrawn=""):
     if withdrawn:
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}")
     elif line and not mark(number, line, make=False):
-        print(f"#{number}: it has no label comment, so this step makes none. The label step of this job gives {line} "
-              "to the label comment that it writes.")
+        print(f"#{number}: it has no label comment, and this step writes none. If a later step of this job writes a "
+              f"label comment, that comment gets {line}. If no later step writes one, the workflow does not record "
+              f"{line}.")
         return False
     return True
 
