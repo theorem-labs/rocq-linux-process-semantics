@@ -15533,6 +15533,37 @@ class KindTableTest(Scheduled, ReaderRunner):
                 if got is not None:
                     self.assertCell(route, case, kind, w, got)
 
+    def test_a_review_by_hand_withdraws_what_stands_after_an_earlier_blocking_review_or_a_newer_hold_for_any_author(self):
+        """OSSV-221's architect, 2026-11-20 14:00Z: a withdrawal must run whenever a success check run may stand on the
+        head (unknown author included, fail-closed); 14:29Z: W runs for a writer too; 22:21Z (the author-kind table,
+        section 8, item 18): a run that reads a head (a relabel or a review by hand) withdraws a standing success
+        import check run whenever the newest screened review of the head does not pass, or any review newer than it
+        gives blocking or person; item 13: a review by hand after a newer screen hold writes held, and so it withdraws
+        the check run as a relabel does. The import check run 901 of HEAD stands (an earlier withdrawal failed, say).
+        Then a person reviews #7 by hand with no screen, and the review passes. blocking: the newest screened review of
+        HEAD gave a blocking finding. held: a hold of the screen of HEAD is newer than the screened pass. For mallory,
+        alice and carol alike, the post job withdraws check run 901, as a relabel of the same comments does."""
+        cases = (("blocking", [review_of(HEAD, "blocking", at=ago(90))],
+                  f"a review of {HEAD} before this run asks for a change"),
+                 ("held", self.relabelled("held"), f"a later screen held {HEAD}"))
+        for kind in ("outsider", "writer", "unknown"):
+            for case, comments, because in cases:
+                with self.subTest(case=case, author=self.AUTHORS[kind]):
+                    self.tearDown()
+                    self.doCleanups()
+                    self.setUp()
+                    args, given = self.start("hand", "pass", kind, want("decide"))
+                    self.comments(7, self.LABELLED, *comments)
+                    event, inputs = args
+                    rc, out, trust = self.run_trust(event, **inputs)
+                    self.assertEqual((rc, trust.get("kind"), trust.get("route")), (0, kind, "review"), out)
+                    self.forget()
+                    got = self.jobs_after(trust, event, **given)
+                    self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, "
+                                  f"because {because}.", got["log"])
+                    self.assertEqual(self.app_writes(), [("token-A", "PATCH", f"repos/{REPO}/check-runs/901")],
+                                     got["log"])
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
