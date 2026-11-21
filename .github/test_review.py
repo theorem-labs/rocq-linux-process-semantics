@@ -14771,6 +14771,39 @@ class ImportCheckTest(ReaderRunner):
                     self.assertIn(rules.PASSED, body)
                 self.assertIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"], gh_calls(self.api))
 
+    def test_a_relabel_after_a_pass_by_hand_over_a_screened_pass_keeps_the_state_import(self):
+        """The author-kind table v5, section 8, item 18 (OSSV-221's architect, 2026-11-20 22:21Z): "An unscreened pass
+        newer than a screened pass neither records nor withdraws, so import stays." The CI run of mallory's #7 screened
+        HEAD, its review passed it, and its post job recorded the check run (901), which stands. alice then reviews
+        HEAD by hand with no screen, and that review passes it too: the decision is hand, and #7 stays import. The
+        comment job posts that review as the workflow posts every review: it replaces the one review comment of #7 (the
+        step "Post the review, or replace the one posted before"), so the marker <!-- review-screened <head> --> of the
+        screened run goes. A relabel of HEAD after that (a change of REPO_PAIRS_IMPORT_PATHS, say) must still find
+        that the check run stands and keep #7 in the state import, not give it decide with the text that no screen
+        passed the head and that the workflow did not record the check."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(90))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
+                         event="workflow_dispatch", comments=[screened, old], listed=[listed])
+        self.assertEqual((got["result"], got["post"]["decision"], got["post"]["standing"], got["labels"]),
+                         ("success", "hand", "true", []), self.logs)
+        # The comment job posts alice's review: it replaces comment 30, the screened run's review comment.
+        by_hand = review_of(HEAD, at=ago(0), screened=False)
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [screened, old])
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        rc, out, _ = self.run_script(step("comment", "Post the review, or replace the one posted before")["run"],
+                                     NUMBER="7", BODY=by_hand["body"])
+        self.assertEqual((rc, [c[:3] for c in writes(self.api)]),
+                         (0, [["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]), out)
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                         event="workflow_dispatch", comments=[by_hand, old], listed=[listed])
+        self.assertEqual((got["result"], got["writes"]), ("success", []), self.logs)
+        self.assertEqual((got["post"]["decision"], got["post"]["standing"]), ("hand", "true"), self.logs)
+        self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+
     def test_a_check_run_recorded_for_another_value_of_the_variable_does_not_stand_for_a_review_by_hand(self):
         """The fresh reader of round 11 (e, finding A): the screened run of mallory's #7 passed HEAD and recorded the
         check run while REPO_PAIRS_IMPORT_PATHS was not set, so its output text holds the marker line of R12 with null.
