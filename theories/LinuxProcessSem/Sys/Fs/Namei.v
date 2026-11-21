@@ -262,7 +262,7 @@ Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EROFS; EOVERFLOW; ENOSPC]
       the configuration of record (it builds no LSM), [handle_dots]
       steps on dentries the walk already holds, and a "." or ".." LAST
       name is answered before any lookup ([do_unlinkat]'s -EISDIR at
-      4720-4722, [do_rmdir]'s switch at 4582-4592, [filename_create]'s
+      4720-4722, [do_rmdir]'s switch at 4583-4593, [filename_create]'s
       -EEXIST at 4219-4220).  Both keep the member, for the arms that
       allocate past the walk ([path_openat]'s [alloc_empty_file],
       4124-4126 and fs/file_table.c:258-260, is one).  On an arm that

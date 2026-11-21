@@ -635,9 +635,12 @@ Definition dev_sole_node (fs : Fs.Fs) (d : DevKind) (k : Fs.path) : bool :=
     [k].  The descriptor carries no key ([State.FdDevNull],
     [State.FdUrandom]) and an open answers at any node of the kind
     ([Fs.Open.open_devnull]), while two nodes are two inodes in Linux,
-    with their own [st_ino], link count and times
-    ([init_special_inode], fs/inode.c:2552-2577, Linux v6.18.46, gives
-    each node its own inode).  So the stat holds the node's members
+    with their own [st_ino], link count and times: the file system
+    allocates each node's inode and gives it its number and times
+    ([__shmem_get_inode], mm/shmem.c:3084-3097; [ramfs_get_inode],
+    fs/ramfs/inode.c:60-68, Linux v6.18.46), and [init_special_inode]
+    (fs/inode.c:2552-2577) only sets the mode, the file operations and
+    the device number on it.  So the stat holds the node's members
     under its key's pin ([fstat_chrdev_spec]) when the node at [k] is
     the image's one node of kind [d], the only node such a descriptor
     can have come from.  Otherwise it holds them under the DESCRIPTOR's
@@ -1039,32 +1042,39 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     is short by up to 7 bytes, because [strncpy_from_user] reads a word
     at a time, and this spec inherits that bound rather than restating it.
 
-    SHARED WITH [Open.openat_spec], AND DELIBERATELY LEFT INLINE.  The
-    three steps between the flag word and the path — [read_cstr]'s three
-    answers, the empty pathname's -ENOENT, and the AT_FDCWD gate — are
-    the same sequence [Open.openat_spec] runs, wrapped in the same
-    ledger, and those two specs are its only copies (mirrored once more
-    by [Open.check_openat] and [Stat.check_newfstatat], whose soundness
-    and completeness lemmas discharge by destructing [read_cstr]
-    directly).  They are kept side by side rather than hoisted into a
-    shared combinator: what repeats is five lines of already shared
-    primitives ([read_cstr], [Fs.path_eqb], [Uapi.AT_FDCWD32],
-    [err_ret]) under one already shared wrapper
-    ([Syscall.record_copyins]), and hoisting them would have to thread a
-    continuation through both checkers, where the arm-for-arm mirroring
-    is what keeps those four lemmas short.  The price is that any later
-    correction to this precedence or to the recorded range must be made
-    in both places.  ([getname_flags]'s own -ENOMEM is not repeated: it
-    is [Fs.Namei.getname_refusals]', one definition every pathname arm
-    applies.)  [readlinkat_spec]
-    above is the third call site: it runs the same five lines, so the
-    three of them repeat one shape.  It is still not extracted, for the
-    reason above — threading a continuation through three checkers costs
-    more than it saves while the mirroring is what keeps their verdict
-    lemmas short.  What the three DO share already is the walk:
-    [newfstatat_body_spec] and [readlinkat_spec] answer the trailing
-    separator through [Fs.resolve] alone, which is what stops them from
-    drifting. *)
+    SHARED WITH [Open.openat_spec] WITHOUT AT_EMPTY_PATH, AND DELIBERATELY
+    LEFT INLINE.  The three steps between the flag word and the path —
+    [read_cstr]'s three answers, the empty pathname, and the AT_FDCWD
+    gate — come in [Open.openat_body_spec]'s order: the empty pathname is
+    -ENOENT before the dirfd is looked at ([getname_flags] without
+    LOOKUP_EMPTY, fs/namei.c:167-171, Linux v6.18.46).  This body takes
+    that order and that -ENOENT only without AT_EMPTY_PATH.  Under
+    AT_EMPTY_PATH the empty pathname is no -ENOENT: it passes to the
+    AT_FDCWD gate and stats the working folder (the arm above).  The
+    sequence is wrapped in the same ledger as openat's, and those two
+    specs are its only copies (mirrored once more by
+    [Open.check_openat] and [Stat.check_newfstatat], whose soundness and
+    completeness lemmas discharge by destructing [read_cstr] directly).
+    They are kept side by side rather than hoisted into a shared
+    combinator: what repeats is a few lines of already shared primitives
+    ([read_cstr], [Fs.path_eqb], [Uapi.AT_FDCWD32], [err_ret]) under one
+    already shared wrapper ([Syscall.record_copyins]), and hoisting them
+    would have to thread a continuation through both checkers, where the
+    arm-for-arm mirroring is what keeps those four lemmas short.  The
+    price is that any later correction to this precedence or to the
+    recorded range must be made in both places.  ([getname_flags]'s own
+    -ENOMEM is not repeated: it is [Fs.Namei.getname_refusals]', one
+    definition every pathname arm applies.)  [readlinkat_body_spec]
+    above takes the same three steps in ANOTHER order: the AT_FDCWD gate
+    comes before the empty pathname.  [do_readlinkat] fetches with
+    LOOKUP_EMPTY (fs/stat.c:569, :575, Linux v6.18.46), so the empty
+    name is walked from the descriptor (:576), and its -ENOENT is the
+    answer for an empty name that resolved to no link (:593), after the
+    walk.  So the three share the steps and not one order, and none of
+    them is extracted, for the reason above.  What the three DO share
+    already is the walk: [newfstatat_body_spec] and [readlinkat_spec]
+    answer the trailing separator through [Fs.resolve] alone, which is
+    what stops them from drifting. *)
 Definition newfstatat_body_spec (i : SyscallInput) (m : Model)
     (dirfd pathp statbuf flag : word) : Sys SyscallEffect :=
     (* [getname_flags()]: all three of its answers are real errnos, and

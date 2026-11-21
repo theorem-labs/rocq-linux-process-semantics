@@ -1096,33 +1096,61 @@ not apply.
   streams, so a stream that the write changed in Linux is still one of
   the launches the statements cover.
 - No tracer (`ptrace`) or other outside agent changes the process.
-- No device cgroup refuses the process an open of a node of the null or
-  urandom device, wherever its name: the process runs in no cgroup whose
-  BPF device programs or v1 devices controller answer such an open with
-  anything but 0. The model's opens of such a node, at any key
-  (`Fs.Open.open_devnull`,
-  `Fs.Open.open_urandom`) answer the descriptor or a refusal Linux gives
-  without the device cgroup (`Fs.Open.openat_errnos`, the walk's own
-  refusals, and `do_open`'s -EEXIST for `O_CREAT|O_EXCL` and -ENOTDIR
-  for `O_DIRECTORY`, `fs/namei.c:3949-3950`, `:3958-3959`, which come
-  before `may_open`), and nothing a device cgroup alone would answer.
-  Linux v6.18.46 asks the device
-  cgroup on every open that reaches `may_open`'s permission check, which
-  every open that hands out a descriptor does but an `O_PATH` one, which
-  the model never answers: `may_open` (`fs/namei.c:3527-3567`)
-  asks `inode_permission` (`fs/namei.c:568-602`), which asks
-  `devcgroup_inode_permission` at `:597`
-  (`include/linux/device_cgroup.h:17-39`), which asks
-  `devcgroup_check_permission` (`security/device_cgroup.c:860-865`).
-  That returns the answer of the cgroup BPF device programs
-  (`__cgroup_bpf_check_dev_permission`, `kernel/bpf/cgroup.c:1774`):
-  `-EPERM` from a program that refuses (`:110`), or any value a
-  program sets through `bpf_set_retval` (`:1839-1846`). Only when that
-  answer is 0 does it ask the v1 devices controller
-  (`devcgroup_legacy_check_permission`,
-  `security/device_cgroup.c:832-854`), which answers `-EPERM` for a
-  device its list does not allow. The configuration of record builds
-  both: its `config` asset sets `CONFIG_CGROUP_DEVICE=y`,
+- No cgroup refuses a call of the process or changes its answer: the
+  process runs in no cgroup whose BPF program at any hook, or whose v1
+  devices controller, refuses one of its calls, and no cgroup BPF program
+  rewrites a call's arguments or its answer. The hooks are the device
+  hook, `sock_create`, `bind`, `connect`, `getsockname` and `getpeername`,
+  `sendmsg` and `recvmsg`, `getsockopt` and `setsockopt`, and the others
+  `include/linux/bpf-cgroup.h` names. It is one premise for every hook
+  because one fact of the launch, below, keeps every program out. Two
+  kinds of call rest on it:
+  - The opens of a node of the null or urandom device, wherever its
+    name. The model's opens of such a node, at any key
+    (`Fs.Open.open_devnull`,
+    `Fs.Open.open_urandom`) answer the descriptor or a refusal Linux gives
+    without the device cgroup (`Fs.Open.openat_errnos`, the walk's own
+    refusals, and `do_open`'s -EEXIST for `O_CREAT|O_EXCL` and -ENOTDIR
+    for `O_DIRECTORY`, `fs/namei.c:3949-3950`, `:3958-3959`, which come
+    before `may_open`), and nothing a device cgroup alone would answer.
+    Linux v6.18.46 asks the device
+    cgroup on every open that reaches `may_open`'s permission check, which
+    every open that hands out a descriptor does but an `O_PATH` one, which
+    the model never answers: `may_open` (`fs/namei.c:3527-3567`)
+    asks `inode_permission` (`fs/namei.c:568-602`), which asks
+    `devcgroup_inode_permission` at `:597`
+    (`include/linux/device_cgroup.h:17-39`), which asks
+    `devcgroup_check_permission` (`security/device_cgroup.c:860-865`).
+    That returns the answer of the cgroup BPF device programs
+    (`__cgroup_bpf_check_dev_permission`, `kernel/bpf/cgroup.c:1774`):
+    `-EPERM` from a program that refuses (`:110`), or any value a
+    program sets through `bpf_set_retval` (`:1839-1846`). Only when that
+    answer is 0 does it ask the v1 devices controller
+    (`devcgroup_legacy_check_permission`,
+    `security/device_cgroup.c:832-854`), which answers `-EPERM` for a
+    device its list does not allow.
+  - The socket calls. `inet_create` and `inet6_create` answer `socket`
+    with the refusal of a `sock_create` program
+    (`BPF_CGROUP_RUN_PROG_INET_SOCK`, `net/ipv4/af_inet.c:391-395` and
+    `net/ipv6/af_inet6.c:264-268`), and `inet_bind_sk`
+    (`net/ipv4/af_inet.c:459-462`) answers `bind` with the refusal of a
+    `bind` program, which it runs before `__inet_bind`.
+    `__inet_stream_connect` runs a `connect` program through
+    `pre_connect` (`net/ipv4/af_inet.c:673-677`), `inet_getname` lets a
+    program rewrite the address it returns (`:816-817`, `:824-825`), and
+    `do_sock_setsockopt` and `do_sock_getsockopt` run the option
+    programs, which may rewrite the arguments or answer themselves
+    (`net/socket.c:2343`, `:2427`). The model answers these calls as
+    Linux does when no program runs (`Net.Socket.socket_spec`,
+    `Net.Socket.bind_spec`, `Net.Socket.connect_spec`,
+    `Net.Socket.setsockopt_spec`, `Net.Socket.getsockopt_spec`).
+
+  Each hook's macro runs a program only under `cgroup_bpf_enabled`, a
+  static key of the hook (`include/linux/bpf-cgroup.h:78`; for example
+  `:216-226`, `:263-281`, `:354-363`, `:376-403`), and only an attach
+  turns a key on (`kernel/bpf/cgroup.c:905`). The configuration of
+  record builds the programs and the v1 controller: its `config` asset
+  sets `CONFIG_CGROUP_DEVICE=y`,
   `CONFIG_CGROUP_BPF=y` and `CONFIG_BPF_SYSCALL=y`, as
   `arch/riscv/configs/defconfig` does (lines 17, 20 and 5 at v6.18.46),
   and `testing/vm/kernel.fragment` names none of the three. The launch
@@ -1133,25 +1161,27 @@ not apply.
   nothing else. So the process stays in the root cgroup, where the
   first process starts (`cgroup_init_subsys`,
   `kernel/cgroup/cgroup.c:6315-6319`): moving a process to another
-  cgroup, attaching a device program and changing a v1 list each need
-  a cgroup folder or a file in one, and only a mounted cgroup file
+  cgroup, attaching a program at any hook and changing a v1 list each
+  need a cgroup folder or a file in one, and only a mounted cgroup file
   system has them (an attach takes a descriptor of a cgroup folder,
   `cgroup_get_from_fd` in `kernel/bpf/cgroup.c:1370`, and
   `css_tryget_online_from_dir` refuses any other,
-  `kernel/cgroup/cgroup.c:7134-7137`). No device program is attached
-  anywhere, so `BPF_CGROUP_RUN_PROG_DEVICE_CGROUP` answers 0 without
-  running one (`include/linux/bpf-cgroup.h:354-363`; only an attach
-  turns its key on, `kernel/bpf/cgroup.c:905`). And the root's v1 list
+  `kernel/cgroup/cgroup.c:7134-7137`). No program is attached
+  anywhere, so no hook runs one: `BPF_CGROUP_RUN_PROG_DEVICE_CGROUP`
+  answers 0 (`include/linux/bpf-cgroup.h:354-363`), and each socket
+  hook's macro hands back the call's own answer, untouched. And the root's v1 list
   allows every device: `devcgroup_online` gives a cgroup with no
   parent the default `DEVCG_DEFAULT_ALLOW`
   (`security/device_cgroup.c:196-197`), and `devcgroup_css_alloc`
   gives it an empty list of exceptions (`:229`), so
   `match_exception_partial` finds none and the access is allowed
   (`:840-843`). The model answers no `mount` and no `bpf`, so no run
-  inside the statements changes this. The premise is about opens: an
-  `F_OK` `faccessat` of a device asks the same hook for an empty access
-  set, which a device program can refuse alone while it lets every open
-  through, and the model declines it (`Fs.Open.faccessat_errnos`).
+  inside the statements changes this. The premise covers every call,
+  an `F_OK` `faccessat` of a device too: it asks the device hook for an
+  empty access set, which a device program could refuse alone while it
+  lets every open through. The model still declines that call
+  (`Fs.Open.faccessat_errnos`), a decline the premise no longer needs:
+  it costs precision only.
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
   carry a PIE. The model needs this twice. For a static PIE (`ET_DYN` with

@@ -1175,7 +1175,7 @@ Lemma check_sendto_kf : forall i fd buf count flags addrp eff m m' evs,
   check_sendto i fd buf count flags addrp eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count flags addrp eff m m' evs H Hoff Hk.
-  unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
+  unfold check_sendto, check_access_ok_zero, check_send_on_socket, check_end_err in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1183,7 +1183,7 @@ Lemma check_sendmsg_kf : forall i fd msgp flags eff m m' evs,
   check_sendmsg i fd msgp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd msgp flags eff m m' evs H Hoff Hk.
-  unfold check_sendmsg, check_send_on_socket in H.
+  unfold check_sendmsg, check_send_on_socket, check_end_err in H.
   kf_frame H m Hoff Hk.
 Qed.
 

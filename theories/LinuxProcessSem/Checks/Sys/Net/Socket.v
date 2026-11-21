@@ -2480,10 +2480,20 @@ Qed.
 (** [Net.Socket.net_end] is the scan of a LITERAL count ([rw_bytes_max]).
     No proof below needs its body, and a tactic that unfolds it on a
     script variable can spend unbounded time writing the stuck term back
-    out (see [send_state_goes_errno]); so the tactics of this file never
+    out (see [send_state_goes_errnos]); so the tactics of this file never
     unfold it.  The checker computes it unchanged ([vm_compute] and
     extraction ignore this). *)
 #[local] Opaque net_end.
+
+(** THE STORED ERROR OF A PROCESSED END, CONSUMED: the claimed return is
+    one of [es] — [e :: more] of [Net.Socket.SendGoes] or
+    [Net.Socket.SendErr] — with [pre] as the whole ledger, over the model
+    [m'] the error leaves. *)
+Definition check_end_err (pre : list (word * nat)) (es : list Z)
+    (eff : SyscallEffect) (m' : Model) : check_result :=
+  if errno_ret_in es (eff_ret eff)
+  then check_ret_only_copyins pre eff (eff_ret eff) m' []
+  else CheckReject.
 
 (** [Net.Socket.send_on_socket] as an acceptor — the socket half both
     calls share, so the short-send rule is decided in ONE place.
@@ -2505,18 +2515,19 @@ Qed.
     [SendErr] accepts the model with the error CONSUMED — [fd_insert]
     onto [SkReset] — because the spec consumes it, and a checker that
     accepted the unchanged model would let a program read the same reset
-    twice. *)
+    twice.  On both arms the error is [e] or one of [more]
+    ([check_end_err]). *)
 Definition check_send_on_socket (pre : list (word * nat))
     (acc : nat -> list (word * nat)) (fd : word) (sk : SockState)
     (total : word) (bs : list byte) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match send_state sk with
-  | SendGoes ch e after =>
+  | SendGoes ch e more after =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then CheckUnmodeled
       else
-      if bv_eqb (eff_ret eff) (errno_ret e)
-      then check_ret_only_copyins pre eff (errno_ret e)
-             (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m) []
+      if errno_ret_in (e :: more) (eff_ret eff)
+      then check_end_err pre (e :: more) eff
+             (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m)
         (* the peer's end was processed: its error, consumed *)
       else
       if w_is0 total then check_ret_only_copyins pre eff (Z_to_bv 64 0) m []
@@ -2539,9 +2550,9 @@ Definition check_send_on_socket (pre : list (word * nat))
             else CheckReject
         | _ => CheckReject
         end
-  | SendErr e after =>
-      check_ret_only_copyins pre eff (errno_ret e)
-        (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m) []
+  | SendErr e more after =>
+      check_end_err pre (e :: more) eff
+        (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m)
   | SendDead => check_ret_only_copyins pre eff (errno_ret EPIPE) m []
   | SendUnknown => CheckUnmodeled
   end.
@@ -2653,10 +2664,67 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
       end
   end.
 
+(** [check_end_err] never declines, and it accepts exactly the errors of
+    [es] over the model it is given. *)
+Lemma check_end_err_no_unmodeled : forall pre es eff m',
+  check_end_err pre es eff m' <> CheckUnmodeled.
+Proof.
+  intros pre es eff m'. unfold check_end_err.
+  destruct (errno_ret_in es (eff_ret eff)); cbv beta iota;
+    [apply check_ret_only_copyins_no_unmodeled|discriminate].
+Qed.
+
+Lemma check_end_err_ok : forall pre es eff m' m'' evs,
+  check_end_err pre es eff m' = CheckOk m'' evs ->
+  exists e, In e es /\ eff = with_copyins pre (mkEffect (errno_ret e) [] [])
+            /\ m'' = m' /\ evs = [].
+Proof.
+  intros pre es eff m' m'' evs H. unfold check_end_err in H.
+  destruct (errno_ret_in es (eff_ret eff)) eqn:He; cbv beta iota in H;
+    [|discriminate].
+  apply errno_ret_in_true in He. destruct He as (e & HIn & Hr).
+  rewrite Hr in H.
+  apply check_ret_only_copyins_ok_iff in H. destruct H as (Heff & Hm & Hevs).
+  exists e. split; [exact HIn|]. split; [exact Heff|]. split; assumption.
+Qed.
+
+Lemma check_end_err_intro : forall pre es e m',
+  In e es ->
+  check_end_err pre es (with_copyins pre (mkEffect (errno_ret e) [] [])) m'
+  = CheckOk m' [].
+Proof.
+  intros pre es e m' HIn. unfold check_end_err.
+  replace (eff_ret (with_copyins pre (mkEffect (errno_ret e) [] [])))
+    with (errno_ret e) by reflexivity.
+  rewrite (errno_ret_in_intro _ _ HIn). cbv beta iota.
+  apply check_ret_only_copyins_refl.
+Qed.
+
+(** The outcomes of the stored error, read back: the rewrite to [fds] and
+    an errno of [es], under the ledger [pre]. *)
+Lemma end_err_ok_inv : forall pre fds es i m eff m' evs,
+  record_copyins pre (set_fds fds ;; e' <- errno_from es ;; err_ret e')
+    i m (Ok eff m' evs) ->
+  exists e, In e es /\ eff = with_copyins pre (mkEffect (errno_ret e) [] [])
+            /\ m' = with_fds fds m /\ evs = [].
+Proof.
+  intros pre fds es i m eff m' evs H.
+  apply record_copyins_ok_inv in H. destruct H as (core & Hc & ->).
+  unfold bind in Hc. cbv beta iota in Hc.
+  destruct Hc as (u & m1 & evs1 & evs2 & Hm & Hk & ->).
+  unfold set_fds, modify in Hm. inversion Hm; subst; try clear Hm.
+  destruct Hk as (e & m2 & evs3 & evs4 & Hch & Hr & ->).
+  unfold errno_from, choose in Hch. destruct Hch as (e0 & HIn & Hq).
+  inversion Hq; subst; try clear Hq.
+  unfold err_ret, ret_only, pure in Hr. inversion Hr; subst; try clear Hr.
+  eexists. split; [eassumption|].
+  cbn [eff_copyins]. rewrite (app_nil_r pre).
+  split; [reflexivity|]. split; reflexivity.
+Qed.
+
 (** The shared socket half, proved once.  [Net.Socket.send_on_socket] is
     run at the same model it captured, which is how both callers use
     it. *)
-
 Lemma check_send_on_socket_sound_ok :
   forall pre acc fd sk total bs eff m m' evs i,
   check_send_on_socket pre acc fd sk total bs eff m = CheckOk m' evs ->
@@ -2664,15 +2732,16 @@ Lemma check_send_on_socket_sound_ok :
 Proof.
   intros pre acc fd sk total bs eff m m' evs i H.
   unfold check_send_on_socket in H. unfold send_on_socket.
-  destruct (send_state sk) as [ch e after|e after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
   - (* SendGoes: the processed end's error, or the delivery *)
     destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z) eqn:Htm;
       cbv beta iota zeta in H |- *; [discriminate|].
-    destruct (bv_eqb (eff_ret eff) (errno_ret e)) eqn:He; cbv beta iota zeta in H.
+    destruct (errno_ret_in (e :: more) (eff_ret eff)) eqn:He; cbv beta iota zeta in H.
     { apply alt_r.
-      apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+      apply check_end_err_ok in H. destruct H as (e' & HIn & -> & -> & ->).
       apply record_copyins_ok_empty; [reflexivity|].
-      eapply bind_ok0; [apply modify_ok|]. apply pure_ok. }
+      eapply bind_ok0; [apply modify_ok|]. cbv beta.
+      eapply bind_ok0; [apply (choose_ok _ e'); exact HIn|]. apply pure_ok. }
     apply alt_l.
     unfold send_bytes.
     destruct (w_is0 total) eqn:Ht.
@@ -2713,9 +2782,10 @@ Proof.
         [reflexivity|apply pure_ok]. }
     now rewrite app_nil_r.
   - (* SendErr: the pending error is consumed *)
-    apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
+    apply check_end_err_ok in H. destruct H as (e' & HIn & -> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|].
-    eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+    eapply bind_ok0; [apply modify_ok|]. cbv beta.
+    eapply bind_ok0; [apply (choose_ok _ e'); exact HIn|]. apply pure_ok.
   - (* SendDead *)
     apply check_ret_only_copyins_ok_iff in H. destruct H as (-> & -> & ->).
     apply record_copyins_ok_empty; [reflexivity|apply pure_ok].
@@ -2723,9 +2793,14 @@ Proof.
     discriminate.
 Qed.
 
-Lemma end_errno_cases : forall t,
-  end_errno t = ECONNRESET \/ end_errno t = ETIMEDOUT \/ end_errno t = EPIPE.
-Proof. intros [| | |b r]; cbn [end_errno]; auto. Qed.
+(** The errors a processed end can store are errnos, and none is the
+    -EFAULT a send of an unreadable buffer answers. *)
+Lemma end_errnos_ok : forall t,
+  errnos_ok (end_errno t :: end_more_errnos t) = true
+  /\ errno_ret_in (end_errno t :: end_more_errnos t) (errno_ret EFAULT) = false.
+Proof.
+  intros t. destruct t; cbn [end_errno end_more_errnos]; split; vm_compute; reflexivity.
+Qed.
 
 (** Read off [send_state] with [net_end] FOLDED, and with no tactic that
     head-normalizes a term containing it ([discriminate], [injection],
@@ -2734,12 +2809,16 @@ Proof. intros [| | |b r]; cbn [end_errno]; auto. Qed.
     shared subterms, written back out, grow exponentially in the count's
     bit length.  The equation is projected by an explicit [match] and
     reduced by [cbv] with [send_state] as the only constant unfolded. *)
-Lemma send_state_goes_errno : forall sk ch e after,
-  send_state sk = SendGoes ch e after -> e = ECONNRESET \/ e = ETIMEDOUT \/ e = EPIPE.
+Lemma send_state_goes_errnos : forall sk ch e more after,
+  send_state sk = SendGoes ch e more after ->
+  errnos_ok (e :: more) = true /\ errno_ret_in (e :: more) (errno_ret EFAULT) = false.
 Proof.
-  intros sk ch e after H.
-  assert (Hp : match send_state sk with SendGoes _ e' _ => e' = e | _ => False end)
-    by (rewrite H; cbv beta iota; reflexivity).
+  intros sk ch e more after H.
+  assert (Hp : match send_state sk with
+               | SendGoes _ e' more' _ => e' = e /\ more' = more
+               | _ => False
+               end)
+    by (rewrite H; cbv beta iota; split; reflexivity).
   clear H.
   destruct sk as [| | |peer ch0 rx|peer ch0 rx [|] bound];
     cbv beta iota delta [send_state] in Hp.
@@ -2747,29 +2826,20 @@ Proof.
   - exact (False_ind _ Hp).
   - exact (False_ind _ Hp).
   - destruct (net_ended (net_end rx)); cbv beta iota in Hp.
-    + rewrite <- Hp. apply end_errno_cases.
+    + destruct Hp as [He Hm]. rewrite <- He, <- Hm. apply end_errnos_ok.
     + exact (False_ind _ Hp).
   - destruct (net_ended (net_end rx)); cbv beta iota in Hp; exact (False_ind _ Hp).
   - exact (False_ind _ Hp).
 Qed.
 
-Lemma reset_errnos_range : forall e,
-  e = ECONNRESET \/ e = ETIMEDOUT \/ e = EPIPE -> (1 <= e <= 4095)%Z.
-Proof.
-  intros e [-> | [-> | ->]]; split; vm_compute; congruence.
-Qed.
-
 (** A delivered count is at most [Uaccess.rw_bytes_max], so it is never
-    an errno return. *)
-Lemma errno_ret_neq_bounded : forall (r : word) e,
-  (1 <= e <= 4095)%Z -> (bv_unsigned r <= rw_bytes_max)%Z ->
-  bv_eqb r (errno_ret e) = false.
+    an errno return of a set of errnos. *)
+Lemma errno_ret_in_bounded : forall es (r : word),
+  errnos_ok es = true -> (bv_unsigned r <= rw_bytes_max)%Z ->
+  errno_ret_in es r = false.
 Proof.
-  intros r e [He1 He2] Hr.
-  destruct (bv_eqb r (errno_ret e)) eqn:Hq; [|reflexivity].
-  apply bv_eqb_eq in Hq. subst r.
-  rewrite (errno_ret_unsigned e He1 He2) in Hr.
-  change two_pow_64 with 18446744073709551616%Z in Hr.
+  intros es r Hok Hr. apply errno_ret_in_below; [exact Hok|].
+  change two_pow_64 with 18446744073709551616%Z.
   unfold rw_bytes_max in Hr. lia.
 Qed.
 
@@ -2821,14 +2891,15 @@ Lemma check_send_on_socket_sound_unmodeled :
 Proof.
   intros pre acc fd sk total bs eff m i H.
   unfold check_send_on_socket in H. unfold send_on_socket.
-  destruct (send_state sk) as [ch e after|e after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
   4: apply unmodeled_intro.
-  2-3: (exfalso; now apply check_ret_only_copyins_no_unmodeled in H).
+  3: (exfalso; now apply check_ret_only_copyins_no_unmodeled in H).
+  2: (exfalso; now apply check_end_err_no_unmodeled in H).
   destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z); cbv beta iota zeta in H |- *;
     [apply unmodeled_intro|].
   exfalso.
-  destruct (bv_eqb (eff_ret eff) (errno_ret e)); cbv beta iota zeta in H;
-    [now apply check_ret_only_copyins_no_unmodeled in H|].
+  destruct (errno_ret_in (e :: more) (eff_ret eff)); cbv beta iota zeta in H;
+    [now apply check_end_err_no_unmodeled in H|].
   destruct (w_is0 total); [now apply check_ret_only_copyins_no_unmodeled in H|].
   destruct (Nat.eqb (length bs) 0);
     [now apply check_ret_only_copyins_no_unmodeled in H|].
@@ -2848,7 +2919,7 @@ Lemma check_send_on_socket_complete_unmodeled :
 Proof.
   intros pre acc fd sk total bs eff m i H.
   unfold send_on_socket in H. unfold check_send_on_socket.
-  destruct (send_state sk) as [ch e after|e after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
   4: reflexivity.
   2-3: (exfalso; sys_unfold; cbv beta iota zeta in H; inv_ok).
   destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z); cbv beta iota zeta in H |- *;
@@ -2867,30 +2938,32 @@ Lemma check_send_on_socket_complete_ok :
 Proof.
   intros pre acc fd sk total bs eff m m' evs i H.
   unfold send_on_socket in H. unfold check_send_on_socket.
-  destruct (send_state sk) as [ch e after|e after| |] eqn:Hss;
+  destruct (send_state sk) as [ch e more after|e more after| |] eqn:Hss;
     cbv beta iota zeta in H |- *.
-  2-3: (sys_unfold; cbv beta iota zeta in H |- *; inv_ok;
+  4: (sys_unfold; cbv beta iota zeta in H; inv_ok).
+  3: (sys_unfold; cbv beta iota zeta in H |- *; inv_ok;
         unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins];
         rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
         cbn; rewrite ?bv_eqb_refl; reflexivity).
-  2: (sys_unfold; cbv beta iota zeta in H; inv_ok).
+  2: (apply end_err_ok_inv in H; destruct H as (e' & HIn & -> & -> & ->);
+      apply check_end_err_intro; exact HIn).
   destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z) eqn:Htm;
     cbv beta iota zeta in H |- *; [sys_unfold; cbv beta iota zeta in H; inv_ok|].
   assert (Htot : (bv_unsigned total <= rw_bytes_max)%Z)
     by (apply negb_false_iff, Z.leb_le in Htm; exact Htm).
   unfold alt in H. destruct H as [H|H].
   2: { (* the processed end: its error, consumed *)
-    sys_unfold. cbv beta iota zeta in H |- *. inv_ok.
-    cbn [eff_ret]. rewrite bv_eqb_refl.
-    unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins];
-      rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
-      cbn; rewrite ?bv_eqb_refl; reflexivity. }
+    apply end_err_ok_inv in H. destruct H as (e' & HIn & -> & -> & ->).
+    replace (eff_ret (with_copyins pre (mkEffect (errno_ret e') [] [])))
+      with (errno_ret e') by reflexivity.
+    rewrite (errno_ret_in_intro _ _ HIn). cbv beta iota.
+    apply check_end_err_intro. exact HIn. }
   (* the delivery: its return is no errno of a processed end *)
-  assert (Hne : bv_eqb (eff_ret eff) (errno_ret e) = false).
-  { pose proof (send_state_goes_errno sk ch e after Hss) as He.
+  assert (Hne : errno_ret_in (e :: more) (eff_ret eff) = false).
+  { destruct (send_state_goes_errnos sk ch e more after Hss) as [Hok Hfault].
     destruct (send_bytes_ret pre acc total bs ch i m eff m' evs H Htot) as [Hf|Hb].
-    - rewrite Hf. destruct He as [-> | [-> | ->]]; vm_compute; reflexivity.
-    - apply errno_ret_neq_bounded; [apply reset_errnos_range; exact He|exact Hb]. }
+    - rewrite Hf. exact Hfault.
+    - apply errno_ret_in_bounded; [exact Hok|exact Hb]. }
   rewrite Hne.
   unfold send_bytes in H. sys_unfold.
   destruct (w_is0 total) eqn:Ht; cbv beta iota zeta in H |- *; inv_ok;

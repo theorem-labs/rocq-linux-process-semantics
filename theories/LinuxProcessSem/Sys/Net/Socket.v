@@ -211,9 +211,12 @@ Definition socket_dgram_b (fam ty pro : Z) : bool :=
     ([security_socket_create], [security_socket_post_create],
     [security_file_alloc]) add none: the configuration of record builds
     no LSM (SCOPE.md), so each is the stub of include/linux/security.h
-    that answers 0.  [inet6_create]'s [BPF_CGROUP_RUN_PROG_INET_SOCK]
-    (af_inet6.c:264-268) is the environment's: the model describes a
-    kernel with no cgroup socket program, as [getsockopt_spec] does. *)
+    that answers 0.  Nor does the cgroup hook: [inet6_create] answers
+    the refusal of a cgroup BPF [sock_create] program
+    ([BPF_CGROUP_RUN_PROG_INET_SOCK], net/ipv6/af_inet6.c:264-268), and
+    SCOPE.md's premise on cgroups ("No cgroup refuses a call of the
+    process") excludes every such program, as it does for [socket_spec]
+    and [bind_spec]. *)
 Definition socket_dgram_errnos (fam : Z) : list Z :=
   if Z.eqb fam AF_INET6 then [ENOMEM; EMFILE; ENFILE; ENOBUFS] else socket_errnos.
 
@@ -255,6 +258,15 @@ Definition socket_dgram_errnos (fam : Z) : list Z :=
     single answer: they precede [sock_alloc].  Descriptor allocation in
     [sock_map_fd] follows creation, so -EMFILE joins none of these
     arms.
+
+    NO CGROUP [sock_create] PROGRAM ANSWERS.  [inet_create] runs
+    [BPF_CGROUP_RUN_PROG_INET_SOCK] after the protocol walk and the
+    allocations and answers a program's refusal
+    (net/ipv4/af_inet.c:391-395, Linux v6.18.46), and [inet6_create]
+    does the same for the datagram arm (net/ipv6/af_inet6.c:264-268).
+    SCOPE.md's premise on cgroups excludes every such program, so the
+    success arms admit only [socket_errnos] and [socket_dgram_errnos]
+    beside the descriptor.
 
     WHAT IS DECLINED, and why:
     - [SOCK_NONBLOCK] in the flags sets O_NONBLOCK on the new file, and
@@ -458,7 +470,14 @@ Definition move_addr_bytes (mp : word -> option byte) (a : word) (len : Z)
     precedes the hook while step 3's 16-byte minimum follows it.  The
     configuration of record builds no LSM (SCOPE.md), so the hook is the
     stub of include/linux/security.h that answers 0, and step 3's
-    -EINVAL is every supported kernel's answer. *)
+    -EINVAL is every supported kernel's answer.
+
+    NOR A CGROUP [bind] PROGRAM.  [inet_bind_sk] runs
+    [BPF_CGROUP_RUN_PROG_INET_BIND_LOCK] between step 3 and step 4 and
+    answers a program's refusal (net/ipv4/af_inet.c:459-462, Linux
+    v6.18.46), so a program could preempt every answer from step 4 on,
+    the autobind's 0 included.  SCOPE.md's premise on cgroups excludes
+    every such program. *)
 Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -556,7 +575,9 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      are the same text in v6.16 and v6.17.  A reset can
                      follow every script, the FIN included: a closed peer
                      answers new data with one (net/ipv4/tcp_input.c
-                     :7177-7189, net/ipv4/tcp_minisocks.c:160-165).
+                     :7177-7189, net/ipv4/tcp_minisocks.c:160-165), and a
+                     peer that stops acknowledging ends it by the
+                     retransmit timer ([end_more_errnos]).
                      The 0 shows the end was processed and the error is
                      still pending ([sock_error] was not called), so the
                      socket moves to [SkReset] with [pending] and [bound]
@@ -1119,13 +1140,16 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
       configuration of record builds no LSM (SCOPE.md), so it is the
       stub of include/linux/security.h that answers 0.
     - A cgroup BPF program at CGROUP_INET4_CONNECT
-      ([BPF_CGROUP_PRE_CONNECT_ENABLED]) can return an arbitrary error,
-      and it is NOT confined to the declined region: [pre_connect] runs
-      inside the SS_UNCONNECTED arm, after the [sk_state != TCP_CLOSE]
-      bail but BEFORE [tcp_v4_connect].  So it can preempt step 5's
-      -EAFNOSUPPORT.  It cannot preempt -EISCONN, which is above it, nor
-      step 5's 16-byte -EINVAL, which [tcp_v4_pre_connect] REPLICATES
-      above it for exactly this reason.
+      ([BPF_CGROUP_PRE_CONNECT_ENABLED]) could return an arbitrary error,
+      and it is NOT confined to the declined region: [pre_connect]
+      (net/ipv4/af_inet.c:673-677, Linux v6.18.46) runs inside the
+      SS_UNCONNECTED arm, after the [sk_state != TCP_CLOSE] bail but
+      BEFORE [tcp_v4_connect].  So it could preempt step 5's -EAFNOSUPPORT.  It
+      cannot preempt -EISCONN, which is above it, nor step 5's 16-byte
+      -EINVAL, which [tcp_v4_pre_connect] REPLICATES above it for
+      exactly this reason.  SCOPE.md's premise on cgroups excludes
+      every such program, so this narrowing removes no launch the
+      statements cover.
     - [move_addr_to_kernel] ends with [audit_sockaddr], whose
       [__audit_sockaddr] kmallocs and can answer -ENOMEM when auditing
       is on.  It sits after the copy and after the [ulen == 0] early
@@ -1257,7 +1281,12 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     [security_socket_*] hook past the lookup.  The configuration of
     record builds no LSM (SCOPE.md), so every such hook is a stub that
     answers 0; an enforcing SELinux or AppArmor policy would need a
-    kernel no supported implementation is. *)
+    kernel no supported implementation is.  The cgroup BPF hooks of
+    these calls run no program either: [getsockname] and [getpeername]
+    reach [inet_getname]'s (net/ipv4/af_inet.c:816-817, :824-825, Linux
+    v6.18.46), the option calls [do_sock_setsockopt]'s and
+    [do_sock_getsockopt]'s (net/socket.c:2343, :2427), and SCOPE.md's
+    premise on cgroups excludes every program at any of them. *)
 Inductive SockOf :=
   | SoInet (sk : SockState)                       (* an AF_INET/SOCK_STREAM socket *)
   | SoPair (id : word) (side : bool) (st : StreamEnd)  (* an AF_UNIX stream-pair end *)
@@ -1440,8 +1469,9 @@ Definition stream_setsockopt (fd id : word) (side : bool) (st : StreamEnd)
     (-EFAULT, with [optval] already written).  A clamped length of 0
     copies nothing and cannot fault.  A copy that would take some bytes
     and not others declines.  [BPF_CGROUP_RUN_PROG_GETSOCKOPT] runs after
-    it and, with no cgroup program attached, hands the result back
-    unchanged -- the same environment the AF_INET arm describes.  The
+    it and hands the result back unchanged: SCOPE.md's premise on
+    cgroups excludes a cgroup getsockopt program, as for the AF_INET
+    arm ([sock_fd]'s note on the LSM).  The
     caller has recorded [do_sock_getsockopt]'s own read of [optlen]; this
     records [sk_getsockopt]'s second one.
 
@@ -1543,7 +1573,9 @@ Definition stream_shutdown (fd id : word) (side : bool) (st : StreamEnd)
     (One more reason not to hard-code 16 as the length: from v6.7
     [inet_getname] returns a local [sin_addr_len] that a
     CGROUP_INET4_GETSOCKNAME BPF program may rewrite, where up to v6.6 it
-    was a literal [return sizeof] of the [sockaddr_in].) *)
+    was a literal [return sizeof] of the [sockaddr_in]; SCOPE.md's
+    premise on cgroups excludes such a program, but the version window
+    stays.) *)
 Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match sock_fd m fd with
@@ -2194,28 +2226,97 @@ Definition send_flag (fl : word) (bit : Z) : bool :=
     out OR answers the error of an end the kernel may already have
     processed ([SendGoes]), answers a pending error once ([SendErr]),
     answers -EPIPE because there is no connection to send on
-    ([SendDead]), or is declined ([SendUnknown]).  [after] is the state
-    an error answer leaves. *)
+    ([SendDead]), or is declined ([SendUnknown]).  The error is [e] or
+    one of [more]: [end_errno] and [end_more_errnos] of the script's end.
+    [after] is the state an error answer leaves. *)
 Inductive SendState :=
-  | SendGoes (chan : word) (e : Z) (after : SockState)  (* ESTABLISHED or CLOSE_WAIT, or already closed *)
-  | SendErr (e : Z) (after : SockState)                 (* one pending error *)
+  | SendGoes (chan : word) (e : Z) (more : list Z) (after : SockState)
+      (* ESTABLISHED or CLOSE_WAIT, or already closed *)
+  | SendErr (e : Z) (more : list Z) (after : SockState)   (* one pending error *)
   | SendDead                                            (* no connection: -EPIPE, port or no port *)
   | SendUnknown.                                        (* the script's end is out of reach *)
 
 (** THE ERROR A PROCESSED END STORES, by the terminal that ends the
     script: net/ipv4/tcp_input.c [tcp_reset] stores ECONNRESET on an
     established connection (:4700-4701) and EPIPE in CLOSE_WAIT, i.e.
-    after the peer's FIN (:4695-4697); the retransmit timer stores
-    ETIMEDOUT.  A RST after the FIN is not in the script — [NFin] is its
-    last cell — but a closed peer sends one in answer to new data
-    (tcp_input.c:7177-7189, net/ipv4/tcp_minisocks.c:160-165), so an
-    [NFin] end may carry it.  Linux v6.18.46; the same text in v6.16 and
-    v6.17. *)
+    after the peer's FIN (:4695-4697); the retransmit timer's
+    [tcp_write_err] stores the socket's soft error, or ETIMEDOUT when
+    there is none (net/ipv4/tcp_timer.c:76-80).  A RST after the FIN is
+    not in the script — [NFin] is its last cell — but a closed peer
+    sends one in answer to new data (tcp_input.c:7177-7189,
+    net/ipv4/tcp_minisocks.c:160-165), so an [NFin] end may carry it;
+    and a peer that stops acknowledging after its FIN ends the
+    connection by the timer, so an [NFin] end may carry the timer's
+    error instead ([end_more_errnos]).  An [NTimedOut] end answers
+    ETIMEDOUT here, as its read does ([State.NetStream]).  Linux
+    v6.18.46; the same text in v6.16 and v6.17. *)
 Definition end_errno (t : NetStream) : Z :=
   match t with
   | NRst => ECONNRESET
   | NTimedOut => ETIMEDOUT
   | _ => EPIPE
+  end.
+
+(** THE SOFT ERRORS OF AN AF_INET TCP CONNECTION: every value
+    [sk_err_soft] can hold once the handshake is done, which
+    [tcp_write_err] stores in place of ETIMEDOUT when the retransmit
+    timer gives up (net/ipv4/tcp_timer.c:78).  The model's TCP sockets
+    are AF_INET ones ([socket_spec]), so the writers are these, Linux
+    v6.18.46 throughout:
+    - [tcp_v4_err], for an ICMP error a router or the peer's host sends
+      (net/ipv4/tcp_ipv4.c:568-614), stores it there when the socket has
+      no IP_RECVERR or the user holds the socket (:650-656): EPROTO for a
+      parameter problem (:576-577); the [icmp_err_convert] entry of a
+      destination-unreachable code (:579-601, net/ipv4/icmp.c:122-187),
+      which is ENETUNREACH, EHOSTUNREACH, ENOPROTOOPT, ECONNREFUSED,
+      EOPNOTSUPP, EHOSTDOWN or ENONET; and EHOSTUNREACH for a time
+      exceeded (:609-610).  Fragmentation needed goes to
+      [tcp_v4_mtu_reduced] instead (:583-598), which stores EMSGSIZE
+      (:388-389).
+    - [inet_sk_rebuild_header] (net/ipv4/af_inet.c:1305-1337), which a
+      retransmission calls (net/ipv4/tcp_output.c:3501), stores the error
+      of a route lookup that fails once the cached route is stale
+      (:1323-1333): EINVAL, ENETUNREACH or ENODEV
+      ([ip_route_output_key_hash_rcu], net/ipv4/route.c:2752, :2756,
+      :2803, :2809; [__mkroute_output], :2603, :2609, :2619), ENOBUFS
+      (:2685), or the FIB's EINVAL, EHOSTUNREACH, EACCES or ENETUNREACH
+      (:2841-2872; [fib_lookup], include/net/ip_fib.h:316-334, without
+      CONFIG_IP_MULTIPLE_TABLES, which neither arch/riscv/configs/defconfig
+      nor testing/vm/kernel.fragment sets; [fib_props],
+      net/ipv4/fib_semantics.c:113-134).  The xfrm step after it
+      ([ip_route_output_flow], route.c:2964-2969) hands the route back:
+      [xfrm_lookup_route] refuses only under a policy or a default of
+      block (net/xfrm/xfrm_policy.c:3300-3309), and the configuration of
+      record builds nothing that installs either (CONFIG_XFRM_USER is
+      [=m] in arch/riscv/configs/defconfig:54, which the build turns off,
+      CONFIG_NET_KEY is not set, and a socket's own policy needs one of
+      them, net/xfrm/xfrm_state.c:3005-3012).
+    The other writers are [tcp_v4_err]'s handshake arm (tcp_ipv4.c:630),
+    which a connection [accept] hands over has left, and IPv6's
+    (net/ipv6/tcp_ipv6.c:498, :515), which an AF_INET socket never
+    reaches; [tcp_v6_err]'s values (net/ipv6/icmp.c:1111-1175) are in
+    the list all the same.  A superset where it is wide, so that no
+    error Linux stores is refused. *)
+Definition tcp_soft_errnos : list Z :=
+  [EPROTO; ENETUNREACH; EHOSTUNREACH; ENOPROTOOPT; ECONNREFUSED; EOPNOTSUPP;
+   EHOSTDOWN; ENONET; EMSGSIZE; EINVAL; ENODEV; EACCES; ENOBUFS].
+
+(** THE OTHER ERRORS A PROCESSED END MAY HAVE STORED, beside
+    [end_errno]'s.  Behind the peer's FIN the connection is CLOSE_WAIT,
+    and it still sends; a peer that then stops acknowledging ends it by
+    the retransmit timer, whose [tcp_write_err] stores the soft error or
+    ETIMEDOUT (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46) and runs
+    [tcp_done] (net/ipv4/tcp_input.c:4663-4674), as the RST does.  A
+    send then answers that error through [sk_stream_wait_connect]
+    (net/core/stream.c:67-69), and [sk_stream_error] keeps it
+    (:190-197).  So an [NFin] end carries ETIMEDOUT and
+    [tcp_soft_errnos] beside [end_errno]'s EPIPE.  A RST or a timeout
+    the script itself ends with carries its own error alone here. *)
+Definition end_more_errnos (t : NetStream) : list Z :=
+  match t with
+  | NRst => []
+  | NTimedOut => []
+  | _ => ETIMEDOUT :: tcp_soft_errnos
   end.
 
 (** What is left of the script past the first [rw_bytes_max] bytes still
@@ -2249,11 +2350,16 @@ Arguments net_end : simpl never.
       stored error (net/core/stream.c:67-69), consumed by [sock_error]'s
       [xchg] (include/net/sock.h:2496) — whatever bytes are still queued
       in front of the end, which is why the error is the one of the
-      script's END ([net_end], [end_errno]) and not of its head.  The error
+      script's END ([net_end], [end_errno], [end_more_errnos]) and not of
+      its head.  Behind the peer's FIN that error is the RST's EPIPE or
+      the retransmit timer's ETIMEDOUT or soft error, since the program
+      cannot see which of the two ended the connection.  The error
       answer moves the socket to [SkReset] with the error consumed and
       the queue intact: tcp_done purges only the write queue
       (tcp_input.c:4669).
     - A reset connection with its error pending: that error, once.
+      Behind a FIN it is any of the three above, because a [bind] that
+      autobinds ([bind_spec]) shows that the end was processed, not by what.
       Reported ONCE because [sock_error] consumes it, by whichever of
       read and send reaches it first, which is why the send transitions
       the socket exactly as a read does.
@@ -2280,7 +2386,8 @@ Arguments net_end : simpl never.
       [inet_csk_listen_start]'s own [get_port] call, which no
       [no_autobind] flag guards, so its -EADDRINUSE branch is live and
       stays under [alt].)
-    - CLOSE_WAIT: THE SEND SUCCEEDS until a RST is processed.  The peer's
+    - CLOSE_WAIT: THE SEND SUCCEEDS until a RST or the retransmit timer
+      ends the connection.  The peer's
       FIN shuts down only the receive half, and CLOSE_WAIT is inside
       [tcp_sendmsg_locked]'s mask.  This is the case a model gets wrong
       by assuming a closed peer means a closed connection. *)
@@ -2288,11 +2395,13 @@ Definition send_state (sk : SockState) : SendState :=
   match sk with
   | SkConnected peer ch rx =>
       if net_ended (net_end rx)
-      then SendGoes ch (end_errno (net_end rx)) (SkReset peer ch rx false false)
+      then SendGoes ch (end_errno (net_end rx)) (end_more_errnos (net_end rx))
+             (SkReset peer ch rx false false)
       else SendUnknown
   | SkReset peer ch rx true bound =>
       if net_ended (net_end rx)
-      then SendErr (end_errno (net_end rx)) (SkReset peer ch rx false bound)
+      then SendErr (end_errno (net_end rx)) (end_more_errnos (net_end rx))
+             (SkReset peer ch rx false bound)
       else SendUnknown
   | SkReset _ _ _ false _         => SendDead
   | SkBound | SkListening         => SendDead
@@ -2364,15 +2473,15 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
       (* every no-connection state, the fresh socket included: TCP does
          not autobind on send, so there is no second errno to union in *)
   | SendUnknown => unmodeled
-  | SendErr e after =>
+  | SendErr e more after =>
       record_copyins pre
         (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
-         err_ret e)
+         e' <- errno_from (e :: more) ;; err_ret e')
       (* consumed here exactly as [socket_pending_error] consumes it on
          the read side: one [sk_err], one [xchg], whichever direction
          gets there first.  The NEXT send is then -EPIPE, which is the
          classic two-step a program sees after a peer reset *)
-  | SendGoes ch e after =>
+  | SendGoes ch e more after =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then unmodeled
         (* both callers have already declined a larger total
            ([modeled_rw_count], and [sendmsg_spec]'s gathered total), so
@@ -2382,7 +2491,7 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
       alt (send_bytes pre acc total bs ch)
           (record_copyins pre
              (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
-              err_ret e))
+              e' <- errno_from (e :: more) ;; err_ret e'))
       (* the delivery if the end is not processed yet, the stored error
          if it is: see [send_state] *)
   end.

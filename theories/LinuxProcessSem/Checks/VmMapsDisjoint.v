@@ -2749,7 +2749,7 @@ Lemma check_send_on_socket_frame :
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros pre acc fd sk total bs eff m m' evs H.
-  unfold check_send_on_socket in H. vm_frame2 H.
+  unfold check_send_on_socket, check_end_err in H. vm_frame2 H.
 Qed.
 
 (** The three socket arms that need no socket.  None of them touches the
@@ -2800,7 +2800,7 @@ Lemma check_sendto_frame : forall i fd buf count flags addrp eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
-  unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
+  unfold check_sendto, check_access_ok_zero, check_send_on_socket, check_end_err in H.
   vm_frame3 H.
 Qed.
 
@@ -2809,7 +2809,7 @@ Lemma check_sendmsg_frame : forall i fd msgp flags eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd msgp flags eff m m' evs H.
-  unfold check_sendmsg, check_send_on_socket in H. vm_frame2 H.
+  unfold check_sendmsg, check_send_on_socket, check_end_err in H. vm_frame2 H.
 Qed.
 
 (** pipe2 writes the descriptor pair into guest memory and installs two

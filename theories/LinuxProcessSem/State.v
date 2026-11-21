@@ -649,6 +649,9 @@ Definition EAGAIN : Z := 11%Z.
     riscv64 uses unchanged — arch/riscv has no errno.h of its own, and
     include/uapi/asm-generic/Kbuild lists errno.h as mandatory-y, so the
     generic header is the one that applies. *)
+Definition ENODEV          : Z := 19%Z.    (* errno-base.h; a route's device gone *)
+Definition ENONET          : Z := 64%Z.
+Definition EPROTO          : Z := 71%Z.
 Definition ENOTSOCK        : Z := 88%Z.
 Definition EMSGSIZE        : Z := 90%Z.
 Definition ENOPROTOOPT     : Z := 92%Z.
@@ -657,17 +660,21 @@ Definition ESOCKTNOSUPPORT : Z := 94%Z.
 Definition EOPNOTSUPP      : Z := 95%Z.
 Definition EAFNOSUPPORT    : Z := 97%Z.
 Definition EADDRINUSE      : Z := 98%Z.
+Definition ENETUNREACH     : Z := 101%Z.
 Definition ECONNRESET      : Z := 104%Z.
-Definition ENOBUFS         : Z := 105%Z.   (* [inet6_create]'s [sk_alloc] failure *)
+Definition ENOBUFS         : Z := 105%Z.   (* [inet6_create]'s [sk_alloc] failure, and a route's *)
 Definition EISCONN         : Z := 106%Z.
 Definition ENOTCONN        : Z := 107%Z.
 Definition ETIMEDOUT       : Z := 110%Z.
 
-(** The one value in this block NO spec returns.  It names the canonical
-    outcome of the connection attempt [Net.Socket.connect_spec] declines,
-    so that [Checks.Cases.Net.Socket] can pin that the declined arm
-    answers [Unmodeled] to a real errno rather than to a bare 111. *)
+(** It names the canonical outcome of the connection attempt
+    [Net.Socket.connect_spec] declines, so that [Checks.Cases.Net.Socket]
+    can pin that the declined arm answers [Unmodeled] to a real errno
+    rather than to a bare 111; and it is one of the soft errors a send
+    behind the peer's FIN can answer ([Net.Socket.tcp_soft_errnos]). *)
 Definition ECONNREFUSED    : Z := 111%Z.
+Definition EHOSTDOWN       : Z := 112%Z.
+Definition EHOSTUNREACH    : Z := 113%Z.
 
 (* =========================================================================
    Syscall inputs and effects
@@ -2707,7 +2714,10 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        the connection ended — [NRst] a RST on an
                        established connection (ECONNRESET, :4700-4701),
                        [NTimedOut] the timer (ETIMEDOUT), [NFin] a RST
-                       after the peer's FIN (EPIPE, :4695-4697).
+                       after the peer's FIN (EPIPE, :4695-4697) or the
+                       timer after it (ETIMEDOUT or the soft error,
+                       net/ipv4/tcp_timer.c:76-80; see
+                       [Net.Socket.end_more_errnos]).
                        [pending] says that error is still in [sk_err]:
                        include/net/sock.h [sock_error] consumes it with an
                        [xchg] (:2496), so the read or send that reports it

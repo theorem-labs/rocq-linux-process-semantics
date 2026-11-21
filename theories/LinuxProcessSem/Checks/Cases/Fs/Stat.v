@@ -1625,8 +1625,9 @@ Proof. split_conj; check_eq. Qed.
     when the node is the image's one of its kind and under the
     DESCRIPTOR otherwise ([Stat.fstat_devfd_spec]).  A null-device
     descriptor carries no key and may come from any null-device node,
-    and two nodes are two inodes ([init_special_inode],
-    fs/inode.c:2552-2577, Linux v6.18.46), but the descriptor holds one
+    and two nodes are two inodes, each allocated by the file system
+    ([__shmem_get_inode], mm/shmem.c:3084-3097; [ramfs_get_inode],
+    fs/ramfs/inode.c:60-68, Linux v6.18.46), but the descriptor holds one
     of them for its whole life, and [vfs_fstat] reports that held
     file's inode at every call (fs/stat.c:276-281; [generic_fillattr],
     fs/stat.c:82-94).  With /dev/x beside /dev/null, two stats of

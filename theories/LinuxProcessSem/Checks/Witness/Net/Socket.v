@@ -731,12 +731,13 @@ Qed.
 
     [Net.Socket.SendErr] consumes the pending error, so its witness
     carries the UPDATED model: the same [fd_insert] the spec performs,
-    which is why the arm is a [modify] step and not a [pure] one. *)
+    which is why the arm is a [modify] step and not a [pure] one.  It
+    answers [e], the head of the errors the end may have stored. *)
 Definition send_on_socket_witness (pre : list (word * nat))
     (acc : nat -> list (word * nat)) (fd : word) (sk : SockState)
     (total : word) (bs : list byte) (m : Model) : outcome SyscallEffect :=
   match send_state sk with
-  | SendGoes ch _ _ =>
+  | SendGoes ch _ _ _ =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then Unmodeled
       else if w_is0 total
       then outcome_copyins pre (ret_outcome (Z_to_bv 64 0) m)   (* zero-length request *)
@@ -745,7 +746,7 @@ Definition send_on_socket_witness (pre : list (word * nat))
       else outcome_copyins (pre ++ acc (length (firstn 1 bs)))
              (Ok (mkEffect (len_word (firstn 1 bs)) [] []) m
                  (map (WriteEv ch) (firstn 1 bs)))            (* the one-byte send *)
-  | SendErr e after =>
+  | SendErr e _ after =>
       outcome_copyins pre
         (ret_outcome (errno_ret e)
            (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m))
@@ -758,7 +759,7 @@ Lemma send_on_socket_witness_ok : forall pre acc fd sk total bs i m,
     (send_on_socket_witness pre acc fd sk total bs m).
 Proof.
   intros. unfold send_on_socket, send_on_socket_witness.
-  destruct (send_state sk) as [ch e after|e after| |]; cbv beta iota zeta.
+  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta.
   - (* SendGoes: the connection takes bytes (the end not processed yet) *)
     destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z); cbv beta iota zeta;
       [apply unmodeled_intro|].
@@ -787,7 +788,8 @@ Proof.
     eapply record_copyins_ok. apply pure_ok.
   - (* SendErr: the pending error is consumed, and the fd is rewritten *)
     apply record_copyins_outcome.
-    eapply bind_step; [apply modify_ok|]. apply pure_ok.
+    eapply bind_step; [apply modify_ok|]. cbv beta.
+    eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
   - (* SendDead: -EPIPE *)
     apply record_copyins_outcome. apply pure_ok.
   - (* SendUnknown: declined *)

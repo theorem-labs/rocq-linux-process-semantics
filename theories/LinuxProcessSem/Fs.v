@@ -2163,8 +2163,10 @@ Definition mode_dir (md : WalkMode) : bool :=
       fs/namei.c:1927-1929), and the link count is not reset when the
       kernel repeats a walk after an RCU -ECHILD ([filename_lookup]
       :2705-2709, [__filename_parentat] :2747-2751; [path_init] does not
-      reset [total_link_count], which only :671 sets), so a chain of 40
-      or fewer may still meet the limit.
+      reset [total_link_count]: [__set_nameidata] sets it before the
+      first try (:671), and [restore_nameidata] hands a nested walk's
+      count back to the walk around it (:693), after both tries), so a
+      chain of 40 or fewer may still meet the limit.
     - [wr_long]: a component over [name_max] was handed to a file
       system's [->lookup] (see [comp_too_long]): -ENAMETOOLONG is
       admitted beside the answer a larger limit would give, which no

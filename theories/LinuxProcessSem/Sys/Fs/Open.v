@@ -1778,8 +1778,8 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       [access_override_creds]'s [prepare_creds] (fs/open.c:486-490,
       ahead of [user_path_at]), fail before the copy is done and stand
       outside the ledger ([Fs.Namei.getname_refusals]).
-    - EACCES, from the path walk's own search-permission check, and from
-      that alone.  [link_path_walk] calls [may_lookup], which takes
+    - EACCES, from the path walk, by two checks.  The first is its
+      search-permission check.  [link_path_walk] calls [may_lookup], which takes
       [inode_permission(..., MAY_EXEC)] on the folder the walk stands
       on, at the top of its loop, once per component and before the
       component is even typed (fs/namei.c:2466-2468, Linux v6.18.46):
@@ -1789,7 +1789,13 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       included, and it needs a component: a pathname that is nothing
       but separators ("/", "//") returns from [link_path_walk] before
       the loop (:2451-2458), so its walk checks nothing, and F_OK of it
-      admits no -EACCES ([Fs.LastRoot] in [Fs.Namei.walk_errnos]).
+      admits no -EACCES ([Fs.LastRoot] in [Fs.Namei.walk_errnos]).  The
+      second is no permission check of a folder: [may_follow_link]
+      (fs/namei.c:1168-1196) refuses, under [fs.protected_symlinks], to
+      follow a last link in a sticky, world-writable folder when neither
+      the caller nor the folder's owner owns the link; [pick_link] calls
+      it for a trailing link (fs/namei.c:1921-1925).  It needs a followed link, so a component, and
+      [Fs.Namei.walk_errnos] counts it in the same member.
       NOT from an LSM: the configuration of record builds none
       (SCOPE.md), so [security_inode_permission] is the stub of
       include/linux/security.h that answers 0.
@@ -1868,15 +1874,16 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       configuration of record builds both (CONFIG_CGROUP_DEVICE=y,
       CONFIG_CGROUP_BPF=y and CONFIG_BPF_SYSCALL=y in
       arch/riscv/configs/defconfig).
-      SCOPE.md's premise on device cgroups excludes a cgroup whose BPF
-      device programs or v1 controller refuse the process an open of
-      /dev/null or /dev/urandom, and that premise is what makes the
-      opens of the two nodes sound ([open_devnull], [open_urandom]):
-      [may_open] reaches the same hook through [inode_permission]
-      (fs/namei.c), and those arms admit nothing beside the descriptor
-      but [openat_errnos].
-      The premise does not fix F_OK's answer, and so this arm keeps its
-      decline.  An open asks the hook for read or write access or both
+      SCOPE.md's premise on cgroups excludes a cgroup whose BPF program
+      at any hook or whose v1 controller refuses a call of the process,
+      an open of /dev/null or /dev/urandom among them, and that premise
+      is what makes the opens of the two nodes sound ([open_devnull],
+      [open_urandom]): [may_open] reaches the same hook through
+      [inode_permission] (fs/namei.c), and those arms admit nothing
+      beside the descriptor but [openat_errnos].
+      The premise covers F_OK as well, and this arm keeps its decline
+      all the same.  Without the premise F_OK's answer is not the
+      opens': an open asks the hook for read or write access or both
       ([devcgroup_inode_permission] turns MAY_READ and MAY_WRITE into
       DEVCG_ACC_READ and DEVCG_ACC_WRITE,
       include/linux/device_cgroup.h:32-35); F_OK asks it for an empty
@@ -1888,10 +1895,12 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
       matches an empty set ([match_exception_partial],
       security/device_cgroup.c:388-389), and under deny the exception
       that lets an open through matches the empty set as well
-      ([match_exception], :342-343).  So F_OK of a device can still
-      answer any errno, no list could hold the answer, and
-      [faccessat_body_spec] declines the [Fs.EDev] row: a sound decline,
-      which costs precision only.  At the launch of the agreement checks
+      ([match_exception], :342-343).  Under the premise no program and
+      no v1 list refuses it, and F_OK of a device answers as F_OK of a
+      regular file does; but
+      [faccessat_body_spec] still declines the [Fs.EDev] row, a sound
+      decline that costs precision only, and the wider premise changed
+      no answer of this arm.  At the launch of the agreement checks
       no device program is attached, and F_OK of /dev/null answers 0
       (testing/syscall-check/tests/faccessat_spec.c, dev-null).
 
@@ -2031,10 +2040,11 @@ Definition access_exists_spec : Sys SyscallEffect := ret_only (Z_to_bv 64 0).
     SO EXISTENCE IS RESOLUTION, BUT FOR A DEVICE.  [Fs.RFound] of a
     file, a directory or a link is 0 — each exists, and F_OK asks
     nothing else.  [Fs.RFound] of either device DECLINES: a cgroup BPF
-    device program can answer any errno for F_OK of it, and SCOPE.md's
-    premise on device cgroups covers the opens of the two nodes, not
-    F_OK's empty access set (the device-cgroup paragraph of
-    [faccessat_errnos]), so no list of answers would be sound.
+    device program could answer any errno for F_OK of it while it lets
+    every open through.  SCOPE.md's premise on cgroups excludes such a
+    program now, for F_OK too, but the arm keeps the decline it had
+    when the premise covered the opens alone (the device-cgroup
+    paragraph of [faccessat_errnos]): a decline costs precision only.
     [Fs.RMissing] and [Fs.RAbsent] are -ENOENT,
     [Fs.RNotDir] is -ENOTDIR, [Fs.RLoop] is -ELOOP, and [Fs.ROutside]
     declines because /proc and /sys are outside the surface (question
@@ -2083,7 +2093,7 @@ Definition faccessat_body_spec (md : Fs.WalkMode) (dirfd pathp : word)
       else
         let '(r, _, _) := Fs.resolve md (m_fs m) (m_cwd m) p in
         match r with
-        | Fs.RFound _ (Fs.EDev _) => unmodeled  (* a device cgroup picks the errno *)
+        | Fs.RFound _ (Fs.EDev _) => unmodeled  (* declined: see [faccessat_errnos]'s device cgroups *)
         | Fs.RFound _ _ => access_exists_spec   (* it exists, whatever else it is *)
           (* A trailing separator on a non-directory is the walk's
              [Fs.RNotDir]: [lookup_last] adds LOOKUP_DIRECTORY for a

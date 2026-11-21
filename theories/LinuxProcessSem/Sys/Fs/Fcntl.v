@@ -775,12 +775,14 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     and third are unreachable because execve and execveat are not
     modeled syscalls.  The fourth is
     unreachable for a different reason worth stating, because it is not
-    about fcntl: [Open.openat_spec] answers a DETERMINISTIC -ENOENT for a
-    path absent from the model's file-system image, and this assumes the
-    image holds no /proc tree — so a program that reads its own fdinfo is
-    REJECTED at the openat, not silently mis-answered here.  That is a
-    standing limit on the whole file-system model, not a hole this arm
-    opens.
+    about fcntl: the model answers no open of an fdinfo file.
+    [Open.openat_spec] answers "/proc/self/fd/N" alone
+    ([Open.proc_self_fd]); every other path through "proc" at the root,
+    "/proc/self/fdinfo/N" among them, goes to the walk, which ends at
+    [Fs.ROutside] there ([Fs.at_outside]), and the open DECLINES it.  So
+    a program that reads its own fdinfo is declined at the openat, not
+    silently mis-answered here.  That is a standing limit on the whole
+    file-system model, not a hole this arm opens.
 
     So no modeled execution is constrained by the difference between
     setting the bit and not: [F_GETFD] admits the same two answers

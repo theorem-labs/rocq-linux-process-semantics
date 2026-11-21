@@ -512,7 +512,7 @@ Proof. check_eq. Qed.
     its component loop ([link_path_walk], fs/namei.c:2466-2469, Linux
     v6.18.46), and "/" returns before that loop (2455-2458).  What
     follows is the type test, each before [mnt_want_write]: -EISDIR in
-    [do_unlinkat] (4720-4722), -EBUSY in [do_rmdir] (4589-4590) and
+    [do_unlinkat] (4720-4722), -EBUSY in [do_rmdir] (4590-4592) and
     -EEXIST in [filename_create] (4219-4220), so -EROFS is refused too.
     The walk's -ENOMEM, which carries the copy-in, stands beside each
     answer ([Fs.Namei.walk_errnos]).  The empty pathname never reaches

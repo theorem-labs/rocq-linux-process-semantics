@@ -253,8 +253,9 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (i : Fs.ino) : bool :
       it is the stub of include/linux/security.h that answers 0.
     - the -EBADF an O_PATH descriptor gets from
       [type != F_UNLCK && !(f_mode & (FMODE_READ|FMODE_WRITE))].
-      [Open.openat_spec] models three flag words and O_PATH is not
-      among them, so no such descriptor exists here.  Note the arm is
+      [Open.openat_spec] answers 14 flag shapes ([Open.modeled_open_flags]
+      over [Open.open_shape], which strips the ignored and the walk bits
+      first) and O_PATH is in none of them, so no such descriptor exists here.  Note the arm is
       -EBADF, not -EINVAL: an fd that IS open can still be refused by
       it, which is why it is named rather than folded into the lookup.
     - blocking.  A LOCK_SH or LOCK_EX without LOCK_NB that conflicts
