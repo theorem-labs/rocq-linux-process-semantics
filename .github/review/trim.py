@@ -1406,11 +1406,12 @@ def with_result(review, trimmed, head, verdict="", items=()):
     after the rules of code, in a pull request's review (head holds REVIEW_HEAD). First trimmed loses each form at the
     start of its first line that verdict or items contradict (without_contradicted). A trimmed text whose first line
     then starts with the form of verdict stays as it is. Else the result line goes first, made inert and closed, as an
-    added item does: the first line of review that is not empty when it starts with that form (the reader dropped it),
-    else the form. For person, the form has one bullet for each question item of items whose text trimmed does not
-    hold (both as plain reads them, with their white space made one space): that text, and the item's ref when the
-    text does not name it (present), so that missing gives no second copy of the question. When trimmed holds the
-    other question items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by
+    added item does: the first line of review that is not empty when it starts with that form and, for person, holds
+    text after the form (the reader dropped it), else the form. So a bare "Questions for Sami:" opens no empty list.
+    For person, the form has one bullet for each question item of items whose text trimmed does not hold (both as
+    plain reads them, with their white space made one space): that text, and the item's ref when the text does not
+    name it (present), so that missing gives no second copy of the question. When trimmed holds the other question
+    items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by
     ASKED_BELOW when items hold a question item, else by NONE_ASKED. So under person, a list with a blocking finding
     (the soundness rule keeps each one) keeps the reader's "Blocking findings." line and what follows it, after the
     result line. With no verdict, the form is the one that the first line of review starts with, and the verdict is
@@ -1424,7 +1425,7 @@ def with_result(review, trimmed, head, verdict="", items=()):
     trimmed = without_contradicted(trimmed, verdict, items)
     if result_of(first_line(trimmed)) == form:
         return trimmed
-    if result_of(line) != form:
+    if result_of(line) != form or (form == RESULTS[2] and not after_form(line, form).strip()):
         held = " ".join(plain(trimmed).split())
         asked = [(i, " ".join(i["text"].split())) for i in items if i.get("kind") == "question"]
         questions = [q + (f" ({code(i['ref'])})" if i.get("ref") and not present(i, q) else "")

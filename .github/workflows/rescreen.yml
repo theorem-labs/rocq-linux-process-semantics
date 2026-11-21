@@ -207,9 +207,9 @@ jobs:
   # judged nothing and counts no try (D19). Each try waits until the newest run of the task is over an hour old, as the
   # first waits on the hold. Then a run of the task stop gives the item waits-on-theorem, with the same step for Sami,
   # and replaces the hold comment of that work with one that says that the work is not tried again, and this pass
-  # fails for that run. A hold whose newest run of its task had a post job that approved held runs or recorded the
-  # import check run, or a comment job that posted, is settled: it counts no try and starts nothing, and the held runs
-  # decide an approval.
+  # fails for that run. A run of the task that had a post job that approved held runs or recorded the import check
+  # run, or a comment job that posted, settled the hold. It counts no try, and only the runs after it count. A hold
+  # whose newest run of its task settled it starts nothing, and the held runs decide an approval.
   # The stop: this pass writes no label and no comment. When it decides that the work of an item is not tried again
   # (each bound above), it starts a run of review.yml with the task stop, named "stop #<n>[ at <head>] for <stop>",
   # where <stop> names the bound: hold-<work> for the hold of a review, an answer, a draft or an approval whose task ran

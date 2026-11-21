@@ -3572,6 +3572,30 @@ class HoldTest(Holding):
         self.assertEqual((state, why), ("held", "screen"),
                          "after the limit hold, a relabel of HEAD would record the check run again: " + str(post[:3]))
 
+    def test_only_a_later_hold_of_the_screen_takes_the_place_of_the_screens_hold(self):
+        """Round 12, item 2: the screen's hold of HEAD (5) and a newer hold of the review at the limit (41). A later
+        hold of the screen replaces the newest hold of the review, whichever it is. A later hold at the limit, or of a
+        review that did not finish, replaces the newest hold of the review that is not the screen's, and posts a new
+        comment when there is none: the screen's hold stays, as a relabel and a review by hand read it."""
+        screen = {"id": 5, "user": {"login": BOT}, "updated_at": ago(120),
+                  "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                          "request, so the automated review did not run. You do not need to do anything.\n\n"
+                          f"<!-- review-held-head {HEAD} -->"}
+        limit = limit_hold(41, at=ago(60), tries=0, head=HEAD)
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        for route, review, comments, want in (("screen", "skipped", [screen, limit], 41),
+                                              ("screen", "skipped", [screen], 5),
+                                              ("limit", "skipped", [screen, limit], 41),
+                                              ("limit", "skipped", [screen], None),
+                                              ("screen", "failure", [screen], None)):
+            with self.subTest(route=route, review=review, comments=[c["id"] for c in comments]):
+                self.tearDown()
+                self.setUp()
+                self.serve(f"repos/{REPO}/issues/comments/41", {"html_url": "https://github.com/acme/model"})
+                _calls, post, _body = self.hold(route, review=review, comments=comments, origin="50", head=HEAD)
+                self.assertEqual(post[:3], new if want is None
+                                 else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
@@ -14738,8 +14762,10 @@ class ImportCheckTest(ReaderRunner):
         stands (its withdrawal failed, say) for the blocking finding of the review before this run, and #7 waits on
         Sami, with a label comment that says that the screen and the review passed it. So does a pass by hand after a
         screened pass, a blocking finding with no screen whose withdrawal failed, and a pass by hand (OSSV-221's
-        architect, 2026-11-20 22:21Z). With no review comment of HEAD whose run screened it, a pass gets the decision
-        screen, and the label comment says that no screen passed the head. review-held comes off in each case."""
+        architect, 2026-11-20 22:21Z). With no review comment of HEAD whose run screened it, and no check run of HEAD
+        that stands, a pass gets the decision screen, and the label comment says that no screen passed the head. With
+        such a check run, the decision is hand (round 12, item 3; the test of a second pass by hand below).
+        review-held comes off in each case."""
         listed, _others = self.recorded()
         marker = rules.import_marker(HEAD, self.LPS)
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
@@ -14775,7 +14801,7 @@ class ImportCheckTest(ReaderRunner):
                 ("a pass after a screened pass, a blocking finding with no screen and a pass by hand", "pass", later,
                  author, stands, "screened", [f"{title}asks for a change"], moved, "decide"),
                 ("a pass with no screened review", "pass", [review_of(HEAD, at=ago(90), screened=False), old], held,
-                 stands, "screen", [], [("+", THEOREM_LABEL)], "decide")):
+                 [], "screen", [], [("+", THEOREM_LABEL)], "decide")):
             with self.subTest(case=case):
                 start = len(self.logs)
                 got = self.judge(["README.md"], verdict, self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
@@ -14844,6 +14870,30 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((got["result"], got["writes"]), ("success", []), self.logs)
         self.assertEqual((got["post"]["decision"], got["post"]["standing"]), ("hand", "true"), self.logs)
         self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+
+    def test_a_second_pass_by_hand_over_a_pass_by_hand_keeps_the_state_import_while_the_check_run_stands(self):
+        """Round 12, item 3 (the author-kind table, section 8, items 17 and 18): the CI run of mallory's #7 screened
+        HEAD, its review passed it, and its post job recorded the check run 901. alice then passed HEAD by hand with no
+        screen, and the comment job replaced the screened review comment with hers, which holds no screened marker.
+        alice reviews HEAD by hand again, and the review passes it. The newest review comment of HEAD is a pass with no
+        screen, so the post job reads whether a check run of HEAD stands. While 901 stands, the decision is hand, and
+        #7 stays import. With no check run that stands, the decision is screen: #7 gets decide, with the text that no
+        screen passed the head."""
+        listed, _others = self.recorded()
+        by_hand = review_of(HEAD, at=ago(30), screened=False)
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        for case, checks, decision, standing in (("901 stands", [listed], "hand", "true"),
+                                                 ("none stands", [], "screen", "false")):
+            with self.subTest(case=case):
+                got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
+                                 event="workflow_dispatch", comments=[by_hand, old], listed=checks)
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["standing"], got["writes"]),
+                                 ("success", decision, standing, []), self.logs)
+                if standing == "true":
+                    self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
+                else:
+                    self.assertWaits(got, self.SOME, rules.UNSCREENED, value=self.LPS)
 
     def test_a_check_run_recorded_for_another_value_of_the_variable_does_not_stand_for_a_review_by_hand(self):
         """The fresh reader of round 11 (e, finding A): the screened run of mallory's #7 passed HEAD and recorded the

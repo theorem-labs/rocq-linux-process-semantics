@@ -629,14 +629,15 @@ halt() {
     >> "$seen/stops"
   owe "${at:-$hour}" stop "" "${head:-}" "$1" "its work is not tried again"
 }
-# stopped <task> <tries>: the work of the hold that held_work read is not tried again, after <tries> runs of
-# <task> since the hold (halt, with the stop hold-<work>): waits-on-theorem, with the label comment's step
-# "Sami starts again, by hand, the work that the hold comment names", and a hold comment that says so in the
-# place of that hold. The hold comment of other work stays as it is.
+# stopped <task> <tries> [<run>]: the work of the hold that held_work read is not tried again, after <tries> runs
+# of <task> since the hold, or since <run>, the newest run that settled it (halt, with the stop hold-<work>):
+# waits-on-theorem, with the label comment's step "Sami starts again, by hand, the work that the hold comment
+# names", and a hold comment that says so in the place of that hold. The hold comment of other work stays as it is.
 stopped() {
-  local title work what tried of=$1
+  local title work what tried of=$1 since="since its hold at $h_at"
   [ "$of" != rescreen ] || of=review
-  echo "::error::#$number: $1 ran $2 times since its hold at $h_at, with no new hold and nothing posted: it" \
+  [ -z "${3:-}" ] || since="after run $3, which settled its hold"
+  echo "::error::#$number: $1 ran $2 times $since, with no new hold and nothing posted: it" \
     "is not tried again, and the label comment names the next step for Sami."
   case $1 in
     answer) title="Automated answer held." work="the automated answer" ;;
@@ -726,14 +727,15 @@ due_held() {
 # stored), and while its hold is not settled: the newest run of its task since the hold had no post job that
 # approved held runs or recorded the import check run, and no comment job that posted (its review, its answer
 # or the label comment of its draft; not the comment on a merge conflict). Each other run of its task since
-# the hold is a try that settled nothing (a review's hold is taken again as a rescreen, and counts the
-# rescreens and the reviews), but a run that ended at a failed step whose name starts with "Sign in": that
-# run judged nothing, counts no try, and the work is taken again (D19). After REVIEW_TRIES tries (stopped), or
-# while the newest run of its task is under an hour old, it is not started. retaken holds the task of each
-# hold that this takes, which the other reasons leave to it.
+# the hold, after the newest run that settled it, is a try that settled nothing (a review's hold is taken again
+# as a rescreen, and counts the rescreens and the reviews), but a run that ended at a failed step whose name
+# starts with "Sign in": that run judged nothing, counts no try, and the work is taken again (D19). A run that
+# settled the hold is no try: so a held run made after an approval gets REVIEW_TRIES tries of its own. After
+# REVIEW_TRIES tries (stopped), or while the newest run of its task is under an hour old, it is not started.
+# retaken holds the task of each hold that this takes, which the other reasons leave to it.
 held_work() {
-  local task=$h_task pattern since tries=0 newest="" created run latest="" f who
-  local signin="" settled="" early="" commented=""
+  local task=$h_task pattern since tries=0 newest="" created run latest="" f who from
+  local signin="" settled="" early="" commented="" ended="" settler=""
   retaken+=" $task"
   [[ $h_at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || { echo "::error::#$number: its hold has no time."; return 1; }
@@ -765,23 +767,27 @@ held_work() {
   pattern=$task
   [ "$task" != rescreen ] || pattern='rescreen|review'
   since=$(runs_of "$pattern" "" workflow_dispatch | awk -v at="$h_at" '$1 >= at')
-  # Each run of the task since the hold, oldest first: the facts of the newest stay, and each run but one that
-  # could not sign in counts a try.
+  # Each run of the task since the hold, oldest first: the facts of the newest stay. A run that settled the hold
+  # ends the count of the runs before it, and each later run but one that could not sign in counts a try.
   while read -r created _ run; do
     [ -n "${run:-}" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
     read -r signin _ _ settled early _ commented _ <<< "$f"
-    newest=$created latest=$run
-    [ "$signin" = signin ] || tries=$((tries + 1))
+    newest=$created latest=$run ended=""
+    if [ "$settled" = settled ] || { [ "$commented" = success ] && [ "$early" = - ]; }; then
+      ended=1 settler=$run tries=0
+    elif [ "$signin" != signin ]; then
+      tries=$((tries + 1))
+    fi
   done <<< "$since"
-  if [ "$settled" = settled ] || { [ "$commented" = success ] && [ "$early" = - ]; }; then
+  if [ -n "$ended" ]; then
     echo "#$number: run $latest of $task approved the held runs, recorded the import check or posted, so" \
       "its hold is settled."
     retaken=${retaken%" $task"}
     return 0
   fi
   if (( tries >= REVIEW_TRIES )); then
-    stopped "$task" "$tries"
+    stopped "$task" "$tries" "$settler"
     return
   fi
   if [ -n "$latest" ]; then
@@ -790,10 +796,12 @@ held_work() {
       echo "#$number: $task ran at $newest, less than an hour ago, with no new hold: tried again later."
       return 0
     fi
+    from="since its hold"
+    [ -z "$settler" ] || from="after run $settler, which settled its hold,"
     if (( tries > 0 )); then
-      echo "#$number: $tries runs of $task since its hold settled nothing; trying again."
+      echo "#$number: $tries runs of $task $from settled nothing; trying again."
     else
-      echo "#$number: each run of $task since its hold could not sign in, which counts no try; trying again."
+      echo "#$number: each run of $task $from could not sign in, which counts no try; trying again."
     fi
   fi
   who=$(held_account "$h_origin" "$author") || { echo "::error::run $h_origin could not be read."; return 1; }

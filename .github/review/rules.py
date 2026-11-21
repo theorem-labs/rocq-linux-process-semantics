@@ -733,8 +733,8 @@ def mark(number, line):
 # - approve: the post job approves the held runs of the head when the screen of this run passed the head (R10).
 # - record: the post job decides on the import check run of the head, and records it when the rules of R12 hold.
 # - withdraw: the post job withdraws the import check runs of the head when this run gives a reason (R12): a review of
-#   the head with a blocking finding or the verdict person, a screen that held the head, or a relabel that finds such
-#   a review or a later hold of the screen.
+#   the head with a blocking finding or the verdict person, a screen that held the head, or a relabel or a review by
+#   hand with no screen that finds such a review or a later hold of the screen, for every author.
 # - retry: the error of a withdrawal that GitHub refused, or that could not be read, says that the rescreen pass tries
 #   it again, but only when the name of the run gives the head too (review.yml): the pass tries no other run again
 #   (held.sh, take and due_retry). The pass tries no App write of the item of another author again (held.sh, consider

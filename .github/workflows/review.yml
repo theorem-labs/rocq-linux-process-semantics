@@ -410,12 +410,12 @@ env:
   # on Sami: each such hold is tried again with no person (the rescreen pass) while it has failed fewer times than this
   # number, and the hold of the last failure is not. A review stopped at SCREENED_HOURLY_CAP is not such a failure,
   # and is tried again whatever this number: the cap is not the item's.
-  # It is also the most runs of the work that a hold names, since the hold, that may end with neither a new hold nor a
-  # post (a run that failed on a GitHub read, say), the most post jobs of a head that may fail at a step that is not a
-  # sign-in, the most reviews that the rescreen pass starts of a head that a run left with no review, the most relabels
-  # of a head whose merge conflict went away, and the most reopens of a pull request that a catch-up left closed,
-  # before the rescreen pass leaves the work to Sami. rescreen.yml has its own copy of this value, as of POST_REVIEW and
-  # APPS.
+  # It is also the most runs of the work that a hold names, since the hold or the newest run that settled it, that may
+  # end with neither a new hold nor a post (a run that failed on a GitHub read, say), the most post jobs of a head that
+  # may fail at a step that is not a sign-in, the most reviews that the rescreen pass starts of a head that a run left
+  # with no review, the most relabels of a head whose merge conflict went away, and the most reopens of a pull request
+  # that a catch-up left closed, before the rescreen pass leaves the work to Sami. rescreen.yml has its own copy of this
+  # value, as of POST_REVIEW and APPS.
   REVIEW_TRIES: "3"
   # The soundness hold of R8 (.github/review.md, "Soundness of a Rocq proof"). Stock Rocq accepts three public proofs
   # of False: rocq-prover/rocq#22651, #22760 and #22772. The checks that the import's copy of a pull request must pass,
@@ -2786,8 +2786,13 @@ jobs:
       # reason). When such a hold comment is newer (held), a later screen held the head: the decision is held, so that
       # the label comment says so, and a later step withdraws its check run. A review by hand with no screen (a review
       # or a rescreen whose route is not screen) records no check run, as no screen ran in its run, and keeps its own
-      # verdict. For screened or earlier, its decision is screened when the rule withdraws, and hand when it does not.
-      # So is a relabel's in the state earlier with the verdict pass. Else the decision is screen, and the label comment
+      # verdict. It reads the rule for every author, as a relabel does, so that it withdraws for the same reasons. The
+      # rule gives its decision only for an outside author. For screened or earlier, its decision is screened when the
+      # rule withdraws, and hand when it does not. So is a relabel's in the state earlier with the verdict pass. The
+      # comment job replaces the review comment in place, so a review with no screen hides a screened review of the same
+      # head. An import check run of the head that stands is then the record of that screened pass, as only a screened
+      # pass records one. So for an outside author, an unscreened newest pass with no reason to withdraw gives the
+      # decision hand while such a check run stands (replaced). Else the decision is screen, and the label comment
       # says that no screen passed the head in a run that also reviewed it. A run whose decision is hand records and
       # withdraws nothing, and reads whether an import check run of the head with the conclusion success, for the value
       # of the variable now, still stands (output standing). The comment job counts such a check run as recorded,
@@ -2831,10 +2836,10 @@ jobs:
             echo "imports=$(jq -acn --arg v "$IMPORT_PATHS" 'if $v == "" then null else $v end')" >> "$GITHUB_OUTPUT"
             exit 0
           }
-          # standing: for the decision hand, the output standing: true when an import check run of the OSS Verify App
-          # with conclusion success, for this pull request (external_id <number>:<head>), stands on the head, and its
-          # output text holds the marker line of R12 for the value of the variable now (rules.py import-marker). One
-          # that rested on another value does not count.
+          # standing: for the decision hand, the output standing, and stands: true when an import check run of the OSS
+          # Verify App with conclusion success, for this pull request (external_id <number>:<head>), stands on the head,
+          # and its output text holds the marker line of R12 for the value of the variable now (rules.py
+          # import-marker). One that rested on another value does not count.
           standing() {
             local found marker values=()
             [ -z "$IMPORT_PATHS" ] || values=("$IMPORT_PATHS")
@@ -2847,14 +2852,28 @@ jobs:
                          and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success"
                          and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id') \
               || { echo "::error::the import check runs of $HEAD could not be read."; exit 1; }
-            if [ -n "$found" ]; then echo "standing=true"; else echo "standing=false"; fi >> "$GITHUB_OUTPUT"
+            stands=false
+            [ -z "$found" ] || stands=true
+            echo "standing=$stands" >> "$GITHUB_OUTPUT"
+          }
+          # replaced <verdict> <state> <why>: the rule's verdict, state and why of the head, for an outside author. The
+          # comment job replaces the review comment in place, so a pass with no screen can hide a screened pass of the
+          # head. For the state unscreened, the verdict pass and no why, an import check run of the head that stands
+          # (standing) is the record of that screened pass: the decision is hand. Else this decides nothing.
+          replaced() {
+            if [ "$RECORD" = true ] && [ "$2" = unscreened ] && [ "$1" = pass ] && [ "$3" = - ]; then
+              standing
+              [ "$stands" != true ] \
+                || decided hand "the newest review of $HEAD passed it with no screen, and its import check run stands"
+            fi
           }
           # relabeled: for a relabel, the verdict of the newest review comment that names the head, its state and why
           # (rules.py verdict). screen is true only for screened: that comment holds the marker
           # <!-- review-screened <head> --> and no hold comment of the screen that names the head is newer. The outputs
           # verdict, held and earlier (why: blocking or person) give them to the step that withdraws an import check
           # run. A newer hold comment (held) gives the decision held. For an outside author, the state earlier with the
-          # verdict pass gives the decision screened with a why, and hand with none.
+          # verdict pass gives the decision screened with a why, and hand with none. The state unscreened gives
+          # replaced.
           relabeled() {
             local reviewed state why said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
@@ -2878,15 +2897,16 @@ jobs:
               said="the newest review of $HEAD passed it with no screen, after a screen passed it in an earlier run"
               decided hand "$said"
             fi
+            replaced "$verdict" "$state" "$why"
           }
-          # by_hand: for a review or a rescreen with no screen in this run (a review by hand), the verdict of the newest
-          # review comment of the head (earlier: this run's review has not posted yet), its state and why (rules.py
-          # verdict), as relabeled reads them. The run keeps its own verdict, and records no check run. held gives the
-          # decision held, and the output held, so that the step that withdraws an import check run withdraws it, as
-          # for a relabel. Else a why (blocking or person) goes to the output earlier, so that the same step withdraws
-          # each check run that still stands for that verdict. screened or earlier gives the decision screened with a
-          # why, and hand with none, with the output standing. For unscreened, the import check below gives the
-          # decision screen.
+          # by_hand: for a review or a rescreen with no screen in this run (a review by hand), of any author, the
+          # verdict of the newest review comment of the head (earlier: this run's review has not posted yet), its state
+          # and why (rules.py verdict), as relabeled reads them. The run keeps its own verdict, and records no check
+          # run. held gives the output held, so that the step that withdraws an import check run withdraws it, as for a
+          # relabel. Else a why (blocking or person) goes to the output earlier, so that the same step withdraws each
+          # check run that still stands for that verdict. Only for an outside author does the rule give a decision: held
+          # gives held, and screened or earlier gives screened with a why, and hand with none, with the output standing.
+          # The state unscreened gives replaced, and else the import check below gives the decision screen.
           by_hand() {
             local reviewed earlier state why said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
@@ -2894,9 +2914,11 @@ jobs:
             read -r earlier state why <<< "$reviewed"
             if [ "$state" = held ]; then
               echo "held=true" >> "$GITHUB_OUTPUT"
+              [ "$RECORD" = true ] || return 0
               decided held "a screen held $HEAD, and no review comment whose run screened it is newer"
             fi
             [ "$why" = - ] || echo "earlier=$why" >> "$GITHUB_OUTPUT"
+            [ "$RECORD" = true ] || return 0
             if [ "$state" = screened ] || [ "$state" = earlier ]; then
               if [ "$why" != - ]; then
                 said="the newest review of $HEAD gives the verdict $earlier"
@@ -2906,6 +2928,7 @@ jobs:
               said="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
               decided hand "$said"
             fi
+            replaced "$earlier" "$state" "$why"
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
@@ -2918,6 +2941,7 @@ jobs:
           [ "$ROUTE" != screen ] || screen=true
           if [ "$RECORD" != true ]; then
             [ "$TASK" != relabel ] || relabeled
+            [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
             decided writer "the author of #$NUMBER is not an outside author: it has write access, or GitHub did not say"
           fi
           [[ $count =~ ^[0-9]+$ ]] || { echo "::error::#$NUMBER gives no count of changed files."; exit 1; }
@@ -2990,7 +3014,7 @@ jobs:
           REVIEW_HEAD: ${{ needs.review.outputs.head }}
           # The verdict of the review comment that a relabel reads (the decision's), or else of this run's review.
           VERDICT: ${{ steps.decide.outputs.verdict || needs.review.outputs.verdict }}
-          # true for the decision held: a relabel or a review by hand with no screen found a newer hold of the screen.
+          # true when a relabel or a review by hand with no screen found a newer hold of the screen, of any author.
           HELD: ${{ steps.decide.outputs.held }}
           # The reason of the rule of rules.py verdict for a relabel or a review by hand: blocking or person.
           EARLIER: ${{ steps.decide.outputs.earlier }}
@@ -3888,7 +3912,8 @@ jobs:
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
   # the label review-held, and one comment that says it was held, which a later hold of the same work replaces: the
   # review (a review or a rescreen), the answer, the draft and the approval each have their own hold comment, so that a
-  # hold of one never takes the place of the hold of another, and the rescreen pass takes each again. The comment says
+  # hold of one never takes the place of the hold of another, and the rescreen pass takes each again. A hold of the
+  # screen is replaced only by a later hold of the screen: a relabel and a review by hand read it. The comment says
   # nothing of why the screen held it: the screen job's one output is its verdict. A hold that the rescreen pass tries
   # again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which the pass finds it and the account:
   # limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient, a screened
@@ -4217,19 +4242,26 @@ jobs:
           gh api --method POST "repos/$REPO/issues/$NUMBER/labels" -f "labels[]=$HELD_LABEL" --jq '.[].name' > /dev/null
           # The newest hold comment of the work of this hold, which this one replaces: a hold that is tried again names
           # its work in its marker (review for a marker with no task), and any other hold in its title, as the trust
-          # job's works gives it. A hold of other work stays as it is.
+          # job's works gives it. A hold of other work stays as it is. A hold of the screen (its text holds "The
+          # automated screen held ", and it has no marker of a hold that is tried again) stays too, unless this hold is
+          # one of the screen (fact screen_held). A relabel and a review by hand read the screen's hold of the head
+          # (rules.py verdict, held.sh relabel_withdraws). So any other hold replaces the newest hold of its work that
+          # is not the screen's, or posts a new comment.
           work=review
           case $TASK in answer|draft|approve) work=$TASK ;; esac
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-          id=$(W=$work gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
+          id=$(W=$work FACT=$fact gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq 'def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
                   | .t // "review")
                 // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
                   | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                      "close and reopen": "catchup"}[.t])
                 // "review";
+              def of_screen: contains("The automated screen held ")
+                and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+") | not);
               .[] | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->"))
-                           and ((.body // "") | work) == $ENV.W) | .id' \
+                           and ((.body // "") | work) == $ENV.W
+                           and ($ENV.FACT == "screen_held" or ((.body // "") | of_screen | not))) | .id' \
             | tail -n 1)
           if [ -n "$id" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url
