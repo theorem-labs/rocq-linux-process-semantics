@@ -15652,6 +15652,43 @@ class ImportCheckTest(ReaderRunner):
                              (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because {end}",
                               f"{first} So this check is no longer an approval for the import."))
 
+    def test_the_line_of_a_refused_withdrawal_is_recorded_also_when_the_review_could_not_be_posted(self):
+        """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z): a refused withdrawal leaves the line
+        <!-- withdraw-owed <head> <why> --> in the label comment, and the comment job records it whatever the post
+        job's result. The screened CI run of mallory's #7 recorded check run 901 on HEAD. alice reviews HEAD by hand and
+        gives a blocking finding; GitHub refuses the withdrawal of 901, so the post job's output owed names HEAD and
+        blocking. In the comment job, GitHub then refuses the edit of the screened pass (30) that alice's review
+        replaces. The blocking review is nowhere on #7, so only the line can tell a later relabel to withdraw 901: the
+        comment job must record it all the same, not skip it after the failed post of the review."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking -->")
+        by_hand = dict(self.BY_HAND, started=ago(1), named=HEAD)
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=by_hand, event="workflow_dispatch",
+                         comments=[screened, old], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)
+        blocked = review_of(HEAD, "blocking", screened=False)
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in by_hand.items()}
+        ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                    "github.repository": REPO, "github.token": self.RUN_TOKEN, "needs.trust.result": "success",
+                    "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                    "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                    "needs.review.outputs.verdict": "blocking", "needs.review.outputs.body": blocked["body"],
+                    "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                    "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [screened, old])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
+        outcomes = run_job(self, "comment", ctx, self.TOKENS)
+        self.assertEqual(outcomes["Post the review, or replace the one posted before"], "failure", self.logs)
+        self.assertEqual([body for _method, _endpoint, body in label_comments(self.api)], [marked], outcomes)
+
     def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
         """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose
         post job failed, which writes neither the labels nor the text of the label comment, and every later write of
