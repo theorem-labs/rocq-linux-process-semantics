@@ -5700,16 +5700,17 @@ class FreshReaderTest(ReaderRunner):
         """Round 13, item 3 (OSSV-221's architect, 2026-11-21 04:57Z, who ruled no line where it would not be true):
         under the verdict person with no question item, a bare "Questions for Sami:" that the reader dropped goes back
         as "Questions for Sami: any question of this review is in the text below." only when the trimmed text holds
-        each question that the model put under it (trim.py asked_under). Else no result line goes back, and the comment
-        starts with the trimmed text. Two questions are under the line, the second on two lines; the reader keeps both,
-        the first alone, or neither. The comment as it posts: the head, the result line when there is one, the trimmed
-        text, the section and the foot."""
+        each part that the model put under it (trim.py asked_under: each list item, heading and paragraph, here also the
+        closing sentence). Else no result line goes back, and the comment starts with the trimmed text. Two questions
+        are under the line, the second on two lines; the reader keeps both, the first alone, or neither. The comment as
+        it posts: the head, the result line when there is one, the trimmed text, the section and the foot."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
         first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
         review = (f"Questions for Sami:\n\n1. {first}\n2. Is the change useful\n   for the goal of the work?\n\n"
                   "The change fails the bar.")
-        self.assertEqual([" ".join(q.split()) for q in trim.asked_under(review)], [first, second])
+        self.assertEqual([" ".join(q.split()) for q in trim.asked_under(review)],
+                         [first, second, "The change fails the bar."])
         line = f"Questions for Sami: {trim.ASKED_ANY}\n\n"
         for case, trimmed, result in (("both", f"- {first}\n- {second}\n\nThe change fails the bar.", line),
                                       ("the first alone", f"- {first}\n\nThe change fails the bar.", ""),
@@ -5719,22 +5720,24 @@ class FreshReaderTest(ReaderRunner):
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, f"{head}\n\n{result}{trimmed}\n\n{section}\n\n---\n{foot}")
 
-    def test_a_bare_person_line_reads_every_question_under_it_up_to_the_next_result_form_or_heading(self):
-        """Round 13, part B, F1 (OSSV-221's architect, 2026-11-21 06:38Z): trim.asked_under reads every list item and
-        every paragraph with a question under the bare "Questions for Sami:", up to the next result form or heading, not
-        only the first block. ASKED_ANY posts only when the trimmed text holds each of them. The reader's two cases:
-        two blocks of questions, and an intro line before the list. In each, a reader that keeps only part of the
-        questions gets no result line; one that keeps them all gets ASKED_ANY. A heading or a result form ends what
-        asked_under reads."""
+    def test_a_bare_person_line_counts_every_part_under_it_up_to_the_next_result_form(self):
+        """Round 13, part B, F1 (OSSV-221's architect, 2026-11-21 06:38Z), and the fresh reader of 58e1d7d5 (findings
+        1 and 2): trim.asked_under counts every list item, heading and paragraph under the bare "Questions for Sami:",
+        up to the next result form, not only the first block, and not only a paragraph with a question mark. ASKED_ANY
+        posts only when the trimmed text holds each of them. The reader's two cases of r13: two blocks of questions, and
+        an intro line before the list. In each, a reader that keeps only part of them gets no result line; one that
+        keeps them all gets ASKED_ANY. A result form ends what asked_under counts, and a heading does not."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
         first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
         blocks = f"Questions for Sami:\n\n1. {first}\n\n2. {second}\n\nThe change fails the bar."
         intro = (f"Questions for Sami:\n\nThe review has two questions.\n\n- {first}\n- {second}\n\n"
                  "The change fails the bar.")
-        for review in (blocks, intro):
-            self.assertEqual(trim.asked_under(review), [first, second])
-        self.assertEqual(trim.asked_under(f"Questions for Sami:\n\n- {first}\n\n## Notes\n\n- {second}"), [first])
+        self.assertEqual(trim.asked_under(blocks), [first, second, "The change fails the bar."])
+        self.assertEqual(trim.asked_under(intro),
+                         ["The review has two questions.", first, second, "The change fails the bar."])
+        self.assertEqual(trim.asked_under(f"Questions for Sami:\n\n- {first}\n\n## Notes\n\n- {second}"),
+                         [first, "## Notes", second])
         self.assertEqual(trim.asked_under(f"Questions for Sami:\n\n- {first}\n\nBlocking findings.\n\n- {second}"),
                          [first])
         line = f"Questions for Sami: {trim.ASKED_ANY}\n\n"
@@ -5748,6 +5751,37 @@ class FreshReaderTest(ReaderRunner):
                 posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
                 self.assertEqual(shown, f"{head}\n\n{result}{trimmed}\n\n{section}\n\n---\n{foot}")
+
+    def test_a_question_with_no_question_mark_or_after_a_heading_counts_under_a_bare_person_line(self):
+        """The fresh reader of 58e1d7d5 (findings 1 and 2; OSSV-221's architect): .github/review.md defines a question
+        as what Sami checks next and why the review cannot check it, so it needs no question mark. Case A: under the
+        bare "Questions for Sami:", an item with a question mark, then a paragraph question with none. Case B: the same,
+        with a "### Exec" heading before the paragraph. A reader that keeps the item alone gets no result line, as the
+        second question is only in the collapsed copy; one that keeps every part gets ASKED_ANY. Finding 2's case: the
+        only question is a paragraph with no question mark, the reader drops it, and the list holds a blocking finding.
+        The comment then starts with ASKED_WHOLE, not with "Blocking findings."."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        asked = "Does `fork` keep the parent's signal mask on Linux?"
+        checks = "Sami also checks that `exec` resets the handlers: the review cannot run Linux."
+        line = f"Questions for Sami: {trim.ASKED_ANY}\n\n"
+        for case, under in (("A", f"- {asked}\n\n{checks}"), ("B", f"- {asked}\n\n### Exec\n\n{checks}")):
+            review = f"Questions for Sami:\n\n{under}"
+            for kept, result in ((f"- {asked}", ""), (under, line)):
+                with self.subTest(case=case, kept=kept):
+                    posted = trim.comment(review, kept, [], head, section, foot, verdict="person")
+                    shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                    self.assertEqual(shown, f"{head}\n\n{result}{kept}\n\n{section}\n\n---\n{foot}")
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        findings = f"Blocking findings.\n\n- {change['text']}"
+        review = ("Questions for Sami:\n\nSami checks that `fork` keeps the parent's signal mask on Linux: the review "
+                  f"cannot run Linux.\n\n{findings}")
+        with self.subTest(case="finding 2"):
+            posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
+            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+            self.assertEqual(shown, f"{head}\n\nQuestions for Sami: {trim.ASKED_WHOLE}\n\n{findings}\n\n{section}\n\n"
+                                    f"---\n{foot}")
 
     def test_a_person_review_whose_blocking_finding_would_open_the_comment_points_to_the_collapsed_copy(self):
         """Round 13, part B, M1 (OSSV-221's architect, 2026-11-21 06:38Z): the verdict is person, the list holds a
@@ -11077,8 +11111,9 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, want), out)
                 if why:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}. Its label comment records a "
-                                  f"withdrawal of {HEAD} that an earlier run did not finish. So the rescreen pass "
-                                  f"tries again only one App write of {HEAD}: the withdrawal of its import check run.",
+                                  f"withdrawal of the import check runs of {HEAD} that an earlier run did not finish. "
+                                  f"So the rescreen pass tries again only one App write of {HEAD}: the withdrawal of "
+                                  "its import check run.",
                                   out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
@@ -15531,7 +15566,7 @@ class ImportCheckTest(ReaderRunner):
         os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
         relabel = dict(self.RELABEL, started=ago(-1))
         title = (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated review of this "
-                 "head commit asks for a change")
+                 "head commit asked for a change")
         for case, label, withdrawn, decision in (("the line stands", marked, [(f"repos/{REPO}/check-runs/901", title)],
                                                   "screen"),
                                                  ("no line", old, [], "hand")):
@@ -15541,6 +15576,21 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((got["result"], [(e, b["output"]["title"]) for _t, e, b in got["withdrawn"]],
                                   got["post"]["decision"], got["steps"][self.RECORD]),
                                  ("success", withdrawn, decision, "skipped"), self.logs)
+                if withdrawn:
+                    self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, "
+                                  f"because an automated review of {HEAD} asked for a change.", "\n".join(self.logs))
+        # The fresh reader of 58e1d7d5 (finding 3): the why of the line is a past verdict, as a later edit in place can
+        # replace the review that gave it. A screen that held the head says what it did, as before.
+        for why, end, first in (("blocking", "an automated review of this head commit asked for a change",
+                                 "An automated review of this head commit asked for a change."),
+                                ("person", "an automated review of this head commit had questions for Sami",
+                                 "An automated review of this head commit had questions for Sami."),
+                                ("screen", "an automated screen held this head commit",
+                                 "An automated screen held this head commit.")):
+            output = rules.withdrawal("7", HEAD, why, "", owed=True)["output"]
+            self.assertEqual((output["title"], output["summary"]),
+                             (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because {end}",
+                              f"{first} So this check is no longer an approval for the import."))
 
     def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
         """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose
@@ -15619,7 +15669,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(rules.UNSCREENED, body)
         self.assertNotIn(rules.PASSED, body)
         self.assertNotIn("a screen passed the head in an earlier run", "\n".join(self.logs))
-        self.assertIn(f"#7: an automated review of {HEAD} asks for a change, but {HEAD} has no import check run to "
+        self.assertIn(f"#7: an automated review of {HEAD} asked for a change, but {HEAD} has no import check run to "
                       "withdraw.", "\n".join(self.logs))
         self.assertEqual(self.owe(got, relabel, [passed, marked]), [old["body"]])
 

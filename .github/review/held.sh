@@ -1458,8 +1458,8 @@ consider() {
         said="#$number: a hold that is not tried again names $head, and $because."
         # The reason of the line <!-- withdraw-owed <head> <why> -->, whatever the newest review says.
         if [ "${from:-}" = owed ]; then
-          said="#$number: a hold that is not tried again names $head. Its label comment records a withdrawal of"
-          said+=" $head that an earlier run did not finish."
+          said="#$number: a hold that is not tried again names $head. Its label comment records a withdrawal of the"
+          said+=" import check runs of $head that an earlier run did not finish."
         fi
         echo "$said So the rescreen pass tries again only one App write of $head: the withdrawal of its import" \
           "check run."

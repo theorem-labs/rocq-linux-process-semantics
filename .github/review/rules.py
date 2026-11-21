@@ -1322,12 +1322,13 @@ WITHDRAWN = {
     "screen": ("because a later screen held it", "A later automated screen held this head commit."),
 }
 # The same reasons when they come from the line of OWED: an earlier run owes the withdrawal, and the review or the hold
-# that gave the reason can be older than the check run. So these texts do not say later.
+# that gave the reason can be older than the check run. So these texts do not say later. A review's reason is a past
+# verdict: an edit of the review comment in place can replace that review. So these texts say what it asked.
 OWED_WITHDRAWN = {
-    "blocking": ("because an automated review of this head commit asks for a change",
-                 "An automated review of this head commit asks for a change."),
-    "person": ("because an automated review of this head commit has questions for Sami",
-               "An automated review of this head commit has questions for Sami."),
+    "blocking": ("because an automated review of this head commit asked for a change",
+                 "An automated review of this head commit asked for a change."),
+    "person": ("because an automated review of this head commit had questions for Sami",
+               "An automated review of this head commit had questions for Sami."),
     "screen": ("because an automated screen held this head commit", "An automated screen held this head commit."),
 }
 
