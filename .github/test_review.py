@@ -15816,6 +15816,28 @@ class ImportCheckTest(ReaderRunner):
                       "withdraw.", "\n".join(self.logs))
         self.assertEqual(self.owe(got, relabel, [passed, marked]), [old["body"]])
 
+    def test_a_post_job_that_fails_before_its_withdrawal_owes_the_withdrawal_of_its_own_verdict(self):
+        """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z), and the post job's output owed (review.yml): "<head>
+        <why>" of a withdrawal that the job found a reason for and did not finish, as GitHub refused it or the job
+        failed before it. The screened CI run of mallory's #7 recorded check run 901 on HEAD. alice reviews HEAD by
+        hand and gives a blocking finding: the reason to withdraw 901 is her own verdict. The post job's read of the
+        files of #7 fails, so the job fails before it withdraws anything. Its output owed must still name HEAD and
+        blocking, so that the comment job records the line: a later pass by hand replaces alice's review comment in
+        place, and then only the line tells a relabel to withdraw 901."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        by_hand = dict(self.BY_HAND, started=ago(1))
+        self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=by_hand, event="workflow_dispatch",
+                         comments=[screened, old], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["steps"][self.DECIDE], got["withdrawn"]), ("failure", "failure", []),
+                         self.logs)
+        self.assertEqual((got["post"]["owed"], got["post"]["withdrawn"]), (f"{HEAD} blocking", ""), self.logs)
+        self.assertEqual(self.owe(got, by_hand, [screened, old]),
+                         [rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking -->")])
+
     def test_after_a_screened_pass_a_relabel_withdraws_for_the_line_once_and_the_next_relabel_records(self):
         """Round 13, part B, F3 (OSSV-221's architect, 2026-11-21 06:38Z, who kept the rule that fails closed): the
         line <!-- withdraw-owed <head> screen --> of a hold of the screen, whose withdrawal GitHub refused, stands. The
