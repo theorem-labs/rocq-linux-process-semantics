@@ -5491,6 +5491,23 @@ class FreshReaderTest(ReaderRunner):
         self.assertEqual(shown.count(asked["text"]), 1, shown)
         self.assertNotIn(f"Questions for Sami:\n\n{trimmed}", shown)
 
+    def test_a_bare_person_line_that_the_reader_dropped_says_that_any_question_is_in_the_text_below(self):
+        """Fresh reader of round 12 (M4): the model gives the verdict person with no question item, and its first line
+        is a bare "Questions for Sami:" with its question on the lines after it. The reader drops that line and keeps
+        the question. The result line goes back, but it does not say that the review lists no question: it says that
+        any question of this review is in the text below, which holds that question. A review whose first line is not
+        the form, with no question item, still says that the review lists none (the test after this one)."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        question = "Is the change useful for the goal of the work?"
+        review = f"Questions for Sami:\n\n- {question}\n\nThe change adds a lemma to the examples."
+        trimmed = f"- {question}\n\nThe change adds a lemma to the examples."
+        posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
+        shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+        line = "Questions for Sami: any question of this review is in the text below."
+        self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
+        self.assertNotIn(trim.NONE_ASKED, shown)
+
     def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
         """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends
         with the colon of "Questions for Sami:", which would open an empty list, so that the next lines would read as
@@ -8978,7 +8995,8 @@ class RescreenJobTest(Held):
         self.assertEqual(sorted(runs), [("7", "rescreen", "mallory"), ("8", "rescreen", "eve"), ("9", "stop", "")], out)
         self.assertIn("#7: 1 runs of rescreen since its hold settled nothing; trying again.", out)
         self.assertEqual(rc, 1, out)
-        self.assertIn(f"::error::#9: rescreen ran {tries} times since its hold", out)
+        self.assertRegex(out, rf"::error::#9: since its hold at \S+, {tries} runs of rescreen or review were tries "
+                              r"that settled nothing, with no new hold\. The work of the hold is not tried again\.")
 
     def test_the_next_try_waits_an_hour_after_the_last_rescreen(self):
         """Retries of a hold that rescreens did not settle are spaced as the hold's own hour is: not again while the
@@ -9018,8 +9036,9 @@ class RescreenJobTest(Held):
                     self.assertEqual((rc, runs), (0, [("7", "rescreen", "mallory")]), out)
                 else:
                     self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
-                    self.assertIn(f"::error::#7: rescreen ran {tries} times since its hold", out)
-                    self.assertIn("it is not tried again", out)
+                    self.assertRegex(out, rf"::error::#7: since its hold at \S+, {tries} runs of rescreen or review "
+                                          r"were tries that settled nothing, with no new hold\.")
+                    self.assertIn("The work of the hold is not tried again.", out)
 
     def test_at_the_bound_the_hold_comment_is_replaced_once_and_the_item_left_alone(self):
         """The hold comment stops promising an automatic try: the pass writes nothing itself and starts the stop's run
@@ -9041,7 +9060,8 @@ class RescreenJobTest(Held):
                     for i in range(tries)])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "")]), out)
-        self.assertIn(f"::error::#7: rescreen ran {tries} times since its hold", out)
+        self.assertRegex(out, rf"::error::#7: since its hold at \S+, {tries} runs of rescreen or review were tries "
+                              r"that settled nothing")
         self.assertEqual([c[:3] for c in writes(self.api)],
                          [["--method", "POST", f"repos/{REPO}/actions/workflows/review.yml/dispatches"]])
         steps = self.stop()
@@ -9748,7 +9768,8 @@ class ScheduleTest(Scheduled):
             self.ran(10 + i, "answer #7 for 900 of mallory", made=70 + 90 * i)
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "hold-answer")]), out)
-        self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        self.assertRegex(out, rf"::error::#7: since its hold at \S+, {self.TRIES} runs of answer were tries that "
+                              r"settled nothing")
         _trust, steps = write_stop(self, "hold-answer")
         self.assertEqual(steps[STOP_STEP], "success", self.logs)
         self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
@@ -10042,7 +10063,8 @@ class ScheduleTest(Scheduled):
             self.ran(10 + i, "answer #7 for 900 of mallory", made=70 + 90 * i)
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "rescreen", "mallory", HEAD, "")]), out)
-        self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        self.assertRegex(out, rf"::error::#7: since its hold at \S+, {self.TRIES} runs of answer were tries that "
+                              r"settled nothing")
         self.assertIn("#7 waits: this run started another run of it", out)
         # The rescreen ran and settled nothing: the next pass, within the hour of that rescreen, starts the stop alone.
         self.ran(60, f"rescreen #7 at {HEAD} of mallory", made=4, ended=2)
@@ -10093,7 +10115,8 @@ class ScheduleTest(Scheduled):
         self.ran(30, "answer #7 for 900 of mallory", made=600)
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "hold-answer")]), out)
-        self.assertIn(f"::error::#7: answer ran {self.TRIES} times since its hold", out)
+        self.assertRegex(out, rf"::error::#7: since its hold at \S+, {self.TRIES} runs of answer were tries that "
+                              r"settled nothing")
 
     def test_an_outside_issue_with_no_stored_draft_gets_one_draft(self):
         """b1 (R3, D16 (e)): an outside issue whose label comment holds no stored draft, and whose draft run (here its
@@ -10430,6 +10453,57 @@ class ScheduleTest(Scheduled):
             with self.subTest(number=number):
                 rc, out, runs = self.started(number=number)
                 self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
+
+    def test_after_a_run_that_settled_the_hold_the_stop_says_that_a_try_finished_before_the_tries_that_did_not(self):
+        """Fresh reader of round 12 (M1 to M3): a run that settled a hold counts no try, so the tries that stop the work
+        are the runs after it. Approve: run 10 approved the held runs (started), or posted the label comment of a head
+        whose runs it did not approve (finished). Review: rescreen run 10 of issue #7 posted its review. Then
+        REVIEW_TRIES runs of the task settled nothing. The pass starts the stop, and its error counts the tries after
+        run 10 as tries, not as all the runs. The stop's hold comment says that a later try finished the work, or
+        started the checks, and that the tries after it did not finish."""
+        approved = post_job({self.HELD: "success", MINT_B: "success", self.APPROVE: "success"})
+        approve, review = f"approve #7 at {HEAD} of mallory", "rescreen #7 of mallory"
+        after = (f"After that, the workflow tried {self.TRIES} more times to start checks of this pull request, and no "
+                 "try finished.")
+        end = "The workflow does not try it again. You do not need to do anything."
+        for case, kind, title, settler, stop, runs, held, text in (
+                ("approve, started", "pr", approve, [approved], "hold-approve", "approve",
+                 "Automated start of the checks held.",
+                 "The workflow held the start of the checks of this pull request. Then a later try started them. "
+                 f"{after} {end}"),
+                ("approve, finished", "pr", approve, [post_job({self.HELD: "success"}), attempt_job("comment")],
+                 "hold-approve", "approve", "Automated start of the checks held.",
+                 "The workflow held the start of the checks of this pull request. Then a later try finished without "
+                 f"starting them. {after} {end}"),
+                ("review", "issue", review, [attempt_job("review", name="review (screened)"), attempt_job("comment")],
+                 "hold-review", "rescreen or review", "Automated review held.",
+                 "The workflow held this issue, and a later try finished the automated review. After that, the "
+                 f"workflow tried the automated review again {self.TRIES} times, and none of these tries finished. "
+                 f"{end}")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                pr = kind == "pr"
+                self.origin(50, BOT if pr else "mallory", event="workflow_dispatch" if pr else "issues",
+                            title=approve if pr else "review #7")
+                self.item(kind=kind, labels=("review-held",), comments=[
+                    limit_hold(50, at=ago(400), tries=0, task="approve" if pr else "", head=HEAD if pr else "")])
+                self.ran(10, title, made=300, jobs=[attempt_job("gather"), self.screened(), *settler])
+                if pr:
+                    self.held_runs(made=200)
+                for i in range(self.TRIES):
+                    self.ran(20 + i, title, made=180 - 50 * i)
+                rc, out, started = self.started()
+                self.assertEqual((rc, started), (1, [("7", "stop", "", HEAD if pr else "", stop)]), out)
+                self.assertIn(f"::error::#7: after run 10, which settled its hold, {self.TRIES} runs of {runs} were "
+                              "tries that settled nothing, with no new hold. The work of the hold is not tried again. "
+                              "The label comment names the next step for Sami.", out)
+                _trust, steps = write_stop(self, stop, head=HEAD if pr else "")
+                self.assertEqual(steps[STOP_STEP], "success", self.logs)
+                posts = [a[len("body="):] for c in writes(self.api) for a in c
+                         if a.startswith("body=<!-- review-held -->")]
+                named = f"\n\n<!-- review-held-head {HEAD} -->" if pr else ""
+                self.assertEqual(posts, [f"<!-- review-held -->\n**{held}**\n\n{text}{named}"])
 
     def test_a_review_whose_post_job_could_not_sign_in_gets_one_relabel_after_an_hour(self):
         """D16 (the App's retry): the workflow_run review of an outside head whose post job failed at token A's mint

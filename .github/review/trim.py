@@ -55,13 +55,14 @@ when that line starts with the form: the reader dropped it. Else it is the form.
 for each question item whose text the trimmed text does not hold: that text, and the item's ref when the text does
 not name it, so that no added item asks the question again. When the trimmed text holds the other question items,
 the line "The review below asks the other questions." (ASKED_OTHERS) follows the bullets. With no bullet, the form is
-followed by "each question is in the review below." (ASKED_BELOW) when the list holds a question item, else by "this
-review lists none." (NONE_ASKED): the colon opens no empty list. So under person, a list with a blocking finding (the
-soundness rule keeps each one) keeps the reader's "Blocking findings." line and the findings after it, after the
-result line. The posted result never says another verdict than the one of code: for example, a review that the
-soundness rule made person never starts with "No blocking finding.". With no --verdict, the form is the one that the
-review's first line starts with. An issue's review has no fixed form, and its trimmed text stays as the reader gave
-it.
+followed by "each question is in the review below." (ASKED_BELOW) when the list holds a question item. With no
+question item, it is followed by "any question of this review is in the text below." (ASKED_ANY) when the review's
+own first line was the bare form, whose questions the text can still hold, else by "this review lists none."
+(NONE_ASKED): the colon opens no empty list. So under person, a list with a blocking finding (the soundness rule keeps
+each one) keeps the reader's "Blocking findings." line and the findings after it, after the result line. The posted
+result never says another verdict than the one of code: for example, a review that the soundness rule made person
+never starts with "No blocking finding.". With no --verdict, the form is the one that the review's first line starts
+with. An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -146,7 +147,11 @@ FORMS = dict(zip(("pass", "blocking", "person"), RESULTS))
 REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # The text after the form of person in a result line that lists no question (with_result): the trimmed text holds
 # each question item of the list, or the list holds no question item. So the colon of the form opens no empty list.
+# ASKED_ANY is for a review whose first line was the bare form, which the reader dropped: the text below can hold
+# the questions that the model put under that line with no question item. NONE_ASKED is for any other review: the
+# model opened no list of questions.
 ASKED_BELOW = "each question is in the review below."
+ASKED_ANY = "any question of this review is in the text below."
 NONE_ASKED = "this review lists none."
 # The line after the bullets of a result line that lists only some question items, as the trimmed text holds the
 # others. Without it, the bullets would read as the whole list of questions.
@@ -1411,12 +1416,12 @@ def with_result(review, trimmed, head, verdict="", items=()):
     For person, the form has one bullet for each question item of items whose text trimmed does not hold (both as
     plain reads them, with their white space made one space): that text, and the item's ref when the text does not
     name it (present), so that missing gives no second copy of the question. When trimmed holds the other question
-    items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by
-    ASKED_BELOW when items hold a question item, else by NONE_ASKED. So under person, a list with a blocking finding
-    (the soundness rule keeps each one) keeps the reader's "Blocking findings." line and what follows it, after the
-    result line. With no verdict, the form is the one that the first line of review starts with, and the verdict is
-    that form's. An issue's review, and a review with no verdict whose first line has no such form, stay as the reader
-    gave them."""
+    items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by ASKED_BELOW when items
+    hold a question item. Else it is followed by ASKED_ANY when the line of review was the bare form, and by
+    NONE_ASKED when it was not. So under person, a list with a blocking finding (the soundness rule keeps each one)
+    keeps the reader's "Blocking findings." line and what follows it, after the result line. With no verdict, the form
+    is the one that the first line of review starts with, and the verdict is that form's. An issue's review, and a
+    review with no verdict whose first line has no such form, stay as the reader gave them."""
     line = first_line(review)
     form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
@@ -1426,6 +1431,7 @@ def with_result(review, trimmed, head, verdict="", items=()):
     if result_of(first_line(trimmed)) == form:
         return trimmed
     if result_of(line) != form or (form == RESULTS[2] and not after_form(line, form).strip()):
+        bare = result_of(line) == form
         held = " ".join(plain(trimmed).split())
         asked = [(i, " ".join(i["text"].split())) for i in items if i.get("kind") == "question"]
         questions = [q + (f" ({code(i['ref'])})" if i.get("ref") and not present(i, q) else "")
@@ -1436,7 +1442,7 @@ def with_result(review, trimmed, head, verdict="", items=()):
             others = ["", ASKED_OTHERS] if len(questions) < len(asked) else []
             line = "\n".join([form, "", *(f"- {q}" for q in questions), *others])
         else:
-            line = f"{form} {ASKED_BELOW if asked else NONE_ASKED}"
+            line = f"{form} {ASKED_BELOW if asked else ASKED_ANY if bare else NONE_ASKED}"
     return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
 
