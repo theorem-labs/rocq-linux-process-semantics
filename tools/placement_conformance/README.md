@@ -196,7 +196,7 @@ randomization draws of each. The tree keeps one log of each.
 ## The generator
 
 ```bash
-python3 tools/placement_conformance/log_to_rocq.py LOG --out F.v --kb-thp {0,1} \
+python3 tools/placement_conformance/log_to_rocq.py LOG --out <out>.v --kb-thp {0,1} \
     [--expect-base ADDR] [--expect {ok,reject}] [--perturb K --perturb-pages N]
 ```
 
@@ -280,7 +280,7 @@ Eval vm_compute in (fst (walk replay_init steps2 0), length steps2).
 Compile it in the build tree:
 
 ```bash
-cd _build/default && <the checker image> rocq compile -q -R theories LinuxProcessSemantics diag.v
+cd _build/default && <the checker image> rocq compile -q -R theories LinuxProcessSemantics <copy>.v
 ```
 
 The first value is the index of the first step the checker does not accept,
@@ -355,7 +355,7 @@ probe that writes it, so the four auxv entries are a check and not an input.
 ### The check: a Rocq term, computed against the model
 
 ```bash
-python3 tools/placement_conformance/start_state_to_rocq.py LOG --out F.v \
+python3 tools/placement_conformance/start_state_to_rocq.py LOG --out <out>.v \
     [--name NAME] [--va {Sv39,Sv48,Sv57}]
 ```
 

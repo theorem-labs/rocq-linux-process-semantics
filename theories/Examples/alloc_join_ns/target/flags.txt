@@ -1,0 +1,3 @@
+-OReleaseSmall
+-mcpu=generic_rv64+m
+-fno-unwind-tables

@@ -46,7 +46,7 @@ From stdpp Require Import bitvector.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import VmMapsDisjoint.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned Placement BudgetPremise.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require MapsFit NoaccessOwned Placement.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise.
 Import ListNotations.
@@ -1256,7 +1256,7 @@ pose proof (word_range ret) as Hrr.
 difn H Eflag; [discriminate|].
 difn H Ealign; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
 difn H Enew; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
-difn H Etask; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
+difn H Etask; [discriminate|].
 difn H Eold; [discriminate|].
 difn H Esrc; [discriminate|].
 difn H Eeq; [apply check_ret_only_model in H; subst m'; exact (conj HL HM)|].
@@ -1731,7 +1731,7 @@ Qed.
 
 
 (* THE REPLACEMENT for the deleted emptiness variant.  Same conclusion as
-   [BudgetPremise.mremap_move_budget_admits_fresh], with the two
+   [NoaccessOwned.mremap_move_budget_admits_fresh], with the two
    hypotheses [WF] already carries -- [noaccess_pages_owned] and the fit
    of the live mappings -- supplied from [WF] itself, and the two
    lazy-ledger identities proved rather than assumed.
@@ -1780,7 +1780,7 @@ assert (NOLZ : forall a n x, In (a, n) (m_vm_lazy m) ->
   pose proof (pfloor_bounds x H0) as [B1 B2].
   split; [exact (pfloor_mono_lo dlo x HalD ltac:(lia) ltac:(lia))|].
   pose proof (aligned_lt_step _ _ (pfloor_mod x) HalDH) as Hs. lia. }
-apply (BudgetPremise.mremap_move_budget_admits_fresh m old old_n dst new_n
+apply (NoaccessOwned.mremap_move_budget_admits_fresh m old old_n dst new_n
          Hdalign Hnmod Hpos Hdtop Hdfree
          (NoaccessOwned.sys_inv_noaccess_pages_owned _ (proj1 HW))
          (proj1 (proj2 (proj1 HW)))).

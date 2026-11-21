@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -260,7 +263,7 @@ Definition EP_MAX_EVENTS : Z := 134217727%Z.
     POSIX message queues, ocfs2 dlmfs and FUSE all install one on
     [S_IFREG] inodes.  So a model state holding an [FdFile] for
     "/proc/self/mounts" would answer -EPERM here where Linux accepts the
-    descriptor.  [Fs.valid_fs] admits such an image, so the model does
+    descriptor.  [Fs.wf_fs] admits such an image, so the model does
     not discharge the obligation, exactly as for pselect6; it is
     a model-vs-Linux fidelity gap rather than a break in the equivalence,
     since source and target are judged against the same model.
@@ -282,12 +285,7 @@ Definition EP_MAX_EVENTS : Z := 134217727%Z.
 Definition fd_can_poll (e : FdEntry) : option bool :=
   match e with
   | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
-  | FdDir => Some false
-  | FdAnon _ _ => Some false
-      (* an unnamed file is a regular file on the run's /tmp, under the
-         same obligation as the file kinds: its table carries no
-         [.poll] ([shmem_file_operations], mm/shmem.c, v6.18.46, on a
-         tmpfs /tmp) *)
+  | FdDir _ => Some false
   | FdSocket _ | FdPipe _ _ => Some true
   | FdStream _ _ _ => Some true
       (* a socket file like [FdSocket]'s: [sock_alloc_file] gives every
@@ -307,7 +305,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
          -EPERM (fs/eventpoll.c) — the [Some false] the file kinds
          carry, with no environment obligation at all.  Declined until
          written. *)
-  | FdUrandom => None
+  | FdUrandom _ _ => None
       (* FAIL-CLOSED, and the answer is again exact: [urandom_fops]
          (drivers/char/random.c, v6.18.46) has no [.poll] either
          ([random_fops] has one; the urandom table does not), so
@@ -340,7 +338,7 @@ Definition fd_can_poll (e : FdEntry) : option bool :=
 Example fd_can_poll_is_select_pollable :
   forall e, bits_all_pollable [(Z_to_bv 64 0, e)] 1%Z 1%nat = true
             <-> fd_can_poll e = Some false.
-Proof. intros [| | | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
+Proof. intros [| | | | | | | | | | | |]; vm_compute; split; congruence. Qed.
 
 (** ------------------------------------------------------------------
     epoll_create1 (20)

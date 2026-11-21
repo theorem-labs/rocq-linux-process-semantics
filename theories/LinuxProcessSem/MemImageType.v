@@ -54,6 +54,11 @@ Record Segment := {
   seg_kind  : SegKind
 }.
 
+(** Readable, neither writable nor executable: the vDSO pair's permissions
+    ([Run.vdso_segments]).  A definition because tools/check_budget_marks.py
+    refuses a string literal in the files it reads, Run.v among them. *)
+Definition seg_perms_ro : String.string := "r--"%string.
+
 (** ** [PhdrInfo] — where the binary's PROGRAM HEADER TABLE lands in memory
 
     The kernel does not only map the LOAD segments at [execve]: it also

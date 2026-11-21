@@ -868,7 +868,7 @@ Qed.
     tail's prefixes. *)
 Theorem spin_branch_node_obs_iff : forall tr,
   obs_trace segs (mkCfg ms model) tr
-  <-> is_prefix tr (wevents bs ++ [ExitEv cs (m_fs model)]).
+  <-> is_prefix tr (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))]).
 Proof.
   intro tr.
   rewrite (srealizes_obs_iff segs _ _ spin_branch_node_srealizes tr).

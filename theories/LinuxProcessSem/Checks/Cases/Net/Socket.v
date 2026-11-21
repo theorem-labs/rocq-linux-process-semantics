@@ -10,7 +10,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -34,13 +37,16 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
     [Net.Socket.connect_spec] declines the connection ATTEMPT, so no
     modeled execution ever holds a connected socket it dialled.
 
-    What keeps the connected states out is the TRANSFER, not the
-    signal.  On [SkConnected] the send either goes out -- a short count
-    chosen from the gatherable bytes, which is [Net.Socket.send_bytes]'s
-    business -- or reports a pending peer error ONCE and rewrites the
-    descriptor (include/net/sock.h [sock_error]), and neither raises
-    SIGPIPE: [sk_stream_error] replaces the errno with [sock_error]'s
-    before it tests for -EPIPE (net/core/stream.c :192-195, v6.18.46).
+    What keeps the connected states out is the TRANSFER, and the signal
+    a reported error may carry.  On [SkConnected] the send either goes out -- a
+    short count chosen from the gatherable bytes, which is
+    [Net.Socket.send_bytes]'s business -- or reports a pending peer error
+    ONCE and rewrites the descriptor (include/net/sock.h [sock_error]).
+    That report is -EPIPE with SIGPIPE when the reset came in CLOSE_WAIT,
+    after the peer's FIN, which stores EPIPE (net/ipv4/tcp_input.c
+    [tcp_reset], :4695-4697, v6.18.46) for [sk_stream_error] to keep
+    (net/core/stream.c:190-197, v6.18.46), and -ECONNRESET with no signal
+    after any other reset.
 
     A socket with NO connection ([State.sock_send_dead]: fresh, bound,
     listening or reset-and-consumed) IS answered, and that is why the
@@ -181,7 +187,7 @@ Definition listening_socket_model : Model :=
     (mkModel
        [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
          (3, FdSocket SkListening) ]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 (** The model a successful accept must leave behind.  The new
     descriptor carries the head connection's peer and its script, on the
@@ -629,7 +635,7 @@ Definition dgram_socket_model : Model :=
   with_creds demo_creds
     (mkModel
        [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2) ]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 Definition dgram_socket (dom ty pro r : word) : check_result :=
   check_syscall (mkInput 198 [dom; ty; pro; 0; 0; 0]
@@ -645,13 +651,25 @@ Example socket_dgram_answers_with_a_descriptor :
   /\ dgram_socket 1 2 0 3 = CheckOk (dgram_after AF_UNIX) []
   (* SOCK_CLOEXEC is admitted and ignored *)
   /\ dgram_socket 10 (2 + 524288) 0 3 = CheckOk (dgram_after AF_INET6) []
+  /\ dgram_socket 1 (2 + 524288) 0 3 = CheckOk (dgram_after AF_UNIX) []
   (* the lowest free fd and no other *)
   /\ dgram_socket 1 2 0 4 = CheckReject
+  /\ dgram_socket 10 2 0 4 = CheckReject
   (* [inet6_create]'s -ENOBUFS, for AF_INET6 and not for AF_UNIX *)
   /\ dgram_socket 10 2 0 (errno_ret ENOBUFS) = CheckOk dgram_socket_model []
   /\ dgram_socket 1 2 0 (errno_ret ENOBUFS) = CheckReject
   /\ dgram_socket 1 2 0 (errno_ret EMFILE) = CheckOk dgram_socket_model []
-  /\ dgram_socket 10 2 0 (errno_ret ENFILE) = CheckOk dgram_socket_model [].
+  /\ dgram_socket 10 2 0 (errno_ret ENFILE) = CheckOk dgram_socket_model []
+  (* AF_INET6 IS REGISTERED in the configuration of record
+     ([CONFIG_IPV6=y], SCOPE.md), so [__sock_create] (net/socket.c:1591-1606,
+     v6.18.46) finds the family and calls its create hook, [inet6_create]
+     (net/ipv6/af_inet6.c): a kernel without it, or booted with
+     [ipv6.disable=1], answers -EAFNOSUPPORT, and that answer is refused;
+     so is the walk's -EPROTONOSUPPORT, which protocol 0 never reaches
+     (net/ipv6/af_inet6.c:148-150) *)
+  /\ dgram_socket 10 2 0 (errno_ret EAFNOSUPPORT) = CheckReject
+  /\ dgram_socket 10 (2 + 524288) 0 (errno_ret EAFNOSUPPORT) = CheckReject
+  /\ dgram_socket 10 2 0 (errno_ret EPROTONOSUPPORT) = CheckReject.
 Proof. repeat split; check_eq. Qed.
 
 (** ...AND EVERY OTHER SHAPE OF THOSE FAMILIES STAYS DECLINED, with the
@@ -682,7 +700,7 @@ Proof. repeat split; check_eq. Qed.
 Definition reset_socket_model : Model :=
   with_accepted
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-      (3, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3)) ]
+      (3, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false)) ]
     listening_socket_model.
 
 Definition fresh_socket_model : Model :=
@@ -690,7 +708,7 @@ Definition fresh_socket_model : Model :=
     (mkModel
        [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
          (3, FdSocket SkFresh) ]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 (** Sixteen readable bytes at 4096 holding [struct sockaddr_in] for
     AF_INET, port 0, INADDR_ANY -- the one address [bind_spec] accepts.
@@ -729,23 +747,32 @@ Example bind_input_reaches_the_state_match :
   bind_answering fresh_socket_model 0 <> CheckUnmodeled.
 Proof. vm_compute. discriminate. Qed.
 
-(** BIND ON A CONNECTION THE PEER HAS RESET IS DECLINED, not -EINVAL.
-    [tcp_done] ran [tcp_set_state(sk, TCP_CLOSE)], whose TCP_CLOSE arm
-    calls [inet_put_port] -- and net/core/sock.c [sk_clone_lock] cleared
-    SOCK_BINDPORT_LOCK on the accepted child, so the guard never saves
-    it -- leaving [inet_num] zero.  Both conjuncts of [__inet_bind]'s
-    [sk->sk_state != TCP_CLOSE || inet->inet_num] are then false and
-    LINUX AUTOBINDS AND RETURNS 0.  Answering -EINVAL is a modeled
-    answer Linux does not give.
-    A guest cannot reach this on its own: reaching a reset connection
-    needs a successful [accept], which needs an inbound connection.
-    [connect] (203) is dispatched, but it cannot supply one, because
-    [Net.Socket.connect_spec] declines the connection ATTEMPT, and an
-    outbound connection is not what [accept] draws from in any case. *)
-Example bind_on_a_reset_connection_declines :
-  bind_answering reset_socket_model (errno_ret EINVAL) = CheckUnmodeled
-  /\ bind_answering reset_socket_model 0 = CheckUnmodeled.
-Proof. split; check_eq. Qed.
+(** BIND ON A CONNECTION WHOSE RESET IS PROCESSED AUTOBINDS: not
+    -EINVAL.  [tcp_done] ran [tcp_set_state(sk, TCP_CLOSE)], whose
+    TCP_CLOSE arm calls [inet_put_port] (net/ipv4/tcp.c:2997-3000, Linux
+    v6.18.46) -- and net/core/sock.c [sk_clone_lock] cleared
+    SOCK_BINDPORT_LOCK on the accepted child (:2515), so the guard never
+    saves it -- leaving [inet_num] zero (net/ipv4/inet_hashtables.c:227).
+    Both conjuncts of [__inet_bind]'s
+    [sk->sk_state != TCP_CLOSE || inet->inet_num] (net/ipv4/af_inet.c:528)
+    are then false, so -EINVAL is no longer the answer: [__inet_bind]
+    calls [get_port] (af_inet.c:538) and returns its failure (:539-542).
+    [inet_csk_get_port] starts from -EADDRINUSE
+    (net/ipv4/inet_connection_sock.c:506) and returns it when no port
+    is free (:517-518) or when a free port's bind bucket cannot be
+    allocated (:534-538, :561-565, [inet_bind_bucket_create]'s
+    GFP_ATOMIC allocation, net/ipv4/inet_hashtables.c:79); otherwise
+    the bind answers 0 (af_inet.c:562).
+    testing/syscall-check/tests/socket_peer_reset.c records the 0 on
+    the pinned kernel. *)
+Example bind_on_a_reset_connection_autobinds :
+  bind_answering reset_socket_model (errno_ret EINVAL) = CheckReject
+  /\ bind_answering reset_socket_model 0 <> CheckReject
+  /\ bind_answering reset_socket_model 0 <> CheckUnmodeled.
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; intro Hx; vm_compute in Hx; discriminate Hx.
+Qed.
 
 (** THE COPY-IN LEDGER MARKS WHERE THE COPY HAPPENED, and this is the
     example that makes that claim falsifiable rather than decorative.
@@ -811,7 +838,7 @@ Example bind_copyin_ledger_marks_the_copy :
        = CheckOk fresh_socket_model []
   /\ bind_answering_at fresh_socket_model 8192 16 (errno_ret EFAULT)
        [(8192, 16%nat)] = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** [getsockopt(3, level, 4, optval, optlenp)] answering [r] with the
     copy-in ledger [cis].  [optlenp] is an argument for
@@ -895,7 +922,7 @@ Example getsockopt_optlen_ledger_marks_the_read :
        [(4096, 4%nat)] = CheckUnmodeled
   /\ getsockopt_answering fresh_socket_model 6 4096 (errno_ret EOPNOTSUPP)
        [] = CheckUnmodeled.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (* -------------------------------------------------------------------------
    READ ON A CONNECTED SOCKET.  Everything below is invisible to the
@@ -965,7 +992,7 @@ Definition read_answering (m : Model) (r : word)
     that answered the error without retiring the connection. *)
 Example read_on_rst_delivers_econnreset_and_retires :
   read_answering (connected_socket_model NRst) (errno_ret ECONNRESET) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
   /\ read_answering (connected_socket_model NRst) (errno_ret ETIMEDOUT) []
     = CheckReject
   /\ read_answering (connected_socket_model NRst) (Z_to_bv 64 0) []
@@ -977,7 +1004,7 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     case refuses the other's errno. *)
 Example read_on_timeout_delivers_etimedout_and_retires :
   read_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
   /\ read_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET) []
     = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
@@ -988,13 +1015,13 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
     the connection left in [SkConnected _ _ NRst] the error would repeat
     forever, which is a plausible answer Linux does not give. *)
 Example read_on_a_retired_connection_is_end_of_stream :
-  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3)))
+  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
       (Z_to_bv 64 0) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3))) []
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
        (errno_ret ECONNRESET) []
     = CheckReject
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3)))
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
        (errno_ret ETIMEDOUT) []
     = CheckReject.
 Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
@@ -1126,7 +1153,7 @@ Definition bound_socket_model : Model :=
     (mkModel
        [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
          (3, FdSocket SkBound) ]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 (** -EISCONN ON A LISTENING SOCKET, which is the answer worth a case of
     its own: [listen] leaves [sock->state] at SS_UNCONNECTED and moves
@@ -1189,7 +1216,7 @@ Example connect_is_eisconn_whatever_the_peer_has_left_to_say :
        (connected_socket_model (NCons (Z_to_bv 8 65) NFin)) 4 8192 16 16
        (errno_ret EISCONN)
      = CheckOk (connected_socket_model (NCons (Z_to_bv 8 65) NFin)) [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ORDERING THAT IS NOT BIND'S.  [__sys_connect] copies the address
     BEFORE [__sys_connect_file] resolves the file to a socket, so an
@@ -1207,7 +1234,7 @@ Example connect_faults_before_it_reaches_enotsock :
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
      = CheckOk listening_socket_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** -ENOTSOCK still wins when the address IS readable, so the case above
     is about the order and not about -ENOTSOCK being unreachable.  And
@@ -1246,7 +1273,7 @@ Example connect_length_thresholds :
        (errno_ret EINVAL) = CheckOk listening_socket_model []
   /\ connect_answering connect_addr_mem listening_socket_model 3 8192 1
        (errno_ret EFAULT) = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** ON A FRESH SOCKET the 16-byte minimum and the family check are
     reachable, and they are [tcp_v4_connect]'s — so a 4-byte address is
@@ -1259,7 +1286,7 @@ Example connect_on_a_fresh_socket_reaches_tcp_v4_connect :
        (errno_ret EAFNOSUPPORT) = CheckOk fresh_socket_model []
   /\ connect_answering_c connect_unix_family_mem fresh_socket_model 3 8192 16 16
        (errno_ret EINVAL) = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ATTEMPT IS DECLINED, and declining is not the same as refusing:
     a well-formed AF_INET connect on a fresh socket is [CheckUnmodeled],
@@ -1349,10 +1376,10 @@ Proof. repeat split; (reflexivity || check_eq). Qed.
 Definition socket_call_model : Model :=
   with_creds demo_creds
     (mkModel
-       [ (0, FdChannel 0); (3, FdFile [102] 0); (4, FdFileW [103] 0);
-         (5, FdDir) ]
+       [ (0, FdChannel 0); (3, FdFile 1 0); (4, FdFileW 2 0);
+         (5, FdDir Fs.default_cwd) ]
        (mkVmMaps [] [] 0 0 demo_limit) IEof
-       [([102], [104; 105]); ([103], [])] None None None).
+       (raw_files [([102], [104; 105]); ([103], [])]) None None None).
 
 (** NO NON-SOCKET FD KIND IS A SOCKET, on all five calls.
     [sock_from_file] tests the file's [f_op] for [socket_file_ops]
@@ -1388,7 +1415,7 @@ Example socket_calls_decline_every_non_socket_fd_kind :
          = CheckReject)
       [204; 205; 208; 209; 210])
     [0; 3; 4; 5].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
 (** Nothing past the descriptor changes the answer.  On 208 and 209 the
     argument below is a LEVEL no protocol registers, with an optname to
@@ -1415,7 +1442,7 @@ Example socket_calls_unknown_level_never_beats_the_fd :
          (mkEffect (errno_ret ENOPROTOOPT) [] []) socket_call_model
        = CheckReject)
     [204; 205; 208; 209; 210].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
 (** setsockopt's NEGATIVE optlen is -EINVAL, but the check lives in
     [do_sock_setsockopt] (net/socket.c), which runs only once
@@ -1438,7 +1465,7 @@ Example setsockopt_negative_optlen_never_beats_the_fd :
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) socket_call_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** A NULL address pointer and a NULL in/out length change nothing
     either: [move_addr_to_user] (net/socket.c) reads the length, and
@@ -1456,9 +1483,9 @@ Example socket_calls_null_pointers_never_beat_the_fd :
          (mkEffect (errno_ret EFAULT) [] []) socket_call_model
        = CheckReject)
     [204; 205; 209].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
-(** THE TWO WAVE-2 KINDS ON EVERY SOCKET CALL.  A datagram socket
+(** THE DATAGRAM AND EVENTFD KINDS ON EVERY SOCKET CALL.  A datagram socket
     ([State.FdDgram]: fd 3 is AF_INET6, fd 4 AF_UNIX) IS a socket --
     [sock_alloc_file] gave it [socket_file_ops] -- so no call answers it
     -ENOTSOCK, and every one declines it: [Net.Socket.SoInert] in the
@@ -1481,7 +1508,7 @@ Definition wave2_kinds_model : Model :=
     (mkModel
        [ (0, FdChannel 0); (3, FdDgram AF_INET6); (4, FdDgram AF_UNIX);
          (5, FdEventfd (mkEventfdCtx 0 false false)) ]
-       (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 Definition wave2_call (no fd : word) (args : list word) (r : word)
     : check_result :=
@@ -1517,12 +1544,12 @@ Proof. repeat constructor; check_eq. Qed.
 Definition socket_states_model : Model :=
   with_creds demo_creds
     (mkModel
-       [ (0, FdChannel 0); (3, FdFile [102] 0);
+       [ (0, FdChannel 0); (3, FdFile 1 0);
          (6, FdSocket SkFresh); (7, FdSocket SkBound); (8, FdSocket SkListening);
          (9, FdSocket (SkConnected (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin));
-         (10, FdSocket (SkReset (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3)) ]
+         (10, FdSocket (SkReset (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin false false)) ]
        (mkVmMaps [] [] 0 0 demo_limit) IEof
-       [([102], [104; 105])] None None None).
+       (raw_files [([102], [104; 105])]) None None None).
 
 (** GETPEERNAME IS THE ARM [SkReset] EXISTS FOR.  [inet_getname] with
     [peer = 1] refuses on [!inet_dport] -- fresh, bound and listening --
@@ -1544,7 +1571,7 @@ Example getpeername_enotconn_covers_reset_but_not_close_wait :
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ENOTCONN) [] []) socket_states_model
      = CheckUnmodeled.
-Proof. split; [repeat constructor; check_eq | vm_compute; reflexivity]. Qed.
+Proof. split; [split_forall; check_eq | vm_compute; reflexivity]. Qed.
 
 (** And the accepting half is not vacuous: on the RESET socket a claimed
     success -- the 16 bytes [move_addr_to_user] would have reported -- is
@@ -1572,7 +1599,7 @@ Example getsockname_declines_on_every_socket_state :
       (mkEffect 16 [] []) socket_states_model
     = CheckUnmodeled)
     [6; 7; 8; 9; 10].
-Proof. repeat constructor; vm_compute; reflexivity. Qed.
+Proof. split_forall; vm_compute; reflexivity. Qed.
 
 (** SETSOCKOPT AND GETSOCKOPT DISAGREE ON AN UNKNOWN LEVEL, and the
     disagreement is real: the set side walks [ip_setsockopt], whose
@@ -1599,7 +1626,7 @@ Example unknown_level_is_enoprotoopt_setting_and_eopnotsupp_getting :
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ENOPROTOOPT) [] []) socket_states_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** A NEGATIVE [optlen] BEATS THE LEVEL, because [do_sock_setsockopt]
     tests it first -- before the LSM hook, before the BPF hook, before
@@ -1647,7 +1674,7 @@ Example a_known_level_is_declined :
        (mkEffect (errno_ret EOPNOTSUPP) [] []) socket_states_model
      = CheckOk socket_states_model [].
 Proof.
-  split; [repeat constructor; vm_compute; reflexivity
+  split; [split_forall; split_conj; vm_compute; reflexivity
          |split; check_eq].
 Qed.
 
@@ -1667,7 +1694,7 @@ Example shutdown_rejects_a_bad_how_on_every_socket_state :
       = CheckOk socket_states_model [])
       [3; 99; Z_to_bv 64 (2 ^ 64 - 1); Z_to_bv 64 (2 ^ 31 - 1)])
     [6; 7; 8; 9; 10].
-Proof. repeat constructor; check_eq. Qed.
+Proof. split_forall; split_conj; check_eq. Qed.
 
 (** SHUT_WR ON A LISTENING SOCKET IS 0 AND CHANGES NOTHING.  The
     [case TCP_LISTEN:] arm is [if (!(how & RCV_SHUTDOWN)) break;], and
@@ -1689,7 +1716,7 @@ Example shut_wr_on_a_listener_is_zero_and_a_no_op :
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) socket_states_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** AND -ENOTCONN IS DECLINED, NOT ANSWERED, on the TCP_CLOSE states --
     the most load-bearing decline in this file.  The errno is right:
@@ -1736,8 +1763,8 @@ Example shutdown_declines_where_it_would_have_to_drop_the_bits :
        (mkEffect 0 [] []) socket_states_model
      = CheckOk socket_states_model [].
 Proof.
-  split; [repeat constructor; vm_compute; reflexivity
-         |split; [repeat constructor; vm_compute; reflexivity
+  split; [split_forall; vm_compute; reflexivity
+         |split; [split_forall; vm_compute; reflexivity
                  |split; check_eq]].
 Qed.
 
@@ -1895,7 +1922,7 @@ Definition reset_pending_socket_model : Model :=
 
 Definition reset_consumed_socket_model : Model :=
   with_fds
-    [ (4, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3));
+    [ (4, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false));
       (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     accepted_socket_model.
@@ -1991,8 +2018,10 @@ Proof. split; check_eq. Qed.
     in both cases.  The model follows Linux: [State.access_okb] passes
     the range, the fd resolves, and [send_bytes] faults on the empty
     readable prefix — so on the connected socket the two agree for
-    different reasons, and -EPIPE is refused; the never-connected
-    socket is where they part.
+    different reasons, and -ECONNRESET is refused (this connection
+    ended with a FIN, so a processed end stores EPIPE: -EPIPE is the one
+    other answer, see [send_behind_the_fin_finds_epipe]); the
+    never-connected socket is where they part.
 
     THE ADDRESS is 46912512909312 = 0x2AAAABAAE000, unmapped here.  It
     is in range (2^45 < [State.TASK_SIZE]), so the range verdict is the
@@ -2009,7 +2038,7 @@ Example sendto_unmapped_buffer_in_range_faults_on_the_copy :
   = CheckOk accepted_socket_model []
   /\ check_syscall (mkInput 206 [4; 46912512909312; 1; 16384; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EPIPE) [] []) accepted_socket_model
+       (mkEffect (errno_ret ECONNRESET) [] []) accepted_socket_model
      = CheckReject
   /\ check_syscall (mkInput 206 [3; 46912512909312; 1; 16384; 0; 0]
                      (fun _ => None) (fun _ => None))
@@ -2027,23 +2056,24 @@ Definition wmem_open : word -> option byte := fun _ => Some 0.
 
 (** An OPEN descriptor that is not a socket is -ENOTSOCK, never -EBADF,
     on both — and neither call delivers a byte, so any write at all is
-    refused.  The MSG_CMSG_COMPAT bit is fail-closed: its value is
-    0x80000000 on a CONFIG_COMPAT kernel and 0 on one without, and
-    nothing a binary can observe says which it is running on. *)
+    refused.  The MSG_CMSG_COMPAT bit is fail-closed: every supported
+    kernel answers it -EINVAL before the descriptor (the configuration
+    of record sets CONFIG_COMPAT, SCOPE.md), and the model declines the
+    call instead, a priority-3 gap. *)
 Example recv_on_a_non_socket_descriptor :
   check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
-    (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [(4096, [97])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 212 [1; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 212 [1; 4096; Z_to_bv 64 (2 ^ 31); 0; 0; 0]
                      (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2098,19 +2128,19 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example recv_argument_order_is_opposite :
   check_syscall (mkInput 207 [999; Z_to_bv 64 (2 ^ 63); 1; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 207 [999; Z_to_bv 64 (2 ^ 63); 1; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 212 [999; Z_to_bv 64 (2 ^ 63); 0; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 212 [999; Z_to_bv 64 (2 ^ 63); 0; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2123,19 +2153,19 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example socketpair_writes_the_descriptors_before_it_fails :
   check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
     (mkEffect (errno_ret EOPNOTSUPP) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP) [(4096, [4;0;0;0]); (4100, [5;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2147,18 +2177,18 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
     does hold; [Checks.Cases.Net.StreamPair] pins its success.) *)
 Example socketpair_flag_check_precedes_the_writes :
   check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
-    (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret EINVAL) [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [1; 257; 0; 4096; 0; 0] (fun _ => None) wmem_open)
-       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+       (mkEffect (errno_ret EINVAL) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [1; 2; 0; 4096; 0; 0] (fun _ => None) wmem_open)
        (mkEffect 0 [(4096, [3;0;0;0]); (4100, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
@@ -2186,17 +2216,17 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
 Example socketpair_declines_the_partial_destination :
   check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 TASK_SIZE; 0; 0]
                    (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 TASK_SIZE; 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EFAULT) [(Z_to_bv 64 TASK_SIZE, [3;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 5); 0; 0]
                      (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckUnmodeled.
 Proof. split; [|split]; check_eq. Qed.
 
@@ -2269,13 +2299,13 @@ Proof. vm_compute. reflexivity. Qed.
 Example socketpair_wrapping_destination_is_efault :
   check_syscall (mkInput 199 [2; 1; 0; socketpair_wrap_sv; 0; 0]
                    (fun _ => None) socketpair_wrap_mem)
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; socketpair_wrap_sv; 0; 0]
                      (fun _ => None) socketpair_wrap_mem)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(socketpair_wrap_sv, [3;0;0;0]); (0, [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2320,14 +2350,14 @@ Proof. vm_compute. reflexivity. Qed.
 Example socketpair_past_long_max_at_the_checker :
   check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (2 ^ 63); 0; 0]
                    (fun _ => None) socketpair_high_mem)
-    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (2 ^ 63); 0; 0]
                      (fun _ => None) socketpair_high_mem)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(Z_to_bv 64 (2 ^ 63), [3;0;0;0]);
                   (Z_to_bv 64 (2 ^ 63 + 4), [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -2368,25 +2398,25 @@ Example socketpair_dest_width_is_eight :
     (mkEffect (errno_ret EOPNOTSUPP)
               [(Z_to_bv 64 (TASK_SIZE - 8), [3;0;0;0]);
                (Z_to_bv 64 (TASK_SIZE - 4), [4;0;0;0])] [])
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) []
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 8); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckReject
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 7); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EOPNOTSUPP)
                  [(Z_to_bv 64 (TASK_SIZE - 7), [3;0;0;0]);
                   (Z_to_bv 64 (TASK_SIZE - 3), [4;0;0;0])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
      = CheckUnmodeled
   /\ check_syscall (mkInput 199 [2; 1; 0; Z_to_bv 64 (TASK_SIZE - 3); 0; 0]
                      (fun _ => None) wmem_open)
        (mkEffect (errno_ret EFAULT) [] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [].
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** PAIR 4 — A WRITE TO A SOCKET WITH NO CONNECTION IS ANSWERED, WHERE
@@ -2772,3 +2802,615 @@ Example sendmsg_ordinary_header_still_sends :
        (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model
      = CheckReject.
 Proof. split; check_eq. Qed.
+
+(* ------------------------------------------------------------------------
+   A peer's end the kernel has already processed, behind what the program
+   has not read: testing/syscall-check/tests/socket_peer_reset.c records
+   each answer below on the pinned kernel (Linux v6.18.46; the functions
+   cited are the same text in v6.16 and v6.17).  The script
+   [byte_then NRst] is the probe's
+   `--peer 41:rst`: one byte, then a RST.
+   ------------------------------------------------------------------------ *)
+
+(** [bind(4, INADDR_ANY:0, 16)] on the accepted connection, answering [r]. *)
+Definition bind4_answering (m : Model) (r : word) : check_result :=
+  check_syscall (mkInput 200 [4; 4096; 16; 0; 0; 0] sockaddr_in_any_mem (fun _ => None))
+    (mkEffectU r [] [] [] [] [(4096, 16%nat)]) m.
+
+Definition byte_then (t : NetStream) : NetStream := NCons (Z_to_bv 8 65) t.
+
+(** BIND BEHIND A PROCESSED RESET AUTOBINDS (bind-byte-rst, bind-once):
+    [tcp_done] released the port (net/ipv4/tcp.c:2997-3000,
+    net/ipv4/inet_hashtables.c:227), so [__inet_bind]'s test
+    (net/ipv4/af_inet.c:528) is false and the autobind answers 0 (:562),
+    or -EADDRINUSE when it fails (no free port, or no bind bucket for
+    one); the error stays pending.
+    Before the reset is processed the same bind is -EINVAL, so both are
+    admitted; -EAFNOSUPPORT never is. *)
+Example bind_behind_a_byte_and_a_reset :
+  bind4_answering (connected_socket_model (byte_then NRst)) 0
+    = CheckOk (retired_socket_model
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) true true))) []
+  /\ bind4_answering (connected_socket_model (byte_then NRst)) (errno_ret EINVAL)
+    = CheckOk (connected_socket_model (byte_then NRst)) []
+  /\ bind4_answering (connected_socket_model (byte_then NRst)) (errno_ret EAFNOSUPPORT)
+    = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** BIND BEHIND THE FIN, ONCE A RESET FOLLOWED IT (bind-fin,
+    bind-byte-fin): the same autobind; the bind after it finds the port
+    it took and is -EINVAL, never 0 again. *)
+Example bind_behind_a_fin_autobinds_once :
+  bind4_answering (connected_socket_model NFin) 0
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) []
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) 0
+    = CheckReject
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true)))
+       (errno_ret EINVAL)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) [].
+Proof. split; [|split]; check_eq. Qed.
+
+(** SEND BEHIND A BYTE AND A PROCESSED RST (send-byte-rst): the stored
+    ECONNRESET (net/ipv4/tcp_input.c:4700-4701), reported by
+    [sk_stream_wait_connect] (net/core/stream.c:67-69) and consumed; the
+    byte stays queued; the next send is -EPIPE and never goes out again.
+    No FIN came first, so -EPIPE as the first answer is refused, and a RST
+    is never -ETIMEDOUT. *)
+Example send_behind_a_byte_and_a_reset :
+  sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret ECONNRESET)
+    = CheckOk (retired_socket_model
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false))) []
+  /\ sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret EPIPE)
+    = CheckReject
+  /\ sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret ETIMEDOUT)
+    = CheckReject
+  /\ sendto_answering (retired_socket_model
+                        (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+       (errno_ret EPIPE)
+    = CheckOk (retired_socket_model
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false))) []
+  /\ sendto_answering_with (retired_socket_model
+                             (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+       2 [(4096, 2%nat)]
+    = CheckReject.
+Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.
+
+(** READING AFTER THE SEND TOOK THE RESET: the queued byte, then 0 --
+    the error is gone, and RCV_SHUTDOWN answers (net/ipv4/tcp.c:2749). *)
+Example read_after_the_send_took_the_reset :
+  read_answering (retired_socket_model
+                    (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+      1 [(4096, [Z_to_bv 8 65])]
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+        [ReadEv 3 (Z_to_bv 8 65)]
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+       (Z_to_bv 64 0) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
+  /\ read_answering (retired_socket_model
+                       (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+       (Z_to_bv 64 0) []
+    = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
+
+(** A RESET STILL PENDING AFTER AN AUTOBIND IS READ ONCE (bind-byte-rst's
+    reads): the bind consumed nothing. *)
+Example read_reports_a_reset_the_bind_left_pending :
+  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+      (errno_ret ECONNRESET) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+       (Z_to_bv 64 0) []
+    = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** SEND BEHIND THE FIN, ONCE A RESET FOLLOWED IT (send-fin,
+    send-byte-fin): tcp_reset stores EPIPE in CLOSE_WAIT
+    (net/ipv4/tcp_input.c:4695-4697), never ECONNRESET. *)
+Example send_behind_the_fin_finds_epipe :
+  sendto_answering (connected_socket_model NFin) (errno_ret EPIPE)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false))) []
+  /\ sendto_answering (connected_socket_model NFin) (errno_ret ECONNRESET)
+    = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** A RESET OR TIMEOUT AT THE HEAD NOT PROCESSED YET: the copy loop runs
+    (net/ipv4/tcp.c:1197 on), so the send goes out and the script stays.
+    No peer in the harness can hold its reset back; the probe's forged
+    `conform --mutate sendto#1:ret=1` case is this one. *)
+Example send_before_the_end_is_processed_goes_out :
+  sendto_answering_with (connected_socket_model NRst) 2 [(4096, 2%nat)]
+    = CheckOk (connected_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
+  /\ sendto_answering_with (connected_socket_model NTimedOut) 2 [(4096, 2%nat)]
+    = CheckOk (connected_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
+Proof. split; check_eq. Qed.
+
+(** THE TIMER'S END, the same two answers: the stored ETIMEDOUT
+    (net/ipv4/tcp_timer.c [tcp_write_err]) once the connection is
+    TCP_CLOSE, consumed into [SkReset]; a RST's errno is refused. *)
+Example send_behind_a_timeout_finds_etimedout :
+  sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
+  /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET)
+    = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** A RESET THE PROGRAM CONSUMED BY READING, THEN A BIND: the port went
+    with the reset, so the bind autobinds (0 here; -EADDRINUSE when the
+    autobind fails) and only then is -EINVAL. *)
+Example bind_after_a_read_consumed_the_reset :
+  bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) 0
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+       (errno_ret EINVAL)
+    = CheckReject.
+Proof. split; check_eq. Qed.
+
+(** A peer that never stops sending: the end of the script lies past the
+    [rw_bytes_max] bytes the send arm scans, so the send is DECLINED
+    rather than answered on a guess about an error that may follow. *)
+CoFixpoint net_forever : NetStream := NCons (Z_to_bv 8 0) net_forever.
+
+Example send_on_an_endless_script_declines :
+  sendto_answering_with (connected_socket_model net_forever) 2 [(4096, 2%nat)]
+    = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+
+(* ------------------------------------------------------------------------
+   The connected bind and send arms, and sendmsg's header, as main's Rocq
+   examples of #2082 state them, restated over this model: where a peer's
+   end can already have been processed, each call admits both timings.
+   ------------------------------------------------------------------------ *)
+
+(** [bind(4, <the INADDR_ANY:0 address at 4096>, 16)] on
+    [connected_socket_model rx], answering [r] with the copy-in ledger
+    [cis]: [bind4_answering]'s call with the ledger as a parameter. *)
+Definition bind_connected_answering (rx : NetStream) (r : word)
+    (cis : list (word * nat)) : check_result :=
+  check_syscall (mkInput 200 [4; 4096; 16; 0; 0; 0]
+                   sockaddr_in_any_mem (fun _ => None))
+    (mkEffectU r [] [] [] [] cis) (connected_socket_model rx).
+
+(** BIND ON A LIVE CONNECTION: -EINVAL WITH ITS COPY LEDGERED, OR THE
+    AUTOBIND.  A script with a BYTE at its head is TCP_ESTABLISHED, or
+    TCP_CLOSE_WAIT, and holds its port while the peer's end is not yet
+    processed, so [__inet_bind]'s [sk->sk_state != TCP_CLOSE ||
+    inet->inet_num] (net/ipv4/af_inet.c:528, Linux v6.18.46) is -EINVAL;
+    once a reset is processed [tcp_done] released the port
+    (net/ipv4/tcp.c:2997-3000) and the bind autobinds to 0 (af_inet.c:562).
+    The program cannot see which, so [Net.Socket.bind_spec] admits both:
+    the -EINVAL leaves the model alone, the 0 retires the descriptor to
+    [SkReset] with the error pending and the port bound.  The same -EINVAL
+    without its copy is refused, and a byte with a reset queued behind it
+    still admits the -EINVAL.  (Main's flat model refused the 0 here.) *)
+Example bind_on_a_live_connection_admits_einval_or_the_autobind :
+  bind_connected_answering (NCons (Z_to_bv 8 65) NFin) (errno_ret EINVAL)
+    [(4096, 16%nat)]
+    = CheckOk (connected_socket_model (NCons (Z_to_bv 8 65) NFin)) []
+  /\ bind_connected_answering (NCons (Z_to_bv 8 65) NFin) 0 [(4096, 16%nat)]
+     = CheckOk (retired_socket_model
+                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 65) NFin) true true))) []
+  /\ bind_connected_answering (NCons (Z_to_bv 8 65) NFin) (errno_ret EINVAL) []
+     = CheckReject
+  /\ bind_connected_answering (NCons (Z_to_bv 8 65) NRst) (errno_ret EINVAL)
+       [(4096, 16%nat)]
+     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 65) NRst)) [].
+Proof. split_conj; check_eq. Qed.
+
+(** A HALF-CLOSED CONNECTION THE SAME WAY.  The peer's FIN leaves
+    TCP_CLOSE_WAIT with the port still held, so -EINVAL with the copy
+    ledgered; a reset can follow a FIN (net/ipv4/tcp_input.c:7177-7189),
+    so the autobind's 0 is admitted beside it, and an unledgered -EINVAL
+    is refused. *)
+Example bind_on_a_half_closed_connection_admits_einval_or_the_autobind :
+  bind_connected_answering NFin (errno_ret EINVAL) [(4096, 16%nat)]
+    = CheckOk (connected_socket_model NFin) []
+  /\ bind_connected_answering NFin 0 [(4096, 16%nat)]
+     = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) []
+  /\ bind_connected_answering NFin (errno_ret EINVAL) [] = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** A PENDING ERROR IS ONE OF THE SEND'S TWO ANSWERS, TAKEN ONCE.
+    [Net.Socket.send_state] maps a connection whose script ends in a
+    reset to [SendGoes 3 ECONNRESET], and one whose script ends in a
+    retransmission timeout to [SendGoes 3 ETIMEDOUT], each with
+    [SkReset demo_peer 3 rx false false] as the state the error answer
+    leaves: the program cannot see whether Linux has processed the end.
+    Not processed, the connection is ESTABLISHED, inside the mask that
+    [tcp_sendmsg_locked] (net/ipv4/tcp.c:1159-1164) tests, and the bytes
+    go out, as [send_before_the_end_is_processed_goes_out] shows.
+    Processed, the socket is TCP_CLOSE and the stored error is the answer:
+    [sk_stream_wait_connect] (net/core/stream.c:67-69) returns it, taken
+    by [sock_error] (include/net/sock.h:2496) with an [xchg], so the send
+    retires the descriptor exactly as a read does.  On a timeout
+    [tcp_write_err] (net/ipv4/tcp_timer.c:76-80) stores ETIMEDOUT when no
+    soft error is pending.  So on the timed-out connection the send
+    answers -ETIMEDOUT with an empty ledger and fd 4 retired to [SkReset]
+    with no error pending; the reset's -ECONNRESET and the dead socket's
+    -EPIPE are refused.  Linux v6.18.46. *)
+Example send_on_a_pending_error_answers_it_and_retires :
+  send_state (SkConnected demo_peer 3 NRst)
+    = SendGoes 3 ECONNRESET (SkReset demo_peer 3 NRst false false)
+  /\ send_state (SkConnected demo_peer 3 NTimedOut)
+     = SendGoes 3 ETIMEDOUT (SkReset demo_peer 3 NTimedOut false false)
+  /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
+     = CheckOk (retired_socket_model
+                  (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
+  /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET)
+     = CheckReject
+  /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret EPIPE)
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** A LIVE CONNECTION SENDS.  [Net.Socket.send_state] maps a FIN at the
+    end (CLOSE_WAIT) and a byte before it (ESTABLISHED) alike to
+    [SendGoes] on the connection's channel: both states are inside the
+    mask [tcp_sendmsg_locked] tests (net/ipv4/tcp.c, v6.18.46).  Any
+    nonempty prefix of "ab" goes out as [WriteEv 3], ledgered at the range
+    it came out of, the model left as it was; the -EFAULT of an unreadable
+    source is refused.  Behind a FIN a reset may already be processed, and
+    [tcp_reset] then stores EPIPE (net/ipv4/tcp_input.c:4695-4696), so the
+    -EPIPE that retires the descriptor is admitted beside the delivery.
+    (Main's flat model refused that -EPIPE.) *)
+Example send_on_a_live_connection_goes_out :
+  send_state (SkConnected demo_peer 3 NFin)
+    = SendGoes 3 EPIPE (SkReset demo_peer 3 NFin false false)
+  /\ send_state (SkConnected demo_peer 7 (NCons (Z_to_bv 8 97) NFin))
+     = SendGoes 7 EPIPE (SkReset demo_peer 7 (NCons (Z_to_bv 8 97) NFin) false false)
+  /\ sendto_answering_with (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+       2 [(4096, 2%nat)]
+     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+         [WriteEv 3 97; WriteEv 3 98]
+  /\ sendto_answering_with (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+       1 [(4096, 1%nat)]
+     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+         [WriteEv 3 97]
+  /\ sendto_answering (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+       (errno_ret EFAULT)
+     = CheckReject
+  /\ sendto_answering (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+       (errno_ret EPIPE)
+     = CheckOk (retired_socket_model
+                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 97) NFin) false false))) [].
+Proof. split_conj; check_eq. Qed.
+
+(** Everything readable, nothing writable, at EVERY address: past
+    [State.TASK_SIZE] and across the top of the address space too, which
+    no run's memory is.  It exists to show where a read asks a range
+    question, as the Lean twin's fixture of the same name does. *)
+Definition rmem_open : word -> option byte := fun _ => Some 0.
+
+(** A HEADER PAST THE RANGE TEST IS -EFAULT, WITH NOTHING COPIED.
+    [Net.Socket.sendmsg_spec] copies the 56-byte header with
+    [State.copy_bytes_map], which refuses a range that wraps past 2^64 or
+    ends past [State.TASK_SIZE], as net/socket.c [copy_msghdr_from_user]
+    does through include/linux/uaccess.h [_inline_copy_from_user]'s
+    [access_ok] (include/asm-generic/access_ok.h [__access_ok], v6.18.46).
+    So a header at 2^64 - 8 over [rmem_open], and one whose last byte is
+    the first past [State.TASK_SIZE] (2^47 - 55), are -EFAULT with an
+    empty ledger, and the [SendDead] -EPIPE a read header would reach is
+    refused.  (Main's flat model read the header with [read_bytes_map]
+    and answered that -EPIPE.) *)
+Example sendmsg_header_past_the_range_test_is_efault :
+  check_syscall (mkInput 211 [3; Z_to_bv 64 (2 ^ 64 - 8); 16384; 0; 0; 0]
+                   rmem_open (fun _ => None))
+    (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 211 [3; Z_to_bv 64 (2 ^ 64 - 8); 16384; 0; 0; 0]
+                     rmem_open (fun _ => None))
+       (mkEffectU (errno_ret EPIPE) [] [] [] []
+          [(Z_to_bv 64 (2 ^ 64 - 8), 56%nat)]) fresh_socket_model
+     = CheckReject
+  /\ check_syscall (mkInput 211 [3; Z_to_bv 64 (2 ^ 47 - 55); 16384; 0; 0; 0]
+                     rmem_open (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+     = CheckOk fresh_socket_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE CLOSED FD STILL ANSWERS FIRST.  net/socket.c [__sys_sendmsg]
+    resolves the fd before the header is copied (v6.18.46), so the closed
+    fd 9 is -EBADF with an empty ledger even where the header wraps past
+    2^64 or sits in the kernel half at 2^63, and the -EFAULT of the header
+    is refused.  [sendmsg_resolves_the_fd_before_the_header] has the
+    ordinary header. *)
+Example sendmsg_closed_fd_past_the_range_test_is_ebadf :
+  check_syscall (mkInput 211 [9; Z_to_bv 64 (2 ^ 64 - 8); 16384; 0; 0; 0]
+                   rmem_open (fun _ => None))
+    (mkEffect (errno_ret EBADF) [] []) fresh_socket_model
+  = CheckOk fresh_socket_model []
+  /\ check_syscall (mkInput 211 [9; Z_to_bv 64 (2 ^ 64 - 8); 16384; 0; 0; 0]
+                     rmem_open (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+     = CheckReject
+  /\ check_syscall (mkInput 211 [9; Z_to_bv 64 (2 ^ 63); 16384; 0; 0; 0]
+                     rmem_open (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) fresh_socket_model
+     = CheckOk fresh_socket_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** An append file at 3 and a read-write file at 4: the two file kinds
+    the append and read-write opens mint, which [socket_call_model]
+    predates. *)
+Definition file_kinds_send_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       [ (3, FdFileA 1 0); (4, FdFileRW 2 0) ]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof
+       (raw_files [([102], [104]); ([103], [105])]) None None None).
+
+(** AN APPEND OR READ-WRITE FILE IS NOT A SOCKET EITHER, ON [sendmsg].
+    [Net.Socket.sendmsg_spec] answers both kinds in the arm it shares with
+    [FdChannel], [FdFile] and [FdFileW]: -ENOTSOCK where qemu-user's path
+    to the host's fd is quiet, before any copy, so the ledger is empty.
+    [sendmsg_resolves_the_fd_before_the_header] shows that arm on a
+    channel; this shows it on the two kinds, each with the half that
+    refuses: a ledger claiming the header was copied, and the -EBADF of an
+    unopened fd.  The Lean twin's [a17_rdwr_sendmsg_is_enotsock] and
+    [a17_append_sendmsg_is_enotsock] state the same answers.
+    kernel: net/socket.c:__sys_sendmsg,sock_from_file@v6.18.46 *)
+Example sendmsg_on_append_and_read_write_files_is_enotsock :
+  check_syscall (mkInput 211 [4; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                   (fun _ => None)) (mkEffect (errno_ret ENOTSOCK) [] [])
+    file_kinds_send_model
+  = CheckOk file_kinds_send_model []
+  /\ check_syscall (mkInput 211 [4; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                     (fun _ => None))
+       (mkEffectU (errno_ret ENOTSOCK) [] [] [] [] [(8192, 56%nat)])
+       file_kinds_send_model
+     = CheckReject
+  /\ check_syscall (mkInput 211 [3; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                     (fun _ => None)) (mkEffect (errno_ret ENOTSOCK) [] [])
+       file_kinds_send_model
+     = CheckOk file_kinds_send_model []
+  /\ check_syscall (mkInput 211 [3; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                     (fun _ => None)) (mkEffect (errno_ret EBADF) [] [])
+       file_kinds_send_model
+     = CheckReject.
+Proof. split; [|split; [|split]]; check_eq. Qed.
+
+(* ------------------------------------------------------------------------
+   The other side of seven guards: accept4's descriptor table on a
+   non-socket, the name, option and connect arms of a stream-pair end,
+   sendto's first flag gate, and a send on a reset connection whose error
+   is still pending.  Every kernel line was read at Linux v6.18.46.
+   ------------------------------------------------------------------------ *)
+
+(** Sixty-four channels, 0 to 63: the lowest free descriptor is 64, and
+    fd 3 is not a socket. *)
+Definition accept4_full_table_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       (map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
+            (seq 0 64))
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
+
+(** The same channels without 63: the lowest free descriptor is 63. *)
+Definition accept4_last_slot_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       (map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
+            (seq 0 63))
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
+
+(** ACCEPT4 ON A NON-SOCKET DECLINES ONCE THE LOWEST FREE DESCRIPTOR IS
+    64.  net/socket.c [__sys_accept4_file] reserves the new descriptor
+    (:2025-2027) before [do_accept] finds that fd 3 is no socket
+    (:1962-1964).  fs/file.c [alloc_fd] answers 64 on the full table, and
+    at or past the table's [max_fds] it calls [expand_files] (:595-601),
+    whose table allocation can fail with -ENOMEM ([alloc_fdtable],
+    :242).  [max_fds] starts at 64 in [dup_fd] (:401), and a table that
+    once held a higher descriptor keeps its larger size, which the model
+    does not record, so it declines there rather than answer -ENOTSOCK
+    and -EMFILE alone.  One descriptor lower [alloc_fd] finds 63 below
+    [max_fds] (:584-585) and expands nothing, so the answer is -ENOTSOCK
+    or the reservation's -EMFILE (:591-593), and -ENOMEM is refused. *)
+Example accept4_on_a_non_socket_past_the_first_table_declines :
+  accept4_answering accept4_full_table_model (errno_ret ENOTSOCK) = CheckUnmodeled
+  /\ accept4_answering accept4_full_table_model (errno_ret EMFILE) = CheckUnmodeled
+  /\ accept4_answering accept4_last_slot_model (errno_ret ENOTSOCK)
+     = CheckOk accept4_last_slot_model []
+  /\ accept4_answering accept4_last_slot_model (errno_ret EMFILE)
+     = CheckOk accept4_last_slot_model []
+  /\ accept4_answering accept4_last_slot_model (errno_ret ENOMEM) = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** A stream-pair end as [socketpair] leaves one: an empty queue,
+    blocking, 4096-byte buffers, no shutdown bit, its reset state
+    undecided. *)
+Definition spair_end : StreamEnd :=
+  mkStreamEnd [] false 4096%Z 4096%Z false false RsUnknown.
+
+(** The three standard channels and the two ends of pair 0 at 3 and 4. *)
+Definition spair_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+         (3, FdStream 0 false spair_end); (4, FdStream 0 true spair_end) ]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
+
+(** Readable bytes from [TASK_SIZE] - 4 to [TASK_SIZE] + 3, the first one
+    16: an [int] of 16 at [TASK_SIZE] - 4, the last four bytes
+    [access_ok] passes, and bytes from [TASK_SIZE] - 3 on that the view
+    maps and [access_ok] refuses. *)
+Definition spair_top_len_mem : word -> option byte :=
+  fun a => if andb (Z.leb (TASK_SIZE - 4)%Z (bv_unsigned a))
+                   (Z.ltb (bv_unsigned a) (TASK_SIZE + 4)%Z)
+           then Some (if Z.eqb (bv_unsigned a) (TASK_SIZE - 4)%Z
+                      then Z_to_bv 8 16 else Z_to_bv 8 0)
+           else None.
+
+(** GETSOCKNAME ON A STREAM-PAIR END AT THE TOP OF THE USER RANGE.
+    net/socket.c [move_addr_to_user] opens with [user_access_begin] over
+    the four bytes at [ulen] (:285-286), which
+    include/asm-generic/access_ok.h [__access_ok] decides (:40).  An
+    [ulen] of [TASK_SIZE] - 4 passes, so the 16 is read (:288), clamped
+    to 2 (:290-291), and both stores land: 2 at [ulen] (:296-297), then
+    AF_UNIX at 4096 (:306).  One byte higher the four bytes end past
+    [TASK_SIZE], so the answer is -EFAULT before anything is read,
+    however the view maps those bytes, and the stores a read length
+    would lead to are refused. *)
+Example getsockname_on_a_stream_pair_end_judges_the_length_range :
+  check_syscall (mkInput 204 [3; 4096; Z_to_bv 64 (TASK_SIZE - 4); 0; 0; 0]
+                   spair_top_len_mem wmem_open)
+    (mkEffectU 0 [(Z_to_bv 64 (TASK_SIZE - 4), [Z_to_bv 8 2; Z_to_bv 8 0; Z_to_bv 8 0; Z_to_bv 8 0]);
+                  (4096, [Z_to_bv 8 1; Z_to_bv 8 0])] [] [] []
+       [(Z_to_bv 64 (TASK_SIZE - 4), 4%nat)]) spair_model
+  = CheckOk spair_model []
+  /\ check_syscall (mkInput 204 [3; 4096; Z_to_bv 64 (TASK_SIZE - 3); 0; 0; 0]
+                     spair_top_len_mem wmem_open)
+       (mkEffect (errno_ret EFAULT) [] []) spair_model
+     = CheckOk spair_model []
+  /\ check_syscall (mkInput 204 [3; 4096; Z_to_bv 64 (TASK_SIZE - 3); 0; 0; 0]
+                     spair_top_len_mem wmem_open)
+       (mkEffectU 0 [(Z_to_bv 64 (TASK_SIZE - 3), [Z_to_bv 8 2; Z_to_bv 8 0; Z_to_bv 8 0; Z_to_bv 8 0]);
+                     (4096, [Z_to_bv 8 1; Z_to_bv 8 0])] [] [] []
+          [(Z_to_bv 64 (TASK_SIZE - 3), 4%nat)]) spair_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** SETSOCKOPT ON A STREAM-PAIR END: A NEGATIVE [optlen] BEATS THE LEVEL.
+    net/socket.c [do_sock_setsockopt] tests [optlen < 0] first
+    (:2335-2336) and reaches the level test of net/unix/af_unix.c
+    [unix_setsockopt] (:950-951) only through [ops->setsockopt]
+    (net/socket.c:2361-2362).  So SOL_TCP with an [optlen] of -1 is
+    -EINVAL, the level's -EOPNOTSUPP refused; with an [optlen] of 4 the
+    same level is -EOPNOTSUPP. *)
+Example setsockopt_on_a_stream_pair_end_negative_optlen_beats_the_level :
+  check_syscall (mkInput 208 [3; 6; 1; 4096; Z_to_bv 64 (2 ^ 32 - 1); 0]
+                   (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) spair_model
+  = CheckOk spair_model []
+  /\ check_syscall (mkInput 208 [3; 6; 1; 4096; Z_to_bv 64 (2 ^ 32 - 1); 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EOPNOTSUPP) [] []) spair_model
+     = CheckReject
+  /\ check_syscall (mkInput 208 [3; 6; 1; 4096; 4; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EOPNOTSUPP) [] []) spair_model
+     = CheckOk spair_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** Four readable bytes at 4104 holding the [int] 4. *)
+Definition spair_len4_mem : word -> option byte :=
+  fun a => if bv_eqb a 4104 then Some (Z_to_bv 8 4)
+           else if andb (Z.leb 4105 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4108)
+           then Some (Z_to_bv 8 0) else None.
+
+(** Writable: only the length at 4104 to 4107. *)
+Definition spair_len_only_wmem : word -> option byte :=
+  fun a => if andb (Z.leb 4104 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4108)
+           then Some (Z_to_bv 8 0) else None.
+
+(** Writable: 4096 and 4097, two of the four value bytes, and the whole
+    length at 4104 to 4107. *)
+Definition spair_val_part_wmem : word -> option byte :=
+  fun a => if orb (andb (Z.leb 4096 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4098))
+                  (andb (Z.leb 4104 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4108))
+           then Some (Z_to_bv 8 0) else None.
+
+(** Writable: the whole value at 4096 to 4099, and 4104 and 4105, two of
+    the four length bytes. *)
+Definition spair_len_part_wmem : word -> option byte :=
+  fun a => if orb (andb (Z.leb 4096 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4100))
+                  (andb (Z.leb 4104 (bv_unsigned a)) (Z.ltb (bv_unsigned a) 4106))
+           then Some (Z_to_bv 8 0) else None.
+
+(** GETSOCKOPT(SOL_SOCKET, SO_SNDBUF) ON A STREAM-PAIR END, EACH STORE.
+    net/core/sock.c [sk_getsockopt] copies the value to [optval]
+    (:2163-2164) and only then stores the length (:2165-2167).  With
+    [optval] taking none of the value and [optlen] writable, the value's
+    copy faults first: -EFAULT with nothing stored and both reads of
+    [optlen] in the ledger, and the 0 with both stores is refused.  A
+    four-byte copy_to_user on riscv64 is the byte loop of
+    arch/riscv/lib/uaccess.S [fallback_scalar_usercopy_sum_enabled]
+    (:76-77, :202-207), which stores each byte before it loads the next
+    and answers the count left at the first fault (:212-213), so a store
+    that takes some bytes and not others leaves those bytes written
+    beside its -EFAULT; at the value and at the length that shape is
+    declined. *)
+Example getsockopt_on_a_stream_pair_end_answers_each_store :
+  check_syscall (mkInput 209 [3; 1; 7; 4096; 4104; 0] spair_len4_mem spair_len_only_wmem)
+    (mkEffectU (errno_ret EFAULT) [] [] [] [] [(4104, 4%nat); (4104, 4%nat)]) spair_model
+  = CheckOk spair_model []
+  /\ check_syscall (mkInput 209 [3; 1; 7; 4096; 4104; 0] spair_len4_mem spair_len_only_wmem)
+       (mkEffectU 0 [(4096, [Z_to_bv 8 0; Z_to_bv 8 16; Z_to_bv 8 0; Z_to_bv 8 0]);
+                     (4104, [Z_to_bv 8 4; Z_to_bv 8 0; Z_to_bv 8 0; Z_to_bv 8 0])] [] [] []
+          [(4104, 4%nat); (4104, 4%nat)]) spair_model
+     = CheckReject
+  /\ check_syscall (mkInput 209 [3; 1; 7; 4096; 4104; 0] spair_len4_mem spair_val_part_wmem)
+       (mkEffectU (errno_ret EFAULT) [] [] [] [] [(4104, 4%nat); (4104, 4%nat)]) spair_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 209 [3; 1; 7; 4096; 4104; 0] spair_len4_mem spair_len_part_wmem)
+       (mkEffectU (errno_ret EFAULT)
+          [(4096, [Z_to_bv 8 0; Z_to_bv 8 16; Z_to_bv 8 0; Z_to_bv 8 0])] [] [] []
+          [(4104, 4%nat); (4104, 4%nat)]) spair_model
+     = CheckUnmodeled.
+Proof. split_conj; check_eq. Qed.
+
+(** CONNECT ON A STREAM-PAIR END DECLINES PAST THE COPY.  net/socket.c
+    [__sys_connect] resolves the descriptor (:2115-2116) and copies the
+    address with [move_addr_to_kernel] (:2118-2120), which answers
+    -EINVAL outside [0, 128] (:250-251) and -EFAULT on a failed copy
+    (:254-255); [__sys_connect_file] then finds a socket (:2092-2096) and
+    net/unix/af_unix.c [unix_stream_connect] (:1646) validates and looks
+    up a [sockaddr_un] name, which the model does not carry.  So sixteen
+    readable bytes decline, an -EBADF never standing in for the decline;
+    an unreadable address is -EFAULT and 129 bytes are -EINVAL. *)
+Example connect_on_a_stream_pair_end_declines_past_the_copy :
+  check_syscall (mkInput 203 [3; 8192; 16; 0; 0; 0] connect_unix_family_mem (fun _ => None))
+    (mkEffectU (errno_ret EBADF) [] [] [] [] [(8192, 16%nat)]) spair_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 203 [3; 8192; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) spair_model
+     = CheckOk spair_model []
+  /\ check_syscall (mkInput 203 [3; 8192; 129; 0; 0; 0] connect_unix_family_mem (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) spair_model
+     = CheckOk spair_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** A FLAG IN NEITHER ARM'S SET DECLINES BEFORE THE BUFFER AND THE FD.
+    MSG_MORE (include/linux/socket.h:320) is neither the exact
+    MSG_NOSIGNAL word nor in the stream-pair end's MSG_NOSIGNAL and
+    MSG_DONTWAIT set, so the first gate declines [sendto(9, 4096, 1,
+    MSG_MORE)] on the closed 9, the same call on stdout, and the same
+    call on 9 from a kernel-half buffer.  net/socket.c [__sys_sendto]
+    answers those -EBADF (:2222-2224), -ENOTSOCK (:2225-2227) and -EFAULT
+    (:2218-2220), and reads [flags] only after all three (:2241-2244);
+    [Net.Socket.sendto_spec] gates the flag word before any answer, so
+    it declines them.  MSG_NOSIGNAL|MSG_DONTWAIT, in the union the gate
+    admits, reaches the closed 9 and is -EBADF. *)
+Example sendto_flag_outside_both_sets_declines_before_the_buffer_and_the_fd :
+  check_syscall (mkInput 206 [9; 4096; 1; 32768; 0; 0] (mem_of send_payload) (fun _ => None))
+    (mkEffect (errno_ret EBADF) [] []) fresh_socket_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 206 [1; 4096; 1; 32768; 0; 0] (mem_of send_payload) (fun _ => None))
+       (mkEffect (errno_ret ENOTSOCK) [] []) fresh_socket_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 206 [9; Z_to_bv 64 (2 ^ 63); 1; 32768; 0; 0] (mem_of send_payload)
+                     (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) fresh_socket_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 206 [9; 4096; 1; 16448; 0; 0] (mem_of send_payload) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) fresh_socket_model
+     = CheckOk fresh_socket_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** A SEND ON A RESET CONNECTION WHOSE ERROR IS STILL PENDING answers that
+    error once: the autobind left the ECONNRESET net/ipv4/tcp_input.c
+    [tcp_reset] stored, net/core/stream.c [sk_stream_wait_connect]
+    returns it (:67-69) and include/net/sock.h [sock_error] takes it with
+    an [xchg] (:2496), so fd 4 keeps its port and has no error left; the
+    -EPIPE of a socket with no error left is refused.  Behind the endless
+    script the end whose error is pending lies past the scan, and the
+    send is declined. *)
+Example send_on_a_reset_the_bind_left_pending_answers_it_once :
+  sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+      (errno_ret ECONNRESET)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+       (errno_ret EPIPE)
+    = CheckReject
+  /\ sendto_answering_with
+       (retired_socket_model (FdSocket (SkReset demo_peer 3 net_forever true true)))
+       2 [(4096, 2%nat)]
+    = CheckUnmodeled.
+Proof. split_conj; check_eq. Qed.

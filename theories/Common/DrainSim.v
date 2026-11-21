@@ -120,7 +120,7 @@ Variable ec : word.
     remains, the trace so far is just a prefix of a longer run. *)
 Definition out_tail (s : InputStream) (a : A) (fs : Fs.Fs) : list event :=
   match s with
-  | IEof => map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) fs]
+  | IEof => map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe fs)]
   | ICons _ _ => []
   end.
 
@@ -144,7 +144,7 @@ Definition drain_from_ch (rch : word) (a : A) (fs : Fs.Fs) (s : InputStream)
      chunks cnt s (blocks ++ [bs]) s' /\
      procs f a (concat blocks) = Some a' /\
      procs f a' bs = None /\
-     is_prefix tr (reads_ch rch (blocks ++ [bs]) ++ [ExitEv ec fs])).
+     is_prefix tr (reads_ch rch (blocks ++ [bs]) ++ [ExitEv ec (Fs.fs_observe fs)])).
 
 (** The same, reading channel 0 — the only channel a read can name:
     [ReadWrite.read_spec] answers -EBADF on the rest directly, and
@@ -182,7 +182,7 @@ Proof. exact (drain_from_ch_nil (Z_to_bv 64 0)). Qed.
 
 (** At end of input: the finishing phase. *)
 Lemma drain_from_ch_out : forall rch a fs tr,
-  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) fs]) ->
+  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe fs)]) ->
   drain_from_ch rch a fs IEof tr.
 Proof.
   intros rch a fs tr Hp. left. exists [], IEof, a.
@@ -190,7 +190,7 @@ Proof.
 Qed.
 
 Lemma drain_from_out : forall a fs tr,
-  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) fs]) ->
+  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) (out a) ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe fs)]) ->
   drain_from a fs IEof tr.
 Proof. exact (drain_from_ch_out (Z_to_bv 64 0)). Qed.
 
@@ -231,7 +231,7 @@ Lemma drain_from_ch_err : forall rch a fs s bs tr,
   (1 <= Z.of_nat (length bs))%Z -> (Z.of_nat (length bs) <= bv_unsigned cnt)%Z ->
   fst (stream_take s (length bs)) = bs ->
   procs f a bs = None ->
-  is_prefix tr [ExitEv ec fs] ->
+  is_prefix tr [ExitEv ec (Fs.fs_observe fs)] ->
   drain_from_ch rch a fs s (map (ReadEv rch) bs ++ tr).
 Proof.
   intros rch a fs s bs tr Hlo Hhi Hpre Hn Hp. right.
@@ -248,7 +248,7 @@ Lemma drain_from_err : forall a fs s bs tr,
   (1 <= Z.of_nat (length bs))%Z -> (Z.of_nat (length bs) <= bv_unsigned cnt)%Z ->
   fst (stream_take s (length bs)) = bs ->
   procs f a bs = None ->
-  is_prefix tr [ExitEv ec fs] ->
+  is_prefix tr [ExitEv ec (Fs.fs_observe fs)] ->
   drain_from a fs s (map (ReadEv (Z_to_bv 64 0)) bs ++ tr).
 Proof. exact (drain_from_ch_err (Z_to_bv 64 0)). Qed.
 
@@ -421,7 +421,7 @@ Lemma to_out_star_admits : forall bs ms model,
   fd1chan model -> m_halted model = None -> m_vm_lazy model = [] ->
   to_out bs ms -> buf_modeled bs ->
   exists c, star segs (mkCfg ms model)
-              (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (m_fs model)]) c.
+              (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros bs ms model Hfd1 Hh Hlazy Ho Hbm. revert Hbm.
   induction Ho as [ms Hte | bs ms HWF | bs ms ms' Hsvc Hstep Ho IH]; intro Hbm.
@@ -437,8 +437,8 @@ Proof.
       as [c Hstar].
     exists c. rewrite band0_255 in Hstar. exact Hstar.
   - destruct (IH Hbm) as [c Hstar]. exists c.
-    replace (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (m_fs model)])
-      with ([] ++ (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (m_fs model)]))
+    replace (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))])
+      with ([] ++ (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))]))
       by reflexivity.
     eapply star_step; [apply (sstep_instr segs ms model ms' model) | exact Hstar];
       try assumption.
@@ -449,7 +449,7 @@ Lemma to_out_star_only : forall bs ms model,
   fd1chan model -> m_halted model = None -> m_vm_lazy model = [] ->
   to_out bs ms -> buf_modeled bs ->
   forall tr c, star segs (mkCfg ms model) tr c ->
-  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (m_fs model)]).
+  is_prefix tr (map (WriteEv (Z_to_bv 64 1)) bs ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))]).
 Proof.
   intros bs ms model Hfd1 Hh Hlazy Ho Hbm. revert Hbm.
   induction Ho as [ms Hte | bs ms HWF | bs ms ms' Hsvc Hstep Ho IH];
@@ -664,10 +664,10 @@ Proof.
       destruct (to_out_star_admits (out a) _ model Hfd1 Hh Hlazy Hout Hobm) as [c Hstar2].
       exists c. cbn [out_tail].
       replace (map (WriteEv (Z_to_bv 64 1)) (out a)
-                 ++ [ExitEv (Z_to_bv 64 0) (m_fs model)])
+                 ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))])
         with (([] : list event)
                 ++ ([] ++ (map (WriteEv (Z_to_bv 64 1)) (out a)
-                             ++ [ExitEv (Z_to_bv 64 0) (m_fs model)])))
+                             ++ [ExitEv (Z_to_bv 64 0) (Fs.fs_observe (m_fs model))])))
         by reflexivity.
       eapply star_trans; [exact Hstar0|].
       eapply star_step; [exact HssE | exact Hstar2].
@@ -717,7 +717,7 @@ Lemma drain_star_admits_err : forall s blocks s1,
   fst (stream_take s1 (length bsE)) = bsE ->
   procs f a' bsE = None ->
   exists c, star segs (mkCfg ms model)
-              (reads (blocks ++ [bsE]) ++ [ExitEv ec (m_fs model)]) c.
+              (reads (blocks ++ [bsE]) ++ [ExitEv ec (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros s blocks s1 HC.
   induction HC as [s | s bs blocks s'' Hlo Hhi Hpre HC IH];
@@ -744,9 +744,9 @@ Proof.
     change (m_fs model') with (m_fs model) in Hstar2.
     exists c.
     cbn [app]. unfold reads, reads_ch. cbn [flat_map]. rewrite app_nil_r.
-    replace (map (ReadEv (Z_to_bv 64 0)) bsE ++ [ExitEv ec (m_fs model)])
+    replace (map (ReadEv (Z_to_bv 64 0)) bsE ++ [ExitEv ec (Fs.fs_observe (m_fs model))])
       with (([] : list event)
-              ++ (map (ReadEv (Z_to_bv 64 0)) bsE ++ [ExitEv ec (m_fs model)]))
+              ++ (map (ReadEv (Z_to_bv 64 0)) bsE ++ [ExitEv ec (Fs.fs_observe (m_fs model))]))
       by reflexivity.
     eapply star_trans; [exact Hstar0|].
     eapply star_step; [exact HssR | exact Hstar2].
@@ -777,10 +777,10 @@ Proof.
     change ((bs :: blocks) ++ [bsE]) with (bs :: (blocks ++ [bsE])).
     rewrite reads_cons, <- app_assoc.
     replace (map (ReadEv (Z_to_bv 64 0)) bs
-               ++ reads (blocks ++ [bsE]) ++ [ExitEv ec (m_fs model)])
+               ++ reads (blocks ++ [bsE]) ++ [ExitEv ec (Fs.fs_observe (m_fs model))])
       with (([] : list event)
               ++ (map (ReadEv (Z_to_bv 64 0)) bs
-                    ++ (reads (blocks ++ [bsE]) ++ [ExitEv ec (m_fs model)])))
+                    ++ (reads (blocks ++ [bsE]) ++ [ExitEv ec (Fs.fs_observe (m_fs model))])))
       by reflexivity.
     eapply star_trans; [exact Hstar0|].
     eapply star_step; [exact HssR | exact Hstar3].

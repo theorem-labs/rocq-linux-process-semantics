@@ -38,7 +38,7 @@
     [exits_c_trace_characterization] below: the trace set of one of
     these runs is exactly
 
-        [{ []; [ExitEv code (in_fs inp)] }]
+        [{ []; [ExitEv code (Fs.fs_observe (in_fs inp))] }]
 
     — an [iff], not an inclusion either way.  Three things about the
     shape are worth reading off it.
@@ -186,7 +186,7 @@ Lemma exits_c_trace_characterization :
         exits_c (segs ++ vt) code fuel (demo_init_state pc sp mem rom) = true) ->
     forall lim en inp t,
       bh_traces (run (mkImage segs pc ph) lim en inp) t
-      <-> (t = [] \/ t = [ExitEv code (in_fs inp)]).
+      <-> (t = [] \/ t = [ExitEv code (Fs.fs_observe (in_fs inp))]).
 Proof.
   intros segs pc ph code fuel Hc lim [sp brk0 mbase rnd] inp t.
   cbn [run bh_traces]. unfold init_config.
@@ -225,7 +225,7 @@ Proof.
                   (mkEntry sp brk0 mbase rnd) inp) as Hme.
     cbn [must_exit_with] in Hme. unfold init_config in Hme.
     destruct (must_exit_at_realizes _ _ _ Hme Hh) as (tr0 & fs & c' & Hstar & _).
-    assert (Hshape : tr0 ++ [ExitEv code fs] = [ExitEv code (in_fs inp)]).
+    assert (Hshape : tr0 ++ [ExitEv code fs] = [ExitEv code (Fs.fs_observe (in_fs inp))]).
     { rewrite <- Hfs.
       destruct (exits_c_star_trace _ _ _ _ _ _ _ Hh Hlazy Hms Hstar)
         as [He | He]; [| exact He].
@@ -249,7 +249,7 @@ Qed.
 
 Theorem O1_traces : forall lim en inp t,
   bh_traces (run O1_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_reject (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold O1_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 O1_exits_c).
@@ -257,7 +257,7 @@ Qed.
 
 Theorem O2_traces : forall lim en inp t,
   bh_traces (run O2_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_accept (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold O2_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 O2_exits_c).
@@ -265,7 +265,7 @@ Qed.
 
 Theorem P1_traces : forall lim en inp t,
   bh_traces (run P1_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_accept (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold P1_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 P1_exits_c).
@@ -273,7 +273,7 @@ Qed.
 
 Theorem P2_traces : forall lim en inp t,
   bh_traces (run P2_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_accept (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold P2_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 P2_exits_c).
@@ -281,7 +281,7 @@ Qed.
 
 Theorem C1_traces : forall lim en inp t,
   bh_traces (run C1_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_reject (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold C1_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 C1_exits_c).
@@ -289,7 +289,7 @@ Qed.
 
 Theorem C2_traces : forall lim en inp t,
   bh_traces (run C2_image lim en inp) t
-  <-> (t = [] \/ t = [ExitEv verdict_reject (in_fs inp)]).
+  <-> (t = [] \/ t = [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))]).
 Proof.
   unfold C2_image.
   exact (exits_c_trace_characterization _ _ _ _ 8 C2_exits_c).
@@ -309,9 +309,9 @@ Lemma no_exit_one_trace_of_exit_zero :
   forall (X : Image),
     (forall lim en inp t,
         bh_traces (run X lim en inp) t
-        <-> (t = [] \/ t = [ExitEv verdict_accept (in_fs inp)])) ->
+        <-> (t = [] \/ t = [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))])) ->
     forall lim en inp,
-      ~ bh_traces (run X lim en inp) [ExitEv verdict_reject (in_fs inp)].
+      ~ bh_traces (run X lim en inp) [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))].
 Proof.
   intros X HX lim en inp Ht.
   apply (proj1 (HX lim en inp _)) in Ht.
@@ -325,9 +325,9 @@ Lemma no_exit_zero_trace_of_exit_one :
   forall (X : Image),
     (forall lim en inp t,
         bh_traces (run X lim en inp) t
-        <-> (t = [] \/ t = [ExitEv verdict_reject (in_fs inp)])) ->
+        <-> (t = [] \/ t = [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))])) ->
     forall lim en inp,
-      ~ bh_traces (run X lim en inp) [ExitEv verdict_accept (in_fs inp)].
+      ~ bh_traces (run X lim en inp) [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))].
 Proof.
   intros X HX lim en inp Ht.
   apply (proj1 (HX lim en inp _)) in Ht.
@@ -341,13 +341,13 @@ Qed.
     [MustExit.must_exit_with_realizes]; this one pins the trace exactly,
     payload included. *)
 Example O1_emits_exactly_exit_one : forall lim en inp,
-  bh_traces (run O1_image lim en inp) [ExitEv verdict_reject (in_fs inp)].
+  bh_traces (run O1_image lim en inp) [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))].
 Proof.
   intros lim en inp. apply (proj2 (O1_traces _ _ _ _)). right. reflexivity.
 Qed.
 
 Example P1_emits_exactly_exit_zero : forall lim en inp,
-  bh_traces (run P1_image lim en inp) [ExitEv verdict_accept (in_fs inp)].
+  bh_traces (run P1_image lim en inp) [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))].
 Proof.
   intros lim en inp. apply (proj2 (P1_traces _ _ _ _)). right. reflexivity.
 Qed.
@@ -356,13 +356,13 @@ Qed.
     trace is not a trace of its patch.  This is the single fact the
     [Classifier.agree] refutation is built from. *)
 Example P1_never_emits_exit_one : forall lim en inp,
-  ~ bh_traces (run P1_image lim en inp) [ExitEv verdict_reject (in_fs inp)].
+  ~ bh_traces (run P1_image lim en inp) [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))].
 Proof. exact (no_exit_one_trace_of_exit_zero P1_image P1_traces). Qed.
 
 Example O2_never_emits_exit_one : forall lim en inp,
-  ~ bh_traces (run O2_image lim en inp) [ExitEv verdict_reject (in_fs inp)].
+  ~ bh_traces (run O2_image lim en inp) [ExitEv verdict_reject (Fs.fs_observe (in_fs inp))].
 Proof. exact (no_exit_one_trace_of_exit_zero O2_image O2_traces). Qed.
 
 Example O1_never_emits_exit_zero : forall lim en inp,
-  ~ bh_traces (run O1_image lim en inp) [ExitEv verdict_accept (in_fs inp)].
+  ~ bh_traces (run O1_image lim en inp) [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))].
 Proof. exact (no_exit_zero_trace_of_exit_one O1_image O1_traces). Qed.

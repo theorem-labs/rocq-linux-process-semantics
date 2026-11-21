@@ -63,8 +63,7 @@ Open Scope sys_scope.
       if ((len * BITS_PER_BYTE) < nr_cpu_ids)  return -EINVAL;
       if (len & (sizeof(unsigned long)-1))     return -EINVAL;
       if (!zalloc_cpumask_var(&mask, GFP_KERNEL)) return -ENOMEM;
-      ret = sched_getaffinity(pid, mask);      /* -ESRCH, or an LSM's
-                                                  errno, or 0 with
+      ret = sched_getaffinity(pid, mask);      /* -ESRCH, or 0 with
                                                   mask = p->cpus_mask
                                                        & cpu_active_mask */
       if (ret == 0) {
@@ -114,8 +113,9 @@ Open Scope sys_scope.
       the general form is false, because arch/x86/xen/smp_pv.c's
       [xen_smp_count_cpus] calls [set_nr_cpu_ids(cpus)] with an
       unguarded [cpus] that is 0 when the very first [VCPUOP_is_up]
-      hypercall fails.  On riscv64 it holds by two routes, and which
-      one applies is a config question.  Where [nr_cpu_ids] is a
+      hypercall fails.  On riscv64 it holds by two routes, and the
+      configuration of record (CONFIG_SMP=y, CONFIG_NR_CPUS=64, no
+      CONFIG_FORCE_NR_CPUS) takes the first.  Where [nr_cpu_ids] is a
       variable at all — kernel/smp.c guards
       [unsigned int nr_cpu_ids __read_mostly = NR_CPUS] with
       [#if (NR_CPUS > 1) && !defined(CONFIG_FORCE_NR_CPUS)] — it starts
@@ -245,7 +245,7 @@ Definition sched_getaffinity_spec (len : word) : Sys SyscallEffect :=
             (rt_policy(policy) != (attr->sched_priority != 0)))
                                                       return -EINVAL;
         user_check_sched_setscheduler(...)            /* -EPERM */
-        security_task_setscheduler(p)                 /* an LSM's errno */
+        security_task_setscheduler(p)                 /* cap_safe_nice's -EPERM */
         ... scx_check_setscheduler, the SCHED_DEADLINE bandwidth check,
         and then the state change, which returns 0.
 
@@ -307,11 +307,14 @@ Definition sched_getaffinity_spec (len : word) : Sys SyscallEffect :=
       (see below) and [sched_setattr] (274) has no arm.  If it were one,
       the [(dl_policy(policy) || dl_task(p)) && sched_dl_overflow(...)]
       gate would run.
-    - NO LSM.  [security_task_setscheduler] (kernel/sched/syscalls.c)
-      is 0 under the model's standing position that no LSM is
-      registered, the same one
-      [Fs.Fcntl.fcntl_spec] takes for [security_file_fcntl] and
-      [Fs.Stat.newfstatat_spec] for [security_inode_getattr].
+    - NO LSM, which the configuration of record settles (SCOPE.md):
+      [security_task_setscheduler] (kernel/sched/syscalls.c) is then the
+      stub of include/linux/security.h that returns
+      [cap_task_setscheduler]'s answer, and [cap_safe_nice]
+      (security/commoncap.c) answers 0 for the calling task, whose
+      permitted set is a subset of its own.  [Fs.Fcntl.fcntl_spec] and
+      [Fs.Stat.newfstatat_spec] rest on the same fact for
+      [security_file_fcntl] and [security_inode_getattr].
 
     The first two hold at [execve] and are preserved by every syscall
     the model admits; what they exclude is a LAUNCHER that changed the
@@ -355,12 +358,13 @@ Definition sched_getaffinity_spec (len : word) : Sys SyscallEffect :=
     [idle_policy || fair_policy || rt_policy || dl_policy], and
     [normal_policy] — the first disjunct of [fair_policy] — reads
     [if (policy == SCHED_EXT) return true;] under
-    [#ifdef CONFIG_SCHED_CLASS_EXT] (kernel/sched/sched.h).  So whether
-    7 is a valid policy at all is a config question, and this model does
-    not fix that config.  A priority the [> MAX_RT_PRIO-1] gate refuses,
-    or a nonzero one the [rt_policy(7) != (priority != 0)] gate refuses,
-    happens to be -EINVAL under BOTH configs; policy 7 at priority 0 is
-    not, so the whole number is declined rather than half of it.
+    [#ifdef CONFIG_SCHED_CLASS_EXT] (kernel/sched/sched.h).  The
+    configuration of record does not set that option: it depends on
+    [DEBUG_INFO_BTF] (kernel/Kconfig.preempt), and the fragment sets
+    [CONFIG_DEBUG_INFO_NONE] (testing/vm/kernel.fragment).  So 7 is no
+    valid policy on a supported kernel, and past the copy of [param]
+    every one answers -EINVAL at every priority.  The arm declines the
+    whole number all the same: a priority-3 gap, and sound.
 
     WHY SCHED_DEADLINE (6) IS -EINVAL AND NEVER ANYTHING ELSE.  The
     legacy entry point cannot express a DEADLINE parameter set:
@@ -524,12 +528,14 @@ Definition sched_setscheduler_spec (pid policy param : word)
     day a shared-memory clone is modeled, this comment is what has to be
     re-read.
 
-    Residual infidelity, stated rather than modeled, and shared with
-    every zero-argument arm here: [SYSCALL_DEFINE0] emits
-    [ALLOW_ERROR_INJECTION(..., ERRNO)], riscv's override included, so
-    on a kernel built with [CONFIG_FUNCTION_ERROR_INJECTION] and running
-    a BPF program that calls [bpf_override_return] the call can be made
-    to return an errno.  The model describes a kernel with no such
-    override attached; [Kernel.Sys.getpid_spec] carries the same note. *)
+    No return override reaches this call, nor any other zero-argument
+    arm here: [SYSCALL_DEFINE0] emits [ALLOW_ERROR_INJECTION(..., ERRNO)],
+    riscv's override included, but the configuration of record does not
+    set [CONFIG_KPROBES], so [CONFIG_FUNCTION_ERROR_INJECTION], which
+    depends on it (lib/Kconfig.debug), does not exist and the macro
+    expands to nothing (include/asm-generic/error-injection.h).  No BPF
+    program can make the call return an errno (SCOPE.md, "The
+    configuration of record"); [Kernel.Sys.getpid_spec] carries the
+    same note. *)
 Definition sched_yield_spec : Sys SyscallEffect :=
   ret_only (Z_to_bv 64 0).

@@ -7,7 +7,10 @@
     [Checks/Progress.v] keeps the dispatcher and
     re-exports this module. A witness here exhibits one admissible
     outcome for a spec in the matching [Sys] module, which is what
-    progress is proved from. *)
+    progress is proved from.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -63,13 +66,12 @@ Definition ioctl_witness (fd req : word) (i : SyscallInput) (m : Model)
     : outcome SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
-  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir
+  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdDir _)
   | Some (FdSocket _) | Some (FdStream _ _ _) | Some (FdEventfd _) | Some (FdPipe _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _)
-  | Some (FdAnon _ _) =>
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else Unmodeled
-  | Some FdUrandom => Unmodeled
+  | Some (FdUrandom _ _) => Unmodeled
   | Some (FdDgram _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else if bv_eqb req SIOCGIFINDEX then siocgifindex_witness (in_arg i 2) i m

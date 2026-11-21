@@ -6,7 +6,10 @@
     [Checks/Progress.v] keeps the dispatcher and
     re-exports this module. A witness here exhibits one admissible
     outcome for a spec in the matching [Sys] module, which is what
-    progress is proved from. *)
+    progress is proved from.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -81,3 +84,38 @@ Proof. intros; subst; eapply bind_ok; eauto. Qed.
 (** [Uaccess.access_ok_zero] as a witness: the zero answer where the model
     is sure the range passed [access_ok], -EFAULT where it is sure it did
     not, and the fail-closed decline in between. *)
+
+
+(** [State.descriptor_invariant], AS A TACTIC.  That predicate says
+    every [State.FdFile*] key resolves to an [Fs.EFile], so the
+    [Fs.EDir] and [Fs.EDev] branches a file-content lookup now has are
+    states it forbids.  It is not yet proved invariant -- see its own
+    comment and [Run.valid_image] -- so what these branches are is
+    FAIL CLOSED on both sides, which is what this tactic discharges.
+    They are FAIL-CLOSED in the spec and in the checker alike, so the
+    two sides agree there and neither admits anything.
+
+    The alternatives below are the shapes that agreement takes: a
+    contradictory hypothesis on the checker side, and the "both decline"
+    obligation on the spec side, whose proof is the ABSENT case's proof
+    with the same two rewrites.  It is [solve], so a branch that is NOT
+    one of these fails loudly here instead of being absorbed. *)
+Ltac entry_rewrites :=
+  do 12 (try (match goal with
+              | H : _ = _ |- _ => progress (srw H)
+              end)).
+
+Ltac entry_absurd :=
+  solve [ discriminate
+        | reflexivity
+        | congruence
+        | assumption
+        | apply unmodeled_intro
+        | (eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
+           eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota;
+           entry_rewrites; apply unmodeled_intro)
+        | (eapply bind_step; [apply input_ok|]; cbv beta;
+           eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+           entry_rewrites; apply unmodeled_intro)
+        | (eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
+           entry_rewrites; apply unmodeled_intro) ].

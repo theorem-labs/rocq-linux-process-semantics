@@ -371,25 +371,20 @@ Proof.
 Qed.
 
 (** A destination that is not [clock_getres_dst_ok_b] is non-NULL; a
-    range [access_ok] refuses is -EFAULT with nothing written, beside
-    the alarm ids' -EINVAL, and a range it admits that is not wholly
-    writable declines — [Kernel.Time.PosixTimers.clock_getres_spec]'s
-    split, decided from the return value as the writable arm decides
-    its -EINVAL. *)
+    range [access_ok] refuses is -EFAULT with nothing written, and a
+    range it admits that is not wholly writable declines.  The alarm ids
+    and [CLOCK_SGI_CYCLE] answer -EINVAL alone, before any destination
+    is looked at — [Kernel.Time.PosixTimers.clock_getres_spec]'s split,
+    with [Kernel.Time.PosixTimers.clock_getres_alarm_b] carrying why the
+    alarm ids have no other answer. *)
 Definition check_clock_getres (i : SyscallInput) (clkid tp : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   if clock_getres_supported_b clkid then
-    if clock_getres_dst_ok_b i tp then
-      if clock_getres_alarm_b clkid
-         && bv_eqb (eff_ret eff) (errno_ret EINVAL)
-      then check_ret_only eff (errno_ret EINVAL) m []
-      else check_clock_getres_result clkid tp eff m
-    else if negb (access_okb tp 16) then
-      if clock_getres_alarm_b clkid
-         && bv_eqb (eff_ret eff) (errno_ret EINVAL)
-      then check_ret_only eff (errno_ret EINVAL) m []
-      else check_ret_only eff (errno_ret EFAULT) m []
+    if clock_getres_dst_ok_b i tp then check_clock_getres_result clkid tp eff m
+    else if negb (access_okb tp 16) then check_ret_only eff (errno_ret EFAULT) m []
     else CheckUnmodeled
+  else if clock_getres_alarm_b clkid
+  then check_ret_only eff (errno_ret EINVAL) m []
   else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE
   then check_ret_only eff (errno_ret EINVAL) m []
   else CheckUnmodeled.
@@ -404,25 +399,16 @@ Proof.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - eapply bind_ok0; [apply input_ok|]. cbv beta.
     destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
-    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
-        destruct (clock_getres_alarm_b clkid) eqn:Ha; cbn [andb] in H.
-        - destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)) eqn:Hr.
-          + apply check_ret_only_ok_iff in H as (-> & -> & ->).
-            apply alt_l. unfold err_ret, ret_only. apply pure_ok.
-          + apply check_ret_only_ok_iff in H as (-> & -> & ->).
-            apply alt_r. unfold err_ret, ret_only. apply pure_ok.
-        - apply check_ret_only_ok_iff in H as (-> & -> & ->).
-          unfold err_ret, ret_only. apply pure_ok. }
-    destruct (clock_getres_alarm_b clkid) eqn:Ha.
-    + cbn [andb] in H.
-      destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)) eqn:Hr.
-      * apply check_ret_only_ok_iff in H as (-> & -> & ->).
-        apply alt_l. unfold err_ret, ret_only. apply pure_ok.
-      * apply alt_r. now eapply check_clock_getres_result_sound_ok.
     + now eapply check_clock_getres_result_sound_ok.
-  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE); [|discriminate].
-    apply check_ret_only_ok_iff in H as (-> & -> & ->).
-    unfold err_ret, ret_only. apply pure_ok.
+    + destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+      apply check_ret_only_ok_iff in H as (-> & -> & ->).
+      unfold err_ret, ret_only. apply pure_ok.
+  - destruct (clock_getres_alarm_b clkid) eqn:Ha.
+    + apply check_ret_only_ok_iff in H as (-> & -> & ->).
+      unfold err_ret, ret_only. apply pure_ok.
+    + destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE); [|discriminate].
+      apply check_ret_only_ok_iff in H as (-> & -> & ->).
+      unfold err_ret, ret_only. apply pure_ok.
 Qed.
 
 Lemma check_clock_getres_sound_unmodeled : forall i clkid tp eff m,
@@ -435,20 +421,14 @@ Proof.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
-    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|apply unmodeled_intro].
-        exfalso.
-        destruct (clock_getres_alarm_b clkid
-                  && bv_eqb (eff_ret eff) (errno_ret EINVAL));
-          now apply check_ret_only_no_unmodeled in H. }
-    destruct (clock_getres_alarm_b clkid) eqn:Ha.
-    + cbn [andb] in H.
-      destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)).
-      * now apply check_ret_only_no_unmodeled in H.
-      * now apply check_clock_getres_result_no_unmodeled in H.
     + now apply check_clock_getres_result_no_unmodeled in H.
-  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+    + destruct (negb (access_okb tp 16)) eqn:Ho; [|apply unmodeled_intro].
+      now apply check_ret_only_no_unmodeled in H.
+  - destruct (clock_getres_alarm_b clkid) eqn:Ha.
     + now apply check_ret_only_no_unmodeled in H.
-    + apply unmodeled_intro.
+    + destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+      * now apply check_ret_only_no_unmodeled in H.
+      * apply unmodeled_intro.
 Qed.
 
 Lemma check_clock_getres_complete_ok : forall i clkid tp eff m m' evs,
@@ -461,36 +441,16 @@ Proof.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - apply input_bind_ok_inv in H. cbv beta in H.
     destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
-    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
-        destruct (clock_getres_alarm_b clkid) eqn:Ha.
-        - unfold alt in H. destruct H as [H|H].
-          + unfold err_ret, ret_only, pure in H. inversion H; subst.
-            cbn [eff_ret]. rewrite bv_eqb_refl.
-            now apply check_ret_only_ok_iff.
-          + unfold err_ret, ret_only, pure in H. inversion H; subst.
-            cbn [andb eff_ret].
-            change (bv_eqb (errno_ret EFAULT) (errno_ret EINVAL)) with false.
-            cbv iota. now apply check_ret_only_ok_iff.
-        - unfold err_ret, ret_only, pure in H. inversion H; subst.
-          cbn [andb]. now apply check_ret_only_ok_iff. }
-    destruct (clock_getres_alarm_b clkid) eqn:Ha.
-    + unfold alt in H. destruct H as [H|H].
-      * unfold err_ret, ret_only, pure in H. inversion H; subst.
-        cbn [eff_ret]. rewrite bv_eqb_refl.
-        now apply check_ret_only_ok_iff.
-      * pose proof (check_clock_getres_result_complete_ok _ _ _ _ _ _ _ H)
-          as Hcheck.
-        destruct (bv_eqb (eff_ret eff) (errno_ret EINVAL)) eqn:Hr.
-        -- apply bv_eqb_eq in Hr.
-           unfold clock_getres_result_spec in H.
-           destruct (w_is0 tp); sys_unfold; inv_ok;
-             subst; change (bv_eqb (Z_to_bv 64 0) (errno_ret EINVAL))
-               with false in Hr; discriminate.
-        -- exact Hcheck.
     + exact (check_clock_getres_result_complete_ok clkid tp eff m m' evs i H).
-  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE) eqn:H10; [|discriminate].
-    unfold err_ret, ret_only, pure in H. inversion H; subst.
-    now apply check_ret_only_ok_iff.
+    + destruct (negb (access_okb tp 16)) eqn:Ho; [|discriminate].
+      unfold err_ret, ret_only, pure in H. inversion H; subst.
+      now apply check_ret_only_ok_iff.
+  - destruct (clock_getres_alarm_b clkid) eqn:Ha.
+    + unfold err_ret, ret_only, pure in H. inversion H; subst.
+      now apply check_ret_only_ok_iff.
+    + destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE) eqn:H10; [|discriminate].
+      unfold err_ret, ret_only, pure in H. inversion H; subst.
+      now apply check_ret_only_ok_iff.
 Qed.
 
 Lemma check_clock_getres_complete_unmodeled : forall i clkid tp m eff,
@@ -503,16 +463,11 @@ Proof.
   destruct (clock_getres_supported_b clkid) eqn:Hs.
   - apply input_bind_unmodeled_inv in H. cbv beta in H.
     destruct (clock_getres_dst_ok_b i tp) eqn:Hd.
-    2:{ destruct (negb (access_okb tp 16)) eqn:Ho; [|reflexivity].
-        exfalso. destruct (clock_getres_alarm_b clkid).
-        - unfold alt in H. destruct H as [H|H];
-            unfold err_ret, ret_only, pure in H; discriminate.
-        - unfold err_ret, ret_only, pure in H. discriminate. }
-    destruct (clock_getres_alarm_b clkid) eqn:Ha.
-    + unfold alt in H. destruct H as [H|H].
-      * unfold err_ret, ret_only, pure in H. discriminate.
-      * exfalso. exact (clock_getres_result_no_unmodeled clkid tp i m H).
     + exfalso. exact (clock_getres_result_no_unmodeled clkid tp i m H).
-  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE); [|reflexivity].
-    unfold err_ret, ret_only, pure in H. discriminate.
+    + destruct (negb (access_okb tp 16)) eqn:Ho; [|reflexivity].
+      unfold err_ret, ret_only, pure in H. discriminate.
+  - destruct (clock_getres_alarm_b clkid) eqn:Ha.
+    + unfold err_ret, ret_only, pure in H. discriminate.
+    + destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE); [|reflexivity].
+      unfold err_ret, ret_only, pure in H. discriminate.
 Qed.

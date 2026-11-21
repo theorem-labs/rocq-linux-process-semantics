@@ -39,7 +39,7 @@ Definition clock_input (clkid : word) : SyscallInput :=
     starts the clock at its origin, so the reading is set on top of one. *)
 Definition clock_model (t : Z) : Model :=
   with_clock (Z_to_bv 64 t)
-    (mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None).
+    (mkModel [] (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 (** One second, as the kernel would write it: tv_sec = 1, tv_nsec = 0. *)
 Definition ts_1s : list byte :=
@@ -535,10 +535,10 @@ Example clock_getres_alarm_and_memory_edges :
     = CheckOk (clock_model 0) []
   /\ check_syscall (getres_input 8 4096 wmem_ts)
        (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
-       = CheckOk (clock_model 0) []
+       = CheckReject
   /\ check_syscall (getres_input 8 4096 (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
-       = CheckUnmodeled
+       = CheckOk (clock_model 0) []
   /\ check_syscall (getres_input 1 4096 (fun _ => None))
        (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
        = CheckUnmodeled
@@ -553,6 +553,124 @@ Example clock_getres_alarm_and_memory_edges :
        (clock_model 0) = CheckReject
   /\ check_syscall (getres_input 1 0 (fun _ => None))
        (mkEffect 0 [(0, res_1ns)] []) (clock_model 0) = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** UNIVERSALLY QUANTIFIED.  On an alarm id the spec admits -EINVAL and
+    nothing else, whatever [tp], the memory or the model:
+    [alarm_clock_getres] (kernel/time/alarmtimer.c:608-616) fails before
+    it fills anything, because [alarmtimer_get_rtcdev] is the stub that
+    returns NULL when CONFIG_RTC_CLASS is not set
+    (include/linux/alarmtimer.h:57-62), as in the configuration of
+    record; and [SYSCALL_DEFINE2(clock_getres)] skips the copy under its
+    [!error &&] (kernel/time/posix-timers.c:1268).  So a resolution, a
+    bare 0 and an -EFAULT are all refused for these ids. *)
+Lemma clock_getres_alarm_ids_answer_only_einval :
+  forall clkid tp i m o,
+    clock_getres_alarm_b clkid = true ->
+    (clock_getres_spec clkid tp i m o
+     <-> o = Ok (mkEffect (errno_ret EINVAL) [] []) m []).
+Proof.
+  intros clkid tp i m o Ha.
+  assert (Hs : clock_getres_supported_b clkid = false).
+  { unfold clock_getres_alarm_b in Ha. unfold clock_getres_supported_b.
+    apply orb_true_iff in Ha as [Ha|Ha]; apply Z.eqb_eq in Ha;
+      rewrite Ha; reflexivity. }
+  unfold clock_getres_spec. rewrite Hs, Ha.
+  unfold err_ret, ret_only, pure. cbv beta iota.
+  apply iff_refl.
+Qed.
+
+(** The same through the checker, on both alarm ids.  -EINVAL is
+    accepted at a writable [tp], at a NULL one, at one mapped nowhere,
+    and on [2^32 + 8], which the [int] narrowing makes
+    [CLOCK_REALTIME_ALARM].  A 0 with a resolution written at a
+    writable [tp] is refused on both ids, and so are a bare 0 at a NULL
+    [tp] and an -EFAULT at a [tp] mapped nowhere. *)
+Example clock_getres_alarm_is_einval_on_every_tp :
+  check_syscall (getres_input 9 4096 wmem_ts)
+    (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+    = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 8 0 (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 9 4096 (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 4294967304 4096 wmem_ts)
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 8 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_4ms)] []) (clock_model 0)
+       = CheckReject
+  /\ check_syscall (getres_input 9 4096 wmem_ts)
+       (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+       = CheckReject
+  /\ check_syscall (getres_input 9 0 (fun _ => None))
+       (mkEffect 0 [] []) (clock_model 0)
+       = CheckReject
+  /\ check_syscall (getres_input 9 4096 (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
+       = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** [CLOCK_BOOTTIME] (7), the last id of the run
+    [clock_getres_supported_b] admits, is a clock.  [posix_clocks] maps
+    it to [clock_boottime] (kernel/time/posix-timers.c:1526, Linux
+    v6.18.46), whose [.clock_getres] is [posix_get_hrtimer_res]
+    (kernel/time/posix-timers.c:279-284).  That writes 0 s and
+    [hrtimer_resolution], which a kernel that switched to high resolution
+    has set to 1 ns ([hrtimer_switch_to_hres]
+    (kernel/time/hrtimer.c:723-738)).  So 0 with {0 s, 1 ns} at a writable
+    [tp] is accepted, and the -EINVAL of an id with no [k_clock]
+    ([SYSCALL_DEFINE2(clock_getres)], kernel/time/posix-timers.c:1263-1264)
+    is refused. *)
+Example clock_getres_boottime_answers :
+  check_syscall (getres_input 7 4096 wmem_ts)
+    (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+    = CheckOk (clock_model 0) []
+  /\ check_syscall (getres_input 7 4096 wmem_ts)
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckReject.
+Proof. repeat split; check_eq. Qed.
+
+(** A general clock's resolution is left open below one second, up to
+    its last nanosecond.  [posix_get_hrtimer_res]
+    (kernel/time/posix-timers.c:279-284, Linux v6.18.46) writes
+    [hrtimer_resolution] into [tv_nsec], and [posix_get_coarse_res]
+    (kernel/time/posix-timers.c:250-254) writes one tick through
+    [ktime_to_timespec64].  Which of the two a clock reports, and the
+    length of the tick, follow the boot ([hrtimer_switch_to_hres]
+    (kernel/time/hrtimer.c:723-738)) and CONFIG_HZ, which this model does
+    not fix, so the bound is a full second and nothing tighter: 10^9 - 1
+    ns is accepted here, and a [tv_nsec] of 10^9 is refused by
+    [clock_getres_alarm_and_memory_edges]. *)
+Example clock_getres_last_nanosecond_below_a_second_admitted :
+  check_syscall (getres_input 1 4096 wmem_ts)
+    (mkEffect 0 [(4096, Z_to_le_bytes 8 0 ++ Z_to_le_bytes 8 999999999)] [])
+    (clock_model 0) = CheckOk (clock_model 0) [].
+Proof. check_eq. Qed.
+
+(** A negative id names a CPU clock or a clock file descriptor:
+    [clockid_to_kclock] (kernel/time/posix-timers.c:1535-1548, Linux
+    v6.18.46) sends it to [clock_posix_cpu] or [clock_posix_dynamic]
+    before [posix_clocks] is read.  -6, sign-extended into register a0
+    as the C caller passes an int, is [PROCESS_CLOCK]
+    (kernel/time/posix-cpu-timers.c:1667), the caller's own process CPU
+    clock.  For it [posix_cpu_clock_getres]
+    (kernel/time/posix-cpu-timers.c:159-177) answers 0 and writes
+    {0 s, 1 ns}: [pid_for_clock] (kernel/time/posix-cpu-timers.c:57-95)
+    takes PID 0 as the caller's own process, and the clock is
+    [CPUCLOCK_SCHED].  The model leaves the negative ids unmodeled
+    ([clock_getres_supported_b]), so the checker declines the call: it
+    judges neither that answer nor the -EINVAL of an id with no
+    [k_clock]. *)
+Example clock_getres_negative_cpu_clock_is_declined :
+  check_syscall (getres_input (Z_to_bv 64 (-6)) 4096 wmem_ts)
+    (mkEffect 0 [(4096, res_1ns)] []) (clock_model 0)
+    = CheckUnmodeled
+  /\ check_syscall (getres_input (Z_to_bv 64 (-6)) 4096 wmem_ts)
+       (mkEffect (errno_ret EINVAL) [] []) (clock_model 0)
+       = CheckUnmodeled.
 Proof. repeat split; check_eq. Qed.
 
 (* =========================================================================
@@ -685,9 +803,10 @@ Example clock_getres_wrap_would_pass_the_bare_walk :
 Proof. vm_compute. discriminate. Qed.
 
 (** -EFAULT with nothing written, and the resolution the bare walk let
-    through is refused.  On an alarm id the -EINVAL [alarm_clock_getres]
-    (kernel/time/alarmtimer.c) answers before the copy stays admitted
-    beside the -EFAULT. *)
+    through is refused.  On an alarm id the answer is the -EINVAL
+    [alarm_clock_getres] (kernel/time/alarmtimer.c) gives before the
+    copy, and the -EFAULT is refused: with CONFIG_RTC_CLASS not set the
+    copy is never reached ([clock_getres_alarm_ids_answer_only_einval]). *)
 Example clock_getres_wrapping_tp_is_efault :
   check_syscall (getres_input 1 clock_getres_wrap_tp clock_getres_wrap_mem)
     (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
@@ -700,7 +819,7 @@ Example clock_getres_wrapping_tp_is_efault :
      = CheckOk (clock_model 0) []
   /\ check_syscall (getres_input 8 clock_getres_wrap_tp clock_getres_wrap_mem)
        (mkEffect (errno_ret EFAULT) [] []) (clock_model 0)
-     = CheckOk (clock_model 0) [].
+     = CheckReject.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
 Definition clock_getres_top_tp : word := Z_to_bv 64 (TASK_SIZE - 16).

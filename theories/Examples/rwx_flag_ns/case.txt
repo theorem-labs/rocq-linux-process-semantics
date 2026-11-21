@@ -1,0 +1,1 @@
+conform --guest-exit 5   # the stored byte comes back as the exit status

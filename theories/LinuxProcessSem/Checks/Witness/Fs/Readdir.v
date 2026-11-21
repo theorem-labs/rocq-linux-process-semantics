@@ -7,7 +7,10 @@
     [Checks/Progress.v] keeps the dispatcher and
     re-exports this module. A witness here exhibits one admissible
     outcome for a spec in the matching [Sys] module, which is what
-    progress is proved from. *)
+    progress is proved from.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -35,9 +38,8 @@ Definition getdents64_witness (fd count : word) (m : Model)
   | Some (FdDgram _)   => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdEventfd _) => ret_outcome (errno_ret ENOTDIR) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret ENOTDIR) m
-  | Some FdUrandom => ret_outcome (errno_ret ENOTDIR) m
-  | Some (FdAnon _ _)  => ret_outcome (errno_ret ENOTDIR) m
-  | Some FdDir =>
+  | Some (FdUrandom _ _) => ret_outcome (errno_ret ENOTDIR) m
+  | Some (FdDir _) =>
       if getdents64_no_room count
       then ret_outcome (errno_ret EINVAL) m
       else Unmodeled

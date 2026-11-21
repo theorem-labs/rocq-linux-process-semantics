@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -26,7 +29,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 Definition eventfd_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2) ]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** The counter comes FIRST and the flag word second, which is the one
     thing about this call's shape a reader is likely to get backwards.
@@ -85,7 +88,7 @@ Example eventfd2_dropped_flag_bits_are_einval :
      = CheckOk eventfd_model []
   /\ check_syscall (efd_in 0 (2 ^ 20)) (mkEffect 3 [] []) eventfd_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ACCEPTED MASK ANSWERS WITH A DESCRIPTOR, one bit at a time and
     all together, and each bit lands in the new context.
@@ -138,7 +141,7 @@ Example eventfd2_accepted_flag_words_answer :
   /\ check_syscall (efd_in 0 (2 * O_CLOEXEC))
        (mkEffect (errno_ret EINVAL) [] []) eventfd_model
      = CheckOk eventfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ERRNOS PAST THE GATE ARE EXACTLY [eventfd2_errnos]: the
     [kmalloc]'s -ENOMEM, [get_unused_fd_flags]' -EMFILE and
@@ -203,7 +206,7 @@ Example eventfd2_counter_is_not_judged :
   /\ check_syscall (efd_in (2 ^ 32 - 1) (2 ^ 20))
        (mkEffect (errno_ret EINVAL) [] []) eventfd_model
      = CheckOk eventfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE FLAG WORD NARROWS TO 32 BITS, and the two halves are pinned
     together because only their conjunction says what narrowing means.
@@ -234,7 +237,7 @@ Example eventfd2_narrows_the_flag_word :
   /\ check_syscall (efd_in 0 (2 ^ 32 + 2 ^ 20))
        (mkEffect (errno_ret EINVAL) [] []) eventfd_model
      = CheckOk eventfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** BIT 31 ALONE, WHICH IS THE SIGN BIT OF THE [int] LINUX COMPARES.
     ADMISSION REASON: the REFUSAL of a descriptor for it is the
@@ -257,4 +260,4 @@ Example eventfd2_sign_bit_is_still_a_bad_bit :
   /\ check_syscall (efd_in 0 (2 ^ 31 + EFD_SEMAPHORE))
        (mkEffect (errno_ret EINVAL) [] []) eventfd_model
      = CheckOk eventfd_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.

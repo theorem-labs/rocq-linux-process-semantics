@@ -1,0 +1,1 @@
+conform --stdin hello   # stdin drained into the mmap arena, count and bytes written to fd 2

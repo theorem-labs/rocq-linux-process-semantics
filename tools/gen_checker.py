@@ -167,7 +167,96 @@ End __.
 '''
 
 
+# The examples whose Checker.v ascribes [Equivalence.SPEC_ON] instead of
+# [Equivalence.SPEC], and nothing else may.  Each names the hypothesis its
+# Proof.v defines and the exact text of that definition, which --check
+# finds in the Proof.v and the Checker.v prints.  The reason, the same for
+# both: both programs open argv[1] (O_RDONLY) and argv[2]
+# (O_WRONLY|O_CREAT|O_TRUNC), and the model declines such an open on one
+# walk end that Run.valid_input admits: Fs.ROutside ("proc" or "sys"
+# looked up at the root, by any spelling or link: /proc and /sys are
+# outside the model).  A device entry is answered at any key.  The
+# hypothesis excludes exactly those inputs; each Proof.v proves it
+# equivalent to "the model answers the open of each operand"
+# (operands_inside_model_iff).
+OPERANDS_INSIDE_MODEL = '''\
+Definition operands_inside_model (inp : ProcInput) : Prop :=
+  (3 <= length (in_argv inp))%nat ->
+  forall (i : nat) (md : Fs.WalkMode),
+    (i = 1%nat /\\ md = Fs.WalkFull true false
+     \\/ i = 2%nat /\\ md = Fs.WalkCreate true) ->
+    nth i (in_argv inp) [] <> [] ->
+    (length (nth i (in_argv inp) []) < State.path_max)%nat ->
+    match fst (fst (Fs.resolve md (in_fs inp) (in_cwd inp) (nth i (in_argv inp) []))) with
+    | Fs.ROutside => False
+    | _ => True
+    end.'''
+
+SPEC_ON = {
+    "cp_ns": ("operands_inside_model", OPERANDS_INSIDE_MODEL),
+    "headcp_ns": ("operands_inside_model", OPERANDS_INSIDE_MODEL),
+}
+
+# The theorem a SPEC_ON example proves, and the suffix of its witness.
+SPEC_ON_THEOREM = "strong_universal_operands_inside"
+WITNESS_SUFFIX = "_witness"
+
+ON_TEMPLATE_HEAD = TEMPLATE.split(
+    "Module Checked <: Equivalence.SPEC ")[0].replace(
+    "at exactly the type [Equivalence.SPEC] demands",
+    "at exactly the type [Equivalence.SPEC_ON] demands under the\n"
+    "    hypothesis below").replace(
+    " (and [omni_strong_universal] at the\n"
+    "    type [OmniEquivalence.OMNI_SPEC] demands)", "")
+
+ON_ASCRIPTION = '''\
+(** The input hypothesis this example's theorem is stated under, as its
+    Proof.v defines it (pinned by tools/gen_checker.py --check):
+
+{hyp_text}
+*)
+Module Hyp <: Equivalence.INPUT_HYP.
+  Definition hyp := LinuxProcessSemantics.Examples.{name}.Proof.{hyp}.
+  Definition hyp_witness := LinuxProcessSemantics.Examples.{name}.Proof.{hyp}{witness}.
+End Hyp.
+
+Module Checked <: Equivalence.SPEC_ON Hyp SourceMemImage.Source TargetMemImage.Target.
+  Definition strong_universal := LinuxProcessSemantics.Examples.{name}.Proof.{theorem}.
+End Checked.
+'''
+
+ON_AUDIT = '''\
+  idtac "<strong_universal>".
+  idtac "<PrintAssumptions>".
+  Print Assumptions Checked.strong_universal.
+  idtac "</PrintAssumptions>".
+  idtac "</strong_universal>".
+  idtac "<hyp_witness>".
+  idtac "<PrintAssumptions>".
+  Print Assumptions Hyp.hyp_witness.
+  idtac "</PrintAssumptions>".
+  idtac "</hyp_witness>".
+'''
+
+
+def indent_comment(text):
+    return "\n".join("    " + line for line in text.splitlines())
+
+
+def render_on(name):
+    hyp, text = SPEC_ON[name]
+    wf_and_audit = TEMPLATE.split("End OmniChecked.\n\n")[1]
+    old_audit = wf_and_audit[wf_and_audit.index('  idtac "<strong_universal>".'):
+                             wf_and_audit.index("Abort.")]
+    return (ON_TEMPLATE_HEAD.format(name=name)
+            + ON_ASCRIPTION.format(name=name, hyp=hyp, hyp_text=indent_comment(text),
+                                   witness=WITNESS_SUFFIX, theorem=SPEC_ON_THEOREM)
+            + "\n" + wf_and_audit.replace(old_audit, ON_AUDIT).format(name=name))
+
+
 def render(name):
+    if name in SPEC_ON:
+        return render_on(name)
     return TEMPLATE.format(name=name)
 
 
@@ -276,6 +365,12 @@ def check_text(text, name):
     if live is None:
         return ["%s: a comment holds a `\"`, which can keep it open across "
                 "a `*)` and hide text from Coq" % name]
+    if name in SPEC_ON:
+        return check_text_on(text, live, name)
+    if SPEC_ON_WORD.search(live):
+        problems.append(
+            "%s: ascribes Equivalence.SPEC_ON / INPUT_HYP, which only the "
+            "examples in gen_checker.SPEC_ON may" % name)
     legacy = LEGACY_ASCRIPTION.format(name=name)
     if live.count(legacy) != 1:
         problems.append(
@@ -328,6 +423,86 @@ def check_text(text, name):
     elif live.find(legacy) >= 0 and live.find(legacy) > omni_at:
         problems.append(
             "%s: the legacy ascription must come before the omni one" % name)
+    return problems
+
+
+SPEC_ON_WORD = re.compile(r"\b(SPEC_ON|INPUT_HYP)\b")
+ON_MODULES = ["Hyp", "Checked", "SourceWf", "TargetWf"]
+ON_TAGS = ("<strong_universal>", "</strong_universal>",
+           "<hyp_witness>", "</hyp_witness>")
+
+
+def check_text_on(text, live, name):
+    """check_text for an example in SPEC_ON: the pinned SPEC_ON ascription
+    (hypothesis, witness and theorem named exactly), the hypothesis's text
+    printed in the file, and the same census as the SPEC form."""
+    hyp, hyp_text = SPEC_ON[name]
+    problems = []
+    asc = ON_ASCRIPTION.format(name=name, hyp=hyp, hyp_text=indent_comment(hyp_text),
+                               witness=WITNESS_SUFFIX, theorem=SPEC_ON_THEOREM)
+    live_asc = strip_coq_comments(asc)
+    if live.count(live_asc.strip()) != 1:
+        problems.append(
+            "%s: the SPEC_ON ascription (Module Hyp <: Equivalence.INPUT_HYP "
+            "with %s and %s%s, Module Checked <: Equivalence.SPEC_ON of "
+            "Proof.%s) is missing or altered"
+            % (name, hyp, hyp, WITNESS_SUFFIX, SPEC_ON_THEOREM))
+    if text.count(indent_comment(hyp_text)) != 1:
+        problems.append("%s: the hypothesis's text is not printed in the "
+                        "Checker.v" % name)
+    if live.count(ON_AUDIT) != 1:
+        problems.append("%s: the Print Assumptions blocks of "
+                        "Checked.strong_universal and Hyp.hyp_witness are "
+                        "missing or altered" % name)
+    requires = REQUIRES.format(name=name)
+    if live.count(requires) != 1:
+        problems.append("%s: the Require lines for Equivalence and the "
+                        "example's Proof are missing or altered" % name)
+    for pattern, what in FORBIDDEN:
+        if pattern.search(live.replace(requires, "")):
+            problems.append("%s: contains %s" % (name, what))
+    for tag in ON_TAGS:
+        if live.count('idtac "%s".' % tag) != 1:
+            problems.append("%s: the audit tag %s must be emitted exactly once"
+                            % (name, tag))
+    if len(PRINT_ASSUMPTIONS.findall(live)) != 2:
+        problems.append("%s: exactly two Print Assumptions are allowed" % name)
+    declared = MODULE_DECL.findall(live)
+    if declared != ON_MODULES:
+        problems.append("%s: declares modules %s where exactly %s are allowed"
+                        % (name, declared, ON_MODULES))
+    if len(REQUIRE.findall(live)) != 5:
+        problems.append("%s: must hold exactly the five pinned Require lines"
+                        % name)
+    return problems
+
+
+def normalise(text):
+    return " ".join(text.split())
+
+
+def check_spec_on(examples_dir):
+    """The SPEC_ON entries that the tree does not bear out: the example's
+    Proof.v must define the pinned hypothesis verbatim, a witness named
+    <hyp>_witness, and the theorem the Checker ascribes."""
+    problems = []
+    for name, (hyp, hyp_text) in sorted(SPEC_ON.items()):
+        path = os.path.join(examples_dir, name, "Proof.v")
+        if not os.path.isfile(path):
+            problems.append("%s: listed in SPEC_ON but has no Proof.v" % name)
+            continue
+        with open(path) as f:
+            proof = strip_coq_comments(f.read()) or ""
+        if normalise(hyp_text) not in normalise(proof):
+            problems.append("%s: Proof.v does not define the pinned "
+                            "hypothesis %s verbatim" % (name, hyp))
+        if not re.search(r"\b(Lemma|Theorem|Definition)\s+%s%s\b"
+                         % (hyp, WITNESS_SUFFIX), proof):
+            problems.append("%s: Proof.v has no witness %s%s" % (name, hyp,
+                                                                WITNESS_SUFFIX))
+        if not re.search(r"\b(Lemma|Theorem)\s+%s\b" % SPEC_ON_THEOREM, proof):
+            problems.append("%s: Proof.v does not prove %s" % (name,
+                                                               SPEC_ON_THEOREM))
     return problems
 
 
@@ -421,13 +596,15 @@ def main():
     if args.verify:
         verify_not_in_tree(args.examples_dir)
     if args.check:
-        problems = check_examples(args.examples_dir)
+        problems = (check_examples(args.examples_dir)
+                    + check_spec_on(args.examples_dir))
         for problem in problems:
             print("gen_checker.py: %s" % problem, file=sys.stderr)
         if problems:
             sys.exit(1)
         print("gen_checker.py: every generated Checker.v ascribes "
-              "Proof.strong_universal to Equivalence.SPEC (%d examples)"
+              "Proof.strong_universal to Equivalence.SPEC, or the SPEC_ON "
+              "theorem of an allowlisted example (%d examples)"
               % len(generated_names(args.examples_dir)))
     if args.verify or args.check:
         return

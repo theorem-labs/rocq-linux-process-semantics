@@ -27,7 +27,9 @@
 (* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes with CONFIG_RSEQ and 27 pairs / 432 bytes without it ([StackLayout.auxv_size]), and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run.
+  BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import Run.
 From LinuxProcessSemantics.Riscv Require Import Prelude Instr Decode DecodeC Sem.
 From LinuxProcessSemantics.Common Require Import
   PropExec CatExec CatSim SeqExec StoreOk StreamSim StepTac ShapeAlg AgentLib StartupAux RefLayout ArgvEnv
@@ -135,8 +137,8 @@ Section Init.
       every build. *)
   Variable kb : KernelBuild.
   Definition inp : ProcInput :=
-    mkProcInput_full argv envp fs stdin uid gid groups net default_nofile
-      (Z_to_bv 64 0) hw false Sv48 default_urandom [] (recorded_kernel kb)
+    mkProcInput_full argv envp fs Fs.default_cwd stdin uid gid groups net default_nofile
+      (Z_to_bv 64 0) hw false Sv48 default_urandom (recorded_kernel kb)
       default_execfn true true false.
     (* in_hwcap = hw, in_abort_terminal = false, in_va_size = Sv48; the
        trailing fields are [State.mkProcInput]'s *)

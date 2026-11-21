@@ -1,0 +1,1 @@
+conform --guest-exit 3 -- in out   # no input file: the open fails and both exit 3; the copy path cannot be recorded, see bugs/harness-seed-file-never-enters-the-model-image.md

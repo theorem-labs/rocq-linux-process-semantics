@@ -74,7 +74,10 @@
     second one says.  [O2_P2_agree] below proves the second one anyway,
     because a reader checking that the classifier's verdict is CORRECT
     rather than merely consistent wants to see that the demo did not
-    quietly rely on both pairs differing.  It is stated as what it is. *)
+    quietly rely on both pairs differing.  It is stated as what it is.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -542,10 +545,11 @@ Definition demo_input (s : list byte) : FinProcInput :=
     own for a third reason: it is a DISJUNCTION, and neither
     [reflexivity] nor [lia] picks a side.
 
-    [Fs.fs_image_real], the FIFTH conjunct, needs no arm of its own:
-    [demo_fs] is the empty image, with no key to be non-canonical and
-    no key under another, so the boolean computes to [true] and the
-    [reflexivity] at the end of the chain closes it.
+    [Run.valid_image] needs no arm in the chain: [demo_fs] is
+    [Fs.standard_root] at [Fs.default_cwd], the working directory
+    [MeasureLib.core_input] names, so each of its clauses is a boolean
+    that computes to [true], and [Run.valid_image_vm] closes it after
+    the chain.
 
     [Run.valid_launch], the THIRTEENTH conjunct, needs three arms for a
     fourth reason: [repeat split] may or may not have taken it apart
@@ -591,6 +595,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | cbn; lia
                  | intros [] ].
+  all: try valid_image_vm.
   all: try valid_urandom_default.
 Qed.
 
@@ -757,7 +762,7 @@ Qed.
     emits. *)
 Example C1_answers_one : forall f en,
   bh_traces (run C1_image classifier_alloc_limit en (to_proc_input f))
-            [ExitEv verdict_reject (in_fs (to_proc_input f))].
+            [ExitEv verdict_reject (Fs.fs_observe (in_fs (to_proc_input f)))].
 Proof.
   intros f en. apply (proj2 (C1_traces _ _ _ _)). right. reflexivity.
 Qed.
@@ -767,7 +772,7 @@ Qed.
     the trace side. *)
 Example C1_never_answers_zero : forall f en,
   ~ bh_traces (run C1_image classifier_alloc_limit en (to_proc_input f))
-              [ExitEv verdict_accept (in_fs (to_proc_input f))].
+              [ExitEv verdict_accept (Fs.fs_observe (in_fs (to_proc_input f)))].
 Proof.
   intros f en.
   exact (no_exit_zero_trace_of_exit_one C1_image C1_traces

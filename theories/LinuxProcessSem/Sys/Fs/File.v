@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -21,13 +24,46 @@ Open Scope sys_scope.
 (** The kernel returns the LOWEST free descriptor, as Linux does
     (e.g. after close(1), the next open returns fd 1) — computed by
     [State.alloc_fd].  The choice set is a singleton (no nondeterminism);
-    the freeness conjunct only empties it in the unreachable case where
-    [alloc_fd]'s scan bound (4096 fds) is exhausted, leaving just the
-    errno alternative — as real kernels fail with -EMFILE at RLIMIT_NOFILE
-    well before that.  [alloc_fd fds <= 4096] keeps an fd from ever being
-    confused with an error-encoded return. *)
+    the freeness conjunct empties it only where [alloc_fd]'s scan bound
+    is exhausted, every descriptor 0 to 4096 held ([lowest_fd_none]),
+    which a run whose soft RLIMIT_NOFILE is above 4096 can reach
+    ([Run.valid_nofile]).  A spec that calls [lowest_fd] there is left
+    with its errno alternative alone; [Open.openat_core_spec] answers
+    before it would allocate instead ([unused_fd_none_spec]).
+    [alloc_fd fds <= 4096] keeps an fd from ever being confused with an
+    error-encoded return. *)
 Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
   choose (fun fd => fd_lookup fds fd = None /\ fd = alloc_fd fds).
+
+(** [lowest_fd] HAS NO SLOT: [State.alloc_fd]'s scan answers a descriptor
+    the table holds.  The scan tests the candidates 0 to 4095 and
+    answers 4096 when it finds none free, so this is every descriptor 0
+    to 4096 held, and it is the freeness conjunct of [lowest_fd] as a
+    test, for a spec that answers before it allocates. *)
+Definition lowest_fd_none (fds : list (word * FdEntry)) : bool :=
+  match fd_lookup fds (alloc_fd fds) with
+  | Some _ => true
+  | None => false
+  end.
+
+(** WHAT [get_unused_fd_flags] ANSWERS WHERE [lowest_fd] HAS NO SLOT.
+    [get_unused_fd_flags] hands [alloc_fd] the soft RLIMIT_NOFILE as
+    [end] (fs/file.c:620-623, Linux v6.18.46), and [alloc_fd] takes the
+    lowest free descriptor and answers -EMFILE when it is at or above
+    [end], before [expand_files] can allocate anything (:591-593; the
+    same test in the same place at v6.16 and v6.17).  With
+    every descriptor 0 to [alloc_fd] held ([lowest_fd_none]), the lowest
+    free one is above [alloc_fd], so under a soft limit of at most
+    [alloc_fd] + 1, the limit [State.m_nofile] holds, -EMFILE is the
+    only answer.  Under a higher limit Linux may hand out that lowest
+    free descriptor, one past the candidates [State.alloc_fd] scans,
+    which no spec here can return, so the call declines rather than
+    refuse a descriptor a kernel gives
+    (bugs/fd-allocation-ignores-rlimit-nofile.md). *)
+Definition unused_fd_none_spec (m : Model) : Sys SyscallEffect :=
+  if (bv_unsigned (m_nofile m) <=? bv_unsigned (alloc_fd (m_fds m)) + 1)%Z
+  then err_ret EMFILE
+  else unmodeled.
 
 (* =========================================================================
    Descriptor duplication: dup (23) / dup3 (24)
@@ -56,7 +92,8 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       position is the model-wide [m_stdin] and its writes are trace
       events, so two fds naming one channel already share everything a
       description shares: copying the entry IS the sharing.
-    - [FdDir] is nullary, and no modeled arm observes a directory
+    - [FdDir k] carries only the folder's key, which a copy shares as
+      it is, and no modeled arm observes a directory
       position: [ReadWrite.lseek_spec] declines on [FdDir], and
       [Readdir.getdents64_spec] declines every listing, answering only
       where the buffer has no room for an entry — which is the arm that
@@ -80,7 +117,7 @@ Definition lowest_fd (fds : list (word * FdEntry)) : Sys word :=
       file description layer fixes both. *)
 Definition dup_modeled_entry (e : FdEntry) : bool :=
   match e with
-  | FdChannel _ | FdDir => true
+  | FdChannel _ | FdDir _ => true
   | FdFile _ _ | FdFileW _ _ | FdSocket _ => false
   (* AN APPEND FD DECLINES WITH THEM, and this one is a CHOICE rather
      than the [FdFile] argument repeated.  A write through an
@@ -151,7 +188,7 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      read the same stream in the same order, exactly as two [struct
      file]s on the random device draw from one generator.  Copying the
      entry loses nothing. *)
-  | FdUrandom => true
+  | FdUrandom _ _ => true
   (* A STREAM-PAIR END DECLINES, for the pipe's reason and one of its
      own.  [State.stream_peer] finds an end's peer by scanning the fd
      table, and [unix_release_sock] runs at the LAST [fput] of a socket
@@ -173,14 +210,6 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      shared socket declines anyway, so copying it would buy nothing,
      and a decline keeps one rule for every socket kind *)
   | FdDgram _ => false
-  (* AN UNNAMED FILE DECLINES, for the [FdFile] reason: the entry
-     carries the descriptor's [f_pos] ([State.af_off]), which read, write
-     and lseek rewrite in place, so a copied entry would split the one
-     offset two Linux descriptors on one [struct file] share.  It carries
-     the file's contents too, which [State.anon_update] keeps in step
-     across entries; it is the offset that has no such keeper.
-     [State.FdAnon]'s note relies on this decline. *)
-  | FdAnon _ _ => false
   end.
 
 (** dup's injectable failures: fd-table exhaustion at RLIMIT_NOFILE
@@ -205,7 +234,12 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     i.e. [State.alloc_fd]), which is where the two injectable failures
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
     the model has no O_PATH fds, so nothing turns on it.  The new
-    descriptor's close-on-exec bit is cleared, [flags] being 0.
+    descriptor's close-on-exec bit is cleared, [flags] being 0.  The new
+    number's old stat pin is dropped before the entry is installed, and
+    the copy, the same [struct file], shares [oldfd]'s pin
+    ([State.with_fd_dup]): a device descriptor copied there may hold
+    another node than the one a descriptor once there held, and it
+    reports the inode [oldfd] reports.
 
     [oldfd] arrives already truncated to 32 bits (see
     [Syscall.fd32]), so [dup(2^32)] duplicates stdin and [dup(-1)] is
@@ -219,7 +253,8 @@ Definition dup_spec (oldfd : word) : Sys SyscallEffect :=
       else
         alt (er <- errno_from dup_errnos ;; err_ret er)  (* untracked env failure or no free fd *)
             (fd <- lowest_fd (m_fds m) ;;
-             set_fds (fd_insert (m_fds m) fd e) ;;
+             modify (fun m' => with_fds (fd_insert (m_fds m) fd e)
+                                 (with_fd_dup (entry_dev_kind e) oldfd fd m')) ;;
              ret_only fd)
   end.
 
@@ -329,7 +364,11 @@ Definition dup3_flags_ok (flags : word) : bool :=
     the same two answers — and the decision to
     ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
     decision to admit both answers to [F_GETFD].  The displaced entry is
-    dropped exactly as [Open.close_spec] drops one. *)
+    dropped exactly as [Open.close_spec] drops one, and [newfd]'s stat
+    pin with it, and the copy shares [oldfd]'s pin ([State.with_fd_dup]):
+    a device descriptor copied over a device descriptor of the same kind
+    leaves an entry equal to the old one, though the two may hold two
+    nodes. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 
@@ -348,9 +387,13 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
           | None =>
               (* free: answered only below the embedded table's floor *)
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
-              then set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+              then modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
+                                       (with_fd_dup (entry_dev_kind e) oldfd newfd m')) ;;
+                   ret_only newfd
               else unmodeled
-          | Some _ => set_fds (fd_insert (m_fds m) newfd e) ;; ret_only newfd
+          | Some _ => modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
+                                          (with_fd_dup (entry_dev_kind e) oldfd newfd m')) ;;
+                      ret_only newfd
           end
     end.
 

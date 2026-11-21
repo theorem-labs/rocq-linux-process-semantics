@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -21,12 +24,14 @@ Open Scope sys_scope.
 (** A request no file that is not a terminal implements, and so one
     every fd this model can produce answers -ENOTTY.
 
-    SCOPE.  Mainline Linux v5.15 through v6.14, riscv64.  The floor is
+    SCOPE.  The supported kernels, v6.16 to v6.18.46 (SCOPE.md).  This
+    header was first read over mainline v5.15 through v6.14; v5.15 is
     where the claim first holds for every far end an [FdChannel] could
-    name (see SOCKETS below); the cap is the last tag read.  v6.15
-    changes [vfs_ioctl]'s RETURN TYPE ([long] to [int]) and nothing
-    else -- same body, still exported -- so what stops at v6.14 is the
-    reading, not the behaviour.
+    name (see SOCKETS below).  v6.15 changed [vfs_ioctl]'s RETURN TYPE
+    ([long] to [int]); at v6.18.46 it is also [static] and no longer
+    exported.  Its body at v6.16, v6.17 and v6.18.46 is the one quoted
+    below, and [do_vfs_ioctl] and [file_ioctl] (fs/ioctl.c) have the same
+    arms at all three, none of them a terminal request.
 
     WHY THE ANSWER IS A CONSTANT.  [SYSCALL_DEFINE3(ioctl, ...)]
     resolves the fd, calls [security_file_ioctl], then tries the request
@@ -61,10 +66,13 @@ Open Scope sys_scope.
 
     What matters is not where these requests ARE implemented but that no
     fd this model can produce reaches a handler that claims them.  A
-    regular file's ext4 [__ext4_ioctl] (fs/ext4/ioctl.c) returns -ENOTTY
-    from its default arm; a pipe's [pipe_ioctl] (fs/pipe.c) returns
-    -ENOIOCTLCMD, which the code above maps to -ENOTTY; a file with no
-    [unlocked_ioctl] at all takes the first branch.  The handlers that
+    regular file of tmpfs or ramfs, the file systems of the configuration
+    of record whose regular files hold bytes (SCOPE.md), has no
+    [unlocked_ioctl] ([shmem_file_operations] in mm/shmem.c,
+    [ramfs_file_operations] in fs/ramfs/file-mmu.c) and takes the first
+    branch, as does any other file with no [unlocked_ioctl]; a pipe's
+    [pipe_ioctl] (fs/pipe.c) returns -ENOIOCTLCMD, which the code above
+    maps to -ENOTTY.  The handlers that
     DO claim them are scattered -- TIOCGWINSZ/TIOCSWINSZ in [tty_ioctl]
     (drivers/tty/tty_io.c), TIOCSCTTY/TIOCNOTTY in
     drivers/tty/tty_jobctrl.c, TCGETS/TCSETS in [tty_mode_ioctl]
@@ -80,12 +88,15 @@ Open Scope sys_scope.
     socket was -EFAULT rather than -ENOTTY whenever the third argument
     was not 40 readable bytes.  v5.15 gates that on
     [is_socket_ioctl_cmd(cmd)] and returns -ENOTTY instead, which is
-    where this scope's floor comes from.
+    where the claim first holds; v6.16, v6.17 and v6.18.46 keep the gate
+    in [sock_do_ioctl] (net/socket.c).
 
-    LSM.  [security_file_ioctl] runs before either half and takes [cmd],
-    so a policy may answer first -- SELinux returns -EACCES for a
-    request outside the domain's [allow ... ioctl] set.  The constant
-    below is therefore a null-LSM claim.
+    LSM.  [security_file_ioctl] runs before either half and takes [cmd].
+    The configuration of record builds no LSM (SCOPE.md), so it is the
+    stub of include/linux/security.h that answers 0 and no policy
+    answers first; an SELinux one, on a kernel that built it, would
+    return -EACCES for a request outside the domain's [allow ... ioctl]
+    set.
 
     ASSUMPTION.  The model classifies ALL THREE standard descriptors --
     fds 0, 1 and 2 ([State.init_model]) -- as [FdChannel] without
@@ -112,18 +123,20 @@ Open Scope sys_scope.
     scope above, so this corroborates rather than establishes).  Method:
     a native C program issuing each request with a 4096-byte argument
     and reporting errno.  Result: -ENOTTY everywhere, and -EBADF on a
-    descriptor that is not open.  One exception, over virtiofs: see
-    WHERE THIS STOPS.
+    descriptor that is not open.  One exception, over virtiofs:
+    TIOCSPTLCK was -EPERM there.  overlayfs and virtiofs are file
+    systems the configuration of record does not build (SCOPE.md), so
+    those rows bear on no supported kernel.
 
-    WHERE THIS STOPS.  The arm assumes the fd's filesystem answers an
-    unimplemented request itself.  FUSE does not -- [fuse_do_ioctl]
-    (fs/fuse/ioctl.c) forwards the request to the userspace server, so
-    the answer is that server's to pick.  Over virtiofs, TIOCSPTLCK
-    really is -EPERM.  That is an environment this model does not
-    describe: [Fs.v]'s interpreted file system has one kind of file and
-    it is an ordinary one.  It is left as an obligation on the
-    environment rather than modeled, because narrowing the arm would mean
-    dropping the one request [openpty] cannot do without. *)
+    WHERE THIS STOPS.  The arm assumes the fd's file system answers an
+    unimplemented request itself, and every file system of the
+    configuration of record that holds the model's files and folders
+    does: tmpfs and ramfs install no [unlocked_ioctl] on a regular file
+    or a folder.  FUSE, whose [fuse_do_ioctl] (fs/fuse/ioctl.c) forwards
+    the request to a userspace server, is not built (no
+    [CONFIG_FUSE_FS], SCOPE.md), and neither is virtiofs, which runs on
+    it.  [Fs.v]'s interpreted file system has one kind of file and it
+    is an ordinary one. *)
 Definition tty_only_request (req : word) : bool :=
   bv_eqb req TCGETS     || bv_eqb req TCSETS    || bv_eqb req TIOCSCTTY ||
   bv_eqb req TIOCGWINSZ || bv_eqb req TIOCSWINSZ || bv_eqb req TIOCNOTTY ||
@@ -288,15 +301,7 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before the request is examined *)
   | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
-  (* AN UNNAMED FILE IS A REGULAR FILE, and takes the file kinds' answer
-     by their route: [do_vfs_ioctl] (fs/ioctl.c, Linux v6.18.46) claims
-     none of the eight, hands an [S_ISREG] inode to [file_ioctl], whose
-     default is -ENOIOCTLCMD, and [vfs_ioctl] then finds no
-     [.unlocked_ioctl] in the regular-file table of tmpfs
-     ([shmem_file_operations], mm/shmem.c) and answers -ENOTTY.  musl's
-     [tmpfile()] reaches this through [__fdopen]'s TIOCGWINSZ *)
-  | Some (FdAnon _ _)
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDir _)
   | Some (FdSocket _)
   (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
      [sock_ioctl] default arm: [sock_do_ioctl] calls [unix_ioctl]
@@ -357,7 +362,7 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
      installed is [null_fops]). *)
   | Some (FdDevNull _ _) =>
       if tty_only_request req then err_ret ENOTTY else unmodeled
-  | Some FdUrandom => unmodeled
+  | Some (FdUrandom _ _) => unmodeled
       (* FAIL-CLOSED, on every request.  Unlike /dev/null this table
          HAS an [.unlocked_ioctl]: [random_ioctl] (drivers/char/random.c,
          v6.18.46) answers RNDGETENTCNT with the pool's entropy count,

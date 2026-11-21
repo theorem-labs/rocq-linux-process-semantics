@@ -1,0 +1,1 @@
+conform -- h   # the h branch: write "hello\n", exit 0

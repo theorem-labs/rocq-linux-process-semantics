@@ -64,9 +64,9 @@ Proof. intros ms a H. rewrite H. cbn. discriminate. Qed.
     resolved first" example below uses. *)
 Definition lo_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-           (3, FdFile [102] 0); (4, FdFileW [103] 0)]
+           (3, FdFile 1 0); (4, FdFileW 2 0)]
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105]); ([103], [])] None None None.
+    (raw_files [([102], [104; 105]); ([103], [])]) None None None.
 
 (** The same table with one 8 KiB mapping at 65536, for mremap. *)
 Definition lo_mapped_model : Model :=

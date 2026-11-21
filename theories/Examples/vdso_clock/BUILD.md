@@ -16,10 +16,10 @@ The image holds clang 20.1.8, lld 20.1.8 and a musl sysroot at
 
 Why this image is the pipeline's toolchain:
 
-1. `docs/building.md:4` of theorem-labs/oss-verify-proofs-internal says
-   that every binary is "a static riscv64 Linux program, compiled for
-   RV64G (`-march=rv64g -mabi=lp64d`) by clang 20.1.8 against musl, and
-   linked with lld".
+1. The pipeline builds every binary as "a static riscv64 Linux program,
+   compiled for RV64G (`-march=rv64g -mabi=lp64d`) by clang 20.1.8 against
+   musl, and linked with lld" (its build notes, which are not in this
+   repository).
 2. The toolchain is built by `toolchain/Dockerfile` of
    theorem-labs/static-asan. That file pins musl to `f21a9653` and
    llvm-project to `87f0227cb` (`ARG MUSL_BASE`, `ARG LLVM_BASE`, lines
@@ -27,10 +27,9 @@ Why this image is the pipeline's toolchain:
    `/mnt/nvme/sami/oss-verifier/agents/repro/static-asan`, commit
    `f48ae5b1`).
 3. The tag `f3560954-oft` names asan-static commit `f3560954`.
-   `notes/archana-TODO.md:218` of `/home/sami/src/oss-verifier` says that
-   static-asan `f48ae5b1` is a snapshot of asan-static `f3560954`, and
-   that `f3560954` built the example binaries.
-   `notes/R4-rebuild-pipeline.md:128-129` says the same.
+   Static-asan `f48ae5b1` is a snapshot of asan-static `f3560954`, and
+   `f3560954` built the example binaries (the pipeline's notes, which are
+   not in this repository).
 
 Measured proof that the image holds musl 1.2.6 at `f21a9653`:
 

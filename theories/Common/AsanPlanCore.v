@@ -559,7 +559,7 @@ Definition run_block_ref (K : nat) (fuel : nat) (stops : list Z) (cs : acs) : op
     end
   else None.
 (** PERF: the same through the executor's block-context functions
-    ([AX2.mkbc]: the block's fact list, its sum-facts digest and range index
+    ([AX2B.mkbc]: the block's fact list, its sum-facts digest and range index
     computed ONCE and shared by the run and by every store of the carry;
     [AX2B.mk_kix]: the knowledge LOAD index, so that a load consults only
     the entries of its 4 KiB granule plus the always-candidates —
@@ -3234,9 +3234,10 @@ Proof.
 Qed.
 
 Definition auxsz_rseq_off_input : ProcInput :=
-  mkProcInput_full [[]] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
+  mkProcInput_full [[]] [] (fst (Fs.migrate_image Fs.default_cwd [])) Fs.default_cwd IEof
+    (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) StackLayout.hwcap_rv64gc false
-    Sv48 default_urandom []
+    Sv48 default_urandom
     (mkKernelBuild false 1%N true 256%N 0%N false 0%N cache_view_absent
                    224%N 212992%N 212992%N 4194304%N 4194304%N)
     default_execfn true true false.

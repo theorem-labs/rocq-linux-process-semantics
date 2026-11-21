@@ -15,7 +15,10 @@
     the one return a given execution happened to produce, and the two
     facts about dup3's RLIMIT_NOFILE gate that need a SECOND model to
     state — that it is read from the run rather than written into the
-    spec, and that it beats a descriptor the process already holds. *)
+    spec, and that it beats a descriptor the process already holds.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -34,8 +37,8 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
     free fd is 5. *)
 Definition dup_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-           (3, FdFile [102] 1); (4, FdDir)]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [([102], [104; 105])] None None
+           (3, FdFile 1 1); (4, FdDir Fs.default_cwd)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof (raw_files [([102], [104; 105])]) None None
     None.
 
 (** dup hands out the lowest free fd and binds it to a COPY of the
@@ -53,12 +56,12 @@ Example dup_installs_a_copy_at_the_lowest_free_fd :
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
-(** A directory fd duplicates too: [FdDir] is nullary, so a copy carries
-    no position that could drift. *)
+(** A directory fd duplicates too: [FdDir] carries only the folder's
+    key, so a copy carries no position that could drift. *)
 Example dup_of_a_directory_fd_duplicates :
   check_syscall (mkInput 23 [4; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 5 [] []) dup_model
-  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 FdDir) dup_model) [].
+  = CheckOk (with_fds (fd_insert (m_fds dup_model) 5 (FdDir Fs.default_cwd)) dup_model) [].
 Proof. check_eq. Qed.
 
 (** The offset-sharing gap, stated as the model's answer rather than as
@@ -234,7 +237,7 @@ Definition dup_pair_end : StreamEnd :=
 Definition dup_pair_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
            (3, FdStream 0 false dup_pair_end); (4, FdStream 0 true dup_pair_end)]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** A STREAM-PAIR END IS NEVER DUPLICATED.  [File.dup_modeled_entry]
     declines it as a source -- a second fd naming one end would make a

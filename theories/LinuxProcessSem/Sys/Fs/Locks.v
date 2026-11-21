@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -59,48 +62,45 @@ Definition flock_cmd_ok_b (cmd : word) : bool :=
     [flock_spec]. *)
 Definition flock_unlock_b (cmd : word) : bool := Z.eqb (flock_base cmd) LOCK_UN.
 
-(** How many descriptors in the table name the path [p].
+(** How many descriptors in the table hold the inode [i].
 
     THIS IS THE WHOLE OF THE MODEL'S LOCK STATE, and it is a count of
     OPENERS rather than a record of locks.  The argument in [flock_spec]
     turns on there being at most one [struct file] on the inode, not on
-    which locks it holds, so no lock has to be recorded to make it.
+    which locks it holds, so no lock has to be recorded to make it.  The
+    count is of the INODE, which is what [flock_lock_inode_wait] locks:
+    two names of one file are one opener's worth of conflict, and a file
+    whose last name is gone is still counted while a descriptor holds it.
 
     Every [FdEntry] constructor is named rather than wildcarded, for
     the reason [State.pipe_end_live] gives for the same shape: a later
-    constructor able to name a file in [m_fs] must stop the build here
+    constructor able to hold a regular file must stop the build here
     instead of being counted as "not an opener" by falling through a
-    catch-all.  The four that are skipped are skipped on a fact about
-    what they are, not on convenience — a channel, a pipe end, a socket
-    and a directory reference each live on an inode that is not a key of
-    [Fs.Fs] at all, which is argued at [flock_spec]. *)
-Fixpoint path_openers (fds : list (word * FdEntry)) (p : path) : nat :=
+    catch-all.  The kinds that are skipped are skipped on a fact about
+    what they are: none of them holds a regular file's inode. *)
+Fixpoint ino_openers (fds : list (word * FdEntry)) (i : Fs.ino) : nat :=
   match fds with
   | [] => 0
-  | (_, FdFile q _)  :: r => (if path_eqb q p then 1 else 0) + path_openers r p
-  | (_, FdFileW q _) :: r => (if path_eqb q p then 1 else 0) + path_openers r p
-  | (_, FdFileA q _) :: r => (if path_eqb q p then 1 else 0) + path_openers r p
-  | (_, FdFileRW q _) :: r => (if path_eqb q p then 1 else 0) + path_openers r p
-  | (_, FdChannel _) :: r => path_openers r p
-  | (_, FdDir)       :: r => path_openers r p
-  | (_, FdSocket _)  :: r => path_openers r p
-  | (_, FdPipe _ _)  :: r => path_openers r p
-  | (_, FdDevNull _ _) :: r => path_openers r p   (* a device node is not a key of [Fs.Fs] *)
-  | (_, FdUrandom) :: r => path_openers r p       (* nor is this one *)
-  | (_, FdStream _ _ _) :: r => path_openers r p  (* a socket inode, not a key of [Fs.Fs] *)
-  | (_, FdDgram _) :: r => path_openers r p       (* another sockfs inode *)
-  | (_, FdEventfd _) :: r => path_openers r p     (* the anonymous inode, not a key of [Fs.Fs] *)
-  | (_, FdAnon _ _) :: r => path_openers r p
-      (* an unnamed file's inode lost its last name, and a file made
-         later under that name is another inode, so it opens no key of
-         [Fs.Fs] *)
+  | (_, FdFile j _)  :: r => (if Z.eqb j i then 1 else 0) + ino_openers r i
+  | (_, FdFileW j _) :: r => (if Z.eqb j i then 1 else 0) + ino_openers r i
+  | (_, FdFileA j _) :: r => (if Z.eqb j i then 1 else 0) + ino_openers r i
+  | (_, FdFileRW j _) :: r => (if Z.eqb j i then 1 else 0) + ino_openers r i
+  | (_, FdChannel _) :: r => ino_openers r i
+  | (_, FdDir _)       :: r => ino_openers r i
+  | (_, FdSocket _)  :: r => ino_openers r i
+  | (_, FdPipe _ _)  :: r => ino_openers r i
+  | (_, FdDevNull _ _) :: r => ino_openers r i   (* a device inode, not a regular file's *)
+  | (_, FdUrandom _ _) :: r => ino_openers r i   (* nor this one *)
+  | (_, FdStream _ _ _) :: r => ino_openers r i  (* a socket inode *)
+  | (_, FdDgram _) :: r => ino_openers r i       (* another sockfs inode *)
+  | (_, FdEventfd _) :: r => ino_openers r i     (* the anonymous inode *)
   end.
 
-(** Exactly one descriptor names [p].  Applied to a path just resolved
-    out of the table, so the count is at least one and this says "no
-    OTHER descriptor names it". *)
-Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
-  Nat.eqb (path_openers fds p) 1.
+(** Exactly one descriptor holds [i].  Applied to an inode just read out
+    of the table, so the count is at least one and this says "no OTHER
+    descriptor holds it". *)
+Definition flock_sole_opener (fds : list (word * FdEntry)) (i : Fs.ino) : bool :=
+  Nat.eqb (ino_openers fds i) 1.
 
 (** [flock fd cmd]: take, convert or release a whole-file advisory lock.
 
@@ -144,7 +144,7 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       cannot block.  Releasing a lock that was never taken is 0 too.
 
     - LOCK_SH or LOCK_EX (with or without LOCK_NB) on an [FdFile] or
-      [FdFileW] whose path NO OTHER DESCRIPTOR NAMES: 0.  This is the
+      [FdFileW] whose inode NO OTHER DESCRIPTOR HOLDS: 0.  This is the
       arm the premise below is spent on.
 
     WHY THE SOLE-OPENER GATE IS THE RIGHT ONE, and not a conservative
@@ -169,7 +169,7 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
     the model does not have — and could not key correctly if it did,
     since [File.dup_spec] copies an [FdEntry] and the copy is the SAME
     [struct file], which does not conflict, while a reopen is a
-    different one, which does.  Two identical [FdFile p off] entries do
+    different one, which does.  Two identical [FdFile i off] entries do
     not say which happened.  So the second call DECLINES, and the first
     is answered only while it is provably alone.  The gate costs the
     duplicated-descriptor case (a [dup] of the locked fd declines even
@@ -189,27 +189,28 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       that assumption does not say whether two channels are two ends of
       one pipe or two different pipes — which is exactly the question
       an inode-scoped lock asks.
-    - [FdDir]: "." and ".." are both [FdDir] and the constructor
-      carries nothing, so two directory references cannot be told
-      apart; two [openat(".")] descriptors are two [struct file]s on
-      one inode.
+    - [FdDir]: two descriptors on one folder are two [struct file]s on
+      one inode — two [openat(".")]s, say — and they conflict as two
+      [FdFile]s on one inode do.  [State.FdDir]'s key is the folder's
+      identity, so the sole-opener gate could count them the way
+      [ino_openers] counts an inode; that count is not written, so this
+      decline, like [FdPipe]'s, is a coverage choice with a known shape
+      rather than a missing fact.
     - [FdSocket]: sockfs gives every socket its own inode, so the
       conflicting pair is not constructible — but the answer would then
       be 0 by an argument about [sock_alloc] rather than about
       fs/locks.c, and no caller wants it.  Declined for want of a
       reason to admit it, not for want of one to refuse it.
 
-    WHY A PATH IS THE RIGHT KEY FOR THE FILE KINDS.  Conflicts are
-    per-INODE, and [Fs.Fs] is a flat path-to-bytes map with no inode
-    notion, so the two coincide only under assumptions the model
-    already makes everywhere: distinct keys are distinct files (a hard
-    link would break it, and no modeled syscall makes one — [linkat]
-    has no arm), and a key is a regular file in the working directory
-    ([Open.openat_spec]'s separator gate is what keeps every key a plain
-    name).  The constructors [path_openers] skips — [FdChannel], [FdDir],
-    [FdSocket] and [FdPipe] — rest on the same map: a pipefs, sockfs or
-    directory inode is not a key of [Fs.Fs], so no descriptor of those
-    kinds can share an inode with an [FdFile].
+    WHY THE INODE IS THE RIGHT KEY FOR THE FILE KINDS.  Conflicts are
+    per-INODE, and a file descriptor carries its inode number
+    ([State.FdFile]), so two names of one file count as one inode and a
+    file whose last name is gone is still counted.  The image decides
+    which names share an inode: a launch file system's hard links are
+    one inode number in it.  The constructors [ino_openers] skips —
+    [FdChannel], [FdDir], [FdSocket] and [FdPipe] among them — hold no
+    regular file's inode, so no descriptor of those kinds can share an
+    inode with an [FdFile].
 
     WHAT THE GRANT ASSUMES ABOUT THE WORLD, stated as an assumption
     rather than derived: no process outside the model holds a
@@ -225,20 +226,19 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
     conflict, but a child that opens the name again is a second one
     that does.
 
-    THE FILESYSTEM BOUND, which is real and is the same one
-    [Sync.fsync_spec] names for [.fsync].  Everything above assumes
-    [f_op->flock] is NULL, so that [locks_lock_file_wait] — the local,
-    inode-scoped path — is what runs.  It holds for the filesystems a
-    run can plausibly sit on: neither [ext4_file_operations]
-    (fs/ext4/file.c) nor [shmem_file_operations] (mm/shmem.c) nor
-    [ext4_dir_operations] (fs/ext4/dir.c) nor [simple_dir_operations]
-    (fs/libfs.c) declares one, and neither do [pipeanon_fops]
-    (fs/pipe.c), [socket_file_ops] (net/socket.c), [tty_fops]
-    (drivers/tty/tty_io.c) or [null_fops] (drivers/char/mem.c).  A
-    network filesystem that DOES declare one — NFS is the standing
-    example — answers from its own lock manager, and a run whose
-    working directory sits on such a mount is outside this spec.  Same
-    shape as fsync's procfs/sysfs bound: named, not fixed.
+    THE FILESYSTEM BOUND, which the configuration of record settles.
+    Everything above assumes [f_op->flock] is NULL, so that
+    [locks_lock_file_wait] — the local, inode-scoped path — is what
+    runs.  The file systems that declare one (9p, AFS, Ceph, FUSE,
+    GFS2, NFS, OCFS2 and the SMB client, each answering from its own
+    lock manager) are none of them built in the configuration of
+    record (SCOPE.md, "The configuration of record"), and the
+    operations a run otherwise reaches declare none:
+    [shmem_file_operations] (mm/shmem.c), [simple_dir_operations]
+    (fs/libfs.c), [pipeanon_fops] (fs/pipe.c), [socket_file_ops]
+    (net/socket.c), [tty_fops] (drivers/tty/tty_io.c) and [null_fops]
+    (drivers/char/mem.c).  So the local path runs on every supported
+    kernel, whatever file system holds the file.
 
     OUT OF SCOPE, and unreachable rather than approximated:
 
@@ -249,9 +249,8 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (p : path) : bool :=
       position [Fcntl.fcntl_spec] and [Ioctl.ioctl_spec] take for the
       same class.
     - the LSM hook [security_file_lock], which runs after the [f_mode]
-      test and can fail the call under an enforcing module.  Same
-      position again, and for the same reason: the model describes a
-      kernel with no LSM registering these hooks.
+      test.  The configuration of record builds no LSM (SCOPE.md), so
+      it is the stub of include/linux/security.h that answers 0.
     - the -EBADF an O_PATH descriptor gets from
       [type != F_UNLCK && !(f_mode & (FMODE_READ|FMODE_WRITE))].
       [Open.openat_spec] models three flag words and O_PATH is not
@@ -307,24 +306,24 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
                  unchanged from the three arms above.
 
                  COUNTING IT IS THE SOUNDNESS-RELEVANT HALF: skipping it
-                 in [path_openers] would leave [flock_sole_opener] true
-                 while a SECOND read-write descriptor held the same path,
+                 in [ino_openers] would leave [flock_sole_opener] true
+                 while a SECOND read-write descriptor held the same file,
                  and the model would answer 0 for a lock the kernel makes
                  conflict — an unsound accept rather than a gap. *)
               if flock_sole_opener (m_fds m) p
               then ret_only (Z_to_bv 64 0)
               else unmodeled
           | FdChannel _ => unmodeled               (* the object is not in the model *)
-          | FdDir       => unmodeled               (* two dirrefs are indistinguishable *)
+          | FdDir _       => unmodeled               (* no opener count is kept for a folder *)
           | FdSocket _  => unmodeled               (* no caller, and a different argument *)
           | FdPipe _ _  => unmodeled               (* both ends share one inode *)
           | FdDevNull _ _ => unmodeled
               (* FAIL-CLOSED: every open of /dev/null is a [struct file]
                  on ONE inode, so two descriptors of this kind conflict
-                 exactly as two [FdFile]s on one path do, and the
+                 exactly as two [FdFile]s on one inode do, and the
                  sole-opener gate would need an [FdDevNull] count the way
-                 [path_openers] counts a path.  Derivable, not written. *)
-          | FdUrandom => unmodeled
+                 [ino_openers] counts an inode.  Derivable, not written. *)
+          | FdUrandom _ _ => unmodeled
               (* FAIL-CLOSED, for the /dev/null reason: one inode, so
                  an [FdUrandom] count would be needed.  Not written. *)
           | FdStream _ _ _ => unmodeled
@@ -336,9 +335,5 @@ Definition flock_spec (fd cmd : word) : Sys SyscallEffect :=
                  inode ([anon_inode_getfile_fmode] passes
                  [anon_inode_inode]), so a conflict is an argument about
                  other eventfds this entry does not count; no caller *)
-          | FdAnon _ _ => unmodeled
-              (* DECLINED: the sole-opener gate would need a count of the
-                 descriptors of the file id, which [path_openers] does
-                 not keep, and no target locks an unnamed file *)
           end
     end.

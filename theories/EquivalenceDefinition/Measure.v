@@ -121,10 +121,10 @@
     [bv_eq].  The fourth field is an [Fs.Fs] that reaches this record
     only through [Classifier.rejects] and
     [FinInput.valid_fin_input], both of which factor through
-    [Run.valid_input] and so require [Fs.valid_fs] of the embedded file
-    system.  It is [Fs.valid_fs] that pins the canonical,
-    strictly-sorted form among its conjuncts — that is an attribute of
-    [Fs.valid_fs], not an assumption made here — and without it a single
+    [Run.valid_input] and so require [Fs.wf_fs] of the embedded file
+    system (through [Run.valid_image]).  It is [Fs.wf_fs] that pins the
+    canonical, strictly-sorted form among its conjuncts — that is an
+    attribute of [Fs.wf_fs], not an assumption made here — and without it a single
     directory could arrive under two unequal-but-equivalent [Fs.Fs]
     values, letting [NoDup] undercount duplicates that are really the
     same rejected input.
@@ -162,7 +162,10 @@
     is chosen by the submission, not by this file; [weight_bound_mono]
     is what makes every [b'] at least as large as a proven [b]
     provable too, which is the fact that lets a checker trust a printed
-    [b] as an upper-bound claim rather than an exact one. *)
+    [b] as an upper-bound claim rather than an exact one.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType Fs State StackLayout Run.

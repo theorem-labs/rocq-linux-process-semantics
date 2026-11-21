@@ -19,10 +19,14 @@
 
     This file: numeric/ABI helpers, [SyscallInput]/[SyscallEffect], the
     [Model] state threaded across a run, observable [event]s, and the
-    fd-table/VmMaps helpers. *)
+    fd-table/VmMaps helpers.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -569,12 +573,16 @@ Definition ENOTDIR : Z := 20%Z.
 Definition EISDIR : Z := 21%Z.
 Definition EINVAL : Z := 22%Z.
 Definition ENOTTY : Z := 25%Z.
+Definition EFBIG  : Z := 27%Z.   (* include/uapi/asm-generic/errno-base.h:31 *)
 Definition ESPIPE : Z := 29%Z.
 Definition EPIPE  : Z := 32%Z.
 Definition ERANGE : Z := 34%Z.
 Definition ENAMETOOLONG : Z := 36%Z.
 Definition ENOSYS : Z := 38%Z.
 Definition ENOTEMPTY : Z := 39%Z.
+(** Too many links followed, or a link the call must not follow:
+    include/uapi/asm-generic/errno.h:21. *)
+Definition ELOOP : Z := 40%Z.
 
 (** Errno values the per-syscall failure-injection sets draw from
     (see [Syscall.errno_from] and the [*_errnos] lists).  EINVAL above is
@@ -602,6 +610,20 @@ Definition EACCES : Z := 13%Z.
 Definition EBUSY  : Z := 16%Z.
 Definition ENFILE : Z := 23%Z.
 Definition EMFILE : Z := 24%Z.
+(** A write-access open of a file whose writes are denied, the file an
+    [execve] runs ([get_write_access], include/linux/fs.h:3215-3218;
+    include/uapi/asm-generic/errno-base.h:30, Linux v6.18.46).  Drawn
+    beside the write opens of an existing file no descriptor of the
+    model writes, never from a [*_errnos] list
+    ([Fs.Open.open_write_existing]). *)
+Definition ETXTBSY : Z := 26%Z.
+(** No room for a new inode (include/uapi/asm-generic/errno-base.h:32,
+    Linux v6.18.46): tmpfs's inode budget is spent
+    ([shmem_reserve_inode], mm/shmem.c:354-358), or the inode allocation
+    failed, which tmpfs and ramfs both report so (mm/shmem.c:3088-3091;
+    [ramfs_mknod], fs/ramfs/inode.c:101-104).  Drawn from
+    [Fs.Namei.mkdirat_errnos] only. *)
+Definition ENOSPC : Z := 28%Z.
 Definition EROFS  : Z := 30%Z.
 Definition EOVERFLOW : Z := 75%Z.
 
@@ -2338,7 +2360,8 @@ Qed.
 (** THE RANDOM STREAM A FIXTURE GETS WHEN IT DOES NOT SAY.  It is a
     FIXTURE DEFAULT and appears in no theorem: it is what [mkProcInput]
     fills [in_urandom] with, for positional literals that do not
-    give the field.
+    give the field, exactly as [Fs.default_cwd] is what it fills
+    [in_cwd] with.
 
     IT IS NOT [IEof], and that is not cosmetic.
     [Run.valid_urandom] asks that a launch's declared random stream
@@ -2669,24 +2692,42 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        channel this connection's bytes are reported on
                        (see [Net.Socket.conn_channel]), and [rx] is what the
                        peer has left to say.
-    - [SkReset peer chan] — the peer's error has already been reported to
-                       the program once (citations v6.12).  Reads answer 0 from here on,
-                       exactly as they do once [rx] is [NFin] — so this
-                       constructor changes NO read behaviour.  It exists
-                       because those two are DIFFERENT TCP STATES and
-                       collapsing them would be a wrong answer for the
-                       send side.  A consumed FIN leaves the socket in
-                       CLOSE_WAIT, which is in [tcp_sendmsg_locked]'s
-                       accepted mask [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT]
-                       and where a send SUCCEEDS; a consumed RST or
-                       timeout ran net/ipv4/tcp.c [tcp_done], leaving
-                       TCP_CLOSE, where net/core/stream.c:
-                       sk_stream_wait_connect answers -EPIPE.  Recording
-                       the difference in the REPRESENTATION rather than
-                       in a flag is the same move [NetStream]'s nullary
-                       terminals make: the state that cannot send is a
-                       different constructor, not a boolean somebody has
-                       to remember to check.
+    - [SkReset peer chan rx pending bound] — the kernel has PROCESSED the
+                       connection's end: net/ipv4/tcp_input.c [tcp_reset]
+                       (:4678-4704) or the retransmit timer stored the
+                       error in [sk_err] and ran net/ipv4/tcp.c
+                       [tcp_done] (:5020-5044), which left TCP_CLOSE and
+                       SHUTDOWN_MASK and released the port
+                       ([tcp_set_state] :2997-3000; inet_hashtables.c
+                       :227).  Citations Linux v6.18.46, the same text in
+                       v6.16 and v6.17.  [rx] is what the program still
+                       has to READ: tcp_done purges the write queue only
+                       (tcp_input.c:4669), so the bytes queued before the
+                       end are still delivered, and the terminal says how
+                       the connection ended — [NRst] a RST on an
+                       established connection (ECONNRESET, :4700-4701),
+                       [NTimedOut] the timer (ETIMEDOUT), [NFin] a RST
+                       after the peer's FIN (EPIPE, :4695-4697).
+                       [pending] says that error is still in [sk_err]:
+                       include/net/sock.h [sock_error] consumes it with an
+                       [xchg] (:2496), so the read or send that reports it
+                       clears the flag.  [bound] says the program has
+                       bound the socket since the reset: __inet_bind's
+                       [sk_state != TCP_CLOSE || inet_num] test
+                       (net/ipv4/af_inet.c:528) then answers -EINVAL.
+                       THE STATE IS NOT [SkConnected] WITH A FLAG because
+                       the send side differs: a consumed FIN leaves
+                       CLOSE_WAIT, inside [tcp_sendmsg_locked]'s accepted
+                       mask [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT] (tcp.c
+                       :1159-1164), where a send SUCCEEDS; TCP_CLOSE is
+                       outside it, and net/core/stream.c
+                       [sk_stream_wait_connect] answers the pending error
+                       or -EPIPE (:67-71).  A program cannot see WHEN the
+                       kernel processed the end, so the arms that observe
+                       it ([bind], the sends) admit the answer of either
+                       timing and move here only on the answer that shows
+                       it ([Net.Socket.send_state], [Net.Socket.bind_spec]);
+                       a read moves here when it reports the error.
 
     THE PER-CONNECTION STATE LIVES IN THE CONSTRUCTOR, not in fields
     beside it, so a listening socket cannot carry a byte stream and a
@@ -2701,7 +2742,8 @@ Inductive SockState :=
   | SkBound
   | SkListening
   | SkConnected (peer : PeerAddr) (chan : word) (rx : NetStream)
-  | SkReset (peer : PeerAddr) (chan : word).
+  | SkReset (peer : PeerAddr) (chan : word) (rx : NetStream)
+            (pending : bool) (bound : bool).
 
 (** THE SOCKET HAS NO CONNECTION TO SEND ON, as a boolean over the
     representation.  TCP has NO -ENOTCONN on the send path: net/core/stream.c
@@ -2709,10 +2751,23 @@ Inductive SockState :=
     outside SYN_SENT and SYN_RECV, and net/ipv4/tcp.c
     [tcp_sendmsg_locked] reaches it whenever the state is outside
     [TCPF_ESTABLISHED | TCPF_CLOSE_WAIT] (Linux v6.18.46, commit
-    1f99e9ab748f).  [SkReset] is the state whose peer error has ALREADY
-    been consumed, so its send is the plain -EPIPE too; the state with
-    an error still pending is [SkConnected _ _ NRst], which answers
-    -ECONNRESET and raises no signal.
+    1f99e9ab748f).  [SkReset] with its error no longer [pending] is the
+    plain -EPIPE too.  With the error pending, and on [SkConnected], a
+    send may go out or report the stored error instead
+    ([Net.Socket.send_state]), so the answer is not the certain -EPIPE
+    this predicate names, and the signal that comes with a reported
+    error depends on which error it is.  A reset in CLOSE_WAIT, the
+    state the peer's FIN leaves, stores EPIPE (net/ipv4/tcp_input.c
+    [tcp_reset], :4695-4697); [sk_stream_wait_connect] returns it
+    through [sock_error] (net/core/stream.c:67-69), and
+    [sk_stream_error] keeps the -EPIPE and sends SIGPIPE unless
+    MSG_NOSIGNAL is set (net/core/stream.c:190-197).  A reset in the
+    other connected states stores ECONNRESET
+    (net/ipv4/tcp_input.c:4700-4701), which raises no signal.  No answer
+    rests on that difference: [Sys.Fs.ReadWrite.write_spec]'s socket arm
+    declines both states, and [Net.Socket.sendto_spec] and
+    [Net.Socket.sendmsg_spec] answer a send on them only under a flag
+    word of exactly MSG_NOSIGNAL ([Net.Socket.send_flags_modeled]).
 
     WHY IT LIVES HERE AND NOT IN [Sys.Net.Socket], where
     [Net.Socket.send_state] already decides the same question.  Two
@@ -2721,12 +2776,13 @@ Inductive SockState :=
     whether a write(2) raises SIGPIPE, and [Sys.Net.Socket] imports
     [Sys.Fs.ReadWrite] rather than the other way about.  Putting it on
     the REPRESENTATION rather than in either spec is what keeps one
-    answer; [Net.Socket.send_state_dead_iff] is the tripwire that holds
-    the two in step, and a new [SockState] constructor has to be added
-    here and there in the same commit. *)
+    answer; no lemma holds the two in step, so a new [SockState]
+    constructor has to be added here and in [Net.Socket.send_state] in
+    the same commit. *)
 Definition sock_send_dead (sk : SockState) : bool :=
   match sk with
-  | SkFresh | SkBound | SkListening | SkReset _ _ => true
+  | SkFresh | SkBound | SkListening => true
+  | SkReset _ _ _ pending _ => negb pending
   | SkConnected _ _ _ => false
   end.
 
@@ -2764,7 +2820,7 @@ Definition PIPE_BUF : Z := 4096%Z.
 Definition PipeBuf : Type := list byte * Z.
 
 (** WHAT A STREAM-PAIR END HAS SHOWN OF THE ERROR ITS PEER'S CLOSE MAY
-    HAVE LEFT ([StreamEnd.se_reset]).  Linux v6.18.46 (commit
+    HAVE LEFT ([State.se_reset]).  Linux v6.18.46 (commit
     1f99e9ab748f), net/unix/af_unix.c: [unix_release_sock] of one end
     sets the other end's [sk_err = ECONNRESET] when the closing end's
     own receive queue still held bytes; an empty read on the survivor
@@ -2841,9 +2897,7 @@ Inductive ResetState := RsUnknown | RsPending | RsNone.
     keeping those would need a premise on them.  78 of the 89 published
     proof trees vendor them, and 34 of those 78 are trees that the new
     [FdStream] constructor does not otherwise break (it breaks 48), so
-    the premise would reach trees this change never touches (counted on
-    oss-verify-proofs-internal ossv/recipes 87c4b944; the LPSREV owner's
-    decision, 2026-10-31, on dispatch://OSSV-287).
+    the premise would reach trees this change never touches.
 
     So the survivor reads "the peer has closed" off the table —
     [stream_peer] is [None] — and every arm treats that as
@@ -2856,11 +2910,7 @@ Inductive ResetState := RsUnknown | RsPending | RsNone.
     EPOLLERR set or clear as a choice shown in its [revents], and each
     records the choice in [se_reset] so every later call keeps to it.
     Linux's run is always one of the branches the model admits; the model
-    does not say which, so a proof must cover both.  (The design:
-    dispatch://OSSV-287/artifact/d2-design-md.  The evidence: in the
-    census of the 19 wave-3 cURL targets, a read on a survivor is the
-    first declined call of 401 runs in 11 targets,
-    dispatch://OSSV-286/artifact/census-wave3-md, kind D2.)  The empty
+    does not say which, so a proof must cover both.  The empty
     read is the error's ONLY CONSUMER in the model because
     getsockopt(SO_ERROR), which also clears it, is declined on a pair
     end ([Net.Socket.stream_getsockopt]); a change that answers SO_ERROR
@@ -2907,7 +2957,7 @@ Record StreamEnd := mkStreamEnd {
       flags masked with [O_ACCMODE | O_NONBLOCK] (fs/anon_inodes.c), and
       [EFD_NONBLOCK] is O_NONBLOCK ([do_eventfd]'s [BUILD_BUG_ON]).  It
       belongs to the [struct file], not to the context; it is carried
-      here for [StreamEnd.se_nonblock]'s reason: no descriptor of this
+      here for [State.se_nonblock]'s reason: no descriptor of this
       kind is ever duplicated (see [FdEventfd]), so the context and its
       one file are the same object.
 
@@ -2936,52 +2986,6 @@ Definition ef_set_count (ctx : EventfdCtx) (c : Z) : EventfdCtx :=
 Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
   mkEventfdCtx (ef_count ctx) (ef_semaphore ctx) b.
 
-(** ONE DESCRIPTOR'S VIEW OF AN UNNAMED FILE ([FdAnon]): a regular file
-    whose last name was removed while descriptors still held it.  Every
-    claim in this block is Linux v6.18.46 (commit 1f99e9ab748f).
-
-    - [af_data] is the file's contents, its page cache up to [i_size].
-      It belongs to the INODE, not to the descriptor, so EVERY entry of
-      one file carries the same bytes, and an arm that changes them
-      writes the change to every entry of the file ([anon_update]).
-    - [af_off] is this descriptor's [f_pos]: it belongs to the
-      [struct file], so it is the one field the entries of one file do
-      not share.
-    - [af_rd] and [af_wr] are FMODE_READ and FMODE_WRITE, which
-      [do_dentry_open] (fs/open.c) set from the access mode of the open
-      that made the [struct file].
-    - [af_append] is O_APPEND in [f_flags]: [iocb_flags]
-      (include/linux/fs.h) turns it into IOCB_APPEND and
-      [generic_write_checks_count] (fs/read_write.c) then puts every
-      write at [i_size_read(inode)], whatever [f_pos] says.
-    - [af_pin] is the file's stat pin ([procst_statpins]'s bytes for a
-      named file): the [struct stat] its first [fstat] delivered, or
-      [None] before one.  It too belongs to the inode, so every entry of
-      one file carries the same pin.
-
-    WHAT IS NOT HERE: no name (the file has none, which is the point),
-    no link count (it is 0 for every unnamed file the model makes, see
-    [Fs.Namei.unlink_open_tmp_spec]), and no O_NONBLOCK or O_CLOEXEC,
-    which no modeled call on a regular file reads. *)
-Record AnonFile := mkAnonFile {
-  af_data   : list byte;
-  af_off    : word;
-  af_rd     : bool;
-  af_wr     : bool;
-  af_append : bool;
-  af_pin    : option (list byte)
-}.
-
-(** One-field updates, for [ef_set_count]'s reason: Rocq has no record
-    update syntax.  The contents and the pin are what an arm writes to
-    every entry of a file; the offset is what it writes to its own. *)
-Definition af_set_data (af : AnonFile) (d : list byte) : AnonFile :=
-  mkAnonFile d (af_off af) (af_rd af) (af_wr af) (af_append af) (af_pin af).
-Definition af_set_off (af : AnonFile) (o : word) : AnonFile :=
-  mkAnonFile (af_data af) o (af_rd af) (af_wr af) (af_append af) (af_pin af).
-Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
-  mkAnonFile (af_data af) (af_off af) (af_rd af) (af_wr af) (af_append af) (Some b).
-
 (** An open file descriptor, carrying its ACCESS MODE so the model can
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
@@ -2993,11 +2997,15 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       Linux reads the direction off the description's [FMODE_*] bits,
       so a process handed a connected socket on fd 0 — every
       inetd-style server — may write it, and this model answers -EBADF.
-    - [FdFile p off]: a file opened O_RDONLY (read-only); write is
-      -EBADF.
-    - [FdFileW p off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
+    - [FdFile i off]: a file opened O_RDONLY (read-only); write is
+      -EBADF.  [i] is the file's INODE NUMBER ([Fs.ino]), not a name:
+      the descriptor reads the file's bytes from [Fs.fs_inodes] under
+      [i], so a write through another name, or another descriptor, is
+      seen here, and the file outlives its last name for as long as a
+      descriptor holds it (see AN UNLINKED OPEN FILE below).
+    - [FdFileW i off]: a file opened O_WRONLY|O_CREAT|O_TRUNC
       (write-only); read is -EBADF.
-    - [FdFileA p off]: a file opened O_WRONLY|O_CREAT|O_APPEND, or
+    - [FdFileA i off]: a file opened O_WRONLY|O_CREAT|O_APPEND, or
       created by O_WRONLY|O_CREAT|O_EXCL|O_APPEND (write-only, APPEND
       MODE); read is -EBADF.  A SEPARATE
       CONSTRUCTOR RATHER THAN A FLAG ON [FdFileW], and the reason is
@@ -3017,7 +3025,7 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       [f_pos], which [lseek] still repositions and reports on an append
       fd, and which a write leaves at the new end of file.  Nothing
       derives a write POSITION from it.
-    - [FdFileRW p off]: a file opened O_RDWR (READ-WRITE), possibly
+    - [FdFileRW i off]: a file opened O_RDWR (READ-WRITE), possibly
       with O_CREAT, O_TRUNC or O_EXCL; see [Open.rdwr_open_word].  It is
       the only file kind on which BOTH directions answer: a read is the
       [FdFile] arm and a write the [FdFileW] arm, at the one [f_pos]
@@ -3040,17 +3048,16 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       [off] IS AN ORDINARY [f_pos], unlike [FdFileA]'s: reads and
       writes both start there and both advance it, and [lseek] moves
       it for either direction.
-    - [FdDir]: a directory fd (from [openat] of "." or "..", the two
-      paths that name a directory without a lookup; see
-      [Open.path_is_dirref]).  It carries NO path, which is what makes
-      those two answerable by one arm: nothing below can tell the
-      working directory from its parent.  No I/O: read yields
+    - [FdDir]: a directory fd, carrying THE DIRECTORY'S CANONICAL KEY.
+      It carries one because the namespace has directories as entries,
+      so a directory fd names a place: [getdents64] and [fstat] read it,
+      and [rmdir] declines a directory an open [FdDir] names.  No I/O:
+      read yields
       -EISDIR and write -EBADF, as Linux does on an O_RDONLY directory
       fd; directory enumeration (getdents64) answers only where nothing
       is listed — [filldir64]'s -EINVAL for a buffer too small for any
-      entry — and the LISTING itself stays unmodeled and fail-closed,
-      which is what keeps the missing path from mattering
-      ([Readdir.getdents64_spec]).
+      entry — and the LISTING itself stays unmodeled and fail-closed
+      ([Readdir.getdents64_spec] gives the reasons).
     - [FdSocket sk]: an AF_INET/SOCK_STREAM socket, carrying its whole
       state (see [SockState]).  READABLE — a socket is never opened
       write-only, so the -EBADF gate must let it through and the read
@@ -3087,8 +3094,8 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       An [FdEntry] match that a new constructor does not break is a
       match that would absorb it silently, so those sites enumerate.
     - [FdDevNull rd wr]: the character device /dev/null (major 1, minor
-      3), opened by [Open.openat_spec]'s arm for exactly that pathname
-      ([Uapi.devnull_path]).  It is the first descriptor whose object
+      3), opened by [Open.openat_spec]'s arms from the [Fs.EDev DevNull]
+      entry at [Fs.devnull_key] ([Open.open_devnull]).  It is the first descriptor whose object
       is a DEVICE rather than a file, a channel, a socket or a pipe,
       and the point of it is that it carries NOTHING: Linux's
       [null_fops] (drivers/char/mem.c, v6.18.46) reads 0 bytes
@@ -3111,25 +3118,28 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       that cannot fails closed, so that a held-open /dev/null costs a
       run nothing and a program that does something with it the model
       has no derivation for is declined rather than guessed.
-    - [FdUrandom]: the character device /dev/urandom (major 1, minor
-      9), opened read-only by [Open.openat_spec]'s arm for exactly that
-      pathname ([Uapi.urandom_path]); the write and read-write words
-      are declined there, so the kind carries no access mode -- every
-      descriptor of it has FMODE_READ and lacks FMODE_WRITE.  Its
-      reads deliver the front of the run's DECLARED stream,
-      [m_urandom] (seeded from [ProcInput]'s [in_urandom]), and advance
-      it; the bytes are an input of the run, not a choice, and the
-      same stream is read on both sides of an equivalence.  Linux's
-      [urandom_fops] (drivers/char/random.c, v6.18.46) reads nothing
-      off the [struct file] -- [urandom_read_iter] consults the
-      generator and the iterator only, [noop_llseek] hands back an
-      [f_pos] no modeled operation moves -- so nothing on the
-      descriptor is observable beyond the bytes, and one stream serves
-      every descriptor.  The arms that answer for it derive the answer
-      from [urandom_fops] and the VFS path that reaches it; the rest
-      fail closed.  THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the
-      environment's /dev/urandom is the random device -- is stated once, at
-      the openat arm, and pointed to from everywhere else.
+    - [FdUrandom rd wr]: the character device /dev/urandom (major 1,
+      minor 9), opened by [Open.openat_spec]'s arms from the
+      [Fs.EDev DevUrandom] entry at [Fs.urandom_key]
+      ([Open.open_urandom]).  [rd] and [wr] are the access mode the open
+      granted, as for [FdDevNull]: [openat] mints [FdUrandom true false]
+      for O_RDONLY, [false true] for the write-only words and
+      [true true] for O_RDWR.  Its reads deliver the front of the run's
+      DECLARED stream, [m_urandom] (seeded from [ProcInput]'s
+      [in_urandom]), and advance it; the bytes are an input of the run,
+      not a choice, and the same stream is read on both sides of an
+      equivalence.  Linux's [urandom_fops] (drivers/char/random.c,
+      v6.18.46) reads nothing off the [struct file] but its mode --
+      [urandom_read_iter] consults the generator and the iterator only,
+      [noop_llseek] hands back an [f_pos] no modeled operation moves --
+      so nothing on the descriptor is observable beyond the bytes and
+      the access mode [vfs_read] and [vfs_write] test, and one stream
+      serves every descriptor.  The arms that answer for it derive the
+      answer from [urandom_fops] and the VFS path that reaches it; the
+      rest fail closed, the write through a [wr] descriptor among them.
+      THE ENVIRONMENT ASSUMPTION IT RESTS ON -- the environment's
+      /dev/urandom is the random device -- is stated once, at the openat
+      arm, and pointed to from everywhere else.
     - [FdStream id side st]: ONE END of an AF_UNIX/SOCK_STREAM pair made
       by [socketpair] (see [Net.Socket.socketpair_spec]), with both ends
       held by this process.  [id] names the pair -- both ends carry the
@@ -3161,9 +3171,9 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       its [struct eventfd_ctx] and its file that the model reads,
       [EventfdCtx], INCLUDING THE COUNTER: an eventfd's state belongs to
       its one context, not to a pair of ends as a pipe's does, so it
-      lives in the entry and needs no side table.  Its file is
-      [anon_inode_getfile_fmode]'s, over the shared anonymous inode with
-      [eventfd_fops] (fs/anon_inodes.c, fs/eventfd.c, Linux v6.18.46),
+      lives in the entry and needs no side table.  Its file is the one
+      [anon_inode_getfile_fmode] (fs/anon_inodes.c, Linux v6.18.46) makes,
+      over the shared anonymous inode with [eventfd_fops] (fs/eventfd.c),
       opened O_RDWR: FMODE_READ and FMODE_WRITE are both set, and
       [alloc_file_pseudo] sets FMODE_LSEEK (the table has [.llseek]) but
       never FMODE_PREAD or FMODE_PWRITE, which only [do_dentry_open]
@@ -3214,61 +3224,80 @@ Definition af_set_pin (af : AnonFile) (b : list byte) : AnonFile :=
       [FdDgram] declines.  Its creation is the one answered path where
       Linux can refuse with -ENOBUFS ([inet6_create]'s [sk_alloc] for
       AF_INET6), and [Net.Socket.socket_dgram_errnos] admits it there.
-    - [FdAnon id af]: a descriptor of an UNNAMED FILE, a regular file in
-      the run's /tmp whose name [unlinkat] removed while descriptors
-      still held it ([Fs.Namei.unlink_open_tmp_spec]), or a descriptor
-      that [openat] of "/proc/self/fd/N" opened again on such a file
-      ([Fs.Open.openat_procfd_spec]).  Linux keeps the inode alive while
-      a [struct file] holds it: [vfs_unlink] (fs/namei.c) drops the
-      link count, and the inode is freed at the last [fput] (Linux
-      v6.18.46).  [id] names the FILE -- every descriptor of one file
-      carries the same id -- and [af] is this descriptor's view of it
-      ([AnonFile]).
 
-      THE CONTENTS LIVE IN THE ENTRIES, and not in the file system or
-      a new field of [Model] (dispatch://OSSV-287/spec, decision "An
-      unnamed file lives in its descriptors").  The file system is
-      observable at exit ([ExitEv] carries [m_fs]), and Linux's file
-      system at exit holds no unnamed file, so a hidden key there would
-      make the model observe what Linux does not; and a new field of
-      the model would break every published tree that builds a model
-      record.  The cost is the invariant the arms keep: ALL ENTRIES
-      WITH ONE [id] CARRY THE SAME [af_data] AND THE SAME [af_pin].
-      Every arm reads the entry the call names, and every arm that
-      changes the contents or the pin writes the change to every entry
-      of the id ([anon_update]); only [af_off] is written to the
-      entry alone, since [f_pos] belongs to the [struct file].
-
-      THE FILE GOES AWAY WITH ITS LAST DESCRIPTOR, as Linux frees the
-      inode at the last [fput], and nothing has to happen for that:
-      [Fs.Open.close_spec] stays kind-blind and removes one entry, and
-      once no entry carries the id nothing names the file.  A new id is
-      one above the largest live one ([anon_new_id]), so a dead file's
-      id is never reused while another entry still carries it.
-
-      A NEW KIND, NOT A [FdFile] WITH NO PATH, for the reason the type
-      enumerates: every [FdFile] arm reads its bytes from [m_fs] under
-      the path, and an unnamed file has none.  [dup], [dup3] and
-      [F_DUPFD] decline it ([Fs.File.dup_modeled_entry]): a copied
-      entry would split the one [f_pos] two Linux descriptors share.  A
-      [clone] holding one declines too
-      ([Kernel.Fork.clone_no_shared_file_b]), so the file is this
-      process's alone, an assumption SCOPE.md states. *)
+    AN UNLINKED OPEN FILE.  A descriptor carries an inode number, so
+    [unlinkat] of a name an open descriptor holds removes the NAME and
+    leaves the descriptor as it was: it goes on reading and writing the
+    inode's row, every descriptor of the file sees the same bytes, and
+    [fstat] reports the link count with the name gone
+    ([Fs.fs_ino_nlink]).  That is Linux's: [vfs_unlink] (fs/namei.c)
+    drops the link count, and the inode is freed only at the last
+    [fput].  On tmpfs and ramfs [iput_final] evicts at every last
+    [iput] ([inode_just_drop], mm/shmem.c:5330, fs/ramfs/inode.c:218,
+    fs/inode.c:1858-1861 and 1883-1884), so what keeps the inode is the
+    [struct file]'s dentry reference, as the pinned dentry
+    (mm/shmem.c:3908, fs/ramfs/inode.c:114) kept it while it had a
+    name ([Fs.Fs] says the same).  The
+    row of such a file stays in [Fs.fs_inodes] while a descriptor holds
+    it ([Fs.fs_unlink_file]).  "/proc/self/fd/N" opens it again
+    ([Fs.Open.openat_procfd_spec]). *)
 Inductive FdEntry :=
   | FdChannel (chan : word)
-  | FdFile (p : path) (offset : word)
-  | FdFileW (p : path) (offset : word)
-  | FdFileA (p : path) (offset : word)
-  | FdFileRW (p : path) (offset : word)
-  | FdDir
+  | FdFile (i : Fs.ino) (offset : word)
+  | FdFileW (i : Fs.ino) (offset : word)
+  | FdFileA (i : Fs.ino) (offset : word)
+  | FdFileRW (i : Fs.ino) (offset : word)
+  | FdDir (p : path)
   | FdSocket (sk : SockState)
   | FdPipe (id : word) (writer : bool)
   | FdDevNull (rd wr : bool)
-  | FdUrandom
+  | FdUrandom (rd wr : bool)
   | FdStream (id : word) (side : bool) (st : StreamEnd)
   | FdEventfd (ctx : EventfdCtx)
-  | FdDgram (family : Z)
-  | FdAnon (id : word) (af : AnonFile).
+  | FdDgram (family : Z).
+
+(** The inode a descriptor holds, or [None].  ENUMERATED, so that a
+    later [FdEntry] constructor able to hold a regular file stops the
+    build here: a missed holder would let [unlinkat] drop the row of a
+    file a descriptor still reads ([Fs.Namei]'s [ino_held] test). *)
+Definition entry_ino (e : FdEntry) : option Fs.ino :=
+  match e with
+  | FdFile i _ | FdFileW i _ | FdFileA i _ | FdFileRW i _ => Some i
+  | FdChannel _ | FdDir _ | FdSocket _ | FdPipe _ _ | FdDevNull _ _
+  | FdUrandom _ _ | FdStream _ _ _ | FdEventfd _ | FdDgram _ => None
+  end.
+
+(** Does some descriptor hold inode [i]? *)
+Definition ino_held (fds : list (word * FdEntry)) (i : Fs.ino) : bool :=
+  existsb (fun p => match entry_ino (snd p) with
+                    | Some j => Z.eqb j i
+                    | None => false
+                    end) fds.
+
+(** The own name of a device descriptor's kind: the key whose pin a
+    stat of the descriptor reads when the node there is the image's one
+    node of the kind ([Fs.Stat.fstat_devfd_spec]).  The descriptor may
+    have been opened from a node at any key ([Fs.Open.open_devnull]);
+    this names the kind's key, not that node's. *)
+Definition entry_dev_key (e : FdEntry) : option Fs.path :=
+  match e with
+  | FdDevNull _ _ => Some Fs.devnull_key
+  | FdUrandom _ _ => Some Fs.urandom_key
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir _ | FdSocket _ | FdPipe _ _ | FdStream _ _ _ | FdEventfd _
+  | FdDgram _ => None
+  end.
+
+(** The device kind of a device descriptor, which keys its stat pin
+    beside its number when its node is not known ([IdDevFd]). *)
+Definition entry_dev_kind (e : FdEntry) : option Fs.DevKind :=
+  match e with
+  | FdDevNull _ _ => Some Fs.DevNull
+  | FdUrandom _ _ => Some Fs.DevUrandom
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdDir _ | FdSocket _ | FdPipe _ _ | FdStream _ _ _ | FdEventfd _
+  | FdDgram _ => None
+  end.
 
 (** Virtual-memory bookkeeping: a ledger of allocator decisions the model
     has already committed to (the flat byte-map memory can't encode
@@ -3702,10 +3731,10 @@ Record KernelBuild := mkKernelBuild {
        of [pmd_size] takes the padded search and the 2 MiB alignment of
        [thp_get_unmapped_area_vmflags] (Linux v6.18.46, commit
        1f99e9ab748f, mm/huge_memory.c), which
-       [Sys/Mm/Mmap.linux_place] reads.  Both answers describe real
-       kernels: the riscv defconfig
-       (arch/riscv/configs/defconfig) does not set it, and
-       distribution kernels do *);
+       [Sys/Mm/Mmap.linux_place] reads.  The configuration of record
+       does not set it (SCOPE.md), so only [false] describes a
+       supported kernel; [Run.recorded_kernel] leaves the field free,
+       which SCOPE.md lists as a priority-2 gap *);
   kb_vdso : N
     (* which vDSO image the kernel build carries.  Its one use here is
        the image's SIZE, through [vdso_text_pages] below; the image's
@@ -3878,8 +3907,8 @@ Qed.
       ([make ARCH=riscv defconfig] at v6.18.46 plus
       CONFIG_DEBUG_INFO_DWARF5 for the debug info alone; the layout was
       confirmed unchanged against the build without it, by the kernel's
-      own [sizeof] evaluated under each build's exact compile command),
-      recorded at dispatch://OSSV-287/artifact/skb-sizes-md.  So
+      own [sizeof] evaluated under each build's exact compile command).
+      So
       [SKB_DATA_ALIGN] of it is 256, [SOCK_MIN_SNDBUF] 4608 and
       [SOCK_MIN_RCVBUF] 2304.  [net.core.wmem_default] and
       [rmem_default] are at their boot value [SK_WMEM_DEFAULT] =
@@ -4065,7 +4094,8 @@ Definition launch_vlenb (kb : KernelBuild) (hwcap : word) : Z :=
     8 + 8 for [uc_flags] and [uc_link], 24 for [stack_t], 8 for
     [sigset_t], 120 for [__unused], 8 of padding, then 784 for
     [struct sigcontext] (256 for [user_regs_struct] and 528 for the
-    floating-point union).  A4's real-kernel run checks the number.
+    floating-point union).  The real-kernel start-state run (tests/dune)
+    checks the number.
 
     [ARCH_DLINFO] emits AT_IGNORE instead when [signal_minsigstksz] is
     0, which it never is: the frame is at least 1088 bytes. *)
@@ -4132,8 +4162,101 @@ Record IoState := mkIoState {
        [Net.Socket.conn_channel] *)
 }.
 
-(** The interpreted file system. *)
-Record FsState := mkFsState { fsst_image : Fs.Fs }.
+(** The interpreted file system: the image, and the process's WORKING
+    DIRECTORY as a canonical key.
+
+    The working directory is here rather than in [ProcState] because it
+    is what a relative pathname is resolved against ([Fs.resolve]) and
+    so belongs beside the image the walk reads.  [Run.valid_input]
+    requires the declared one to resolve to a directory, and NO SYSCALL
+    ARM WRITES IT: [chdir] and [fchdir] stay unmodeled, and
+    [rmdir] declines the working directory and its ancestors, so "the
+    working directory is a directory" is a state invariant. *)
+Record FsState := mkFsState { fsst_image : Fs.Fs; fsst_cwd : Fs.path }.
+
+(** THE IDENTITY A STAT PIN IS KEYED BY ([procst_statpins]).  A regular
+    file's is its inode number, so its names share it.  A folder's is
+    its key: a folder has one name ([vfs_link]'s -EPERM, fs/namei.c:
+    4929-4930).  A device node's and a link's are their keys too: the
+    image gives neither an inode number, so two names of one device node
+    or one link are two identities here, and since no distinctness is
+    asked between identities that admits whatever Linux reports for
+    them.  Each holds its own link count ([Fs.Stat.stat_pin_held]), so
+    the removal of a link name, which may lower the count another link
+    identity holds, RELEASES every link's count and [st_ctime]
+    ([statpins_release_links]).
+
+    A DEVICE DESCRIPTOR'S is its number and its device's kind
+    ([IdDevFd]), for a stat of the descriptor that cannot name the node
+    ([Fs.Stat.fstat_devfd_spec]: the image holds more than one node of
+    the kind).  The descriptor carries no key ([FdDevNull],
+    [FdUrandom]), but it holds one node for its whole life, and
+    [vfs_fstat] (fs/stat.c:276-281, Linux v6.18.46) reports that node's
+    inode at every call ([generic_fillattr], fs/stat.c:82-94).  The pin
+    lives while the number holds a descriptor of the kind
+    ([stat_id_alive]), and every arm that can install a device
+    descriptor at a number drops that number's pin before it installs
+    ([with_fd_unpinned], [with_fd_dup]): the new descriptor may hold
+    another node of the kind.
+
+    TWO NUMBERS THAT HOLD ONE FILE SHARE ONE PIN.  [dup] installs the
+    [struct file] the old number holds ([SYSCALL_DEFINE1(dup)],
+    fs/file.c:1457-1467), and so does dup3 ([do_dup2],
+    fs/file.c:1303-1304, Linux v6.18.46), and [vfs_fstat] stats that file
+    (fs/stat.c:276-281), so both numbers report one inode.  So the copy
+    takes the old number's pin when it has one ([with_fd_dup]); when it
+    has none, the table records that the two numbers share one
+    ([IdDevShare]), and the first stat of either pins both
+    ([with_statpin], [statpins_shares]).  An [IdDevShare] entry is no
+    stat identity: its pin is empty ([statpin_share]) and no stat reads
+    it. *)
+Inductive StatId :=
+  | IdIno (i : Fs.ino)
+  | IdDir (k : Fs.path)
+  | IdDev (k : Fs.path)
+  | IdLink (k : Fs.path)
+  | IdDevFd (fd : word) (d : Fs.DevKind)
+  | IdDevShare (a b : word).
+
+(** The two device kinds compared. *)
+Definition devkind_eqb (a b : Fs.DevKind) : bool :=
+  match a, b with
+  | Fs.DevNull, Fs.DevNull | Fs.DevUrandom, Fs.DevUrandom => true
+  | _, _ => false
+  end.
+
+Definition stat_id_eqb (a b : StatId) : bool :=
+  match a, b with
+  | IdIno i, IdIno j => Z.eqb i j
+  | IdDir k, IdDir q | IdDev k, IdDev q | IdLink k, IdLink q => Fs.path_eqb k q
+  | IdDevFd f d, IdDevFd g e => (bv_eqb f g && devkind_eqb d e)%bool
+  | IdDevShare a b, IdDevShare c d => (bv_eqb a c && bv_eqb b d)%bool
+  | _, _ => false
+  end.
+
+(** THE TWO RULES A FOLDER'S LINK COUNT MAY FOLLOW ([Fs.DirLinks]):
+    counting its subfolders, or fixed. *)
+Inductive DirRule := DirCounting | DirFixed.
+
+(** ONE PIN: the bytes, for a folder the RULE its count follows once a
+    stat has told the two apart, and whether the members a link name's
+    removal may move are RELEASED.
+
+    A folder's two counts are equal until a subfolder is made or removed
+    under it ([Fs.fs_dir_links]); the first stat at which they differ
+    chooses one, by the [st_nlink] it delivers, and every later stat of
+    the folder must follow the same rule.  That is "chosen at the first
+    change and kept" observed from outside: before the counts differ no
+    stat can tell which rule the folder follows.
+
+    [sp_released] is set on a LINK's pin when a link name is removed
+    ([statpins_release_links]): the removed name may have been another
+    name of this link's inode, whose link count it lowered and whose
+    [st_ctime] it set.  The next stat of the link may then deliver any
+    count and ctime, holds every other member it held, and becomes the
+    pin with the flag clear ([Fs.Stat.pinned_after]). *)
+Record StatPin := mkStatPin
+  { sp_bytes : list byte ; sp_rule : option DirRule ; sp_released : bool }.
 
 (** The process's UNIX credentials.  Six ids, in the kernel's own
     grouping ([include/linux/cred.h], [struct cred]): the REAL id, which
@@ -4552,46 +4675,67 @@ Record ProcState := mkProcState {
                                     stance a proof was made under; a statement
                                     that pins neither asserts both *)
 ;
-  procst_statpins : list (Fs.path * list byte)
-    (* THE `struct stat` EACH STATTED FILE WAS FIRST SEEN WITH, keyed by
-       path -- the 128 bytes [Fs.Stat.fstat_spec] delivered the first
-       time that file was statted, kept so that a LATER stat of the same
-       file cannot disagree with it about which file it is.  A path with
-       no entry has not been statted yet.
+  procst_statpins : list (StatId * StatPin)
+    (* THE `struct stat` EACH STATTED IDENTITY WAS FIRST SEEN WITH,
+       keyed by IDENTITY ([StatId]) -- the 128 bytes [Fs.Stat] delivered
+       the first time that file, folder, device node, link or device
+       descriptor was statted, kept so that a LATER stat of the same
+       identity cannot disagree with it about which object it is.  An
+       identity with no entry has not been statted yet.
 
        WHY A PIN AT ALL, and it is [procst_utsname]'s argument on a
        different value.  Of the twenty members of the delivered struct
-       the model derives one, [st_size], and knows four more to be zero
-       padding; the rest -- the device, the inode, the mode, the link
-       count, the owning ids, the block size, the block count and the
-       three timestamps -- are the environment's, because [Fs.Fs] is a
-       map from path to CONTENTS and carries none of them.  Chosen
+       the model derives the type and [st_nlink] for a file and a folder
+       and a file's [st_size], bounds a folder's [st_size] by the names
+       the folder holds ([Uapi.stat_dir_size_ok]: 0, or a multiple of 20
+       of at least 40 and 20 per name), knows four more to be zero
+       padding, and knows the block size, the page size for every kind
+       ([Uapi.stat_page_blksize]); the rest -- the device, the inode, the
+       permission bits, the owning ids, the block count and the three
+       timestamps -- are the environment's, because [Fs.Fs] carries none
+       of them.  Chosen
        AFRESH at each call they would admit a trace in which two
        [fstat]s of one unchanged file report different inodes, which no
        Linux machine produces.  Chosen ONCE and recorded, they cannot.
 
-       ONLY THE STABLE MEMBERS ARE HELD AGAINST A LATER CALL, and which
+       THE STABLE MEMBERS ARE HELD AGAINST A LATER CALL, and which
        those are is [Uapi.stat_stable_eqb]'s subject rather than this
        field's: the whole 128 bytes are stored, and the comparison
-       ignores [st_size], [st_blocks] and the timestamps, every one of
-       which a write moves.  Storing the whole buffer and comparing part
-       of it -- rather than storing a projection -- keeps the two halves
-       of that decision in one place, next to the layout they are
-       offsets into.
+       ignores [st_nlink] (which the model computes for a file and a
+       folder), [st_size], [st_blocks] and the timestamps, and lets a
+       regular file's set-user-ID and set-group-ID bits drop as a write
+       or a truncate drops them.  The stat that first shows such a drop
+       records its own bytes here ([Fs.Stat.file_pin_after]), so a
+       file's entry holds the last mode a stat of it showed.  Beside
+       them a device node's (or a device descriptor's), a link's and a
+       folder's pin holds the
+       members no answered call moves for that object
+       ([Fs.Stat.stat_pin_held]: a device node's link count and
+       timestamps, a link's link count, [st_blocks], [st_mtime] and
+       [st_ctime], a folder's [st_blocks]).
+
+       KEYED BY IDENTITY, as Linux keys [st_ino]: two names of one file
+       share one pin, and a name made after the old one went is a new
+       identity with no pin ([IdIno] of a fresh inode; [IdDir] of a key
+       [rmdir] emptied, whose pin [with_fs] drops; [IdDevFd] of a number
+       a device descriptor was installed at, whose pin
+       [with_fd_unpinned] or [with_fd_dup] drops).  Two numbers of one
+       device file share one pin: a [dup] copy takes the old number's,
+       or a pair with it while it has none ([with_fd_dup],
+       [IdDevShare]).  No distinctness is
+       asked between two identities' pins: tmpfs hands inode numbers out
+       of a counter that wraps in its 32-bit mode ([shmem_reserve_inode],
+       mm/shmem.c:362-376), and an image may hold several file systems.
+
+       A FOLDER'S RULE is pinned here too ([sp_rule]), and whether a
+       LINK's count and ctime are released ([sp_released]): see
+       [StatPin].
 
        NOT IN [Fs], DELIBERATELY.  [Fs.Fs] is [ExitEv]'s payload and is
        compared with [=] (Fs.v, CANONICAL FORM), so a nondeterministic
-       value inside it would cost the examples statements they prove
-       -- [Examples.cp_ns]'s [m_fs model = fs_set fs0v dstp
-       (firstn k D)] is not provable if [fs_set] does not determine
-       its result.  That is
-       why the pin lives here: process state is observed by no
-       event.
-
-       KEYED BY PATH, WHICH IS THIS MODEL'S INODE.  Linux keys it by
-       inode, and the difference shows only where two paths name one
-       inode or one path names two -- neither of which [Fs]'s flat,
-       link-free namespace can express (Fs.v). *)
+       value inside it would cost the examples statements they prove.
+       That is why the pin lives here: process state is observed by no
+       event. *)
 ;
   procst_sigpipe_pending : bool  (* SIGPIPE has been sent to this process and is
                                     BLOCKED, so it sits in
@@ -4909,6 +5053,10 @@ Definition m_urandom (m : Model) : InputStream := iost_urandom (m_io m).
 Definition m_net (m : Model) : NetQueue := iost_net (m_io m).
 Definition m_conn_ix (m : Model) : word := iost_conn_ix (m_io m).
 Definition m_fs (m : Model) : Fs.Fs := fsst_image (m_fsys m).
+
+(** The process's working directory, the key every relative pathname is
+    resolved against. *)
+Definition m_cwd (m : Model) : Fs.path := fsst_cwd (m_fsys m).
 Definition m_halted (m : Model) : option word := procst_halted (m_proc m).
 Definition m_tid (m : Model) : option word := procst_tid (m_proc m).
 Definition m_setsid_succeeded (m : Model) : bool :=
@@ -4959,7 +5107,7 @@ Definition m_sigpipe_terminal (m : Model) : bool :=
   procst_sigpipe_terminal (m_proc m).
 Definition m_utsname (m : Model) : option (list byte) :=
   procst_utsname (m_proc m).
-Definition m_statpins (m : Model) : list (Fs.path * list byte) :=
+Definition m_statpins (m : Model) : list (StatId * StatPin) :=
   procst_statpins (m_proc m).
 Definition m_rlimit_core (m : Model) : option (list byte) := limst_core (m_lim m).
 Definition m_nofile (m : Model) : word := limst_nofile (m_lim m).
@@ -4999,13 +5147,16 @@ Definition default_nofile : word := Z_to_bv 64 1024.
     builds a model is unchanged.  The random device's stream starts
     EMPTY here ([IEof]) for the reason the accept queue starts silent:
     it is an input of the run, and the one place that installs one is
-    [init_model], through [with_urandom]. *)
+    [init_model], through [with_urandom].  The WORKING DIRECTORY starts
+    at [Fs.default_cwd] here for the same reason and is installed the
+    same way, through [with_cwd]. *)
 Definition mkModel (fds : list (word * FdEntry)) (vm : VmMaps)
     (stdin : InputStream) (fs : Fs.Fs) (halted : option word)
     (tid : option word) (rlim : option (list byte)) : Model :=
   mkModelOf (mkFdState fds [])
             (mkVmState vm [] [] default_kernel (vdso_run_init vdso_draw_keep))
-            (mkIoState stdin IEof net_silent (Z_to_bv 64 0)) (mkFsState fs)
+            (mkIoState stdin IEof net_silent (Z_to_bv 64 0))
+            (mkFsState fs Fs.default_cwd)
             (mkProcState halted tid
                (mkCreds overflow_id overflow_id overflow_id
                         overflow_id overflow_id overflow_id [])
@@ -5093,51 +5244,134 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (mkIoState (m_stdin m) (m_urandom m) q (m_conn_ix m))
             (m_fsys m) (m_proc m) (m_lim m) (m_time m).
 
-(** Install a new file-system image, DROPPING THE STAT PIN of every path
-    the new image does not hold.
+(** Is the identity a pin is keyed by still alive?  A regular file is
+    alive while a name or a row of the inode table keeps it (a file a
+    descriptor holds keeps its row, [Fs.fs_unlink_file]); a folder and a
+    link while their key holds one; a device node while its key holds a
+    device or a descriptor of the device's kind is open ([entry_dev_key]:
+    such a descriptor's stat reads the pin of the kind's own name, when
+    the node there is the image's one node of the kind,
+    [Fs.Stat.fstat_devfd_spec]); a device descriptor's while its number
+    holds a descriptor of its kind ([entry_dev_kind], the first entry at
+    the number as [fd_lookup] reads it).  The installing arms drop the
+    last one too, where the number may come to hold another node of the
+    kind with no change this test can see ([with_fd_unpinned],
+    [with_fd_dup]).  A record that two numbers share one file
+    ([IdDevShare]) is kept: only those arms drop it, the one way a
+    number comes to hold another device file.  One whose number was
+    closed, or given a file of another kind, is dead, and a stat that
+    follows it pins that number to no avail: no stat reads the pin
+    before an installing arm drops it. *)
+Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId)
+    : bool :=
+  match id with
+  | IdIno i =>
+      negb (Nat.eqb (Fs.fs_ino_names fs i) 0)
+      || match Fs.itab_find (Fs.fs_inodes fs) i with Some _ => true | None => false end
+  | IdDir k =>
+      match Fs.fs_lookup fs k with Some Fs.EDir => true | _ => false end
+  | IdDev k =>
+      match Fs.fs_lookup fs k with Some (Fs.EDev _) => true | _ => false end
+      || existsb (fun p => match entry_dev_key (snd p) with
+                           | Some q => Fs.path_eqb q k
+                           | None => false
+                           end) fds
+  | IdLink k =>
+      match Fs.fs_lookup fs k with Some (Fs.ELink _) => true | _ => false end
+  | IdDevFd n d =>
+      match List.find (fun p => bv_eqb (fst p) n) fds with
+      | Some p => match entry_dev_kind (snd p) with
+                  | Some d' => devkind_eqb d' d
+                  | None => false
+                  end
+      | None => false
+      end
+  | IdDevShare _ _ => true
+  end.
+
+(** Install a new file-system image, DROPPING THE STAT PIN of every
+    identity the new image and the descriptors no longer keep alive
+    ([stat_id_alive]).
 
     THE FILTER IS NOT BOOKKEEPING; IT IS THE PIN'S CORRECTNESS
-    CONDITION.  [procst_statpins] holds a path's inode identity for the
-    life of the file, and [unlinkat] (35) -- the one modeled syscall
-    that takes a key OUT of the map -- destroys it.  A pin that survived
-    the removal would be held against the NEXT file created at that
-    name, which Linux gives a different inode, so
-    [Fs.Stat.fstat_file_spec] would reject the conforming trace
-    `create f; fstat; unlink f; create f; fstat`.  Every other writer of
-    this field passes a map that still holds the path it is about --
-    [Open.create_wronly]'s O_TRUNC keeps the key, and so do
-    [ReadWrite.write_spec] and [Open.ftruncate_spec] -- so the filter is
-    inert for all of them, which is what makes routing the invalidation
-    through this one setter equivalent to putting it in [unlinkat] and
-    cheaper than remembering to.
+    CONDITION.  A pin that survived its identity would be held against
+    the NEXT object that takes the same key: [rmdir] then [mkdirat] at
+    one key makes a new folder, which Linux gives a new inode, and a
+    pin kept on the key would make [Fs.Stat] reject the conforming trace
+    `mkdir d; stat d; rmdir d; mkdir d; stat d`.  A file's pin is keyed
+    by its inode number, and a number is handed out again only after its
+    row is gone ([Fs.fs_fresh_ino]), which is when this drops the pin.
+    Every writer that keeps the identity -- a write, a truncate, an
+    O_TRUNC open, the removal of one of a file's two names -- leaves the
+    filter inert for it.  The removal of a link name RELEASES part of
+    every link's pin, the count and ctime, without dropping it
+    ([statpins_release_links]). *)
+Definition statpins_restrict (fs : Fs.Fs) (fds : list (word * FdEntry))
+    (ps : list (StatId * StatPin)) : list (StatId * StatPin) :=
+  List.filter (fun e => stat_id_alive fs fds (fst e)) ps.
 
-    THE REMOVAL OF A NAME AN OPEN DESCRIPTOR HOLDS drops the pin here
-    too, and that is still right: the inode outlives the name, so its
-    pin must outlive it as well, and [Fs.Namei.unlink_open_tmp_spec]
-    first copies it into every [FdAnon] entry it makes ([af_pin]),
-    with [st_nlink] at 0, before this filter takes it off the name.
-    The next file created under the name then starts with no pin, as
-    Linux gives it a new inode.
+(** How many names of LINKS the image holds. *)
+Definition fs_link_count (fs : Fs.Fs) : nat :=
+  length (List.filter (fun ke => match snd ke with Fs.ELink _ => true | _ => false end)
+                      (Fs.fs_tree fs)).
 
-    A CREATE OVER AN EXISTING FILE KEEPS THE PIN, and should: O_TRUNC
-    resizes an inode rather than replacing it, and [st_size] is not a
-    member the pin holds fixed anyway. *)
-Definition statpins_restrict (fs : Fs.Fs) (ps : list (Fs.path * list byte))
-    : list (Fs.path * list byte) :=
-  List.filter (fun e => match Fs.fs_lookup fs (fst e) with
-                   | Some _ => true
-                   | None => false
-                   end) ps.
+(** RELEASE EVERY LINK'S COUNT AND CTIME WHEN A LINK NAME GOES: when the
+    new image [fs] holds fewer links than the old one [fs0], set
+    [sp_released] on the pin of every link identity ([IdLink]), and keep
+    every pin as it was otherwise.  It is a map over [ps] either way, so
+    a model with no pin keeps none by computation.
+
+    WHAT THE REMOVAL MOVES.  A link's pin holds its link count and
+    [st_ctime] ([Fs.Stat.stat_pin_held]), and the image cannot show two
+    names of one link as one identity ([StatId]), so the removed name
+    may have been another name of any link the run has pinned:
+    [vfs_unlink] lowers the count of the inode the name held and sets
+    its ctime ([simple_unlink], fs/libfs.c:787-795, and [shmem_unlink],
+    mm/shmem.c:4016-4019, Linux v6.18.46).  Those two are all it changes
+    of that inode: the size and mtime it sets are the folder's
+    (mm/shmem.c:4015-4016), and [shmem_free_inode] (:4010-4011) counts
+    the superblock's inodes.  So a surviving name's inode keeps its
+    device, number, mode, owners, block size, [st_blocks] and
+    [st_mtime] ([generic_fillattr], fs/stat.c:88-106), and the release
+    frees the count and the ctime alone: the link's next stat may
+    deliver any of those two, must repeat every other member its pin
+    holds, and becomes the pin ([Fs.Stat.pinned_after]).
+
+    A COUNT IS ENOUGH TO SEE THE REMOVAL, because no arm makes a link (the
+    model has no [symlinkat], [linkat] or [rename] arm): a step removes a
+    link name exactly when the image holds fewer links after it.  An arm
+    that makes a link must revisit this.  A device node's pin and a
+    folder's need no release: no arm makes or removes a device name
+    ([Fs.Namei.unlinkat_file_spec] declines the removal), and no
+    answered call moves what [Fs.Stat.stat_pin_held] holds of either. *)
+Definition statpins_release_links (fs0 fs : Fs.Fs) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  let gone := Nat.ltb (fs_link_count fs) (fs_link_count fs0) in
+  List.map (fun e => match fst e with
+                     | IdLink _ => (fst e, mkStatPin (sp_bytes (snd e)) (sp_rule (snd e))
+                                                 (sp_released (snd e) || gone)%bool)
+                     | _ => e
+                     end) ps.
+
+(** Install the working directory.  [init_model_setter_chain] is its ONE
+    caller ([init_model] builds the same field in its one constructor):
+    no syscall arm writes it ([chdir] and [fchdir] stay unmodeled),
+    which is what makes "the working directory is a directory" a state
+    invariant rather than a preservation obligation per writer. *)
+Definition with_cwd (cwd : Fs.path) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (mkFsState (m_fs m) cwd)
+            (m_proc m) (m_lim m) (m_time m).
 
 Definition with_fs (fs : Fs.Fs) (m : Model) : Model :=
-  mkModelOf (m_fd m) (m_vm m) (m_io m) (mkFsState fs)
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (mkFsState fs (m_cwd m))
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
                          (m_setsid_succeeded m) (m_sigmask m)
                          (m_has_children m) (m_utsname m)
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         (statpins_restrict fs (m_statpins m))
+                         (statpins_restrict fs (m_fds m)
+                            (statpins_release_links (m_fs m) fs (m_statpins m)))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
@@ -5196,33 +5430,64 @@ Definition with_utsname (bs : list byte) (m : Model) : Model :=
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
-(** Look a file's stat pin up by path.  [None] means no [fstat] has
-    delivered a [struct stat] for that file yet, which is the branch
-    that CREATES one.  Linear over an association list, like
-    [Fs.fs_lookup] and [fd_lookup] beside it. *)
-Fixpoint statpin_lookup (ps : list (Fs.path * list byte)) (p : Fs.path)
-    : option (list byte) :=
+(** Look an identity's stat pin up.  [None] means no stat has delivered
+    a [struct stat] for that identity yet, which is the branch that
+    CREATES one.  Linear over an association list, like [Fs.fs_lookup]
+    and [fd_lookup] beside it; the first entry wins. *)
+Fixpoint statpin_lookup (ps : list (StatId * StatPin)) (id : StatId)
+    : option StatPin :=
   match ps with
   | [] => None
-  | (q, bs) :: rest => if Fs.path_eqb q p then Some bs else statpin_lookup rest p
+  | (q, sp) :: rest => if stat_id_eqb q id then Some sp else statpin_lookup rest id
   end.
 
-(** Record the [struct stat] a file was first seen with.
-    [Fs.Stat.fstat_spec] is the only caller and it calls this only on
-    the branch where [statpin_lookup] was [None], so a path's pin is
-    written once and never overwritten -- which is what lets
-    [Checks.Sys.Fs.Stat]'s repeat check be a comparison against the
-    stored bytes rather than a relation between two calls.  The entry is
-    CONSED rather than merged into a sorted list on purpose: unlike
-    [Fs.fs_set], nothing observes this field's representation, so it
-    owes no canonical form.
+(** THE NUMBERS THAT SHARE DESCRIPTOR NUMBER [n]'S FILE, as the
+    [IdDevShare] entries of [ps] record them.  A copy pairs its new
+    number with the old one and with every number the old one is paired
+    with ([statpins_dup]), so every two numbers that hold one file the
+    pins do not yet know are a pair, and the numbers paired with [n] are
+    all of them. *)
+Definition statpins_shares (n : word) (ps : list (StatId * StatPin)) : list word :=
+  flat_map (fun e => match fst e with
+                     | IdDevShare a b =>
+                         if bv_eqb a n then [b] else if bv_eqb b n then [a] else []
+                     | _ => []
+                     end) ps.
 
-    A second writer would have to argue why the pin may move.  There is
-    no such argument for the members [Uapi.stat_stable_eqb] compares --
-    no [chmod], [chown] or [link] arm exists in
+(** The pins recorded beside [id]'s pin [sp]: for a device descriptor's
+    identity ([IdDevFd n d]) the same pin for every number that shares
+    [n]'s file ([statpins_shares]), and none for any other identity. *)
+Definition statpin_copies (id : StatId) (sp : StatPin) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  match id with
+  | IdDevFd n d => List.map (fun q => (IdDevFd q d, sp)) (statpins_shares n ps)
+  | _ => []
+  end.
+
+(** Record an identity's pin.  [Fs.Stat] writes one on the branch where
+    [statpin_lookup] was [None]; writes a folder's pin again, with the
+    same bytes, on the one branch where its rule is chosen ([StatPin]);
+    and writes a regular file's again, with the later stat's bytes, on
+    the one branch where that stat shows a set-id bit cleared
+    ([Fs.Stat.file_pin_after]).  The entry is CONSED, so the newer one
+    is the one [statpin_lookup] finds.  Nothing observes this field's
+    representation, so it owes no canonical form.
+
+    A writer that changed the BYTES has to argue why the pin may move.
+    The one there is argues it from [Uapi.stat_stable_eqb], which lets
+    only a regular file's S_ISUID and S_ISGID drop between the two
+    stats, as a write or a truncate drops them
+    ([Uapi.stat_mode_killed]); for every other member it compares no
+    syscall moves one -- no [chmod], [chown] or [link] arm exists in
     [Sys.SyscallTable.spec_table] -- so adding one means revisiting that
-    predicate in the same commit, not adding a call here. *)
-Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
+    predicate in the same commit.
+
+    A DEVICE DESCRIPTOR'S PIN IS RECORDED FOR EVERY NUMBER THAT HOLDS ITS
+    FILE ([statpin_copies]): the first stat of any of the numbers a
+    [dup] left sharing one file pins them all, so a later stat of
+    another of them reports the same inode, whichever was statted
+    first. *)
+Definition with_statpin (id : StatId) (sp : StatPin) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
                          (m_setsid_succeeded m) (m_sigmask m)
@@ -5230,7 +5495,95 @@ Definition with_statpin (p : Fs.path) (bs : list byte) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         ((p, bs) :: m_statpins m)
+                         ((id, sp) :: statpin_copies id sp (m_statpins m) ++ m_statpins m)
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
+            (m_lim m) (m_time m).
+
+(** The pins [ps] without the one a device descriptor at number [n]
+    holds ([IdDevFd n _], either kind), and without every record that
+    [n] shares a file with another number ([IdDevShare]). *)
+Definition statpins_unpin_fd (n : word) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  List.filter (fun e => match fst e with
+                        | IdDevFd q _ => negb (bv_eqb q n)
+                        | IdDevShare a b => negb (bv_eqb a n || bv_eqb b n)
+                        | _ => true
+                        end) ps.
+
+(** DROP THE STAT PIN OF DESCRIPTOR NUMBER [n] ([statpins_unpin_fd]).
+    Every arm that can install a DEVICE descriptor at a number calls it,
+    or [with_fd_dup], which drops the pin the same way, before it
+    installs: [Fs.Open.open_devnull], [Fs.Open.open_urandom],
+    [Fs.File.dup_spec] and [Fs.File.dup3_spec] ([F_DUPFD] and
+    [F_DUPFD_CLOEXEC] are declined, [Fs.Fcntl.fcntl_spec]).  The new
+    descriptor may hold another node of the kind than the one whose stat
+    the old pin holds, and nothing on the table tells the two apart: a
+    descriptor carries no key, so a [dup3] onto a number holding a
+    null-device descriptor from one node, of a null-device descriptor
+    from another, leaves an entry equal to the old one.  So the drop is
+    the arm's, and [stat_id_alive], which the table alone decides, is
+    not enough.  An arm that installs a descriptor of another kind at
+    the number leaves the pin in place but dead ([stat_id_alive]: no
+    stat reads it while the number holds no device descriptor of its
+    kind), and the next arm that installs a device descriptor there
+    drops it. *)
+Definition with_fd_unpinned (n : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m)
+                         (statpins_unpin_fd n (m_statpins m))
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
+            (m_lim m) (m_time m).
+
+(** The empty pin an [IdDevShare] entry carries: the entry records a
+    pair of numbers, and no stat reads its pin. *)
+Definition statpin_share : StatPin := mkStatPin [] None false.
+
+(** The pins after a copy of descriptor number [src] to [tgt] whose
+    entry is a device descriptor of kind [k] ([None] for any other kind):
+    [tgt]'s old pin and pairs are dropped first ([statpins_unpin_fd]),
+    and then [tgt] takes [src]'s pin when [src] has one, or is paired
+    with [src] and with every number paired with [src]
+    ([statpins_shares]) when it has none. *)
+Definition statpins_dup (k : option Fs.DevKind) (src tgt : word)
+    (ps : list (StatId * StatPin)) : list (StatId * StatPin) :=
+  let ps' := statpins_unpin_fd tgt ps in
+  match k with
+  | None => ps'
+  | Some d =>
+      match statpin_lookup ps' (IdDevFd src d) with
+      | Some sp => (IdDevFd tgt d, sp) :: ps'
+      | None => List.map (fun q => (IdDevShare tgt q, statpin_share))
+                         (src :: statpins_shares src ps') ++ ps'
+      end
+  end.
+
+(** THE PINS OF A COPY: [dup] and [dup3] call it as they install a copy
+    of number [src]'s entry, of device kind [k], at [tgt]
+    ([statpins_dup]).  The copy is the same [struct file]
+    ([SYSCALL_DEFINE1(dup)], fs/file.c:1457-1467; [do_dup2],
+    :1303-1304, Linux v6.18.46), which [vfs_fstat] stats
+    (fs/stat.c:276-281), so the two numbers report one inode: [tgt]
+    takes [src]'s pin, or, while [src] has none, a pair with it, so
+    that the first stat of either pins both ([with_statpin]).  [tgt]'s
+    old pin goes first, as [with_fd_unpinned] drops it, and with it
+    every pair [tgt] was in: only [tgt]'s link to its old file is cut,
+    and the numbers left holding that file stay paired. *)
+Definition with_fd_dup (k : option Fs.DevKind) (src tgt : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m)
+                         (statpins_dup k src tgt (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
@@ -5653,8 +6006,10 @@ Definition fd_remove (fds : list (word * FdEntry)) (fd : word)
     Linux does (see [File.lowest_fd]/[Open.openat_spec]).  The scan is
     fuel-bounded at 4096 candidates, so the result is always <= 4096
     (never confusable with an error-encoded return); if all of 0..4095
-    are taken the returned candidate may be occupied, and the openat
-    spec's freeness side-condition then leaves only the errno branch. *)
+    are taken the returned candidate may be occupied, and then
+    [File.lowest_fd]'s freeness conjunct empties its choice set
+    ([File.lowest_fd_none]), which [Open.openat_core_spec] tests before
+    it allocates. *)
 Fixpoint alloc_fd_aux (fds : list (word * FdEntry)) (cand : word) (fuel : nat)
     : word :=
   match fuel with
@@ -5871,7 +6226,7 @@ Definition pipe_new_id (ps : list (word * PipeBuf)) : word :=
     [m_fs] and yields an [FdFile]/[FdFileW]/[FdFileA]/[FdFileRW] — or,
     for the device paths it answers, an [FdDevNull] or an [FdUrandom] — never
     an [FdPipe].  The one procfs path it answers, "/proc/self/fd/N"
-    ([Fs.Open.openat_procfd_spec]), opens again only an [FdAnon] and
+    ([Fs.Open.openat_procfd_spec]), opens again only a regular file and
     declines every other kind at N, a pipe end included, so a procfs
     path cannot hand out a second reference to a pipe either.
 
@@ -5988,16 +6343,13 @@ Fixpoint pipe_end_live (fds : list (word * FdEntry)) (id : word)
   | (_, FdFileW _ _) :: r => pipe_end_live r id writer
   | (_, FdFileA _ _) :: r => pipe_end_live r id writer
   | (_, FdFileRW _ _) :: r => pipe_end_live r id writer
-  | (_, FdDir) :: r => pipe_end_live r id writer
+  | (_, FdDir _) :: r => pipe_end_live r id writer
   | (_, FdSocket _) :: r => pipe_end_live r id writer
   | (_, FdDevNull _ _) :: r => pipe_end_live r id writer
-  | (_, FdUrandom) :: r => pipe_end_live r id writer
+  | (_, FdUrandom _ _) :: r => pipe_end_live r id writer
   | (_, FdStream _ _ _) :: r => pipe_end_live r id writer
   | (_, FdEventfd _) :: r => pipe_end_live r id writer
   | (_, FdDgram _) :: r => pipe_end_live r id writer
-  | (_, FdAnon _ _) :: r => pipe_end_live r id writer
-    (* an unnamed file is a regular file's inode, not a pipe's: its
-       [id] numbers files, a space of its own *)
   end.
 
 (** A 32-bit value as the four little-endian bytes the kernel's
@@ -6016,136 +6368,6 @@ Definition le32_bytes (v : word) : list byte :=
 Definition pipe_fd_bytes (fdr fdw : word) : list byte :=
   le32_bytes fdr ++ le32_bytes fdw.
 
-(* =========================================================================
-   Unnamed-file helpers — the [FdAnon] entries an unlink of an open /tmp
-   file and a "/proc/self/fd/N" open make
-   ========================================================================= *)
-
-(** The unnamed file an entry is a descriptor of, or [None].
-
-    ENUMERATED, for [pipe_end_live]'s reason: a later [FdEntry]
-    constructor that could hold an unnamed file must stop the build
-    here.  A missed descriptor would keep a stale copy of the contents
-    when another descriptor writes ([anon_update]) and would let
-    [anon_new_id] hand its id to a second file. *)
-Definition entry_anon_id (e : FdEntry) : option word :=
-  match e with
-  | FdAnon id _ => Some id
-  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
-  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => None
-  end.
-
-(** The largest file id a live [FdAnon] entry carries, or -1 when none
-    does. *)
-Fixpoint anon_max_id (fds : list (word * FdEntry)) : Z :=
-  match fds with
-  | [] => (-1)%Z
-  | (_, e) :: r =>
-      match entry_anon_id e with
-      | Some id => Z.max (bv_unsigned id) (anon_max_id r)
-      | None => anon_max_id r
-      end
-  end.
-
-(** The id a new unnamed file gets: one above every live one's, for
-    [stream_new_id]'s reason.  A dead file needs no avoiding -- its
-    contents left with its last entry -- and a live one does, since a
-    reused id would join two files.  [Fs.Namei.unlink_open_tmp_spec]
-    checks that no live entry carries it, so the one way to fail, a
-    live id of 2^64 - 1 whose successor wraps to 0, declines rather
-    than aliases. *)
-Definition anon_new_id (fds : list (word * FdEntry)) : word :=
-  Z_to_bv 64 (anon_max_id fds + 1).
-
-(** Does some live entry carry file id [id]? *)
-Definition anon_id_live (fds : list (word * FdEntry)) (id : word) : bool :=
-  existsb (fun p => match entry_anon_id (snd p) with
-                    | Some id' => bv_eqb id' id
-                    | None => false
-                    end) fds.
-
-(** [f] applied to one entry if it is a descriptor of file [id], and
-    the entry unchanged otherwise.  Enumerated, for [entry_anon_id]'s
-    reason. *)
-Definition anon_entry_update (id : word) (f : AnonFile -> AnonFile)
-    (e : FdEntry) : FdEntry :=
-  match e with
-  | FdAnon id' af => if bv_eqb id' id then FdAnon id' (f af) else e
-  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
-  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => e
-  end.
-
-(** [f] applied to EVERY descriptor of file [id], each in its place in
-    the table.  This is how an arm keeps [FdAnon]'s invariant: a change
-    of the contents or of the pin is the inode's, so every [struct file]
-    on the inode sees it. *)
-Definition anon_update (fds : list (word * FdEntry)) (id : word)
-    (f : AnonFile -> AnonFile) : list (word * FdEntry) :=
-  map (fun p => (fst p, anon_entry_update id f (snd p))) fds.
-
-(** The contents [d] written to every descriptor of file [id]. *)
-Definition anon_set_data (fds : list (word * FdEntry)) (id : word)
-    (d : list byte) : list (word * FdEntry) :=
-  anon_update fds id (fun af => af_set_data af d).
-
-(** A transfer through descriptor [fd], whose entry was [FdAnon id af],
-    that leaves the file holding [d] and this descriptor's [f_pos] at
-    [o]: the contents go to every descriptor of the file, the offset to
-    this one alone. *)
-Definition anon_write_back (fds : list (word * FdEntry)) (fd id : word)
-    (af : AnonFile) (d : list byte) (o : word) : list (word * FdEntry) :=
-  fd_insert (anon_set_data fds id d) fd (FdAnon id (af_set_off (af_set_data af d) o)).
-
-
-(** Two pins are the same: both absent, or both the same bytes. *)
-Definition anon_pin_eqb (a b : option (list byte)) : bool :=
-  match a, b with
-  | None, None => true
-  | Some x, Some y => Fs.path_eqb x y
-  | None, Some _ | Some _, None => false
-  end.
-
-(** Entry [e] agrees with [af] as a descriptor of file [id]: a descriptor
-    of another file, or of no unnamed file, agrees trivially; a
-    descriptor of file [id] must carry the same contents and pin.
-    Enumerated, for [entry_anon_id]'s reason. *)
-Definition anon_entry_agrees (id : word) (af : AnonFile) (e : FdEntry) : bool :=
-  match e with
-  | FdAnon id' af' =>
-      implb (bv_eqb id' id)
-            (Fs.path_eqb (af_data af') (af_data af) && anon_pin_eqb (af_pin af') (af_pin af))
-  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
-  | FdDir | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom
-  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => true
-  end.
-
-(** THE REPLICAS AGREE: every descriptor of file [id] in the table carries
-    the contents and the pin of [af], the entry the call names.
-
-    The contents of an unnamed file are REPLICATED, one copy per
-    descriptor ([FdAnon]), so nothing in the type stops two descriptors of
-    one file from disagreeing, and a state where they do describes no
-    Linux machine: one inode has one size and one set of bytes.  So the
-    model answers no call that reads an unnamed file's contents or pin in
-    such a state.  EVERY arm that reads them — [Fs.ReadWrite]'s read,
-    write, writev, pwrite64, pwritev2 and lseek, [Fs.Open]'s ftruncate and
-    /proc/self/fd/N reopen, [Fs.Stat]'s fstat — first requires
-    [anon_agree] and DECLINES otherwise.  A proof therefore cannot use a
-    disagreeing state to conclude anything about a run: the run is
-    unmodeled there.
-
-    The arms that answer also KEEP the replicas agreeing, which is what
-    makes the decline unreachable from a launch (no launch holds an
-    unnamed file): a change of the contents goes to every descriptor of
-    the file ([anon_update], [anon_write_back]), a reopen copies the
-    contents and pin of an agreeing descriptor, the removal of a /tmp name
-    gives every descriptor it converts the same contents and pin under one
-    fresh id, and a close only removes an entry.
-    [Checks.AnonAgree] states these as lemmas. *)
-Definition anon_agree (fds : list (word * FdEntry)) (id : word) (af : AnonFile) : bool :=
-  forallb (fun p => anon_entry_agrees id af (snd p)) fds.
 (* =========================================================================
    Stream-pair helpers — the [FdStream] ends [socketpair] makes
    ========================================================================= *)
@@ -6173,17 +6395,15 @@ Fixpoint stream_end (fds : list (word * FdEntry)) (id : word) (side : bool)
   | (_, FdFileW _ _) :: r => stream_end r id side
   | (_, FdFileA _ _) :: r => stream_end r id side
   | (_, FdFileRW _ _) :: r => stream_end r id side
-  | (_, FdDir) :: r => stream_end r id side
+  | (_, FdDir _) :: r => stream_end r id side
   | (_, FdSocket _) :: r => stream_end r id side
   | (_, FdPipe _ _) :: r => stream_end r id side
   | (_, FdDevNull _ _) :: r => stream_end r id side
-  | (_, FdUrandom) :: r => stream_end r id side
+  | (_, FdUrandom _ _) :: r => stream_end r id side
   | (_, FdEventfd _) :: r => stream_end r id side
   | (_, FdDgram _) :: r => stream_end r id side
     (* neither names a stream end: an eventfd is an anonymous inode and
        an [FdDgram] is a socket no [socketpair] joined to anything *)
-  | (_, FdAnon _ _) :: r => stream_end r id side
-    (* a regular file's inode; its [id] numbers files, not pairs *)
   end.
 
 (** The PEER of end [(id, side)]: [unix_peer] of that socket, while the
@@ -6203,14 +6423,13 @@ Fixpoint stream_max_id (fds : list (word * FdEntry)) : Z :=
   | (_, FdFileW _ _) :: r => stream_max_id r
   | (_, FdFileA _ _) :: r => stream_max_id r
   | (_, FdFileRW _ _) :: r => stream_max_id r
-  | (_, FdDir) :: r => stream_max_id r
+  | (_, FdDir _) :: r => stream_max_id r
   | (_, FdSocket _) :: r => stream_max_id r
   | (_, FdPipe _ _) :: r => stream_max_id r
   | (_, FdDevNull _ _) :: r => stream_max_id r
-  | (_, FdUrandom) :: r => stream_max_id r
+  | (_, FdUrandom _ _) :: r => stream_max_id r
   | (_, FdEventfd _) :: r => stream_max_id r
   | (_, FdDgram _) :: r => stream_max_id r
-  | (_, FdAnon _ _) :: r => stream_max_id r
   end.
 
 (** The id a new pair gets: one above every LIVE pair's.  Unlike
@@ -6297,8 +6516,7 @@ Definition se_add_shut (st : StreamEnd) (rd wr : bool) : StreamEnd :=
       [Fs.ReadWrite.stream_send]) and queued, and only a LATER skb can be
       refused, which returns the bytes already sent.  The model writes
       32768 for the last term, which is below its measured 36544 on the
-      riscv64 defconfig (dispatch://OSSV-287/artifact/skb-sizes-md), so
-      the bound is no larger than Linux's.
+      riscv64 defconfig, so the bound is no larger than Linux's.
 
     Every count Linux can return satisfies this, which is what makes it
     sound; it admits more than Linux does — any total between the first
@@ -7065,7 +7283,7 @@ Definition noaccess_pages_owned (h : VmMaps) : Prop :=
     a hypothesis.  The NONEMPTINESS half is preserved by construction,
     and it is what every [region_free] reader of [vm_noaccess] actually
     leans on — [Madvise.madvise_dontneed_ok]'s third conjunct and
-    [Mremap.mremap_ok]'s — because a vacuous entry closes a
+    [Mremap.mremap_source_b]'s last — because a vacuous entry closes a
     [region_free] gate over a range it names no byte of (see
     [entries_nonzero] above, and
     [Madvise.madvise_noaccess_decline_names_a_protected_byte] for the
@@ -7096,149 +7314,6 @@ Definition vm_noaccess_entries_nonzero (h : VmMaps) : Prop :=
 Lemma noaccess_pages_owned_nonzero : forall h,
   noaccess_pages_owned h -> vm_noaccess_entries_nonzero h.
 Proof. intros h H a n Hin. exact (proj1 (H a n Hin)). Qed.
-
-(* =========================================================================
-   The run's private /tmp, as keys of the flat file system
-   ========================================================================= *)
-
-(** "/tmp/" — the prefix under which the run's declared PRIVATE
-    temporary directory is carried in the flat map ([Fs.Fs]).
-
-    WHY THE KEY IS ABSOLUTE.  The model has no directory structure and
-    no working directory, so "the file [out.gif] inside /tmp" has to be
-    a key like any other.  Spelling it exactly as the program spells it
-    — "/tmp/out.gif" — is what lets the three modeled operations reach
-    the EXISTING arms: the descriptor a create hands out is an ordinary
-    [FdFileW] on that key, and read, write, lseek, fstat and close on it
-    are the same arms every file uses.  A relative key can
-    never collide with one of these, because no key of a relative name
-    begins with "/".
-
-    The prefix is five bytes: '/', 't', 'm', 'p', '/'.  Only
-    [Fs.Namei.tmp_name] takes it apart again, and only for a path that
-    has exactly ONE further component. *)
-Definition tmp_prefix : Fs.path :=
-  [Z_to_bv 8 47; Z_to_bv 8 116; Z_to_bv 8 109; Z_to_bv 8 112; Z_to_bv 8 47].
-
-(** The flat-map key of the /tmp entry named [name]. *)
-Definition tmp_key (name : Fs.path) : Fs.path := tmp_prefix ++ name.
-
-(** A name with a NUL byte in it is not a name: [read_cstr] stops at the
-    first NUL, so no pathname a program can pass names such an entry,
-    and Linux's directory entries cannot hold one either.  A declaration
-    that mentions one describes nothing, and [fs_seed_tmp] drops it.
-    Dropping it is also what keeps the seeded image inside
-    [Fs.valid_fs], whose second clause is exactly this test — see
-    [fs_seed_tmp_valid]. *)
-Definition tmp_nul_free (name : Fs.path) : bool :=
-  negb (existsb (fun b => bv_eqb b (Z_to_bv 8 0)) name).
-
-(** Seed a declared private /tmp into a file-system image: insert each
-    declared entry under its absolute key, ONE AT A TIME, through the
-    file system's own [Fs.fs_set].
-
-    INSERTION RATHER THAN CONCATENATION IS THE WHOLE POINT.  [Fs.fs_set]
-    puts a key in its sorted place and replaces a duplicate, so the
-    result is in the canonical form for EVERY list the declaration
-    happens to be — unsorted, with repeats, in any order — and the
-    declaration therefore needs no validity clause of its own.  That is
-    what makes [State.in_tmp] a true input: every value is one a launch
-    could present, and
-    [Run.valid_input] excludes none of them ([fs_seed_tmp_valid] is the
-    proof).  A later entry wins over an earlier one with the same name,
-    which is the only reading a fold can give and costs nothing: the two
-    describe the same directory entry. *)
-Definition fs_seed_tmp (fs : Fs.Fs) (t : Fs.Fs) : Fs.Fs :=
-  fold_left
-    (fun acc e =>
-       if tmp_nul_free (fst e) then fs_set acc (tmp_key (fst e)) (snd e)
-       else acc)
-    t fs.
-
-Lemma fs_seed_tmp_nil : forall fs, fs_seed_tmp fs [] = fs.
-Proof. reflexivity. Qed.
-
-Lemma tmp_prefix_nul_free : ~ In (Z_to_bv 8 0) tmp_prefix.
-Proof.
-  unfold tmp_prefix. cbn [In].
-  intros [H|[H|[H|[H|[H|H]]]]]; try exact H;
-    apply (proj2 (bv_eqb_eq _ _)) in H; vm_compute in H; discriminate.
-Qed.
-
-Lemma tmp_key_nul_free : forall name,
-  tmp_nul_free name = true -> ~ In (Z_to_bv 8 0) (tmp_key name).
-Proof.
-  intros name Hn Hin. unfold tmp_key in Hin.
-  apply in_app_or in Hin. destruct Hin as [Hin|Hin].
-  - exact (tmp_prefix_nul_free Hin).
-  - unfold tmp_nul_free in Hn. apply Bool.negb_true_iff in Hn.
-    assert (existsb (fun b => bv_eqb b (Z_to_bv 8 0)) name = true) as Hc.
-    { apply existsb_exists. exists (Z_to_bv 8 0). split; [exact Hin|].
-      apply bv_eqb_eq. reflexivity. }
-    rewrite Hc in Hn. discriminate.
-Qed.
-
-(** THE CLAUSE ON THE IMAGE EXCLUDES NO /tmp.  Seeding a canonical image
-    with ANY declared /tmp leaves it canonical, so [Run.valid_input]'s
-    [Fs.valid_fs] clause — which reads the SEEDED image, through
-    [in_fs] — is satisfied for every value of [in_tmp] whenever it was
-    satisfied by the image alone.  That is the precise sense in which
-    the declaration is unconstrained: no /tmp table a launch could
-    present is ruled out. *)
-Lemma fs_seed_tmp_valid : forall t fs,
-  Fs.valid_fs fs -> Fs.valid_fs (fs_seed_tmp fs t).
-Proof.
-  induction t as [|[name data] t IH]; intros fs Hv; [exact Hv|].
-  cbn [fs_seed_tmp fold_left fst snd].
-  destruct (tmp_nul_free name) eqn:Hn; [|now apply IH].
-  apply IH. destruct Hv as [Hs Hf]. split.
-  - now apply fs_set_sorted.
-  - apply (fs_set_keys (fun q => ~ In (Z_to_bv 8 0) q));
-      [exact Hf | now apply tmp_key_nul_free].
-Qed.
-
-(** The seeding's insertion-closure, the shape [Fs.fs_set_keys] has for
-    ONE insertion: a property that holds of every key of the image and
-    of every /tmp key holds of every key of the seeded image.  The
-    NUL-free clause of [fs_seed_tmp_valid] just above is one instance
-    (left as it stands, so that proof keeps reading in one piece);
-    [seeded_absolute_key_is_tmp] below is the other. *)
-Lemma fs_seed_tmp_keys : forall (P : Fs.path -> Prop) t fs,
-  Forall (fun pf => P (fst pf)) fs ->
-  (forall n, P (tmp_key n)) ->
-  Forall (fun pf => P (fst pf)) (fs_seed_tmp fs t).
-Proof.
-  intros P t. induction t as [|[name data] t IH]; intros fs Hfs Hk; [exact Hfs|].
-  cbn [fs_seed_tmp fold_left fst snd].
-  destruct (tmp_nul_free name); [|now apply IH].
-  apply IH; [|exact Hk]. apply Fs.fs_set_keys; [exact Hfs | apply Hk].
-Qed.
-
-(** WHERE AN ABSOLUTE KEY IN A RUN'S FILE SYSTEM CAN COME FROM: the
-    seeding, and nothing else.
-
-    Under [Fs.fs_keys_relative] on the image, every key of the seeded
-    image is either RELATIVE — it came from the image, and the image's
-    keys begin with no "/" — or it is a key the seeding minted, and
-    every one of those is [tmp_key n] for the declared name [n], which
-    begins with "/tmp/".  The two halves are one disjunction rather than
-    two lemmas because that is how the consumers read it: a spec holding
-    an absolute path asks "could this be a key?", and the answer is "only
-    if it is under /tmp".
-
-    This is the lemma [Run.device_paths_never_seeded] turns into the
-    statement that the device arms' image guards cannot fire on a valid
-    input. *)
-Lemma seeded_absolute_key_is_tmp : forall t fs,
-  Fs.fs_keys_relative fs ->
-  Forall (fun pf => Fs.key_is_relative (fst pf) \/ exists n, fst pf = tmp_key n)
-         (fs_seed_tmp fs t).
-Proof.
-  intros t fs Hrel.
-  apply (fs_seed_tmp_keys (fun q => Fs.key_is_relative q \/ exists n, q = tmp_key n)).
-  - eapply Forall_impl; [|exact Hrel]. intros a Ha. now left.
-  - intros n. right. now exists n.
-Qed.
 
 (** What the CALLER supplies to a run: the argv and envp strings, the
     initial file-system image, the standard-input stream, the user and
@@ -7313,11 +7388,12 @@ Qed.
     nothing has to write it back.
 
     [in_nofile] is an input for the same reason, and CONSTANT for a
-    reason worth stating precisely, because an exec really can change
-    this limit: the LSM [bprm_committing_creds] hooks clamp every
-    resource including NOFILE (security/selinux/hooks.c,
+    reason worth stating precisely.  On a kernel with an LSM an exec
+    could change this limit — the [bprm_committing_creds] hooks clamp
+    every resource including NOFILE (security/selinux/hooks.c,
     [selinux_bprm_committing_creds]; security/apparmor/resource.c; Linux
-    v6.18.46, commit 1f99e9ab748f).  What makes the field constant is
+    v6.18.46, commit 1f99e9ab748f) — but the configuration of record
+    builds none (SCOPE.md).  What makes the field constant is
     not that nothing writes it but WHEN the writers run — at exec, at
     boot, on a core dump — and this model begins AT execve and reaches
     none of them afterwards.  So the limit a run starts with is the one
@@ -7341,11 +7417,26 @@ Record ProcInput := mkProcInput_full {
   in_argv  : list (list byte);
   in_envp  : list (list byte);
   in_image_fs : Fs.Fs
-    (* the file-system image the run is launched over, WITHOUT the
-       run's private /tmp.  Read it through [in_fs] below, which is
-       what every consumer means by "the file system the run starts
-       with"; this projection exists so that the image and the
-       declared /tmp can be supplied separately *);
+    (* THE FILE-SYSTEM IMAGE the run is launched over: the whole
+       namespace, keyed by absolute canonical paths, devices and
+       directories included.  [Run.valid_input] requires it to be
+       well formed ([Fs.wf_fs]).  [in_fs] below is the projection every
+       consumer reads it through; the run's /tmp is whatever the image
+       holds under /tmp *);
+  in_cwd : Fs.path
+    (* THE ENVIRONMENT'S DECLARATION of the working directory the run
+       is launched in, as an absolute canonical key.  Like the
+       credentials it is a fact about the environment the model cannot
+       derive -- nothing a trace reveals says where the process was
+       started -- and like argv it is ARBITRARY BUT FIXED, the SAME
+       directory seen by the source and the target of a pair.
+
+       [Run.valid_input] requires it to be canonical, to resolve to a
+       directory in the image, and to be short enough that its bytes
+       plus a NUL fit in PATH_MAX (so [getcwd] can never answer
+       -ENAMETOOLONG).  [init_model] copies it into [m_cwd] and
+       nothing writes it afterwards.  [Fs.default_cwd] is the FIXTURE
+       default, not a layout any theorem names *);
   in_stdin : InputStream;
   in_uid   : word;   (* the real user id the process is launched with *)
   in_gid   : word;   (* the real group id the process is launched with *)
@@ -7418,7 +7509,7 @@ Record ProcInput := mkProcInput_full {
   in_urandom : InputStream
     (* THE ENVIRONMENT'S DECLARATION of the bytes the random device
        hands out, in order: what every read of /dev/urandom
-       ([Fs.Open.openat_urandom_spec], [State.FdUrandom]) delivers,
+       ([Fs.Open.open_urandom], [State.FdUrandom]) delivers,
        front first, across every descriptor the run opens on it.  Like
        [in_va_size] it is a fact about the environment the model cannot
        derive -- nothing a trace reveals says which bytes the kernel's
@@ -7438,30 +7529,6 @@ Record ProcInput := mkProcInput_full {
        nothing whatever about WHICH bytes come out.  [init_model] seeds
        [iost_urandom] from it, and the read arm consumes that copy the
        way stdin's arm consumes [iost_stdin]. *);
-  in_tmp   : Fs.Fs
-    (* THE ENVIRONMENT'S DECLARATION of the run's PRIVATE /tmp at
-       launch: the files it already contains, keyed by the ONE
-       component of their name (no "/tmp/" prefix in the key).  Like
-       [in_urandom] it is a fact about the environment the model cannot
-       derive, and like it the value is ARBITRARY BUT FIXED -- a
-       parameter of the execution exactly as argv and envp are, the
-       SAME directory seen by the source and the target of a pair, so
-       every equivalence is proved for every declared /tmp.  It is not
-       nondeterministic in the model.
-
-       THE PREMISE IT CARRIES is that /tmp is a distinct, writable
-       directory PRIVATE to this run, which is what makes this table
-       the whole truth about it: what the run holds there is this
-       declaration, plus what [Fs.Open.create_wronly] created, minus
-       what [Fs.Namei.unlinkat_spec] removed, and nothing else can put
-       a file there or take one away.  PRIVATE INCLUDES THE FILES'
-       LINKS: each declared file is a regular file whose one name is
-       its name here, so the removal of that name leaves it with link
-       count 0 ([Uapi.stat_pin_unlinked]).
-
-       [Run.valid_input] has NO clause naming it: [fs_seed_tmp] seeds
-       any list into the canonical form, so every value is one a launch
-       could present ([fs_seed_tmp_valid]). *);
   in_kernel : KernelBuild
     (* THE ENVIRONMENT'S DECLARATION of the kernel build the process
        was launched on: see [KernelBuild] for what it holds and why it
@@ -7608,31 +7675,42 @@ Record ProcInput := mkProcInput_full {
        nothing else writes it *)
 }.
 
-(** THE POSITIONAL-LITERAL FORM: every field except the seven
-    TRAILING DECLARATION fields of the record ([in_urandom], [in_tmp],
-    [in_kernel], [in_execfn], [in_channel_reader],
-    [in_sigpipe_default], [in_sigpipe_terminal]).
+(** THE POSITIONAL-LITERAL FORM: every field except [in_cwd] and the
+    six TRAILING DECLARATION fields of the record ([in_urandom],
+    [in_kernel], [in_execfn], [in_channel_reader], [in_sigpipe_default],
+    [in_sigpipe_terminal]), with the third place taking a FLAT LEGACY
+    IMAGE keyed by relative plain names instead of an [Fs.Fs].
 
     The record's own constructor is [mkProcInput_full] and takes every
-    field.  This takes the first thirteen, in that order, and fills the
-    last seven with THE DEFAULT RANDOM STREAM, THE EMPTY /tmp, THE
-    DEFAULT KERNEL BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER,
-    SIGPIPE AT SIG_DFL and SIGPIPE DEATHS DECLINED: [default_urandom],
-    which is zero bytes
-    forever; a private /tmp that starts empty; [default_kernel], a
-    kernel built without transparent huge pages; [default_execfn], the
-    one-byte name "a"; [true], the reading every literal written before
+    field.  This takes thirteen, in the record's order with [in_cwd]
+    left out, and puts the legacy image through [Fs.migrate_image] at
+    [Fs.default_cwd]: the keys move, so a literal that named "out.gif"
+    denotes "/work/out.gif", the image holds the standard root
+    ([Fs.standard_dirs]' folders and the two devices) underneath, and a
+    legacy key the migration REJECTS (empty, absolute, or holding an
+    empty, "." or ".." component) is not in the image at all.  A
+    statement about a literal FINAL MAP is therefore pinned to the
+    migrated map; a statement about what a program can read and write
+    through a plain name is about the key the migration gave it
+    ([Fs.resolve_plain_name]).
+
+    It fills [in_cwd] with [Fs.default_cwd], the folder "/work", and
+    the last six with THE DEFAULT RANDOM STREAM, THE DEFAULT KERNEL
+    BUILD, THE DEFAULT EXEC NAME, A LIVE CHANNEL READER, SIGPIPE AT
+    SIG_DFL and SIGPIPE DEATHS DECLINED: [default_urandom], which is
+    zero bytes forever; [default_kernel], a kernel built without
+    transparent huge pages; [default_execfn], the one-byte name "a";
+    [true], the reading every literal written before
     [in_channel_reader] existed was already assuming; [true] again,
     the SIG_DFL launch, which [Run.valid_input] does NOT pin -- it
     leaves the disposition free, so this is a choice of the fixture and
-    not a forced value; and [false], the
-    declined SIGPIPE death [Run.valid_input] does pin
-    ([mkProcInput_sigpipe_terminal] proves it is the literal).  So a
-    literal written
-    through this name denotes an input in an environment that holds no
-    file of its own, on an ordinary kernel, launched as "a", whose
-    standard output is read, whose SIGPIPE is at SIG_DFL, and whose
-    write to a reader-less descriptor declines.
+    not a forced value; and [false], the declined SIGPIPE death
+    [Run.valid_input] does pin ([mkProcInput_sigpipe_terminal] proves
+    it is the literal).  So a literal written through this name denotes
+    an input launched in /work over the migrated image, on an ordinary
+    kernel, launched as "a", whose standard output is read, whose
+    SIGPIPE is at SIG_DFL, and whose write to a reader-less descriptor
+    declines.
 
     THE RANDOM DEFAULT IS NOT [IEof]: under
     [Run.valid_urandom] every valid input declares an endless stream, so
@@ -7645,51 +7723,54 @@ Record ProcInput := mkProcInput_full {
     form under this name, and putting every new environment field at
     the END, is what makes an added field a compile error there rather
     than a re-spelling of every literal.  A NEW literal that wants to
-    set either field uses [mkProcInput_full] or the record-brace form;
-    this one cannot express them, which is the point.
+    set one of the fields this form fills uses [mkProcInput_full] or the
+    record-brace form; this one cannot express them, which is the point.
 
     It is a plain (transparent) [Definition], so it reduces wherever the
-    constructor would — but a [cbn] or [simpl] with an explicit
+    constructor would -- but a [cbn] or [simpl] with an explicit
     constant list has to name it to see through it. *)
 Definition mkProcInput
-    (argv envp : list (list byte)) (image_fs : Fs.Fs) (stdin : InputStream)
+    (argv envp : list (list byte)) (legacy_fs : list (Fs.path * list byte))
+    (stdin : InputStream)
     (uid gid : word) (groups : list word) (net : NetQueue)
     (nofile sigmask hwcap : word) (abort_terminal : bool)
     (va_size : VaSize) : ProcInput :=
-  mkProcInput_full argv envp image_fs stdin uid gid groups net
-    nofile sigmask hwcap abort_terminal va_size default_urandom []
+  mkProcInput_full argv envp
+    (fst (Fs.migrate_image Fs.default_cwd legacy_fs)) Fs.default_cwd
+    stdin uid gid groups net
+    nofile sigmask hwcap abort_terminal va_size default_urandom
     default_kernel default_execfn true true false.
 
 (** The default is the LITERAL [false], not a variable: every input
     built through [mkProcInput] is one on which a SIGPIPE death
     declines, which is the value [Run.valid_input] pins. *)
 Lemma mkProcInput_sigpipe_terminal :
-  forall argv envp image_fs stdin uid gid groups net nofile sigmask hwcap
+  forall argv envp legacy_fs stdin uid gid groups net nofile sigmask hwcap
          abort_terminal va_size,
   in_sigpipe_terminal
-    (mkProcInput argv envp image_fs stdin uid gid groups net nofile sigmask
+    (mkProcInput argv envp legacy_fs stdin uid gid groups net nofile sigmask
        hwcap abort_terminal va_size) = false.
 Proof. reflexivity. Qed.
 
-(** THE FILE SYSTEM THE RUN STARTS WITH: the image, with the run's
-    declared private /tmp seeded into it under absolute keys.
+(** The working directory of every input built through [mkProcInput] is
+    the literal [Fs.default_cwd], the folder its legacy image was
+    migrated under. *)
+Lemma mkProcInput_cwd_is_default :
+  forall argv envp legacy_fs stdin uid gid groups net nofile sigmask hwcap
+         abort_terminal va_size,
+  in_cwd
+    (mkProcInput argv envp legacy_fs stdin uid gid groups net nofile sigmask
+       hwcap abort_terminal va_size) = Fs.default_cwd.
+Proof. reflexivity. Qed.
 
-    This is what every consumer means by [in_fs], and it is
-    what [init_model] installs, so [m_fs (init_model _ _ _ _ _
-    inp) = in_fs inp] holds by [reflexivity].  The record carries the
-    image and the
-    declared /tmp as two fields, and this function is the one place
-    that puts them together.
+(** THE FILE SYSTEM THE RUN STARTS WITH: the image the launch declares,
+    which IS the namespace, /tmp included.
 
-    IT IS A FUNCTION RATHER THAN A PROJECTION, which the record's header
-    note above asks about: a function of two projections reduces exactly
-    as a projection does for a variable [inp], so the reflexivity
-    property the note is written for is unaffected.  An input whose
-    [in_tmp] is the empty declaration gives back the image itself
-    ([fs_seed_tmp_nil]), by computation, which is why every literal
-    built with [mkProcInput] reduces to its image. *)
-Definition in_fs (inp : ProcInput) : Fs.Fs :=
-  fs_seed_tmp (in_image_fs inp) (in_tmp inp).
+    It is a named definition rather than [in_image_fs] at every use
+    because every consumer -- [Common], the Examples, the equivalence
+    statements -- says [in_fs], and [m_fs (init_model _ _ _ _ _ inp) =
+    in_fs inp] holds by [reflexivity]. *)
+Definition in_fs (inp : ProcInput) : Fs.Fs := in_image_fs inp.
 
 (* =========================================================================
    Initial model: fds 0/1/2 bound to the three standard channels;
@@ -7753,17 +7834,22 @@ Definition init_reserved (reserved : list (word * word))
 
     Each [with_*] rebuilds [mkModelOf] from the projections of its
     argument, so a chain of them denotes a term holding the PRODUCT of
-    their per-setter counts — not a power.  Only [with_nofile] takes
-    seven; a setter that rebuilds a sub-record takes more, because every
-    field of that record is another projection.  Counted at this commit,
-    over [init_model_setter_chain]'s seven links:
+    their per-setter counts — not a power.  Only [with_nofile] and
+    [with_cwd] take seven; a setter that rebuilds a sub-record takes
+    more, because every field of that record is another projection.
+    Counted at this commit, over [init_model_setter_chain]'s eleven
+    links:
 
-      with_abort_terminal 17   with_sigmask 17   with_nofile  7
-      with_net             9   with_urandom  9   with_creds  17
-      with_kernel          9
+      with_sigpipe_terminal 21   with_sigpipe_default 21
+      with_channel_reader   21   with_abort_terminal  21
+      with_sigmask          21   with_nofile           7
+      with_net               9   with_urandom          9
+      with_kernel           10   with_cwd              7
+      with_creds            21
 
-    17·17·7·9·9·17·9 = 25,071,039 copies of the innermost model, against
-    the 823,543 that "7^7" would give.  The kernel's conversion does not
+    21^6·7·9·9·10·7 = 3,404,057,342,490 copies of the innermost model,
+    against the 1,977,326,743 that "7^11" would give.  The kernel's
+    conversion does not
     share them.  A goal that reduces [init_model] TWICE — which is every
     fixture that writes the term on both sides of an equation, as
     [Checks.Cases.Prelude] does — then costs time exponential in the
@@ -7814,7 +7900,7 @@ Definition init_model (reserved : list (word * word)) (brk0 mbase sp : word)
                              [] [] brk0 brk0 lim mbase sp)
                [] [] (in_kernel inp) (vdso_run_init vdso_draw_keep))
     (mkIoState (in_stdin inp) (in_urandom inp) (in_net inp) (Z_to_bv 64 0))
-    (mkFsState (in_fs inp))
+    (mkFsState (in_fs inp) (in_cwd inp))
     (mkProcState None None
        (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
                 (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
@@ -7840,6 +7926,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
    (with_net (in_net inp)
    (with_urandom (in_urandom inp)
    (with_kernel (in_kernel inp)
+   (with_cwd (in_cwd inp)
    (with_creds
     (mkCreds (in_uid inp) (in_uid inp) (in_uid inp)
              (in_gid inp) (in_gid inp) (in_gid inp) (in_groups inp))
@@ -7853,7 +7940,7 @@ Definition init_model_setter_chain (reserved : list (word * word))
        (in_fs inp)
        None
        None
-       None)))))))))).
+       None))))))))))).
 Lemma m_kernel_init_model : forall reserved brk0 mbase sp lim inp,
   m_kernel (init_model reserved brk0 mbase sp lim inp) = in_kernel inp.
 Proof. reflexivity. Qed.
@@ -7926,6 +8013,10 @@ Lemma m_kernel_with_fs : forall v m, m_kernel (with_fs v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_fs : model.
 
+Lemma m_kernel_with_cwd : forall v m, m_kernel (with_cwd v m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_cwd : model.
+
 Lemma m_kernel_with_halted : forall v m, m_kernel (with_halted v m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_halted : model.
@@ -7952,10 +8043,20 @@ Lemma m_kernel_with_utsname : forall v m,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_utsname : model.
 
-Lemma m_kernel_with_statpin : forall p bs m,
-  m_kernel (with_statpin p bs m) = m_kernel m.
+Lemma m_kernel_with_statpin : forall id sp m,
+  m_kernel (with_statpin id sp m) = m_kernel m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_statpin : model.
+
+Lemma m_kernel_with_fd_unpinned : forall n m,
+  m_kernel (with_fd_unpinned n m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fd_unpinned : model.
+
+Lemma m_kernel_with_fd_dup : forall k src tgt m,
+  m_kernel (with_fd_dup k src tgt m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fd_dup : model.
 
 Lemma m_kernel_with_abort_terminal : forall v m,
   m_kernel (with_abort_terminal v m) = m_kernel m.
@@ -8331,6 +8432,19 @@ Lemma m_fs_with_urandom : forall (v : InputStream) (m : Model),
   m_fs (with_urandom v m) = m_fs m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_fs_with_urandom : model.
+
+(** The working directory is carried across a write to the map: every
+    writer goes through [with_fs], and none of them moves it. *)
+Lemma m_cwd_with_fs : forall (v : Fs.Fs) (m : Model),
+  m_cwd (with_fs v m) = m_cwd m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_cwd_with_fs : model.
+
+Lemma m_cwd_with_fds : forall (v : list (word * FdEntry)) (m : Model),
+  m_cwd (with_fds v m) = m_cwd m.
+Proof. reflexivity. Qed.
+
+#[export] Hint Rewrite m_cwd_with_fds : model.
 
 Lemma m_fs_with_fs : forall (v : Fs.Fs) (m : Model),
   m_fs (with_fs v m) = v.
@@ -9796,10 +9910,13 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_utsname_mkModel : model.
 
 
-(** The per-file stat pins against every other move of the model.  One
-    row and one column of the matrix above: [Fs.Stat.fstat_spec] is the
-    only reader and [with_statpin] the only writer, so every entry but
-    the diagonal one is [m_statpins m].
+(** The stat pins against every other move of the model.  One row and
+    one column of the matrix above: [Fs.Stat]'s stats are the only
+    readers, and [with_statpin], [with_fs] (which drops and releases
+    pins, [statpins_restrict], [statpins_release_links]),
+    [with_fd_unpinned] (which drops a device descriptor's) and
+    [with_fd_dup] (which drops one and copies or pairs another) the only
+    writers, so every other entry is [m_statpins m].
 
     The column is what the framing obligations need.  A [fstat] that
     creates a pin changes the model on a
@@ -9847,7 +9964,8 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_accepted : model.
 
 Lemma m_statpins_with_fs : forall (v : Fs.Fs) (m : Model),
-  m_statpins (with_fs v m) = statpins_restrict v (m_statpins m).
+  m_statpins (with_fs v m)
+  = statpins_restrict v (m_fds m) (statpins_release_links (m_fs m) v (m_statpins m)).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_fs : model.
 
@@ -9901,105 +10019,308 @@ Lemma m_statpins_with_utsname : forall (v : list byte) (m : Model),
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_utsname : model.
 
-Lemma m_fds_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_fds (with_statpin p bs m) = m_fds m.
+Lemma m_fds_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_fds (with_statpin id sp m) = m_fds m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_fds_with_statpin : model.
 
-Lemma m_pipes_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_pipes (with_statpin p bs m) = m_pipes m.
+Lemma m_pipes_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_pipes (with_statpin id sp m) = m_pipes m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_pipes_with_statpin : model.
 
-Lemma m_vmmaps_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_vmmaps (with_statpin p bs m) = m_vmmaps m.
+Lemma m_vmmaps_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_vmmaps (with_statpin id sp m) = m_vmmaps m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vmmaps_with_statpin : model.
 
-Lemma m_vm_lazy_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_vm_lazy (with_statpin p bs m) = m_vm_lazy m.
+Lemma m_vm_lazy_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_vm_lazy (with_statpin id sp m) = m_vm_lazy m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vm_lazy_with_statpin : model.
 
-Lemma m_vm_materialized_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_vm_materialized (with_statpin p bs m) = m_vm_materialized m.
+Lemma m_vm_materialized_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_vm_materialized (with_statpin id sp m) = m_vm_materialized m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_vm_materialized_with_statpin : model.
 
-Lemma m_stdin_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_stdin (with_statpin p bs m) = m_stdin m.
+Lemma m_stdin_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_stdin (with_statpin id sp m) = m_stdin m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_stdin_with_statpin : model.
 
-Lemma m_net_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_net (with_statpin p bs m) = m_net m.
+Lemma m_net_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_net (with_statpin id sp m) = m_net m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_net_with_statpin : model.
 
-Lemma m_conn_ix_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_conn_ix (with_statpin p bs m) = m_conn_ix m.
+Lemma m_conn_ix_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_conn_ix (with_statpin id sp m) = m_conn_ix m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_conn_ix_with_statpin : model.
 
-Lemma m_fs_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_fs (with_statpin p bs m) = m_fs m.
+Lemma m_fs_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_fs (with_statpin id sp m) = m_fs m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_fs_with_statpin : model.
 
-Lemma m_halted_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_halted (with_statpin p bs m) = m_halted m.
+Lemma m_halted_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_halted (with_statpin id sp m) = m_halted m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_halted_with_statpin : model.
 
-Lemma m_tid_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_tid (with_statpin p bs m) = m_tid m.
+Lemma m_tid_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_tid (with_statpin id sp m) = m_tid m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_tid_with_statpin : model.
 
-Lemma m_setsid_succeeded_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_setsid_succeeded (with_statpin p bs m) = m_setsid_succeeded m.
+Lemma m_setsid_succeeded_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_setsid_succeeded (with_statpin id sp m) = m_setsid_succeeded m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_setsid_succeeded_with_statpin : model.
 
-Lemma m_has_children_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_has_children (with_statpin p bs m) = m_has_children m.
+Lemma m_has_children_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_has_children (with_statpin id sp m) = m_has_children m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_has_children_with_statpin : model.
 
-Lemma m_sigmask_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_sigmask (with_statpin p bs m) = m_sigmask m.
+Lemma m_sigmask_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_sigmask (with_statpin id sp m) = m_sigmask m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_sigmask_with_statpin : model.
 
-Lemma m_utsname_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_utsname (with_statpin p bs m) = m_utsname m.
+Lemma m_utsname_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_utsname (with_statpin id sp m) = m_utsname m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_utsname_with_statpin : model.
 
-Lemma m_rlimit_core_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_rlimit_core (with_statpin p bs m) = m_rlimit_core m.
+Lemma m_rlimit_core_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_rlimit_core (with_statpin id sp m) = m_rlimit_core m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_rlimit_core_with_statpin : model.
 
-Lemma m_nofile_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_nofile (with_statpin p bs m) = m_nofile m.
+Lemma m_nofile_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_nofile (with_statpin id sp m) = m_nofile m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_nofile_with_statpin : model.
 
-Lemma m_clock_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_clock (with_statpin p bs m) = m_clock m.
+Lemma m_clock_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_clock (with_statpin id sp m) = m_clock m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_clock_with_statpin : model.
 
-Lemma m_creds_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_creds (with_statpin p bs m) = m_creds m.
+Lemma m_creds_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_creds (with_statpin id sp m) = m_creds m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_creds_with_statpin : model.
 
-Lemma m_statpins_with_statpin : forall (p : Fs.path) (bs : list byte) (m : Model),
-  m_statpins (with_statpin p bs m) = (p, bs) :: m_statpins m.
+Lemma m_statpins_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
+  m_statpins (with_statpin id sp m)
+  = (id, sp) :: statpin_copies id sp (m_statpins m) ++ m_statpins m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_statpin : model.
+
+(** [with_fd_unpinned] moves the pins alone. *)
+Lemma m_fds_with_fd_unpinned : forall (n : word) (m : Model),
+  m_fds (with_fd_unpinned n m) = m_fds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_fd_unpinned : model.
+
+Lemma m_pipes_with_fd_unpinned : forall (n : word) (m : Model),
+  m_pipes (with_fd_unpinned n m) = m_pipes m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pipes_with_fd_unpinned : model.
+
+Lemma m_vmmaps_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vmmaps (with_fd_unpinned n m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_fd_unpinned : model.
+
+Lemma m_vm_lazy_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vm_lazy (with_fd_unpinned n m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_lazy_with_fd_unpinned : model.
+
+Lemma m_vm_materialized_with_fd_unpinned : forall (n : word) (m : Model),
+  m_vm_materialized (with_fd_unpinned n m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_materialized_with_fd_unpinned : model.
+
+Lemma m_stdin_with_fd_unpinned : forall (n : word) (m : Model),
+  m_stdin (with_fd_unpinned n m) = m_stdin m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_stdin_with_fd_unpinned : model.
+
+Lemma m_net_with_fd_unpinned : forall (n : word) (m : Model),
+  m_net (with_fd_unpinned n m) = m_net m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_net_with_fd_unpinned : model.
+
+Lemma m_conn_ix_with_fd_unpinned : forall (n : word) (m : Model),
+  m_conn_ix (with_fd_unpinned n m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_conn_ix_with_fd_unpinned : model.
+
+Lemma m_fs_with_fd_unpinned : forall (n : word) (m : Model),
+  m_fs (with_fd_unpinned n m) = m_fs m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fs_with_fd_unpinned : model.
+
+Lemma m_halted_with_fd_unpinned : forall (n : word) (m : Model),
+  m_halted (with_fd_unpinned n m) = m_halted m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_halted_with_fd_unpinned : model.
+
+Lemma m_tid_with_fd_unpinned : forall (n : word) (m : Model),
+  m_tid (with_fd_unpinned n m) = m_tid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_tid_with_fd_unpinned : model.
+
+Lemma m_setsid_succeeded_with_fd_unpinned : forall (n : word) (m : Model),
+  m_setsid_succeeded (with_fd_unpinned n m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_setsid_succeeded_with_fd_unpinned : model.
+
+Lemma m_has_children_with_fd_unpinned : forall (n : word) (m : Model),
+  m_has_children (with_fd_unpinned n m) = m_has_children m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_fd_unpinned : model.
+
+Lemma m_sigmask_with_fd_unpinned : forall (n : word) (m : Model),
+  m_sigmask (with_fd_unpinned n m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_fd_unpinned : model.
+
+Lemma m_utsname_with_fd_unpinned : forall (n : word) (m : Model),
+  m_utsname (with_fd_unpinned n m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_fd_unpinned : model.
+
+Lemma m_rlimit_core_with_fd_unpinned : forall (n : word) (m : Model),
+  m_rlimit_core (with_fd_unpinned n m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_rlimit_core_with_fd_unpinned : model.
+
+Lemma m_nofile_with_fd_unpinned : forall (n : word) (m : Model),
+  m_nofile (with_fd_unpinned n m) = m_nofile m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_nofile_with_fd_unpinned : model.
+
+Lemma m_clock_with_fd_unpinned : forall (n : word) (m : Model),
+  m_clock (with_fd_unpinned n m) = m_clock m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_clock_with_fd_unpinned : model.
+
+Lemma m_creds_with_fd_unpinned : forall (n : word) (m : Model),
+  m_creds (with_fd_unpinned n m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_fd_unpinned : model.
+
+Lemma m_statpins_with_fd_unpinned : forall (n : word) (m : Model),
+  m_statpins (with_fd_unpinned n m) = statpins_unpin_fd n (m_statpins m).
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_fd_unpinned : model.
+
+(** [with_fd_dup] moves the pins alone. *)
+Lemma m_fds_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_fds (with_fd_dup k src tgt m) = m_fds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_fd_dup : model.
+
+Lemma m_pipes_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_pipes (with_fd_dup k src tgt m) = m_pipes m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pipes_with_fd_dup : model.
+
+Lemma m_vmmaps_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vmmaps (with_fd_dup k src tgt m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_fd_dup : model.
+
+Lemma m_vm_lazy_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vm_lazy (with_fd_dup k src tgt m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_lazy_with_fd_dup : model.
+
+Lemma m_vm_materialized_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vm_materialized (with_fd_dup k src tgt m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_materialized_with_fd_dup : model.
+
+Lemma m_stdin_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_stdin (with_fd_dup k src tgt m) = m_stdin m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_stdin_with_fd_dup : model.
+
+Lemma m_net_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_net (with_fd_dup k src tgt m) = m_net m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_net_with_fd_dup : model.
+
+Lemma m_conn_ix_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_conn_ix (with_fd_dup k src tgt m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_conn_ix_with_fd_dup : model.
+
+Lemma m_fs_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_fs (with_fd_dup k src tgt m) = m_fs m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fs_with_fd_dup : model.
+
+Lemma m_halted_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_halted (with_fd_dup k src tgt m) = m_halted m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_halted_with_fd_dup : model.
+
+Lemma m_tid_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_tid (with_fd_dup k src tgt m) = m_tid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_tid_with_fd_dup : model.
+
+Lemma m_setsid_succeeded_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_setsid_succeeded (with_fd_dup k src tgt m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_setsid_succeeded_with_fd_dup : model.
+
+Lemma m_has_children_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_has_children (with_fd_dup k src tgt m) = m_has_children m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_fd_dup : model.
+
+Lemma m_sigmask_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_sigmask (with_fd_dup k src tgt m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_fd_dup : model.
+
+Lemma m_utsname_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_utsname (with_fd_dup k src tgt m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_fd_dup : model.
+
+Lemma m_rlimit_core_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_rlimit_core (with_fd_dup k src tgt m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_rlimit_core_with_fd_dup : model.
+
+Lemma m_nofile_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_nofile (with_fd_dup k src tgt m) = m_nofile m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_nofile_with_fd_dup : model.
+
+Lemma m_clock_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_clock (with_fd_dup k src tgt m) = m_clock m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_clock_with_fd_dup : model.
+
+Lemma m_creds_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_creds (with_fd_dup k src tgt m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_fd_dup : model.
+
+Lemma m_statpins_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_statpins (with_fd_dup k src tgt m) = statpins_dup k src tgt (m_statpins m).
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_fd_dup : model.
 
 Lemma m_statpins_mkModel : forall fds vm stdin fs halted tid rlim,
   m_statpins (mkModel fds vm stdin fs halted tid rlim) = [].
@@ -10886,3 +11207,289 @@ Lemma m_pipes_init_model : forall reserved brk0 mbase sp lim inp,
   m_pipes (init_model reserved brk0 mbase sp lim inp) =
   [].
 Proof. reflexivity. Qed.
+
+(* =========================================================================
+   THE REACHABLE-STATE INVARIANT
+
+   What a run's state is supposed to look like, stated once so the arms
+   have something to prove PRESERVED and the fail-closed stubs have
+   something to CITE.  It is not proved invariant here -- see the note
+   on [descriptor_invariant] below and [Run.valid_image].
+   ========================================================================= *)
+
+(** Does this descriptor name the key [p]?  ENUMERATED, for
+    [pipe_end_live]'s reason: a later [FdEntry] constructor that names a
+    key must stop the build here.  Only a folder descriptor names a key:
+    a file descriptor names an inode ([entry_ino]), which outlives its
+    names. *)
+Definition fd_names_key (p : Fs.path) (e : FdEntry) : Prop :=
+  match e with
+  | FdDir q => q = p
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom _ _
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => False
+  end.
+
+(** WHAT A DESCRIPTOR PROMISES ABOUT THE IMAGE.  Every [FdDir] key is a
+    directory.  The file kinds promise nothing about the names, because
+    an inode number reads as a file whether or not a name or a row is
+    left ([Fs.fs_inode]); the channel, socket, pipe, device, stream-pair,
+    eventfd and datagram kinds carry nothing into the image at all. *)
+Definition fd_entry_wf (fs : Fs.Fs) (e : FdEntry) : Prop :=
+  match e with
+  | FdDir p => Fs.fs_lookup fs p = Some Fs.EDir
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdFileA _ _ | FdFileRW _ _
+  | FdSocket _ | FdPipe _ _ | FdDevNull _ _ | FdUrandom _ _
+  | FdStream _ _ _ | FdEventfd _ | FdDgram _ => True
+  end.
+
+Definition descriptor_invariant (m : Model) : Prop :=
+  forall fd e, fd_lookup (m_fds m) fd = Some e -> fd_entry_wf (m_fs m) e.
+
+(** THE WHOLE STATE INVARIANT: the image is a well-formed namespace, the
+    working directory is a directory in it, and every descriptor keeps
+    its promise.
+
+    EVERY WRITER CREATES AT THE RESOLVED KEY: [Sys.Fs.Open]'s create
+    arms and [Sys.Fs.Namei]'s [mkdirat] key the tree by [Fs.resolve]'s
+    key, never by the raw pathname a program passed, so a create keeps
+    [Fs.wf_fs].
+
+    WHAT IS PROVED OF IT HERE, one lemma per model-level writer shape
+    the arms have: [model_fs_wf_set_ino_data] for every writer that
+    replaces a file's bytes, [model_fs_wf_fd_insert] for a descriptor
+    insert, [model_fs_wf_create_at] for a name made at a resolved key,
+    [model_fs_wf_create_then_open] for the two composed,
+    [model_fs_wf_unlink_file] for unlink and
+    [model_fs_wf_remove_empty_dir] for rmdir.  Each takes the side
+    condition the arm's own guard establishes.
+
+    WHAT IS NOT PROVED is [Run.sstep_preserves_wf], which is the theorem
+    these are FOR and which this tree does not yet carry. *)
+Definition model_fs_wf (m : Model) : Prop :=
+  Fs.wf_fs (m_fs m)
+  /\ Fs.canonical_key (m_cwd m) = true
+  /\ Fs.fs_lookup (m_fs m) (m_cwd m) = Some Fs.EDir
+  /\ descriptor_invariant m.
+
+(** Every writer of the image goes through [with_fs], so the whole
+    invariant follows from three facts about the new image. *)
+Lemma model_fs_wf_with_fs : forall m fs,
+  Fs.wf_fs fs ->
+  Fs.canonical_key (m_cwd m) = true ->
+  Fs.fs_lookup fs (m_cwd m) = Some Fs.EDir ->
+  (forall fd e, fd_lookup (m_fds m) fd = Some e -> fd_entry_wf fs e) ->
+  model_fs_wf (with_fs fs m).
+Proof.
+  intros m fs Hwf Hcan Hcwd Hfds. unfold model_fs_wf, descriptor_invariant.
+  rewrite m_fs_with_fs, m_cwd_with_fs.
+  split; [exact Hwf|]. split; [exact Hcan|]. split; [exact Hcwd|].
+  intros fd e Hfd. rewrite m_fds_with_fs in Hfd. exact (Hfds fd e Hfd).
+Qed.
+
+(** A new image with the SAME NAMES keeps every promise. *)
+Lemma model_fs_wf_same_tree : forall m fs,
+  model_fs_wf m -> Fs.fs_tree fs = Fs.fs_tree (m_fs m) ->
+  model_fs_wf (with_fs fs m).
+Proof.
+  intros m fs (Hwf & Hcan & Hcwd & Hfds) Ht.
+  apply model_fs_wf_with_fs; [ | exact Hcan | | ].
+  - exact (Fs.wf_fs_same_tree (m_fs m) fs Ht Hwf).
+  - unfold Fs.fs_lookup in *. rewrite Ht. exact Hcwd.
+  - intros fd e Hfd. specialize (Hfds fd e Hfd).
+    destruct e; cbn [fd_entry_wf] in *; try exact I.
+    unfold Fs.fs_lookup in *. rewrite Ht. exact Hfds.
+Qed.
+
+(** THE BYTE WRITERS, at the model level: write, pwrite, the writev
+    arms, both truncates and a truncating open rewrite a file's bytes
+    and move no name. *)
+Lemma model_fs_wf_set_ino_data : forall m i d,
+  model_fs_wf m -> model_fs_wf (with_fs (Fs.fs_set_ino_data (m_fs m) i d) m).
+Proof. intros m i d Hm. now apply model_fs_wf_same_tree. Qed.
+
+(* =========================================================================
+   THE ARMS' PRESERVATION OBLIGATIONS
+
+   The ones below change which keys exist -- the CREATES, [mkdirat],
+   [unlinkat] and [rmdir] -- and each needs the key it changes to be one
+   the walk delivered.
+   ========================================================================= *)
+
+(** Inserting a descriptor whose promise the image ALREADY keeps.  Every
+    arm that mints one ends here: the create arms first change the image
+    and then bind the fd, so this is the second half of each of them. *)
+Lemma model_fs_wf_fd_insert : forall m fd e,
+  model_fs_wf m ->
+  fd_entry_wf (m_fs m) e ->
+  model_fs_wf (with_fds (fd_insert (m_fds m) fd e) m).
+Proof.
+  intros m fd e (Hwf & Hcan & Hcwd & Hfds) He.
+  unfold model_fs_wf, descriptor_invariant.
+  rewrite m_fs_with_fds, m_cwd_with_fds.
+  split; [exact Hwf|]. split; [exact Hcan|]. split; [exact Hcwd|].
+  assert (Hsub : forall l fd' e', bv_eqb fd fd' = false ->
+            fd_lookup (List.filter (fun q => negb (bv_eqb (fst q) fd)) l) fd'
+              = Some e' ->
+            fd_lookup l fd' = Some e').
+  { intros l. induction l as [|[k x] l IH]; intros fd' e' Hne Hl;
+      [cbn in Hl; discriminate|].
+    change (List.filter (fun q => negb (bv_eqb (fst q) fd)) ((k, x) :: l))
+      with (if negb (bv_eqb k fd)
+            then (k, x) :: List.filter (fun q => negb (bv_eqb (fst q) fd)) l
+            else List.filter (fun q => negb (bv_eqb (fst q) fd)) l) in Hl.
+    cbn [fd_lookup].
+    destruct (negb (bv_eqb k fd)) eqn:Hk.
+    - cbn [fd_lookup] in Hl.
+      destruct (bv_eqb k fd'); [exact Hl | exact (IH fd' e' Hne Hl)].
+    - destruct (bv_eqb k fd') eqn:Hk'.
+      + exfalso. apply Bool.negb_false_iff in Hk.
+        apply bv_eqb_eq in Hk; apply bv_eqb_eq in Hk'. subst.
+        rewrite bv_eqb_refl in Hne. discriminate.
+      + exact (IH fd' e' Hne Hl). }
+  intros fd' e' Hfd'. rewrite m_fds_with_fds in Hfd'.
+  unfold fd_insert in Hfd'. cbn [fd_lookup] in Hfd'.
+  destruct (bv_eqb fd fd') eqn:Hfe.
+  - inversion Hfd'; subst e'. exact He.
+  - exact (Hfds fd' e' (Hsub (m_fds m) fd' e' Hfe Hfd')).
+Qed.
+
+(** THE CREATES AND [mkdirat]: adding a name at a key the walk found
+    MISSING.  The three hypotheses are exactly what the walk returns off
+    an [Fs.RMissing] -- the key is canonical, its parent is a directory
+    in the image, and nothing is there yet.
+
+    THE WORKING DIRECTORY SURVIVES because the key is absent and the
+    working directory is not, and every folder descriptor keeps its
+    promise because a key nothing held cannot be a key one named. *)
+Lemma model_fs_wf_create_at : forall m k e,
+  model_fs_wf m ->
+  Fs.canonical_key k = true ->
+  Fs.fs_lookup (m_fs m) k = None ->
+  Fs.fs_lookup (m_fs m) (Fs.path_parent k) = Some Fs.EDir ->
+  model_fs_wf (with_fs (Fs.fs_set (m_fs m) k e) m).
+Proof.
+  intros m k e (Hwf & Hcan & Hcwd & Hfds) Hck Habs Hpar.
+  assert (Hne : Fs.path_eqb (m_cwd m) k = false).
+  { destruct (Fs.path_eqb (m_cwd m) k) eqn:E; [|reflexivity].
+    apply Fs.path_eqb_eq in E. rewrite E, Habs in Hcwd. discriminate. }
+  apply model_fs_wf_with_fs; [ | exact Hcan | | ].
+  - exact (Fs.wf_fs_set_create (m_fs m) k e Hwf Hck Habs Hpar).
+  - rewrite (Fs.fs_lookup_set_neq _ _ _ _ Hne). exact Hcwd.
+  - intros fd e' Hfd. specialize (Hfds fd e' Hfd).
+    destruct e' as [ch|q o|q o|q o|q o|q|sk|id w|rd wr| |id s st|ctx|fam];
+      cbn [fd_entry_wf] in *; try exact I.
+    assert (Hqk : Fs.path_eqb q k = false)
+      by (destruct (Fs.path_eqb q k) eqn:E; [|reflexivity];
+          apply Fs.path_eqb_eq in E; subst q; rewrite Habs in Hfds; discriminate).
+    rewrite (Fs.fs_lookup_set_neq _ _ _ _ Hqk). exact Hfds.
+Qed.
+
+(** A NEW FILE at a missing key: the name, and a fresh inode. *)
+Lemma model_fs_wf_create_file : forall m k d,
+  model_fs_wf m ->
+  Fs.canonical_key k = true ->
+  Fs.fs_lookup (m_fs m) k = None ->
+  Fs.fs_lookup (m_fs m) (Fs.path_parent k) = Some Fs.EDir ->
+  model_fs_wf (with_fs (Fs.fs_create_file (m_fs m) k d) m).
+Proof.
+  intros m k d Hm Hck Habs Hpar.
+  pose proof (model_fs_wf_create_at m k (Fs.EFile (Fs.fs_fresh_ino (m_fs m)))
+                Hm Hck Habs Hpar) as H.
+  destruct H as (Hwf & Hcan & Hcwd & Hfds).
+  rewrite m_fs_with_fs in Hwf, Hcwd. rewrite m_cwd_with_fs in Hcan, Hcwd.
+  apply model_fs_wf_with_fs; [ | exact Hcan | exact Hcwd | ].
+  - exact (Fs.wf_fs_same_tree _ _ eq_refl Hwf).
+  - intros fd e Hfd. specialize (Hfds fd e). rewrite m_fds_with_fs, m_fs_with_fs in Hfds.
+    exact (Hfds Hfd).
+Qed.
+
+(** UNLINK'S PRESERVATION LEMMA: removing a file's NAME.  No folder
+    descriptor names a file's key, and the working directory is a folder,
+    so neither can be the key removed; a file descriptor keeps its inode
+    whether the name goes or not. *)
+Lemma model_fs_wf_unlink_file : forall m k i held,
+  model_fs_wf m ->
+  Fs.fs_lookup (m_fs m) k = Some (Fs.EFile i) ->
+  model_fs_wf (with_fs (Fs.fs_unlink_file (m_fs m) k i held) m).
+Proof.
+  intros m k i held (Hwf & Hcan & Hcwd & Hfds) Hlk.
+  assert (Hne : Fs.path_eqb (m_cwd m) k = false).
+  { destruct (Fs.path_eqb (m_cwd m) k) eqn:E; [|reflexivity].
+    apply Fs.path_eqb_eq in E. rewrite E in Hcwd.
+    rewrite Hlk in Hcwd. discriminate. }
+  apply model_fs_wf_with_fs; [ | exact Hcan | | ].
+  - exact (Fs.wf_fs_unlink_file (m_fs m) k i held Hwf Hlk).
+  - rewrite Fs.fs_lookup_unlink_file, (Fs.fs_lookup_remove_neq _ _ _ Hne).
+    exact Hcwd.
+  - intros fd e' Hfd. pose proof (Hfds fd e' Hfd) as He'.
+    destruct e' as [ch|q o|q o|q o|q o|q|sk|id w|rd wr| |id s st|ctx|fam];
+      cbn [fd_entry_wf] in *; try exact I.
+    assert (Hqk : Fs.path_eqb q k = false)
+      by (destruct (Fs.path_eqb q k) eqn:E; [|reflexivity];
+          apply Fs.path_eqb_eq in E; subst q;
+          rewrite Hlk in He'; discriminate).
+    rewrite Fs.fs_lookup_unlink_file, (Fs.fs_lookup_remove_neq _ _ _ Hqk).
+    exact He'.
+Qed.
+
+(** THE FRAME HALF OF THE KIT.  [model_fs_wf] reads three fields and no
+    others, so an arm that leaves those three alone preserves it with no
+    argument about what the arm does. *)
+Lemma model_fs_wf_frame : forall m m',
+  model_fs_wf m ->
+  m_fs m' = m_fs m ->
+  m_cwd m' = m_cwd m ->
+  m_fds m' = m_fds m ->
+  model_fs_wf m'.
+Proof.
+  intros m m' (Hwf & Hcan & Hcwd & Hfds) Hfs Hc Hd.
+  unfold model_fs_wf, descriptor_invariant.
+  rewrite Hfs, Hc. split; [exact Hwf|]. split; [exact Hcan|].
+  split; [exact Hcwd|]. intros fd e Hlk. rewrite Hd in Hlk.
+  exact (Hfds fd e Hlk).
+Qed.
+
+(** [rmdir]: removing an EMPTY DIRECTORY that is neither the working
+    directory nor one an open [State.FdDir] names.  Emptiness buys
+    [Fs.wf_fs] through [Fs.wf_fs_remove_empty_dir]; "not the working
+    directory" buys the third conjunct; "named by no open [FdDir]" buys
+    the descriptor half. *)
+Lemma model_fs_wf_remove_empty_dir : forall m k,
+  model_fs_wf m ->
+  Fs.fs_lookup (m_fs m) k = Some Fs.EDir ->
+  Fs.fs_has_child (m_fs m) k = false ->
+  Fs.path_eqb (m_cwd m) k = false ->
+  (forall fd q, fd_lookup (m_fds m) fd = Some (FdDir q) ->
+                Fs.path_eqb q k = false) ->
+  model_fs_wf (with_fs (Fs.fs_rmdir (m_fs m) k) m).
+Proof.
+  intros m k (Hwf & Hcan & Hcwd & Hfds) Hlk Hempty Hne Hdir.
+  apply model_fs_wf_with_fs; [ | exact Hcan | | ].
+  - exact (Fs.wf_fs_rmdir (m_fs m) k Hwf Hlk Hempty).
+  - rewrite Fs.fs_lookup_rmdir, (Fs.fs_lookup_remove_neq _ _ _ Hne). exact Hcwd.
+  - intros fd e' Hfd. pose proof (Hfds fd e' Hfd) as He'.
+    destruct e' as [ch|q o|q o|q o|q o|q|sk|id w|rd wr| |id s st|ctx|fam];
+      cbn [fd_entry_wf] in *; try exact I.
+    rewrite Fs.fs_lookup_rmdir, (Fs.fs_lookup_remove_neq _ _ _ (Hdir fd q Hfd)).
+    exact He'.
+Qed.
+
+(** THE SHAPE EVERY O_CREAT ARM ACTUALLY PRODUCES: a create at the
+    resolved key AND a descriptor on it, in one model. *)
+Lemma model_fs_wf_create_then_open : forall m k d fd fe,
+  model_fs_wf m ->
+  Fs.canonical_key k = true ->
+  Fs.fs_lookup (m_fs m) k = None ->
+  Fs.fs_lookup (m_fs m) (Fs.path_parent k) = Some Fs.EDir ->
+  fd_entry_wf (Fs.fs_create_file (m_fs m) k d) fe ->
+  model_fs_wf (with_fds (fd_insert (m_fds m) fd fe)
+                 (with_fs (Fs.fs_create_file (m_fs m) k d) m)).
+Proof.
+  intros m k d fd fe Hm Hcan Habs Hpar Hfe.
+  pose proof (model_fs_wf_create_file m k d Hm Hcan Habs Hpar) as Hm2.
+  pose proof (model_fs_wf_fd_insert (with_fs (Fs.fs_create_file (m_fs m) k d) m)
+                fd fe Hm2) as Hstep.
+  rewrite m_fs_with_fs in Hstep. specialize (Hstep Hfe).
+  rewrite m_fds_with_fs in Hstep. exact Hstep.
+Qed.

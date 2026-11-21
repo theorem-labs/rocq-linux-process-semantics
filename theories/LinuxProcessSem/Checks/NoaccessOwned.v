@@ -2,8 +2,8 @@
 
     Not part of the trusted specification: the preservation half of the
     ledger invariant [State.noaccess_pages_owned], which
-    [Mremap.mremap_fresh_avoids_noaccess] and
-    [Checks.BudgetPremise.fresh_dst_avoids_noaccess] take as a hypothesis.
+    [Mremap.mremap_fresh_avoids_noaccess] and [fresh_dst_avoids_noaccess]
+    (the last section below) take as a hypothesis.
 
     ** Why the invariant is not proved on its own
 
@@ -840,7 +840,7 @@ Proof.
   difn H Eflag; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hna|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hna|].
-  difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hna|].
+  difn H Etask; [discriminate|].
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hna|].
@@ -1000,6 +1000,7 @@ Proof.
     | erewrite check_epoll_create1_frame by eassumption; exact Hna
     | erewrite check_epoll_ctl_frame by eassumption; exact Hna
     | erewrite check_epoll_pwait_frame by eassumption; exact Hna
+    | erewrite check_mkdirat_frame by eassumption; exact Hna
     | fail 1 "checked_table_preserves_na has no case for this dispatcher arm: give the new checker a *_frame lemma (it leaves m_vmmaps alone) or a *_preserves_na one (it writes vm_maps or vm_noaccess), and add it to the list above" ].
 Qed.
 
@@ -1129,4 +1130,113 @@ Corollary init_config_star_cfg_sys_inv :
 Proof.
   intros segs cfg pc ph sp brk0 mb rnd lim inp tr c Hstar.
   exact (star_cfg_preserves_sys_inv _ _ _ _ _ Hstar (init_config_sys_inv _ _ _ _ _ _ _ _ _)).
+Qed.
+
+(* -------------------------------------------------------------------------
+   What the invariant gives the mremap move: a fresh destination meets no
+   protected byte, and the move's charge admits it
+   ------------------------------------------------------------------------- *)
+
+(** The limit is carried across the resize unchanged. *)
+Lemma mremap_model_next_limit : forall m old old_n dst new_n,
+  vm_limit (m_vmmaps (mremap_model_next m old old_n dst new_n))
+  = vm_limit (m_vmmaps m).
+Proof. reflexivity. Qed.
+
+(** The protected half of "fresh", from the ledger invariant alone.
+    [Mremap.mremap_fresh_avoids_noaccess] proves the same conclusion
+    but takes the whole of [Mremap.mremap_fresh_b], budget conjunct
+    included; its page-granularity argument reads only the alignment of
+    [dst], the shape of [new_n] and freeness against
+    [vm_reserved ++ vm_maps].  This is that argument on exactly those
+    hypotheses, so a consumer can derive the [vm_noaccess] hypothesis of
+    [Mremap.mremap_move_charge_at_fresh] BEFORE it knows the gate
+    passes. *)
+Lemma fresh_dst_avoids_noaccess : forall h dst new_n,
+  noaccess_pages_owned h ->
+  (0 < bv_unsigned new_n)%Z ->
+  (bv_unsigned new_n mod page_size = 0)%Z ->
+  (bv_unsigned dst mod page_size = 0)%Z ->
+  region_free (vm_reserved h ++ vm_maps h) dst new_n = true ->
+  region_free (vm_noaccess h) dst new_n = true.
+Proof.
+  intros h dst new_n Hown Hpos Hmod Halign Hrf.
+  assert (Hhi : ((bv_unsigned dst + bv_unsigned new_n) mod page_size = 0)%Z).
+  { rewrite Z.add_mod by (unfold page_size; lia).
+    rewrite Halign, Hmod. reflexivity. }
+  apply region_free_intro. intros a n Hin.
+  destruct (Hown a n Hin) as [Hn Hpage].
+  destruct (iv_overlap dst new_n a n) eqn:Hov; [exfalso|reflexivity].
+  unfold iv_overlap in Hov.
+  apply andb_true_iff in Hov as [Hov1 Hov2].
+  apply Z.ltb_lt in Hov1. apply Z.ltb_lt in Hov2.
+  remember (Z.max (bv_unsigned dst) (bv_unsigned a)) as x eqn:Hx.
+  destruct (Hpage x ltac:(lia)) as [b [s [Hinm [Hb1 Hb2]]]].
+  destruct (page_round_down_Z_within (bv_unsigned dst)
+              (bv_unsigned dst + bv_unsigned new_n) x Halign Hhi ltac:(lia))
+    as [Hf1 Hf2].
+  pose proof (region_free_In _ _ _ b s Hrf
+                (in_or_app _ _ _ (or_intror Hinm))) as Hno.
+  unfold iv_overlap in Hno.
+  apply andb_false_iff in Hno as [Hc|Hc]; apply Z.ltb_ge in Hc; lia.
+Qed.
+
+(** THE MOVE'S CHARGE ADMITS EVERY FRESH DESTINATION: where the move's
+    budget gate [Mremap.mremap_move_budget_b] passes, the gate
+    [Mremap.mremap_final_budget_b] that [Mremap.mremap_fresh_b] reads
+    passes at every destination that is page aligned, ends at or below
+    [alloc_top] and is free against [vm_reserved ++ vm_maps] — the
+    non-budget conjuncts of [Mremap.mremap_fresh_b] that bear on the
+    charge.  The ledger hypotheses are [State.noaccess_pages_owned], the
+    fit of every live mapping (from which [Mremap.maps_subtract_fits]
+    gives that lemma the fit of the ledger with the source range cut),
+    and the two lazy-ledger identities
+    [Mremap.mremap_move_charge_at_fresh] takes;
+    the [vm_noaccess] hypothesis of that lemma comes from
+    [fresh_dst_avoids_noaccess].  The converse direction of
+    [Checks.BudgetPremise.mremap_budget_refused_refuses_move].  The two
+    side conditions on [new_n] are what [Mremap.mremap_spec] supplies at
+    the call site: it passes
+    [new_n = Z_to_bv 64 (page_round_up_Z (bv_unsigned new_size))]
+    under [page_align_is0_b new_size = false]. *)
+Lemma mremap_move_budget_admits_fresh : forall m old old_n dst new_n,
+  (bv_unsigned dst mod page_size = 0)%Z ->
+  (bv_unsigned new_n mod page_size = 0)%Z ->
+  (0 < bv_unsigned new_n)%Z ->
+  (bv_unsigned dst + bv_unsigned new_n <= alloc_top (m_vmmaps m))%Z ->
+  region_free (vm_reserved (m_vmmaps m) ++ vm_maps (m_vmmaps m)) dst new_n
+  = true ->
+  noaccess_pages_owned (m_vmmaps m) ->
+  (forall (a sz : word), In (a, sz) (vm_maps (m_vmmaps m)) ->
+     (bv_unsigned a + bv_unsigned sz <= two_pow_64)%Z) ->
+  maps_subtract
+    (maps_subtract (m_vm_lazy m) (bv_unsigned old)
+       (bv_unsigned old + bv_unsigned old_n))
+    (bv_unsigned dst) (bv_unsigned dst + bv_unsigned new_n)
+  = maps_subtract (m_vm_lazy m) (bv_unsigned old)
+      (bv_unsigned old + bv_unsigned old_n) ->
+  List.filter (page_outside_range (bv_unsigned dst)
+                 (bv_unsigned dst + bv_unsigned new_n))
+    (List.filter (page_outside_range (bv_unsigned old)
+                    (bv_unsigned old + bv_unsigned old_n))
+       (m_vm_materialized m))
+  = List.filter (page_outside_range (bv_unsigned old)
+                   (bv_unsigned old + bv_unsigned old_n))
+      (m_vm_materialized m) ->
+  mremap_move_budget_b m old old_n new_n = true ->
+  mremap_final_budget_b m old old_n dst new_n = true.
+Proof.
+  intros m old old_n dst new_n Hdalign Hnmod Hpos Hdtop Hdfree Hown Hfit
+    Hlazy Hpages Hmv.
+  pose proof (alloc_top_lt (m_vmmaps m)) as Htop.
+  unfold mremap_move_budget_b in Hmv.
+  unfold mremap_final_budget_b, vm_backing_within_limit.
+  rewrite mremap_model_next_limit.
+  rewrite (mremap_move_charge_at_fresh m old old_n dst new_n);
+    [exact Hmv | exact Hdalign | exact Hnmod | exact Hpos | lia
+    | exact (maps_subtract_fits _ _ _ Hfit)
+    | apply (region_free_subtract_fits _ _ _ _ _ Hfit);
+      exact (region_free_app_r _ _ _ _ Hdfree)
+    | exact (fresh_dst_avoids_noaccess _ _ _ Hown Hpos Hnmod Hdalign Hdfree)
+    | exact Hlazy | exact Hpages].
 Qed.

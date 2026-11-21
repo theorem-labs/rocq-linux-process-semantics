@@ -72,7 +72,7 @@ Qed.
    ========================================================================= *)
 
 Definition clone3_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 Definition clone3_wrap_uargs : word := Z_to_bv 64 (2 ^ 64 - 8).
 

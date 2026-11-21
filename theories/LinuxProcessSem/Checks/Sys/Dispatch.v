@@ -14,7 +14,10 @@
     What this buys: the four soundness/completeness theorems and
     [receptive] each become one lookup and one field, instead of one block
     per syscall.  They stop growing when a syscall is added, and adding one
-    stops touching them. *)
+    stops touching them.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -89,9 +92,9 @@ Qed.
 (** getcwd (17). *)
 Definition arm_getcwd : CheckedArm.
 Proof.
-  refine (mkCheckedArm (mkSpecArm 17%Z (fun i => getcwd_spec (in_arg i 1) i))
-                       (fun i eff m => check_getcwd (in_arg i 1) eff m)
-                       (fun i m => getcwd_witness (in_arg i 1) m)
+  refine (mkCheckedArm (mkSpecArm 17%Z (fun i => getcwd_spec (in_arg i 0) (in_arg i 1) i))
+                       (fun i eff m => check_getcwd i (in_arg i 0) (in_arg i 1) eff m)
+                       (fun i m => getcwd_witness i (in_arg i 0) (in_arg i 1) m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_getcwd_sound_ok, check_getcwd_sound_unmodeled, check_getcwd_complete_ok, check_getcwd_complete_unmodeled, getcwd_witness_ok.
@@ -206,6 +209,19 @@ Proof.
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_flock_sound_ok, check_flock_sound_unmodeled, check_flock_complete_ok, check_flock_complete_unmodeled, flock_witness_ok.
+Defined.
+
+(** mkdirat (34).  NEW in R22: before the namespace there was no value
+    a created directory could be, so the call was outside the modeled
+    surface entirely. *)
+Definition arm_mkdirat : CheckedArm.
+Proof.
+  refine (mkCheckedArm (mkSpecArm 34%Z (fun i => mkdirat_spec (fd32 (in_arg i 0)) (in_arg i 1) i))
+                       (fun i eff m => check_mkdirat i (fd32 (in_arg i 0)) (in_arg i 1) eff m)
+                       (fun i m => mkdirat_witness (fd32 (in_arg i 0)) (in_arg i 1) i m)
+                       _ _ _ _ _);
+    cbn [sa_spec sa_no]; intros;
+    eauto using check_mkdirat_sound_ok, check_mkdirat_sound_unmodeled, check_mkdirat_complete_ok, check_mkdirat_complete_unmodeled, mkdirat_witness_ok.
 Defined.
 
 (** unlinkat (35). *)
@@ -387,9 +403,9 @@ Defined.
 (** readlinkat (78). *)
 Definition arm_readlinkat : CheckedArm.
 Proof.
-  refine (mkCheckedArm (mkSpecArm 78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) i))
-                       (fun i eff m => check_readlinkat (fd32 (in_arg i 0)) eff m)
-                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) m)
+  refine (mkCheckedArm (mkSpecArm 78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i))
+                       (fun i eff m => check_readlinkat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) eff m)
+                       (fun i m => readlinkat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_readlinkat_sound_ok, check_readlinkat_sound_unmodeled, check_readlinkat_complete_ok, check_readlinkat_complete_unmodeled, readlinkat_witness_ok.
@@ -398,9 +414,9 @@ Defined.
 (** newfstatat (79). *)
 Definition arm_newfstatat : CheckedArm.
 Proof.
-  refine (mkCheckedArm (mkSpecArm 79%Z (fun i => newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i))
-                       (fun i eff m => check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) eff m)
-                       (fun i m => newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i m)
+  refine (mkCheckedArm (mkSpecArm 79%Z (fun i => newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i))
+                       (fun i eff m => check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) eff m)
+                       (fun i m => newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m)
                        _ _ _ _ _);
     cbn [sa_spec sa_no]; intros;
     eauto using check_newfstatat_sound_ok, check_newfstatat_sound_unmodeled, check_newfstatat_complete_ok, check_newfstatat_complete_unmodeled, newfstatat_witness_ok.
@@ -1140,6 +1156,7 @@ Definition checked_table : list CheckedArm :=
   arm_fcntl ::
   arm_ioctl ::
   arm_flock ::
+  arm_mkdirat ::
   arm_unlinkat ::
   arm_ftruncate ::
   arm_faccessat ::
@@ -1241,13 +1258,13 @@ Proof. reflexivity. Qed.
     [autorewrite with arm_unfold] and does not have to name the syscall. *)
 
 Lemma ca_check_arm_getcwd : forall i eff m,
-  ca_check arm_getcwd i eff m = check_getcwd (in_arg i 1) eff m.
+  ca_check arm_getcwd i eff m = check_getcwd i (in_arg i 0) (in_arg i 1) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_getcwd : forall i m,
-  ca_witness arm_getcwd i m = getcwd_witness (in_arg i 1) m.
+  ca_witness arm_getcwd i m = getcwd_witness i (in_arg i 0) (in_arg i 1) m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_getcwd : forall i m o,
-  sa_spec (ca_arm arm_getcwd) i m o = getcwd_spec (in_arg i 1) i m o.
+  sa_spec (ca_arm arm_getcwd) i m o = getcwd_spec (in_arg i 0) (in_arg i 1) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_eventfd2 : forall i eff m,
@@ -1338,6 +1355,16 @@ Lemma ca_witness_arm_flock : forall i m,
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_flock : forall i m o,
   sa_spec (ca_arm arm_flock) i m o = flock_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i m o.
+Proof. reflexivity. Qed.
+
+Lemma ca_check_arm_mkdirat : forall i eff m,
+  ca_check arm_mkdirat i eff m = check_mkdirat i (fd32 (in_arg i 0)) (in_arg i 1) eff m.
+Proof. reflexivity. Qed.
+Lemma ca_witness_arm_mkdirat : forall i m,
+  ca_witness arm_mkdirat i m = mkdirat_witness (fd32 (in_arg i 0)) (in_arg i 1) i m.
+Proof. reflexivity. Qed.
+Lemma sa_spec_arm_mkdirat : forall i m o,
+  sa_spec (ca_arm arm_mkdirat) i m o = mkdirat_spec (fd32 (in_arg i 0)) (in_arg i 1) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_unlinkat : forall i eff m,
@@ -1504,23 +1531,23 @@ Lemma sa_spec_arm_ppoll : forall i m o,
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_readlinkat : forall i eff m,
-  ca_check arm_readlinkat i eff m = check_readlinkat (fd32 (in_arg i 0)) eff m.
+  ca_check arm_readlinkat i eff m = check_readlinkat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_readlinkat : forall i m,
-  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) m.
+  ca_witness arm_readlinkat i m = readlinkat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_readlinkat : forall i m o,
-  sa_spec (ca_arm arm_readlinkat) i m o = readlinkat_spec (fd32 (in_arg i 0)) i m o.
+  sa_spec (ca_arm arm_readlinkat) i m o = readlinkat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_newfstatat : forall i eff m,
-  ca_check arm_newfstatat i eff m = check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) eff m.
+  ca_check arm_newfstatat i eff m = check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) eff m.
 Proof. reflexivity. Qed.
 Lemma ca_witness_arm_newfstatat : forall i m,
-  ca_witness arm_newfstatat i m = newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i m.
+  ca_witness arm_newfstatat i m = newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m.
 Proof. reflexivity. Qed.
 Lemma sa_spec_arm_newfstatat : forall i m o,
-  sa_spec (ca_arm arm_newfstatat) i m o = newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i m o.
+  sa_spec (ca_arm arm_newfstatat) i m o = newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m o.
 Proof. reflexivity. Qed.
 
 Lemma ca_check_arm_fstat : forall i eff m,
@@ -2185,6 +2212,7 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_check_arm_fcntl ca_witness_arm_fcntl sa_spec_arm_fcntl : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_ioctl ca_witness_arm_ioctl sa_spec_arm_ioctl : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_flock ca_witness_arm_flock sa_spec_arm_flock : arm_unfold.
+#[export] Hint Rewrite ca_check_arm_mkdirat ca_witness_arm_mkdirat sa_spec_arm_mkdirat : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_unlinkat ca_witness_arm_unlinkat sa_spec_arm_unlinkat : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_ftruncate ca_witness_arm_ftruncate sa_spec_arm_ftruncate : arm_unfold.
 #[export] Hint Rewrite ca_check_arm_faccessat ca_witness_arm_faccessat sa_spec_arm_faccessat : arm_unfold.
@@ -2297,6 +2325,11 @@ Proof. reflexivity. Qed.
 Lemma ca_no_arm_flock : ca_no arm_flock = 32%Z.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite ca_no_arm_flock : arm_unfold.
+
+Lemma ca_no_arm_mkdirat : ca_no arm_mkdirat = 34%Z.
+Proof. reflexivity. Qed.
+
+#[export] Hint Rewrite ca_no_arm_mkdirat : arm_unfold.
 
 Lemma ca_no_arm_unlinkat : ca_no arm_unlinkat = 35%Z.
 Proof. reflexivity. Qed.

@@ -25,7 +25,7 @@
       still pins one [(bufs, code)] outcome; interior nodes are brk
       syscalls branching over every admissible resolution.
     - the trace characterization ([alloc_obs_iff]): [obs_trace] is
-      exactly the prefixes of [wevents bufs ++ [ExitEv code (in_fs inp)]] for
+      exactly the prefixes of [wevents bufs ++ [ExitEv code (Fs.fs_observe (in_fs inp))]] for
       outcomes in [U]; plus no-error ([alloc_no_error_run]).  The retry
       loop puts the whole buffer out, so this file quantifies over
       outcomes alone — the per-delivery choices ([CatSim.wpick]) are
@@ -247,7 +247,7 @@ Qed.
     pages.  Package a VM ledger with that empty backing state for the pure
     outcome algebra below. *)
 Definition vm_model (h : VmMaps) : Model :=
-  mkModel [] h IEof [] None None None.
+  mkModel [] h IEof Fs.fs_empty None None None.
 
 Definition brk_grow_ok (h : VmMaps) (req r : word) : bool :=
   Mmap.brk_grow_ok (vm_model h) req r.
@@ -1230,7 +1230,7 @@ Qed.
 (* ------------------------------------------------------------------------- *)
 
 Definition outcome_trace (fs : Fs.Fs) (o : list (list byte) * word) : list event :=
-  wevents (fst o) ++ [ExitEv (snd o) fs].
+  wevents (fst o) ++ [ExitEv (snd o) (Fs.fs_observe fs)].
 
 (** The omni reading of a brk-branching run: every execution ends by
     halting with one of the outcomes, having emitted exactly that

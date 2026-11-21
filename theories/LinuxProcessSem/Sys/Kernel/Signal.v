@@ -520,7 +520,7 @@ Definition sigpipe_hidden_pending_possible (m : Model) : bool :=
     5. The [oact] copy-out of the action from step 3:
        [sigpipe_oact_write].
 
-    So the three shapes curl's census shows are all answered: [act] and
+    So every shape with a non-NULL pointer is answered: [act] and
     [oact] both non-NULL, [act] alone, and [oact] alone (a read of the
     current action, which installs nothing).  Both NULL is 0, as before.
 
@@ -552,10 +552,9 @@ Definition sigpipe_hidden_pending_possible (m : Model) : bool :=
     collapse rests on: a hidden pending SIGPIPE can exist only while the
     handler is SIG_IGN and the signal is blocked; an unblock discards it
     ([get_signal]'s SIG_IGN [continue]); a SIG_IGN install flushes it.
-    The cost is narrow: with signal 13 open in the mask, curl's
-    ignore-then-restore is answered whole.  (The LPS model owner chose
-    this over making [raise_sigpipe] queue the signal; decision relayed
-    on Envoy for OSSV-287, 2026-10-31.)
+    The cost is narrow: with signal 13 open in the mask, a program that
+    ignores SIGPIPE and later restores SIG_DFL is answered whole.  The
+    alternative, making [raise_sigpipe] queue the signal, was not taken.
 
     A RUN THAT INSTALLS NOTHING BEHAVES EXACTLY AS IT DID BEFORE THIS ARM.
     The argument is a count of writers, and these commands check it:
@@ -824,14 +823,18 @@ Qed.
     has no reader, and this spec is what decides between the death and
     the -EPIPE: the mask is READ there.  What stays assumed rather
     than raised is SIGXFSZ: neither [write_spec] nor
-    [ftruncate_spec] carries a file-size
-    limit.  The
-    RLIMIT_FSIZE half of the limit is a premise of the run —
+    [ftruncate_spec] carries RLIMIT_FSIZE, the limit that sends it.
+    That half of the limit is a premise of the run —
     RLIM_INFINITY at exec, and the set fails closed, see
-    [Open.ftruncate_spec] — and the [s_maxbytes] half, which the model
-    does not carry either, raises no signal:
-    [inode_newsize_ok]'s [out_big] and [generic_write_check_limits]'s
-    [s_maxbytes] arm both return -EFBIG without a [send_sig].
+    [Open.ftruncate_spec] — and the [s_maxbytes] half raises no
+    signal: [inode_newsize_ok]'s [out_big] and
+    [generic_write_check_limits]'s [s_maxbytes] arm both return -EFBIG
+    without a [send_sig].  The model carries that half where a run can
+    reach it: the append arms of the write specs answer its -EFBIG and
+    its cut ([ReadWrite.append_room], with [s_maxbytes] taken as
+    [Fs.MAX_LFS_FILESIZE]), and no length [ftruncate_spec] answers
+    passes it on tmpfs or ramfs, whose [s_maxbytes] is [LLONG_MAX]
+    ([Open.ftruncate_spec]).
 
     That distinction is not pedantry, because this spec WIDENS what
     those assumptions cost.  Blocking SIGXFSZ succeeds here and is
@@ -841,12 +844,13 @@ Qed.
     unblocked the process dies on the signal, blocked it takes -EFBIG
     and runs on.  Under the RLIM_INFINITY premise no run reaches
     that ftruncate, but the model does not carry the premise.  So this
-    file adds no wrong answer — the missing limit owns it, with or
-    without this file — but it is a pair the
+    file adds no wrong answer — the missing RLIMIT_FSIZE limit owns it,
+    with or without this file — but it is a pair the
     equivalence relation cannot separate.  The obligation the invariant below states
-    therefore binds those specs too: a file-size limit in
-    [ftruncate_spec] would turn a blocked mask into something the model
-    reads, and must give this spec state in the same commit.  The
+    therefore binds those specs too: an RLIMIT_FSIZE limit in
+    [ftruncate_spec] or in a write spec would turn a blocked mask into
+    something the model reads, and must give this spec state in the
+    same commit.  The
     -EPIPE arm in [ReadWrite.write_spec] is the case that already
     happened, and it brought [State.procst_sigpipe_pending] and
     [sigmask_deliver_model]'s second branch with it.
@@ -1771,8 +1775,11 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
       machine.
     - [sig] = 0, the permission-and-existence probe.  [valid_signal(0)]
       is true and delivery is skipped under [if (!error && sig)], so the
-      answer is whatever [security_task_kill] says, which is an LSM
-      question rather than a kernel one.
+      answer is [check_kill_permission]'s.  Its last step,
+      [security_task_kill], is the stub that answers 0 in the
+      configuration of record, which builds no LSM (SCOPE.md), so this
+      decline costs coverage rather than standing for an answer the
+      model cannot know.
     - any other signal in 1..64.  The model has a disposition for
       SIGABRT and for no other signal: [rt_sigaction_spec] answers an
       install only for SIGINT and SIGTERM, and for SIGABRT only with the
@@ -1812,13 +1819,14 @@ Definition sigaltstack_spec (uss uoss : word) : Sys SyscallEffect :=
     list, so the list's second half still holds for the two signals on
     it.
 
-    ** THE LSM GAP
+    ** NO LSM ANSWERS FIRST
 
-    [check_kill_permission] ends with [security_task_kill], which an
-    enabled LSM can answer -EPERM to even for a signal to oneself.  This
-    spec answers rather than declining, so it does not admit that
-    -EPERM.  That is a known gap, of the same shape as [getdents64]'s
-    LSM and fanotify denial gap. *)
+    [check_kill_permission] ends with [security_task_kill], and the
+    configuration of record builds no LSM (SCOPE.md), so that hook is
+    the stub that answers 0 and no supported kernel answers this call
+    -EPERM.  The spec answers rather than declining, and refusing an
+    -EPERM there is exact, as [getdents64]'s refusal of -EACCES and
+    -EPERM is. *)
 
 (** [pid] and [tgid] arrive as [pid_t], an [int]: [Syscall.pid32] has
     already truncated to 32 bits, so "positive" is 1..2^31-1 and every

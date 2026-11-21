@@ -699,7 +699,7 @@ Variable nx0 : nat.
 Variable LIMIT : Z.
 Variable CEIL : Z.      (** the run's allocation ceiling ([APS.co_ceil]) *)
 Hypothesis CEIL_ok : ceil_ok CEIL.
-(** the plan's CONFIG_RSEQ flag ([APS.rz]); the summaries do not read it *)
+(** the plan's CONFIG_RSEQ flag ([rz] of [APS.Sound]); the summaries do not read it *)
 Variable rz : Z.
 Hypothesis SEGS_wx : wx_segs_nowrap SEGS.
 Hypothesis SEGS_in_hull : forall a : word, in_hull A (bv_unsigned a) = false -> find_segment SEGS (bv_unsigned a) 1 = None.

@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -20,10 +23,11 @@ Open Scope sys_scope.
 
 (** [fsync fd] / [fdatasync fd]: flush this file to stable storage.
 
-    The model's file system is an interpreted map from paths to byte
-    contents ([Fs.Fs]) with no page cache, no dirty state and no
-    durability notion: a write is already durable when it returns, and
-    the map is observed only at exit (it rides out in [ExitEv]).  A
+    The model's file system ([Fs.Fs]) is a tree of names over an inode
+    table that holds each regular file's bytes, and it has no page cache,
+    no dirty state and no durability notion: a write is already durable
+    when it returns, and the image is observed only at exit (it rides
+    out in [ExitEv], through [Fs.fs_observe]).  A
     SUCCESSFUL fsync is therefore observationally inert — it returns 0,
     touches no memory and emits no event.  Its whole content is the
     ERROR cases below, and those are real kernel returns, not modeling
@@ -87,10 +91,14 @@ Open Scope sys_scope.
     misattribute — so fsync on a descriptor opened O_RDONLY succeeds
     exactly as on one opened for writing, and [FdFile] and [FdFileW]
     agree.  (The one fd that defeats the shorthand is an O_PATH one,
-    which is -EINVAL rather than 0 — [do_dentry_open] gives it
-    [empty_fops], so it fails the [.fsync] test above rather than any
-    mode test.  [Open.openat_spec] models three flag words and O_PATH is not
-    among them, so no such fd exists here.)  This is
+    which is -EBADF rather than 0, and by a mode test made before any
+    [.fsync] test: [do_dentry_open] gives it [FMODE_PATH] (fs/open.c:917),
+    and [do_fsync]'s [CLASS(fd, f)(fd)] (fs/sync.c:207) is [fdget]
+    (include/linux/file.h:83), which is [__fget_light(fd, FMODE_PATH)]
+    (fs/file.c:1179-1182) and answers [EMPTY_FD] for a file with that
+    mode (:1169-1170, :1173-1175), so [do_fsync] answers -EBADF
+    (fs/sync.c:209-210), all Linux v6.18.46.  [Open.openat_spec] models
+    no O_PATH flag word, so no such fd exists here.)  This is
     the arm where copying [ReadWrite.write_spec]'s -EBADF-on-a-read-only-fd would
     be a confident wrong answer.
 
@@ -109,19 +117,29 @@ Open Scope sys_scope.
     which [shmem_get_inode] wraps), and [noop_fsync] (Linux v6.10-v6.15,
     fs/libfs.c, [noop_fsync]) returns 0.
 
-    The bound worth naming, because it is a real one: this holds of the
-    filesystems a run can plausibly sit on, NOT of every filesystem.
+    The bound worth naming, because it is a real one: this holds of
+    tmpfs and ramfs, NOT of every filesystem.
     [proc_dir_operations] (Linux v6.10-v6.15, fs/proc/generic.c) and
     [kernfs_dir_fops] (Linux v6.10-v6.15, fs/kernfs/dir.c) set no
     [.fsync] at all, so a directory fd on procfs or sysfs really is
-    -EINVAL.  [FdDir] only ever comes from [openat] of "." or ".."
-    ([Open.path_is_dirref]), so a run diverges here when its working
-    directory OR ITS PARENT is on procfs or sysfs.
+    -EINVAL.  [FdDir] comes from [openat] of any folder the walk
+    reaches, "." and ".." among them ([Open.openat_read_spec],
+    [Open.openat_dir_spec]).  A valid input's working folder lies outside
+    /proc and /sys ([Run.outside_proc_sysb]), a walk that looks
+    "proc" or "sys" up at the root ends at [Fs.ROutside], which every arm
+    declines, and SCOPE.md's launch premise puts every other folder of
+    the launch tree on tmpfs or ramfs: no procfs, sysfs or kernfs is
+    mounted anywhere else in it.  ramfs's folders carry
+    [simple_dir_operations] (fs/ramfs/inode.c:79, Linux v6.18.46), whose
+    [.fsync] is [noop_fsync] too (fs/libfs.c:230-237).  So every folder
+    this arm sees answers 0 on Linux, and no launch the statements cover
+    reaches a folder without an [.fsync].
 
-    THAT IS WIDER THAN A BOUND ON THE WORKING DIRECTORY ALONE, and the reason
-    is worth having in front of you: A DIRECTORY'S PARENT CAN BE ON A
+    BEFORE R22 THE BOUND WAS ON THE WORKING DIRECTORY AND ITS PARENT, and
+    the reason it was wider than the working directory alone is still
+    worth having in front of you: A DIRECTORY'S PARENT CAN BE ON A
     DIFFERENT FILESYSTEM THAN THE DIRECTORY, because a mount point sits
-    in one and resolves into the other.  So the ".." half admits runs
+    in one and resolves into the other.  So the ".." half admitted runs
     a "."-only bound would exclude by construction:
 
       cwd = /sys/kernel/debug            (debugfs, a mount UNDER sysfs)
@@ -137,10 +155,12 @@ Open Scope sys_scope.
     the two above are to the version README.md names.)  The cwd here is on NEITHER procfs nor sysfs,
     and the same run conforms on one call and diverges on the next.
     /proc/sys/fs/binfmt_misc does it too, and so does any mount point
-    under either filesystem.
-
-    This divergence is a known limitation, kept on purpose: the arm
-    answers 0 here rather than declining.
+    under either filesystem.  Those working directories are outside
+    [Run.valid_input] now, and a procfs or sysfs mount elsewhere in the
+    launch tree, which would give the same shape, is outside SCOPE.md's
+    launch premise.  The premise is what keeps this arm's 0 Linux's
+    answer; it stops being true when a launch may mount another file
+    system in the tree.
 
     [fd] arrives ALREADY TRUNCATED to 32 bits (see [Syscall.fd32]): the ABI
     declares it [unsigned int] and the syscall wrapper narrows it (Linux
@@ -236,7 +256,7 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
                                                      -EINVAL], before the [datasync] read — the
                                                      pipe argument above, on a table the model
                                                      knows exactly *)
-  | Some FdUrandom => err_ret EINVAL              (* nor on /dev/urandom: [urandom_fops]
+  | Some (FdUrandom _ _) => err_ret EINVAL        (* nor on /dev/urandom: [urandom_fops]
                                                      (drivers/char/random.c, v6.18.46) lists
                                                      [.read_iter], [.write_iter], [.unlocked_ioctl],
                                                      [.compat_ioctl], [.fasync], [.llseek],
@@ -250,11 +270,5 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   | Some (FdFileRW _ _) => ret_only (Z_to_bv 64 0) (* and opened O_RDWR: it reads no access mode
                                                       either, which is why the read-only arm
                                                       above is not an error *)
-  | Some (FdAnon _ _) => ret_only (Z_to_bv 64 0)   (* the [FdFile] answer carries over unchanged:
-                                                      [vfs_fsync_range] (fs/sync.c) reads
-                                                      [f_op->fsync], which an unnamed file keeps
-                                                      from its regular-file table, and nothing
-                                                      about a name; on a tmpfs /tmp that is
-                                                      [noop_fsync] (mm/shmem.c, v6.18.46) *)
-  | Some FdDir         => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
+  | Some (FdDir _)     => ret_only (Z_to_bv 64 0) (* directory fsync succeeds; the key-publish path needs it *)
   end.

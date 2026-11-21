@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -135,6 +138,62 @@ Proof.
   unfold rw_bytes_max. lia.
 Qed.
 
+(** THE SIZE LIMIT OF AN APPEND WRITE.  A write to a regular file on tmpfs
+    reaches [shmem_file_write_iter] (mm/shmem.c:3490-3510, Linux
+    v6.18.46), which calls [generic_write_checks] (:3497) before it copies
+    a byte.  That is [generic_write_checks_count] (fs/read_write.c:
+    1736-1756): a zero count returns 0 at once (:1744-1745); an append
+    write's position becomes [i_size] (:1747-1748); then
+    [generic_write_check_limits] (:1709-1732) answers -EFBIG when the
+    position is at or past the file system's [s_maxbytes] (:1726-1727),
+    and otherwise cuts the count so that the write ends there (:1729),
+    after which [generic_write_checks] truncates the source to that count
+    (:1775).  All of it runs after [vfs_write]'s [access_ok],
+    [rw_verify_area] and [MAX_RW_COUNT] clamp (:674-681).  Its other two
+    arms do not apply: RLIMIT_FSIZE (:1715-1721) is infinite by the
+    harness premise [Open.ftruncate_spec] states, and the [O_LARGEFILE]
+    arm (:1723-1724) never fires, because every open on a 64-bit kernel
+    sets [O_LARGEFILE] (include/linux/fcntl.h:24-25, applied in
+    fs/open.c:1466-1467).
+
+    ONLY AN APPEND WRITE REACHES THE LIMIT.  A write at its own position
+    has passed [rw_verify_area]'s [(loff_t)(pos + count) < 0] test, so it
+    ends at or below [LLONG_MAX], which is [Fs.MAX_LFS_FILESIZE]: with a
+    count of 1 or more its position is below the limit and nothing is
+    cut.  An append write is different because [rw_verify_area] reads the
+    descriptor's position (or the position [pwrite64] and [pwritev2]
+    name) and [generic_write_checks_count] then replaces it with
+    [i_size].
+
+    [s_maxbytes] IS TAKEN TO BE [Fs.MAX_LFS_FILESIZE], which that
+    constant explains.  The -EFBIG is right on every file system, since a
+    file reaches that size only where the limit is that large; the cut
+    is right where the limit is [Fs.MAX_LFS_FILESIZE], as on tmpfs.  A
+    file system with a smaller [s_maxbytes] refuses or cuts earlier, and
+    the model still admits those writes.
+
+    [append_room] is what is left below the limit; [append_efbigb] is
+    the -EFBIG test, false at a zero count; [append_count] is the count
+    after the cut, the count itself whenever nothing is cut. *)
+Definition append_room (data : list byte) : Z :=
+  (Fs.MAX_LFS_FILESIZE - Z.of_nat (length data))%Z.
+
+Definition append_efbigb (data : list byte) (count : word) : bool :=
+  negb (w_is0 count) && (append_room data <=? 0)%Z.
+
+Definition append_count (data : list byte) (count : word) : word :=
+  if w_is0 count || (bv_unsigned count <=? append_room data)%Z then count
+  else Z_to_bv 64 (append_room data).
+
+(** The vectored cut: the first [room] bytes of the gathered prefix
+    [bs].  It equals [firstn (Z.to_nat room) bs] for [room >= 0], but it
+    takes [Z.to_nat] only of a room below [length bs].  The room is
+    usually near 2^63, and [Z.to_nat] of that is a unary [nat] that no
+    evaluation can build: [vm_compute] of a checker call runs out of
+    memory on it. *)
+Definition writev_cut (room : Z) (bs : list byte) : list byte :=
+  if (room <? Z.of_nat (length bs))%Z then firstn (Z.to_nat room) bs else bs.
+
 (** [read fd buf count].
 
     The DESTINATION prefix [buf, buf+n) must be writable-mapped
@@ -196,10 +255,9 @@ Qed.
     ([vfs_read], fs/read_write.c at v6.18.46, tests [FMODE_READ] before
     [access_ok], and [access_ok] before the fd's content is consulted —
     the order every [access_okb] premise in theories/Common rests on).  A regular file
-    also faces [rw_verify_area]'s position test there, which this arm
-    does NOT model — [rw_pos_einvalb] is applied by [readv_imported]
-    only.  This is a known gap: past [LLONG_MAX] the scalar arm answers
-    0 where Linux answers -EINVAL.
+    then faces [rw_verify_area]'s position test, after [access_ok] and
+    before the [MAX_RW_COUNT] clamp ([rw_pos_einvalb];
+    fs/read_write.c:563-567, Linux v6.18.46).
 
     Nonexistent fd, or an fd not open for reading (stdout/stderr, a
     write-only file): -EBADF (checked before the buffer and before the
@@ -238,9 +296,9 @@ Qed.
     answers -EFAULT.  Below that gate they ask [access_ok] on every
     path that answers.
 
-    The fd's OFFSET carries no bound: a read at or past end-of-file
-    delivers nothing whatever the offset, and [Fs.file_read] answers
-    that directly.
+    The fd's OFFSET carries no bound of the model's own: past the
+    position test, a read at or past end-of-file delivers nothing
+    whatever the offset, and [Fs.file_read] answers that directly.
 
     On a DIRECTORY fd there is no transfer to bound and so no count
     guard at all, but there is still an [access_ok] one:
@@ -258,9 +316,16 @@ Qed.
     [s_maxbytes] is [MAX_LFS_FILESIZE = LLONG_MAX] (mm/shmem.c
     [shmem_fill_super], include/linux/fs.h), and a nonempty read at that
     offset is this [-EINVAL], where an offset merely past end-of-file is
-    0.  The scalar [read] reaches the same test with its UNCLAMPED count
-    ([vfs_read] calls [rw_verify_area] before the [MAX_RW_COUNT]
-    clamp); only the vectored arm applies this predicate. *)
+    0.  The scalar [read] and [write] reach the same test with their
+    UNCLAMPED count ([vfs_read] and [vfs_write] call [rw_verify_area]
+    before the [MAX_RW_COUNT] clamp, fs/read_write.c:563-567 and
+    :677-681), so every file arm, scalar or vectored, applies this
+    predicate.
+
+    A NEGATIVE position is -EINVAL too (:462-464), and this predicate
+    answers it: an [off] at or above [2^63] makes the sum pass
+    [2^63 - 1] at any count.  An [lseek] cannot produce such an
+    [f_pos] ([lseek_dest] answers only offsets under [2^63]). *)
 Definition rw_pos_einvalb (off : word) (count : Z) : bool :=
   (2 ^ 63 - 1 <? bv_unsigned off + count)%Z.
 
@@ -285,68 +350,82 @@ Definition rw_pos_einvalb (off : word) (count : Z) : bool :=
     -EFAULT branch of that verdict the state is NOT advanced: the
     protocol is never reached, so the error stays pending, exactly as on
     Linux. *)
-Definition socket_pending_error (e : Z) (fd : word) (peer : PeerAddr)
-    (ch : word) (buf count : word) (i : SyscallInput) (m : Model)
+Definition socket_pending_error (e : Z) (fd : word) (after : SockState)
+    (buf count : word) (i : SyscallInput) (m : Model)
     : Sys SyscallEffect :=
   access_ok_zero buf count
-    (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch))) ;;
+    (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
      err_ret e).
+
+(** THE PAGE-MULTIPLE STOP of the random device's two copy loops.
+    [get_random_bytes_user] (drivers/char/random.c:434-482, Linux
+    v6.18.46) and [write_pool_user] (:1420-1446) move 64-byte blocks
+    and, after a block that leaves the running count [r] a multiple of
+    [PAGE_SIZE] with bytes still to move, break if
+    [signal_pending(current)] (:471-473, :1437-1439), returning [r].
+
+    THE STOP IS REACHABLE WITH NO SIGNAL THE MODEL HOLDS.  [freeze_task]
+    calls [fake_signal_wake_up] on every user task it freezes
+    (kernel/freezer.c:164-175), which calls [signal_wake_up]
+    (kernel/freezer.c:99-107; include/linux/sched/signal.h:443-451),
+    whose [signal_wake_up_state] sets TIF_SIGPENDING
+    (kernel/signal.c:721-725), and [signal_pending] reads exactly that
+    flag (include/linux/sched/signal.h:381-396).  A freezer cgroup or a
+    system suspend can do this to any process at any time, so every
+    positive page multiple below the count is a real answer, whatever
+    the process's own signal state.  A request of at most a page cannot
+    stop early, and one of at most 32 bytes never enters the read loop
+    at all (:455-457). *)
+Definition random_page_stopb (n r : Z) : bool :=
+  (Z.ltb 0 r && Z.ltb r n && Z.eqb (Z.modulo r page_size) 0)%bool.
 
 (** A READ OF /dev/urandom, shared by the [read] and [pread64] arms on
     [State.FdUrandom] once each has made the test Linux makes ahead of
     the device ([vfs_read]'s [access_ok], and for pread64
-    [rw_verify_area]'s position test).  It answers exactly [count]
-    bytes taken from the front of the run's DECLARED stream
-    ([State.m_urandom], seeded from [State.in_urandom]) and advances the
-    stream past them.  Nothing is chosen and nothing reaches the trace:
-    the bytes are an input of the run, the same on both sides of an
-    equivalence.
+    [rw_verify_area]'s position test).  It answers [k] bytes taken from
+    the front of the run's DECLARED stream ([State.m_urandom], seeded
+    from [State.in_urandom]) and advances the stream past them, where
+    [k] is the clamped count or a page multiple below it
+    ([random_page_stopb]).  The bytes are an input of the run, the same
+    on both sides of an equivalence; only how many of them a read takes
+    is chosen.
 
-    WHY THE WHOLE COUNT, from drivers/char/random.c at v6.18.46:
+    WHY THESE COUNTS, from drivers/char/random.c at v6.18.46:
     [urandom_read_iter] is [get_random_bytes_user] over the imported
-    iterator, which returns 0 on an empty request and otherwise fills
-    the request — the first 32 bytes straight from the key, the rest
-    in 64-byte ChaCha blocks — stopping early only where
-    [copy_to_iter] copies short.  It never waits: [urandom_read_iter]
-    warns about an unseeded pool and reads anyway ([try_to_generate_
-    entropy], then the read), so there is no -EINTR and no -EAGAIN on
-    this device, unlike [random_read_iter]'s [wait_for_random_bytes]
-    and unlike [getrandom]'s.  The one short answer Linux has here is
-    the loop's [signal_pending] test at every page boundary
-    ([ret % PAGE_SIZE == 0]), which stops a request past 4096 bytes at a
-    page multiple when a signal is pending — a signal-interrupted
-    transfer, and it is REJECTED rather than declined for the same
-    reason as every other read arm: whether one was pending is not a function of
-    the call's arguments, so no gate can be written, and this model
-    admits no signal that is not the process's own.
+    iterator, which returns 0 on an empty request (:440-441) and
+    otherwise fills the request — one of at most 32 bytes straight from
+    the key (:455-457), a longer one in 64-byte ChaCha blocks — stopping
+    early where [copy_to_iter] copies short, or at a page multiple
+    ([random_page_stopb]).  It never waits: [urandom_read_iter] warns
+    about an unseeded pool and reads anyway ([try_to_generate_entropy],
+    then the read), so there is no -EINTR and no -EAGAIN on this device,
+    unlike [random_read_iter]'s [wait_for_random_bytes] and unlike
+    [getrandom]'s.
 
     THE DESTINATION, in the order [get_random_bytes_user] decides it:
     a request none of whose bytes can land is -EFAULT ([copy_to_iter]
-    copies nothing and [ret ? ret : -EFAULT] fires); one whose range is
-    admitted but not wholly writable copies a prefix whose length is
-    the copy routine's rounded progress, which this model does not
-    describe — declined, as every read arm declines it.  Both are
+    copies nothing and [ret ? ret : -EFAULT] fires, :481); one whose
+    range is admitted but not wholly writable copies a prefix whose
+    length is the copy routine's rounded progress, which this model does
+    not describe — declined, as every read arm declines it.  Both are
     tested against [in_wmem], the writable map, exactly as the channel
     arm tests them.
 
     THE COUNT IS JUDGED AS LINUX JUDGES IT, through [State.rw_count_clamp]
     — the [MAX_RW_COUNT] clamp [vfs_read] applies before the read — and
-    carries no ceiling of its own, as no read arm does:
-    the count the device transfers is the clamped count, which is [count]
-    itself below 2^31.  The unary numerals the checker builds are bounded
-    by the DELIVERY rather than by the request: [stream_take_z] stops at
-    the declared stream's end, and the whole-range [read_bytes_map] below
-    is over the delivered length, which the stream-length test has just
-    equated to the clamp — the channel arm's spelling, for the channel
-    arm's reason.
+    carries no ceiling of its own, as no read arm does.  The unary
+    numerals the checker builds are bounded by the DELIVERY rather than
+    by the request: [stream_take_z] stops at the declared stream's end,
+    and the whole-range [read_bytes_map] below is over the delivered
+    length, which the stream-length test has just equated to the clamp
+    — the channel arm's spelling, for the channel arm's reason.
 
     THE STREAM RUNNING OUT is a DECLINE, not a short read: a finite
     declared stream that ends before the request is met is an
-    environment that stopped answering, and Linux's device never does
-    ([get_random_bytes_user] loops until the iterator is empty).  So
-    the arm answers only when the stream holds the whole clamped count,
-    and [IEof] short of it is [unmodeled] — the program is asking for
-    bytes the declaration did not supply.  Tested ahead of the
+    environment that stopped answering, and Linux's device never does.
+    So the arm answers only when the stream holds the whole clamped
+    count, and [IEof] short of it is [unmodeled] — the program is asking
+    for bytes the declaration did not supply.  Tested ahead of the
     whole-range writability, so that the numeral built for that test
     is the delivery's. *)
 Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
@@ -358,18 +437,90 @@ Definition read_urandom (buf count : word) (i : SyscallInput) (m : Model)
   | None => err_ret EFAULT                       (* not one byte can land: [copy_to_iter]
                                                     copies nothing, -EFAULT *)
   | Some _ =>
-      let r := stream_take_z (m_urandom m) (rw_count_clamp count) in
-      if negb (Z.eqb (Z.of_nat (length (fst r))) (rw_count_clamp count))
+      let n := rw_count_clamp count in
+      let r := stream_take_z (m_urandom m) n in
+      if negb (Z.eqb (Z.of_nat (length (fst r))) n)
       then unmodeled                             (* the declared stream ran out *)
       else
       match read_bytes_map (in_wmem i) buf (len_word (fst r)) with
       | None => unmodeled                        (* a partially writable destination: the
                                                     short count is the copy routine's *)
       | Some _ =>
-          set_urandom (snd r) ;;
-          pure (mkEffect (len_word (fst r)) [(buf, fst r)] [])
+          k <- choose (fun k : Z => k = n \/ random_page_stopb n k = true) ;;
+          let t := stream_take_z (m_urandom m) k in
+          set_urandom (snd t) ;;
+          pure (mkEffect (len_word (fst t)) [(buf, fst t)] [])
       end
   end.
+
+(** WHAT [write_pool_user] RETURNS for [n] bytes asked (already
+    clamped) of which the first [l] are readable (drivers/char/random.c:
+    1420-1446, Linux v6.18.46).  It copies 64-byte blocks with
+    [copy_from_iter] (:1430) and stops at the first block that comes
+    back short, or once the iterator is empty (:1433-1434).  Each copy
+    takes exactly the readable bytes in front of the first unreadable
+    one, so the count is [l] itself: all [n] when [l = n], and when
+    [l < n] the [l] readable bytes, 0 being the [-EFAULT] of
+    [return ret ? ret : -EFAULT] (:1445).  The one other count is a page
+    multiple below [n] that whole blocks reach ([random_page_stopb]),
+    which [r <= l] bounds.
+
+    WHY EACH COPY STOPS EXACTLY AT THE FIRST UNREADABLE BYTE, step by
+    step at v6.18.46 in SCOPE.md's configuration of record:
+
+    - [copy_from_iter] (include/linux/uio.h:225-230) passes
+      [check_copy_size] for the 64-byte [block] and calls
+      [_copy_from_iter] (lib/iov_iter.c:253-261), which walks the user
+      iterator with [copy_from_user_iter] (lib/iov_iter.c:45-59):
+      [iterate_ubuf] for one range (include/linux/iov_iter.h:24-35), and
+      for a vector [iterate_iovec] (include/linux/iov_iter.h:41-69),
+      which stops at the first piece that copies short (:57-58).  No
+      fault-in pass runs on this path.
+    - [copy_from_user_iter]'s [access_ok] never refuses a piece: each
+      piece lies inside a range that [vfs_write]
+      (fs/read_write.c:674-675), [__import_iovec]
+      (lib/iov_iter.c:1380) or [import_ubuf] (lib/iov_iter.c:1437)
+      already passed.  [should_fail_usercopy] is the stub that answers
+      false (include/linux/fault-inject-usercopy.h), since the
+      configuration has no CONFIG_FAULT_INJECTION.
+    - [raw_copy_from_user] (arch/riscv/include/asm/uaccess.h:424-427)
+      is [__asm_copy_from_user], an alias of [__asm_copy_to_user]
+      (arch/riscv/lib/uaccess.S:15-25).  Its vector path needs at
+      least [riscv_v_usercopy_threshold] bytes, 768 in this
+      configuration (arch/riscv/lib/riscv_v_helpers.c:17), so a piece
+      of at most 64 bytes takes [fallback_scalar_usercopy_sum_enabled],
+      which sends a copy shorter than [9*SZREG-1] = 71 bytes to its byte
+      loop (arch/riscv/lib/uaccess.S:76-77, :202-207).  The loop loads
+      each byte before it stores it, and a load that the fault handler
+      cannot serve reaches [no_context] and the fixup
+      (arch/riscv/mm/fault.c:93-115), which returns the count from that
+      byte on (arch/riscv/lib/uaccess.S:212-213).
+
+    Every step above is the same in v6.16 and v6.17, except that
+    v6.16's [handle_page_fault] has no tracepoints.
+
+    The bytes are mixed into the input pool ([mix_pool_bytes]) and
+    credit no entropy, so nothing the model holds moves: the read stream
+    is the launch's [State.in_urandom], and what a write mixes in does
+    not change which bytes a later read of the declared stream takes. *)
+Definition random_write_countb (n l r : Z) : bool :=
+  let l := Z.min l n in    (* the readable prefix of [n] bytes is at most [n] *)
+  (Z.eqb r l || (random_page_stopb n r && Z.leb r l))%bool.
+
+(** A WRITE INTO THE RANDOM DEVICE, once the calling syscall has made
+    its own tests: [random_write_iter] (drivers/char/random.c:1448-1451)
+    is [write_pool_user], which returns 0 at once on an
+    empty request (:1426-1427) and otherwise one of the counts
+    [random_write_countb] admits.  [ledger r] is the copy-in a return of
+    [r] records, which the vectored callers lay over their segments.
+    The model is unchanged on every answer. *)
+Definition random_write (n l : Z) (ledger : Z -> list (word * nat))
+    : Sys SyscallEffect :=
+  if Z.eqb n 0 then ret_only (Z_to_bv 64 0)
+  else
+    w <- choose (fun w : word => random_write_countb n l (bv_unsigned w) = true) ;;
+    if w_is0 w then err_ret EFAULT
+    else record_copyins (ledger (bv_unsigned w)) (ret_only w).
 
 (** THE SURVIVOR'S EMPTY READ, from what the end has shown of its error
     ([State.ResetState]): nothing yet ([RsUnknown]) is a CHOICE shown in
@@ -449,18 +600,12 @@ Definition stream_read_reset (fd id : word) (side : bool) (st : StreamEnd)
       termination statement would be provable for it.  A state with no
       transition at all would be sound, but it
       would make [Checks.Progress.receptive] false -- every state admits
-      an outcome -- and 37 of the 89 proof trees published on
-      oss-verify-proofs-internal's ossv/recipes use that theorem
-      directly (the LPSREV owner's decision, 2026-10-31 20:50Z, on
-      dispatch://OSSV-287).  Declining keeps the protection: the state
+      an outcome -- and 37 of the 89 published proof trees use that
+      theorem directly.  Declining keeps the protection: the state
       is unmodeled, so no termination statement can be proved through
-      it.  And it costs the cURL targets this was written for nothing,
-      because none of them makes a blocking call on a pair: the harness
-      sets its end non-blocking when it creates the pair (curl-fuzzer
-      de8de30, proto_fuzzer/mock_server.cc:73-74), and curl sets its own
-      end non-blocking in [cf_socket_open] before any I/O (curl
-      lib/cf-socket.c:1378).  If a later target does reach it, this
-      decline is what says so. *)
+      it.  A program that sets each end of its pair non-blocking before
+      any I/O on it never reaches this case; one that does reach it is
+      told so by this decline. *)
 Definition stream_read_empty (fd id : word) (side : bool) (st : StreamEnd)
     (nonblock : bool) (m : Model) : Sys SyscallEffect :=
   match stream_peer (m_fds m) id side with
@@ -515,9 +660,8 @@ Definition stream_read (fd id : word) (side : bool) (st : StreamEnd)
       no signal is modeled, so the read never returns.  A choice of
       "some count arrives" would be unsound and no transition at all
       would break [Checks.Progress.receptive]; declining keeps both.
-      The cURL target this was written for creates its eventfds with
-      EFD_NONBLOCK and reads them at a zero counter (curl-fuzzer's
-      census, OSSV-287 wave 2), so it takes the -EAGAIN.
+      A program that creates its eventfd with EFD_NONBLOCK and reads it
+      at a zero counter takes the -EAGAIN.
     - Otherwise [eventfd_ctx_do_read] takes [ucnt] -- 1 under
       EFD_SEMAPHORE, the whole counter otherwise; the counter is not 0
       here, so [(flags & EFD_SEMAPHORE) && count] is just the bit -- and
@@ -625,20 +769,23 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
            [rw_verify_area] between the range test and the read cannot
            fire — [f_pos] is 0 on this kind and a count of 2^63 or more
            already failed [access_ok] *)
-  | Some FdUrandom =>
+  | Some (FdUrandom rd _) =>
+      if negb rd then err_ret EBADF
+        (* opened write-only: [vfs_read]'s FMODE_READ test
+           (fs/read_write.c, v6.18.46), before the buffer *)
+      else
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_read]'s [access_ok] on the count the call NAMED, ahead
-           of the clamp and the device, as on every kind; FMODE_READ is
-           set on every descriptor of this kind (the open admits
-           O_RDONLY alone), so there is no -EBADF to decide first.
+           of the clamp and the device, as on every kind.
            [rw_verify_area]'s position test cannot fire: [f_pos] is 0
            on this kind ([noop_llseek] and [urandom_read_iter] never
            move it) and a count of 2^63 or more already failed
            [access_ok] *)
       else read_urandom buf count i m
         (* [urandom_read_iter] (drivers/char/random.c, v6.18.46): the
-           whole count from the declared stream — see [read_urandom] *)
-  | Some FdDir =>
+           whole count from the declared stream, or a page multiple of
+           it — see [read_urandom] *)
+  | Some (FdDir _) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_read] runs [access_ok] before it dispatches to the
            directory's [.read], so a range past [State.TASK_SIZE] is
@@ -702,8 +849,8 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  sk_err, so END-OF-STREAM DOMINATES A LATER ERROR: once
                  EOF has been observed a subsequent RST cannot turn this
                  back into an error *)
-          | NRst => socket_pending_error ECONNRESET fd peer ch buf count i m
-          | NTimedOut => socket_pending_error ETIMEDOUT fd peer ch buf count i m
+          | NRst => socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false) buf count i m
+          | NTimedOut => socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false) buf count i m
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
                 (* [vfs_read]'s [access_ok] on the count the call NAMED,
@@ -771,14 +918,50 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
               end
               end
           end
-      | SkReset _ _ =>
-          access_ok_zero buf count (ret_only (Z_to_bv 64 0))
-          (* the peer's error has already been delivered once, and
-             net/ipv4/tcp.c [tcp_done] set [sk_shutdown = SHUTDOWN_MASK];
-             tcp_recvmsg_locked tests [sk_shutdown & RCV_SHUTDOWN]
-             IMMEDIATELY ABOVE the TCP_CLOSE arm below, so the answer is
-             0 and NOT the -ENOTCONN this socket's state would otherwise
-             suggest *)
+      | SkReset peer ch rx pending bound =>
+          (* THE END WAS PROCESSED, and what was queued before it is still
+             read: tcp_done purges only the write queue (net/ipv4/
+             tcp_input.c:4669, Linux v6.18.46), so the bytes come first
+             exactly as on [SkConnected].  At the end: a FIN reads 0
+             (SOCK_DONE is tested before sk_err, net/ipv4/tcp.c:2741,
+             :2744); a RST or timeout whose error is still [pending] reads
+             that error once and consumes it; one already consumed reads
+             0, because tcp_done set RCV_SHUTDOWN (:2749), not the
+             -ENOTCONN of the TCP_CLOSE arm below it (:2752-2756) *)
+          match rx with
+          | NFin => access_ok_zero buf count (ret_only (Z_to_bv 64 0))
+          | NRst =>
+              if pending
+              then socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound) buf count i m
+              else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
+          | NTimedOut =>
+              if pending
+              then socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound) buf count i m
+              else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
+          | NCons _ _ =>
+              if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+              else
+              match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
+              | None => err_ret EFAULT
+              | Some _ =>
+              match read_bytes_map (in_wmem i) buf
+                      (len_word (fst (net_take_z rx (rw_count_clamp count)))) with
+              | None => unmodeled
+              | Some _ =>
+                  (* the [SkConnected] delivery, the state kept *)
+                  bs <- choose (fun bs : list byte =>
+                                  (1 <= Z.of_nat (length bs))%Z
+                                  /\ (Z.of_nat (length bs) <= rw_count_clamp count)%Z
+                                  /\ fst (net_take rx (length bs)) = bs
+                                  /\ read_bytes_map (in_wmem i) buf (len_word bs) <> None) ;;
+                  set_fds (fd_insert (m_fds m) fd
+                             (FdSocket (SkReset peer ch
+                                          (snd (net_take rx (length bs))) pending bound))) ;;
+                  emit (map (ReadEv ch) bs) ;;
+                  pure (mkEffect (len_word bs) [(buf, bs)] [])
+              end
+              end
+          end
       | _ =>
           (* fresh, bound or listening: net/ipv4/tcp.c [tcp_recvmsg_locked]
              answers -ENOTCONN for a socket that never reached
@@ -786,27 +969,30 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
              so the range verdict is all that is left *)
           access_ok_zero buf count (err_ret ENOTCONN)
       end
-  | Some (FdFile p off) =>
+  | Some (FdFile fi off) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok] (fs/read_write.c:560-561, Linux
+           v6.18.46), exactly as on the channel arm *)
+      else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
+        (* THEN [rw_verify_area]'s position test (fs/read_write.c:563-565,
+           the test at :462-469), on [f_pos] and the count the call
+           named, before the [MAX_RW_COUNT] clamp (:566-567): -EINVAL
+           when [pos + count] passes [LLONG_MAX] ([rw_pos_einvalb]).
+           This replaces a read that answered there as at end-of-file,
+           with 0 and nothing delivered.  That was false: no file the
+           model holds has [FOP_UNSIGNED_OFFSET] in its [fop_flags] (the
+           flag is on /dev/mem, /proc/PID/mem and a few drivers), so
+           [rw_verify_area] answers -EINVAL (:467-469), and an [lseek]
+           to [LLONG_MAX] reaches it.  Below the test, a read at or past
+           end-of-file still delivers nothing, and [Fs.file_read]
+           answers that without walking [off]. *)
       else
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled   (* an FdFile always points into the fs; see openat *)
-      | Some data =>
+      let data := fs_ino_data (m_fs m) fi in
           (* deterministic: bytes come from the file at [off], truncated
              at EOF and at the kernel's [MAX_RW_COUNT] clamp
-             ([State.rw_count_clamp]; a no-op below 2^31).  DETERMINISTIC
-             ON THE PREMISE THAT [p] NAMES A REGULAR FILE, which nothing
-             establishes: for a path the kernel resolves to a character
-             device this returns the recorded bytes where Linux returns
-             end-of-file. *)
+             ([State.rw_count_clamp]; a no-op below 2^31).  The inode is
+             a regular file's: an [Fs.EFile] is one, and a descriptor
+             keeps reading it after its last name is gone. *)
           let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
           match read_bytes_map (in_wmem i) buf (len_word bs) with
           | None =>
@@ -821,15 +1007,14 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
               end
           | Some _ =>
               let deliver :=
-                set_fds (fd_insert (m_fds m) fd (FdFile p (off + len_word bs))) ;;  (* advance offset *)
+                set_fds (fd_insert (m_fds m) fd (FdFile fi (off + len_word bs))) ;;  (* advance offset *)
                 pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in  (* no trace events for files *)
               deliver
                 (* [bs] may be empty (count = 0, or at or past end-of-file):
                    the destination is then never touched, and the range
                    verdict above is all Linux checked on it *)
           end
-      end
-  | Some (FdFileRW p off) =>
+  | Some (FdFileRW fi off) =>
       (* THE [FdFile] ARM ABOVE, WORD FOR WORD, with the entry written
          back under this kind.  An O_RDWR description reads exactly as a
          read-only one does: [vfs_read] tests FMODE_READ, which
@@ -838,25 +1023,12 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
          What the shared [f_pos] then means for the NEXT write is
          [write_spec]'s [FdFileRW] arm; here it is only advanced. *)
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], exactly as on the channel arm.  [off]
-           has no guard of its own here: a read at or past end-of-file
-           delivers nothing, and [Fs.file_read] answers that without
-           walking [off].  What that leaves out is [rw_verify_area]'s
-           [(loff_t)(pos + count) < 0 -> -EINVAL] on a file whose
-           [fop_flags] lack [FOP_UNSIGNED_OFFSET] (fs/read_write.c,
-           v6.18.46), reachable through an [lseek] to an offset just
-           under 2^63 *)
+        (* [vfs_read]'s [access_ok], then [rw_verify_area]'s position
+           test, exactly as on the [FdFile] arm above *)
+      else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
       else
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled   (* an FdFileRW always points into the fs; see openat *)
-      | Some data =>
-          (* deterministic: bytes come from the file at [off], truncated
-             at EOF and at the kernel's [MAX_RW_COUNT] clamp
-             ([State.rw_count_clamp]; a no-op below 2^31).  DETERMINISTIC
-             ON THE PREMISE THAT [p] NAMES A REGULAR FILE, which nothing
-             establishes: for a path the kernel resolves to a character
-             device this returns the recorded bytes where Linux returns
-             end-of-file. *)
+      let data := fs_ino_data (m_fs m) fi in
+          (* deterministic, as on the [FdFile] arm above *)
           let bs := file_read data off (Z_to_bv 64 (rw_count_clamp count)) in
           match read_bytes_map (in_wmem i) buf (len_word bs) with
           | None =>
@@ -871,14 +1043,13 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
               end
           | Some _ =>
               let deliver :=
-                set_fds (fd_insert (m_fds m) fd (FdFileRW p (off + len_word bs))) ;;  (* advance offset *)
+                set_fds (fd_insert (m_fds m) fd (FdFileRW fi (off + len_word bs))) ;;  (* advance offset *)
                 pure (mkEffect (len_word bs) (delivered_writes buf bs) []) in  (* no trace events for files *)
               deliver
                 (* [bs] may be empty (count = 0, or at or past end-of-file):
                    the destination is then never touched, and the range
                    verdict above is all Linux checked on it *)
           end
-      end
   | Some (FdPipe id w) =>
       if w then err_ret EBADF                    (* the WRITE end is O_WRONLY: real -EBADF, decided
                                                     before the destination, as Linux checks
@@ -1004,38 +1175,6 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
          [unix_dgram_recvmsg] or [udpv6_recvmsg] with an empty queue and,
          on the blocking file [State.FdDgram] always is, waits for a
          datagram nothing in this model can send *)
-  | Some (FdAnon id af) =>
-      if negb (anon_agree (m_fds m) id af) then unmodeled
-        (* the replicas of this file disagree: [State.anon_agree] *)
-      else
-      (* AN UNNAMED FILE READS AS THE [FdFileRW] ARM ABOVE DOES, on the
-         descriptor's own copy of the contents ([af_data]) at its own
-         [f_pos] ([af_off]).  [vfs_read] (fs/read_write.c, Linux
-         v6.18.46) tests FMODE_READ first, so a descriptor opened for
-         writing only is -EBADF before the buffer is looked at; then
-         [access_ok] on the named count; then the file's [read_iter]
-         copies from the page cache, which is the INODE's, so the bytes
-         are the same through every descriptor of the file.  Only this
-         descriptor's offset advances: [f_pos] is per [struct file]. *)
-      if negb (af_rd af) then err_ret EBADF
-      else
-      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-        (* [vfs_read]'s [access_ok], as on the [FdFile] arm, with the same
-           unmodeled [rw_verify_area] position test *)
-      else
-      let bs := file_read (af_data af) (af_off af) (Z_to_bv 64 (rw_count_clamp count)) in
-      match read_bytes_map (in_wmem i) buf (len_word bs) with
-      | None =>
-          match read_bytes_map (in_wmem i) buf (Z_to_bv 64 1) with
-          | None => err_ret EFAULT               (* not even the first delivered byte can
-                                                    land: real -EFAULT, offset unchanged *)
-          | Some _ => unmodeled                  (* partially writable destination: fail
-                                                    closed, see [readv_imported] *)
-          end
-      | Some _ =>
-          set_fds (fd_insert (m_fds m) fd (FdAnon id (af_set_off af (af_off af + len_word bs)))) ;;
-          pure (mkEffect (len_word bs) (delivered_writes buf bs) [])
-      end
   end.
 
 (** [write fd buf count].
@@ -1070,12 +1209,19 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     interruption included.
 
     A regular file is weaker, but still not the channel rule: a buffered
-    write returns short only after a partial copy, and only on -EINTR
-    from [fatal_signal_pending] (mm/filemap.c:4049) or on an error out
-    of [write_begin]/[write_end] (:4056, :4071) — ENOSPC, EIO, ENOMEM,
-    EDQUOT.  An ordinary catchable signal does not truncate it, and
-    RLIMIT_FSIZE is not a short-return path at all: it clamps the count
-    before the write, or returns -EFBIG (fs/read_write.c:1745-1750).
+    write ([generic_perform_write], mm/filemap.c:4244-4335, Linux
+    v6.18.46) returns short only after a partial copy, and only when the
+    source stops being readable partway (the fault-in that fails at
+    :4321-4324, after which the bytes already written are returned,
+    :4331-4334), on -EINTR from [fatal_signal_pending] (:4267-4270), or
+    on an error out of [write_begin]/[write_end] (:4272-4275,
+    :4293-4298) — ENOSPC, EIO, ENOMEM, EDQUOT.  Before the copy the
+    count is clamped at [MAX_RW_COUNT] (fs/read_write.c:680-681), and
+    [generic_write_check_limits] cuts a write that would cross
+    RLIMIT_FSIZE or the file system's [s_maxbytes] to end at the limit
+    (:1720, :1729): each is a short return too.  Only a write that starts
+    at or past one of those limits fails, with -EFBIG (:1716-1718,
+    :1726-1727).  An ordinary catchable signal does not truncate it.
 
     The model cannot tell these cases apart — it classifies fds 1 and 2
     as [FdChannel] unconditionally, without knowing whether the far end
@@ -1090,15 +1236,24 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     HAS a reader.  Linux kills the process there rather than answering
     a count, and this arm answers a success.
 
-    File: fully deterministic — the whole readable prefix lands in the
-    interpreted file system at the fd's offset (zero-filling any gap
-    past end-of-file); the offset advances by the delivered length; no
-    events.  (Short writes are a channel behavior: a regular-file write
-    falls short only under the conditions listed above — a fatal signal,
-    or ENOSPC/EIO/ENOMEM/EDQUOT out of the page-cache write — none of
-    which the model has, so admitting them here would be a new rule with
-    no kernel behavior behind it.  The ENOSPC half is a real short
-    return that this arm therefore REJECTS.)
+    File: fully deterministic — the readable prefix of the source lands
+    in the interpreted file system at the fd's offset (zero-filling any
+    gap past end-of-file); the offset advances by the delivered length;
+    no events.  The arm has every short return it can decide from what
+    the model holds, each the one certain answer: a count clamped at
+    [MAX_RW_COUNT] ([State.rw_count_clamp]), a source readable at its
+    first byte but not throughout, of which the readable prefix lands
+    ([Uaccess.write_source]), and an append that would cross
+    [s_maxbytes], cut to end there ([append_count]).  RLIMIT_FSIZE is
+    infinite by the harness premise [Open.ftruncate_spec] states, so its
+    cut never arises.  The arm admits none of the other short returns a
+    regular file can give: a fatal signal's, whose task never sees the
+    count, and one after ENOSPC/EIO/ENOMEM/EDQUOT out of the page-cache
+    write, which the model has no state to decide; admitting those here
+    would admit a short return on a file system with room, which Linux
+    does not give.
+    The ENOSPC half is a real short return that this arm therefore
+    REJECTS.
 
     Nonexistent fd, or an fd not open for writing (stdin, a read-only
     file): -EBADF (checked before the source buffer, as Linux checks
@@ -1139,20 +1294,28 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     all three.  The differences between them are exactly four, and every
     one of them is a kernel fact rather than a modelling convenience:
 
-    - the LEADING KERNEL TESTS.  The append arm models [vfs_write]'s
-      [access_ok] and [rw_verify_area]; the other two model [access_ok]
-      and not [rw_verify_area], and rely on [modeled_file_gap] declining
-      first for that one, which is a known divergence from Linux.
-      That is a difference between the ARMS, not between the kernels, so
-      it has to stay visible at each arm rather than move in here.
     - the GAP GUARD, which the append arm does not need and does not have
       ([append_opens_no_gap]).
+    - the SIZE LIMIT, which only the append arm meets: [append_efbigb]'s
+      -EFBIG on a file of [Fs.MAX_LFS_FILESIZE] bytes, and
+      [append_count]'s cut of a write that would cross that size, after
+      the leading tests below and before the shared tail.  A write at its
+      own position has passed [rw_verify_area], so it ends at or below
+      [LLONG_MAX] and nothing cuts it ([append_room] has the argument,
+      after [generic_write_check_limits], fs/read_write.c:1726-1729,
+      Linux v6.18.46).
     - the DESTINATION: [off] for the two positional kinds,
       [len_word data] for the append one.
     - the ENTRY WRITTEN BACK, which carries the kind.
 
-    Everything else is common, and the three helpers below are that
-    "everything else", named once so a fourth kind cannot arrive as a
+    Everything else is common.  That includes [vfs_write]'s two LEADING
+    KERNEL TESTS, [access_ok] and then [rw_verify_area]'s position test
+    on [f_pos] (fs/read_write.c:674-679, Linux v6.18.46), which all three
+    arms make in that order, inside the count gate.  They are spelled at
+    each arm and not in [write_range_gate]: the gate decides whether the
+    model judges the call at all, and the tests are the kernel's answer
+    on a call the gate has admitted.  The three helpers below are the
+    rest of that "everything else", named once so a fourth kind cannot arrive as a
     copy that drifts.  A change to one arm's count gate that missed the
     copy beside it would answer the same
     [write] on the same count two ways, by nothing but the fd.  Reading
@@ -1221,7 +1384,11 @@ Definition write_ledger (buf count : word) (bs : list byte)
     [Fs.file_extend].  [f_pos] does not move -- [new_sync_write]
     (fs/read_write.c) writes a position back only under [if (ret > 0 &&
     ppos)] -- so no [fault] update writes the descriptor back.  Linux
-    v6.18.46 throughout.
+    v6.18.46 throughout.  Linux v6.16 and v6.17 run the same loop and
+    the same size test: at v6.16 the address space's write_begin and
+    write_end are handed the file where later versions hand the kiocb,
+    and nothing else in either differs, so every supported version
+    leaves the same file here.
 
     [Uaccess.write_source] is the readable prefix of the CLAMPED range:
     Linux clamps at [MAX_RW_COUNT] before the write, so a delivering
@@ -1375,7 +1542,7 @@ Definition raise_sigpipe (m : Model) : Model :=
     silently dropped the ordinary Linux launch whose launcher ran
     `signal(SIGPIPE, SIG_IGN)` before execve, a disposition execve
     KEEPS (kernel/signal.c [flush_signal_handlers] :526-532, called
-    with [force_default = 0] from fs/exec.c [begin_new_exec] :1298).
+    with [force_default = 0] from fs/exec.c [begin_new_exec] :1252).
     Declining under BOTH dispositions while the death is undeclared
     gives that answer up and buys the launch back: [Run.valid_input]
     says nothing about the disposition, and every statement quantified
@@ -1518,12 +1685,14 @@ Definition stream_send (id : word) (side : bool) (st : StreamEnd)
       else unmodeled               (* a blocking send that may sleep forever *)
   end.
 
-(** [stream_send] for one flat buffer: write(2) and sendto. *)
+(** [stream_send] for one flat buffer: write(2) and sendto.  The source
+    is [Uaccess.write_source], cut to the bytes the send moves, as the
+    vectored send cuts [State.writev_gathered]. *)
 Definition stream_write (id : word) (side : bool) (st : StreamEnd)
     (nonblock nosignal : bool) (buf count : word) (i : SyscallInput) (m : Model)
     : Sys SyscallEffect :=
   stream_send id side st nonblock nosignal (rw_count_clamp count)
-    (fun c => readable_bytes (in_mem i) buf (Z_to_bv 64 c))
+    (fun c => firstn (Z.to_nat c) (write_source (in_mem i) buf count))
     (fun k => [(buf, k)]) m.
 
 (** A WRITE TO AN EVENTFD, once [write_spec] has made [vfs_write]'s
@@ -1569,25 +1738,23 @@ Definition eventfd_write (fd : word) (ctx : EventfdCtx) (buf count : word)
   end.
 
 (** The faulting-source post-state of a write whose bytes would have
-    landed at [off] in [p]: the file extended to [off], the descriptor
-    untouched, or [None] where the hole is one the model will not build.
+    landed at [off] in inode [i]: the file extended to [off], the
+    descriptor untouched, or [None] where the hole is one the model will
+    not build.
 
     The POSITIONAL arms pass this -- [write]'s two, [writev]'s two and
     [pwrite64]'s shared one -- so the kernel statement [write_file_tail]
     cites is written once.  The APPEND arms pass [write_fault_keep]
     below instead, and the difference is the kernel's arithmetic rather
     than a second rule. *)
-Definition write_fault_extend (fs : Fs) (p : path) (off : word)
+Definition write_fault_extend (fs : Fs) (i : ino) (off : word)
     : option (Sys SyscallEffect -> Sys SyscallEffect) :=
-  match fs_lookup fs p with
-  | None => None                 (* a file fd always points into the fs; see openat *)
-  | Some data =>
-      if negb (modeled_zero_fill (bv_unsigned off) data) then None
-        (* the same hole [modeled_file_gap] bounds for a DELIVERING
-           write, measured at the same offset: the model holds a file as
-           a flat byte list and would have to build those zeros *)
-      else Some (fun k => set_fs (fs_set fs p (file_extend data off)) ;; k)
-  end.
+  let data := fs_ino_data fs i in
+  if negb (modeled_zero_fill (bv_unsigned off) data) then None
+    (* the same hole [modeled_file_gap] bounds for a DELIVERING
+       write, measured at the same offset: the model holds a file as
+       a flat byte list and would have to build those zeros *)
+  else Some (fun k => set_fs (fs_set_ino_data fs i (file_extend data off)) ;; k).
 
 (** An APPEND write's faulting source leaves the file alone, and that
     is [shmem_write_end]'s own test rather than an omission: the
@@ -1606,69 +1773,32 @@ Remark file_extend_at_eof : forall data,
   file_extend data (len_word data) = data.
 Proof. intros data H. apply file_extend_within, H. Qed.
 
-(** * The write arms of an UNNAMED FILE ([State.FdAnon])
-
-    One descriptor kind with both positioning rules, because the
-    [struct file] carries O_APPEND or not ([State.af_append]): the
-    [FdFileW]/[FdFileRW] middle at [f_pos] when it does not, and the
-    [FdFileA] middle at [i_size] when it does.  The kernel facts are
-    the ones those arms cite, and only two things differ: the contents
-    are the descriptor's own copy ([af_data]) rather than [m_fs] under
-    a path, and a change of them goes to EVERY descriptor of the file
-    ([State.anon_write_back]), since the page cache is the inode's.
-    The written-back [f_pos] goes to this descriptor alone. *)
-
-(** [write_fault_extend] for an unnamed file: the contents extended to
-    [dst] in every descriptor of file [id], or [None] where the hole is
-    one the model will not build. *)
-Definition anon_fault_extend (fds : list (word * FdEntry)) (id : word)
-    (data : list byte) (dst : word)
-    : option (Sys SyscallEffect -> Sys SyscallEffect) :=
-  if negb (modeled_zero_fill (bv_unsigned dst) data) then None
-  else Some (fun k => set_fds (anon_set_data fds id (file_extend data dst)) ;; k).
-
-(** The faulting-source post-state of a [write] or [writev] through an
-    unnamed-file descriptor: [write_fault_keep] with O_APPEND, for the
-    [FdFileA] reason, and the extension to [f_pos] without it. *)
-Definition anon_write_fault (fds : list (word * FdEntry)) (id : word)
-    (af : AnonFile) : option (Sys SyscallEffect -> Sys SyscallEffect) :=
-  if af_append af then Some write_fault_keep
-  else anon_fault_extend fds id (af_data af) (af_off af).
-
-(** The middle of a delivering [write] or [writev] of [bs] through
-    descriptor [fd], whose entry is [FdAnon id af]: the [FdFileA] middle
-    with O_APPEND (the bytes at the end, [f_pos] to [append_new_pos],
-    no gap guard by [append_opens_no_gap]) and the [FdFileW] middle
-    without it (the bytes at [f_pos], which advances; the gap guard). *)
-Definition anon_write_place (fds : list (word * FdEntry)) (fd id : word)
-    (af : AnonFile) (bs : list byte)
-    : option (Sys SyscallEffect -> Sys SyscallEffect) :=
-  let data := af_data af in
-  let off := af_off af in
-  if af_append af then
-    Some (fun k =>
-      set_fds (anon_write_back fds fd id af (file_write data (len_word data) bs)
-                               (append_new_pos data bs off)) ;;
-      k)
-  else if negb (modeled_file_gap data off bs) then None
-  else
-    Some (fun k =>
-      set_fds (anon_write_back fds fd id af (file_write data off bs)
-                               (off + len_word bs)) ;;
-      k).
-
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, not a modeling gap *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: real -EBADF *)
-  | Some FdUrandom => err_ret EBADF             (* every descriptor of this kind is O_RDONLY —
-                                                    the open declines the write words — so
-                                                    [vfs_write]'s FMODE_WRITE test (fs/read_write.c,
-                                                    v6.18.46) answers before the buffer is looked at.
-                                                    Linux's own [random_write_iter] is reachable only
-                                                    through a descriptor this model never mints *)
+  | Some (FdUrandom _ wr) =>
+      if negb wr then err_ret EBADF              (* opened O_RDONLY: [vfs_write]'s FMODE_WRITE test
+                                                    (fs/read_write.c, v6.18.46) answers before the
+                                                    buffer is looked at *)
+      else
+      write_range_gate buf count
+        (* the count rule every judging write arm applies
+           ([Uaccess.modeled_rw_range]), as on /dev/null *)
+        (access_ok_zero buf count
+           (random_write (rw_count_clamp count)
+              (Z.of_nat (length (write_source (in_mem i) buf count)))
+              (fun r => [(buf, Z.to_nat r)])))
+        (* [vfs_write]'s [access_ok] over the named range
+           (fs/read_write.c:674-675) and its clamp at [MAX_RW_COUNT]
+           (:680-681).  [rw_verify_area]'s position test cannot fire:
+           [f_pos] is 0 on this device for good, since its [.llseek] is
+           [noop_llseek] and neither of its iterators advances [ki_pos].
+           Then [random_write_iter] (drivers/char/random.c:1448-1451)
+           over the readable prefix of the clamped range:
+           [random_write] *)
   | Some (FdDevNull _ wr) =>
       if negb wr then err_ret EBADF              (* opened O_RDONLY: [vfs_write]'s FMODE_WRITE test,
                                                     fs/read_write.c, before the buffer *)
@@ -1770,24 +1900,28 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
         emit (map (WriteEv ch) ds) ;;            (* record each delivered byte *)
         record_copyins [(buf, length ds)]
           (ret_only (len_word ds))               (* the (possibly short) delivered length *)
-  | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
+  | Some (FdDir _) => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
                                                     checked before the source buffer as Linux does *)
   | Some (FdSocket sk) =>
       if negb (sock_send_dead sk) then unmodeled
         (* A DELIVERING SOCKET WRITE IS STILL UNMODELED, and this is
            what is left of the arm that used to decline every socket.
-           [State.sock_send_dead] is false only for [SkConnected],
-           where the send either goes out -- a short count chosen from
-           the gatherable bytes, which is [Net.Socket.send_bytes]'s
+           [State.sock_send_dead] is false for [SkConnected], where the
+           send either goes out -- a short count chosen from the
+           gatherable bytes, which is [Net.Socket.send_bytes]'s
            business and needs that file's machinery -- or reports a
            pending peer error ONCE and REWRITES the descriptor
            (include/net/sock.h [sock_error] consumes it with an
-           [xchg]).  Neither raises a signal: [sk_stream_error] replaces
-           the errno with [sock_error]'s before it tests for -EPIPE
-           (net/core/stream.c :192-195), so a reset connection's FIRST
-           write is -ECONNRESET and carries none.  What keeps those
-           states out is the transfer, not the signal, which is why this
-           decline is now bounded and not permanent *)
+           [xchg]), and for an [SkReset] whose error is still pending,
+           where it reports that error.  Whether a report raises a
+           signal depends on the error: a reset in CLOSE_WAIT, after the
+           peer's FIN, stores EPIPE (net/ipv4/tcp_input.c [tcp_reset],
+           :4695-4697), which [sk_stream_error] keeps as -EPIPE and
+           answers with SIGPIPE (net/core/stream.c:190-197), while any
+           other reset of a connection stores ECONNRESET, returned with
+           no signal.  What keeps those states out is the transfer and
+           that choice, which is why this decline is bounded and not
+           permanent *)
       else
       if negb (modeled_rw_range buf count) then unmodeled
         (* the count rule every judging arm of this spec applies, after
@@ -1848,36 +1982,35 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          MSG_NOSIGNAL gate, where the flag is an argument a spec can
          read ([Net.Socket.send_flags_modeled]) *)
   | Some (FdFileW p off) =>
-      (* ONE LEADING KERNEL TEST, [vfs_write]'s [access_ok], and not the
-         second.  This note used to say the arm models neither
-         [vfs_write]'s [access_ok] nor [rw_verify_area]; the [access_ok]
-         half of that is withdrawn.  Without it a write whose named range
-         [access_ok] refuses was judged by its readable prefix — a short
-         or full write where Linux answers -EFAULT, and at a buffer
-         straddling 2^64 a write of bytes the walk reached by wrapping
-         ([State.copy_bytes_map]'s note has the wrap).
+      (* [vfs_write]'S TWO LEADING TESTS, in its order, inside the count
+         gate as on the append arm below (which says why the gate comes
+         first): [access_ok] -EFAULT on the range the call named
+         (fs/read_write.c:674-675, Linux v6.18.46), then
+         [rw_verify_area]'s position test -EINVAL on [f_pos] and the
+         unclamped count (:677-679, the test at :462-469), both before
+         the [MAX_RW_COUNT] clamp (:680-681).
 
-         TAKING [access_ok] WITHOUT [rw_verify_area] CANNOT INVERT THEIR
-         ORDER.  [vfs_write] (fs/read_write.c) runs [access_ok] FIRST and
-         [rw_verify_area] second; the inversion the append arm's note
-         warns of — -EINVAL where Linux answers -EFAULT — needs the later
-         test without the earlier one, and this arm has the earlier one
-         without the later.  [rw_verify_area] is still not modeled here,
-         and the arm rests on [modeled_file_gap] below declining first for
-         it: a known divergence from Linux where that test would fire.
-         The append arm below models both, for the reason it gives
-         there. *)
+         Without [access_ok] a write whose named range it refuses was
+         judged by its readable prefix: a short or full write where
+         Linux answers -EFAULT, and at a buffer straddling 2^64 a write
+         of bytes the walk reached by wrapping
+         ([State.copy_bytes_map]'s note has the wrap).  The position
+         test replaces an arm that did not make it, and rested on
+         [modeled_file_gap] below declining first.  That was false for a
+         file already within [Uaccess.rw_bytes_max] of [2^63], where the
+         write was judged and Linux answers -EINVAL; it is now the
+         kernel's answer at every offset.  [modeled_file_gap] still
+         declines a hole too large to build. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
          write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off)
              (* a source that faults still extends the file to [off]:
                 see [write_file_tail] *)
            (fun bs =>
-           match fs_lookup (m_fs m) p with
-           | None => None                        (* an FdFileW always points into the fs; see openat *)
-           | Some data =>
+           let data := fs_ino_data (m_fs m) p in
                if negb (modeled_file_gap data off bs) then None
                  (* a hole past end-of-file too large to zero-fill as a byte
                     list; Linux makes the file sparse for free — see
@@ -1885,12 +2018,11 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                     same hole at the same offset *)
                else
                Some (fun k =>
-                 set_fs (fs_set (m_fs m) p (file_write data off bs)) ;;
+                 set_fs (fs_set_ino_data (m_fs m) p (file_write data off bs)) ;;
                    (* the prefix lands AT [off] *)
                  set_fds (fd_insert (m_fds m) fd
                             (FdFileW p (off + len_word bs))) ;;      (* advance *)
-                 k)
-           end))
+                 k)))
   | Some (FdFileRW p off) =>
       (* THE [FdFileW] ARM ABOVE with the entry written back under this
          kind, and it is the SAME two helpers rather than a copy of that
@@ -1904,26 +2036,24 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          arm advances, which is the whole content of the kind.  Linux
          v6.18.46.
 
-         IT INHERITS THE O_WRONLY ARM'S KERNEL TESTS TOO: [access_ok]
-         and not [rw_verify_area], resting on [modeled_file_gap]
-         declining first for the second, with the same known
-         divergence. *)
+         IT HAS THE O_WRONLY ARM'S TWO LEADING KERNEL TESTS TOO:
+         [access_ok] -EFAULT, then [rw_verify_area]'s position test
+         -EINVAL on [f_pos] (fs/read_write.c:674-679, Linux v6.18.46),
+         inside the count gate. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+         else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
          write_file_tail (in_mem i) buf count
            (write_fault_extend (m_fs m) p off) (fun bs =>
-           match fs_lookup (m_fs m) p with
-           | None => None                        (* an FdFileRW always points into the fs; see openat *)
-           | Some data =>
+           let data := fs_ino_data (m_fs m) p in
                if negb (modeled_file_gap data off bs) then None
                else
                Some (fun k =>
-                 set_fs (fs_set (m_fs m) p (file_write data off bs)) ;;
+                 set_fs (fs_set_ino_data (m_fs m) p (file_write data off bs)) ;;
                  set_fds (fd_insert (m_fds m) fd
                             (FdFileRW p (off + len_word bs))) ;;
-                 k)
-           end))
+                 k)))
   | Some (FdFileA p off) =>
       (* THE OFFSET IS NOT READ, and that is the whole of what separates
          this arm's middle from the two above.  [iocb_flags]
@@ -1944,23 +2074,17 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [true] at every call).  It is the one thing an append write
          cannot ask the model to build.
 
-         DROPPING THAT GUARD IS WHY [rw_pos_einvalb] IS HERE, and the
-         leading kernel tests below are the one place this arm is not
-         the [FdFileW] arm above with the position moved.
+         THE LEADING KERNEL TESTS ARE THE [FdFileW] ARM'S, on the
+         descriptor's REAL position even here.
          [rw_verify_area] (fs/read_write.c) is handed [&file->f_pos] by
          [vfs_write] and runs BEFORE the iterator, so its
          [(loff_t)(pos + count) < 0] test reads the fd's REAL position
          even on an append fd — [generic_write_checks] (mm/filemap.c)
-         overrides [ki_pos] only once the write is under way.  The
-         [FdFileW] and [FdFileRW] arms do not model that test, and
-         rest on the argument that [modeled_file_gap] declines
-         first, so no run reaches it.  THIS arm has no
-         [modeled_file_gap], so nothing would decline first: an
+         overrides [ki_pos] only once the write is under way.  So here
+         the test is NOT about where the bytes go: an
          [lseek(fd, LLONG_MAX, SEEK_SET)] followed by a one-byte write
-         would be answered as an append where Linux answers -EINVAL,
-         which is a wrong modeled answer rather than a gap.  The
-         [writev] arm below keeps the same test for the same reason and
-         says so at greater length.
+         is -EINVAL, not an append.  The [writev] arm below keeps the
+         same test for the same reason and says so at greater length.
 
          AND THE [access_ok] THAT PRECEDES IT, which is not optional once
          the position test is modeled.  [vfs_write] runs
@@ -1984,25 +2108,31 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          [access_ok] would answer that call as a delivering append — a
          wrong modeled answer rather than a gap.
 
-         This is where the append arm stops matching the [FdFileW] one
-         in a second place: that arm models [access_ok] and not
-         [rw_verify_area], resting on [modeled_file_gap] for the second,
-         which is a known divergence.  Modelling [rw_verify_area] here
-         without [access_ok] would have been the worst of the three, so
-         the arm takes both.  Linux v6.18.46. *)
+         The [FdFileW] and [FdFileRW] arms take the same two tests in the
+         same place.  Linux v6.18.46.
+
+         THEN THE SIZE LIMIT ([append_efbigb], [append_count]): -EFBIG
+         when the file already holds [Fs.MAX_LFS_FILESIZE] bytes, and a
+         write that would cross that size cut to end at it.  This
+         replaces an append that landed every byte it was given however
+         long the file already was, which was false because
+         [generic_write_check_limits] answers -EFBIG at [s_maxbytes] and
+         cuts a write that crosses it (fs/read_write.c:1726-1729, Linux
+         v6.18.46); [append_room] says why [Fs.MAX_LFS_FILESIZE] is the
+         limit taken. *)
       write_range_gate buf count
         (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
          else if rw_pos_einvalb off (bv_unsigned count) then err_ret EINVAL
          else
-         write_file_tail (in_mem i) buf count (Some write_fault_keep)
+         let data := fs_ino_data (m_fs m) p in
+         if append_efbigb data count then err_ret EFBIG
+         else
+         write_file_tail (in_mem i) buf (append_count data count) (Some write_fault_keep)
            (* a faulting source leaves an APPEND write's file alone:
               see [write_fault_keep] *)
            (fun bs =>
-           match fs_lookup (m_fs m) p with
-           | None => None                        (* an FdFileA always points into the fs; see openat *)
-           | Some data =>
                Some (fun k =>
-                 set_fs (fs_set (m_fs m) p
+                 set_fs (fs_set_ino_data (m_fs m) p
                            (file_write data (len_word data) bs)) ;;   (* at end-of-file *)
                  set_fds (fd_insert (m_fds m) fd
                             (FdFileA p (append_new_pos data bs off))) ;;
@@ -2010,8 +2140,7 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
                       file, and a zero-length one not at all — see
                       [append_new_pos], which is where that asymmetry is
                       argued *)
-                 k)
-           end))
+                 k)))
   | Some (FdPipe id w) =>
       if negb w then err_ret EBADF               (* the READ end is O_RDONLY: real -EBADF, decided
                                                     before the source buffer, as Linux checks
@@ -2198,29 +2327,6 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
          socket is refused by [unix_dgram_sendmsg] and [udpv6_sendmsg]
          past flag and length tests this model does not carry; no target
          writes one *)
-  | Some (FdAnon id af) =>
-      if negb (anon_agree (m_fds m) id af) then unmodeled
-        (* the replicas of this file disagree: [State.anon_agree] *)
-      else
-      (* THE [FdFileW]/[FdFileRW] ARM without O_APPEND and the [FdFileA]
-         arm with it, through the same two helpers, on the descriptor's
-         own contents; see [anon_write_place].  [vfs_write]
-         (fs/read_write.c, Linux v6.18.46) tests FMODE_WRITE before the
-         buffer, so a read-only descriptor is -EBADF first.  The leading
-         kernel tests follow the arm each case follows: [access_ok] for
-         both, and [rw_verify_area]'s position test with O_APPEND only,
-         where no gap guard declines ahead of it (the [FdFileA] arm's
-         argument). *)
-      if negb (af_wr af) then err_ret EBADF
-      else
-      write_range_gate buf count
-        (if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-         else if (af_append af && rw_pos_einvalb (af_off af) (bv_unsigned count))%bool
-         then err_ret EINVAL
-         else
-         write_file_tail (in_mem i) buf count
-           (anon_write_fault (m_fds m) id af)
-           (anon_write_place (m_fds m) fd id af))
   end.
 
 (** * pread64 (67) and pwrite64 (68) — a transfer at a POSITION THE CALL NAMES
@@ -2277,11 +2383,9 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
     O_APPEND IS THE SECOND RULE.  Linux's [pwrite64] ignores [pos] on an
     O_APPEND description: [generic_write_checks_count] (fs/read_write.c)
     overwrites [iocb->ki_pos] with [i_size_read(inode)], after
-    [rw_verify_area] has tested the [pos] the call named.  Two kinds
-    carry O_APPEND: [State.FdFileA], whose arm below declines, and an
-    unnamed file opened with it ([State.FdAnon] with [af_append]), whose
-    arm answers it, the bytes at the end of the file and every offset
-    left alone. *)
+    [rw_verify_area] has tested the [pos] the call named.  The one kind
+    that carries O_APPEND, [State.FdFileA], has an arm below that answers
+    it: the bytes at the end of the file and every offset left alone. *)
 
 (** [pos < 0], the first test in both [ksys_pread64] (fs/read_write.c:755)
     and [ksys_pwrite64] (fs/read_write.c:785).  [pos] arrives as an
@@ -2311,9 +2415,7 @@ Definition ppos_einvalb (pos : word) : bool := (bv_signed pos <? 0)%Z.
       position test (fs/read_write.c:467-469) through [rw_pos_einvalb],
       applied to the UNCLAMPED count as [vfs_read] applies it — the
       [MAX_RW_COUNT] clamp is two statements later (:566-567).
-      [read_spec] does NOT model this test
-      (reaching it there needs an [lseek] to an offset just under
-      [2^63]); here it is unavoidable and cheap, because [pos] IS an
+      [read_spec] makes the same test on [f_pos]; here [pos] IS an
       argument;
     - a directory: -EISDIR (fs/libfs.c [generic_read_dir]), after both
       range verdicts;
@@ -2384,12 +2486,15 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
            a stream and does not carry FOP_UNSIGNED_OFFSET, so a
            [pos + count] past LLONG_MAX is -EINVAL, as on a file *)
       else ret_only (Z_to_bv 64 0)               (* [read_null]: 0, nothing touched *)
-  | Some FdUrandom =>
-      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+  | Some (FdUrandom rd _) =>
+      if negb rd then err_ret EBADF
         (* FMODE_PREAD is set on the device ([do_dentry_open] sets it,
            [memory_open] clears nothing; fs/open.c, drivers/char/mem.c,
            v6.18.46), so this reaches [vfs_read], whose FMODE_READ test
-           every descriptor of this kind passes, then its [access_ok] *)
+           a write-only descriptor fails *)
+      else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+        (* then [vfs_read]'s [access_ok] *)
       else
       if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
         (* [rw_verify_area]'s position test on the named [pos], as for
@@ -2398,7 +2503,7 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       else read_urandom buf count i m
         (* then [urandom_read_iter], which reads no position: the same
            bytes off the same stream a plain [read] would take *)
-  | Some FdDir =>
+  | Some (FdDir _) =>
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_read]'s [access_ok] runs before it dispatches to the
            directory's [.read], as in [read_spec]'s directory arm *)
@@ -2408,11 +2513,6 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
            not [FMODE_STREAM], so its [ppos] is non-NULL and the position
            test applies (fs/read_write.c:459-470) *)
       else err_ret EISDIR
-  | Some (FdAnon _ _) => unmodeled
-      (* DECLINED, by choice: the [FdFile] arm below would carry over on
-         the descriptor's own contents, and no target reads an unnamed
-         file positionally (dispatch://OSSV-287/spec R15 names the calls
-         it answers, and pread64 is not among them) *)
   | Some (FdFile p _) | Some (FdFileRW p _) =>
       (* ONE ARM FOR TWO KINDS, and nothing here has to tell them apart:
          a positional read consults no [f_pos] and advances none, so the
@@ -2423,12 +2523,16 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       else
       if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
       else
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled   (* a file fd always points into the fs; see openat *)
-      | Some data =>
+      let data := fs_ino_data (m_fs m) p in
           (* the bytes at [pos], truncated at end-of-file and at the
              kernel's [MAX_RW_COUNT] clamp; the fd's own offset is NOT
-             consulted and NOT advanced *)
+             consulted and NOT advanced.  A file whose last name is gone
+             reads the same: the descriptor holds the inode, which
+             [unlinkat] does not free while a [struct file] references
+             it -- [iput_final] (fs/inode.c:1874-1915) is reached only by
+             the last [iput], and [inode_generic_drop]
+             (include/linux/fs.h:3345-3348) is about the link count, not
+             the page cache the read copies from *)
           let bs := file_read data pos (Z_to_bv 64 (rw_count_clamp count)) in
           match read_bytes_map (in_wmem i) buf (len_word bs) with
           | None =>
@@ -2443,7 +2547,6 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
               (* no state change at all, and no trace events: file
                  contents are observed at exit only *)
           end
-      end
   end.
 
 (** [pwrite64 fd buf count pos].
@@ -2463,19 +2566,19 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
       [FMODE_WRITE] test (fs/read_write.c:670-671).  A directory reaches
       that test rather than -EISDIR, and reaches it holding
       [FMODE_PWRITE], since [do_dentry_open] set the bit for it too;
-    - a range [access_ok] refuses: -EFAULT (fs/read_write.c:674-675).
-      [write_spec] does NOT make this test — it judges a write by its
-      readable prefix, a known divergence — and this arm does, because the argument for leaving it out there
-      (an unreadable buffer is already the -EFAULT) does not survive a
-      count whose range merely ENDS past [State.TASK_SIZE];
+    - a range [access_ok] refuses: -EFAULT (fs/read_write.c:674-675),
+      as [write_spec]'s file arms make it;
     - [pos + count] past [LLONG_MAX]: -EINVAL, [rw_verify_area]
       (fs/read_write.c:467-469), on the unclamped count;
     - a regular file opened for writing, AT ANY COUNT: the readable
       prefix of the CLAMPED range lands at [pos], zero-filling any hole
       past end-of-file ([Fs.file_write]), and the return is that
-      prefix's length.  DETERMINISTIC — a regular-file write falls short
-      only under conditions the model does not have, the argument
-      [write_spec] spells out.  The descriptor's offset does not move.
+      prefix's length.  DETERMINISTIC — the short returns a regular-file
+      write gives that the model can decide are the ones it gives (the
+      readable prefix, the [MAX_RW_COUNT] clamp below, and an append's
+      cut at the file-size limit, [append_count]); the others rest on
+      conditions the model does not have, as [write_spec] spells out.
+      The descriptor's offset does not move.
 
     THE COUNT IS NOT CAPPED AT [Uaccess.rw_bytes_max], and this arm
     has no count gate at all: the -EFAULT test two statements
@@ -2535,10 +2638,33 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
                                                    before [vfs_write] is reached *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: [vfs_write]'s FMODE_WRITE
                                                     test, fs/read_write.c *)
-  | Some FdUrandom => err_ret EBADF             (* FMODE_PWRITE is set on the device, so this
-                                                    reaches [vfs_write]'s FMODE_WRITE test, which a
-                                                    read-only descriptor fails: -EBADF before the
-                                                    buffer or the position is looked at *)
+  | Some (FdUrandom _ wr) =>
+      if negb wr then err_ret EBADF              (* FMODE_PWRITE is set on the device:
+                                                    [do_dentry_open] sets it on every file
+                                                    (fs/open.c:960-961, Linux v6.18.46), and
+                                                    neither [memory_open]
+                                                    (drivers/char/mem.c:707-727) nor
+                                                    [urandom_fops], which has no [.open]
+                                                    (drivers/char/random.c:1572-1581), clears
+                                                    it the way [nonseekable_open] does
+                                                    (fs/open.c:1638-1641).  So
+                                                    [ksys_pwrite64] reaches [vfs_write]
+                                                    (fs/read_write.c:792-793), whose
+                                                    FMODE_WRITE test a read-only descriptor
+                                                    fails: -EBADF before the buffer or the
+                                                    position is looked at *)
+      else
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+      else
+      if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
+        (* [rw_verify_area] on the named [pos]: [urandom_fops] is not a
+           stream and carries no FOP_UNSIGNED_OFFSET *)
+      else
+        random_write (rw_count_clamp count)
+          (Z.of_nat (length (write_source (in_mem i) buf count)))
+          (fun r => [(buf, Z.to_nat r)])
+        (* [vfs_write]'s clamp, then [random_write_iter], which reads no
+           position: [write]'s answers *)
   | Some (FdDevNull _ wr) =>
       if negb wr then err_ret EBADF              (* FMODE_PWRITE is set on the device, so the
                                                     same FMODE_WRITE test answers *)
@@ -2554,32 +2680,44 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
            CHOSEN, not an oversight: [write] on this kind declines above
            [Uaccess.rw_bytes_max] at an out-of-range buffer where this
            arm answers -EFAULT, the same difference the file kinds
-           carry between the two syscalls *)
-  | Some FdDir => err_ret EBADF                  (* a directory is O_RDONLY: the same FMODE_WRITE
+           carry between the two syscalls, and [pwrite64_spec] is
+           outside the parity lists of
+           tools/check_write_arm_count_rule.py for that reason *)
+  | Some (FdDir _) => err_ret EBADF              (* a directory is O_RDONLY: the same FMODE_WRITE
                                                     test, and NOT -EISDIR *)
-  | Some (FdFileA _ _) => unmodeled
+  | Some (FdFileA p _) =>
       (* AN APPEND FD IS THE ONE KIND WHOSE ANSWER IS NOT THE [FdFileW]
          ARM BELOW, and the difference is the whole point of this
-         syscall.  [iocb_flags] (include/linux/fs.h, Linux v6.18.46,
-         commit 1f99e9ab748f) turns O_APPEND into IOCB_APPEND, and
-         [generic_write_checks] (mm/filemap.c, same commit) then runs
-         [if (iocb->ki_flags & IOCB_APPEND) iocb->ki_pos =
-         i_size_read(inode);] -- so the [pos] [pwrite64] named is
-         DISCARDED and the bytes land at end-of-file.  Linux does this on
-         purpose and POSIX does not require it; either way it is what the
-         pinned tree does.
-
-         Answering it with the arm below would put the bytes at [pos],
-         which is a wrong modeled behaviour rather than a missing one, so
-         this fails closed instead.  What a real arm would have to be is
-         [write_spec]'s [FdFileA] case with [pos] dropped, kept behind
-         [ksys_pwrite64]'s own -EINVAL and -ESPIPE gates
-         (fs/read_write.c, [ksys_pwrite64]); that is a modelling change
-         with its own argument to make, not something this decline
-         prejudges.  No example can reach it: an [FdFileA] is minted only
-         by [Open.openat_append_spec] (both append words), and no
-         example opens a file in append mode and then pwrites
-         it. *)
+         syscall.  [iocb_flags] (include/linux/fs.h:3839-3843, Linux
+         v6.18.46, commit 1f99e9ab748f) turns O_APPEND into IOCB_APPEND,
+         and [generic_write_checks_count] (fs/read_write.c:1736-1748, same
+         commit) then runs [if (iocb->ki_flags & IOCB_APPEND)
+         iocb->ki_pos = i_size_read(inode);] (:1748) -- so the [pos] [pwrite64] named is
+         DISCARDED and the bytes land at end-of-file, after
+         [vfs_write]'s [access_ok] and [rw_verify_area] have tested the
+         NAMED [pos] (fs/read_write.c:674-681).  No offset moves:
+         [ksys_pwrite64] passes [&pos].  A source with nothing readable
+         is -EFAULT with the file left alone ([write_fault_keep]'s
+         reason), and no hole is opened ([append_opens_no_gap]).  The
+         size limit comes between the position test and the copy, as on
+         [write_spec]'s [FdFileA] arm ([append_room]): -EFBIG when the
+         file already holds [Fs.MAX_LFS_FILESIZE] bytes, and the count
+         cut so that the write ends there. *)
+      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
+      else
+      if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
+      else
+      let data := fs_ino_data (m_fs m) p in
+      if append_efbigb data count then err_ret EFBIG
+      else
+      let cnt := append_count data count in
+      let bs := write_source (in_mem i) buf cnt in
+      if negb (w_is0 cnt) && Nat.eqb (length bs) 0 then err_ret EFAULT
+      else
+      set_fs (fs_set_ino_data (m_fs m) p (file_write data (len_word data) bs)) ;;
+      if w_is0 cnt
+      then ret_only (len_word bs)
+      else record_copyins [(buf, length bs)] (ret_only (len_word bs))
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
       (* ONE ARM FOR TWO KINDS, and one arm rather than two copies is the
          point: a positional write neither reads nor moves [f_pos], so the
@@ -2633,63 +2771,18 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
         | Some upd => upd (err_ret EFAULT)
         end
       else
-      match fs_lookup (m_fs m) p with
-      | None => unmodeled   (* a file fd always points into the fs; see openat *)
-      | Some data =>
+      let data := fs_ino_data (m_fs m) p in
           if negb (modeled_file_gap data pos bs) then unmodeled
             (* a hole past end-of-file too large to zero-fill as a byte
                list — see [modeled_file_gap], and the pwrite-specific note
                in this spec's header *)
           else
-          set_fs (fs_set (m_fs m) p (file_write data pos bs)) ;;  (* write the prefix at [pos] *)
+          set_fs (fs_set_ino_data (m_fs m) p (file_write data pos bs)) ;;  (* write the prefix at [pos] *)
           if w_is0 count
           then ret_only (len_word bs)
             (* a zero-length write reads no user byte, so its ledger is
                empty rather than a singleton zero-length range *)
           else record_copyins [(buf, length bs)] (ret_only (len_word bs))
-      end
-  | Some (FdAnon id af) =>
-      if negb (anon_agree (m_fds m) id af) then unmodeled
-        (* the replicas of this file disagree: [State.anon_agree] *)
-      else
-      (* THE ARM ABOVE on the descriptor's own contents, with O_APPEND
-         honoured.  [ksys_pwrite64] reaches [vfs_write] (a regular file
-         keeps FMODE_PWRITE), whose FMODE_WRITE test is -EBADF on a
-         read-only descriptor, then [access_ok] and [rw_verify_area] on
-         the NAMED [pos] (fs/read_write.c, Linux v6.18.46).  The bytes then
-         land at [pos], or at the end of the file when the descriptor
-         carries O_APPEND: [generic_write_checks_count] puts [ki_pos] at
-         [i_size_read(inode)] whatever [pos] was (R15 of
-         dispatch://OSSV-287/spec).  The new contents go to every
-         descriptor of the file; no offset moves, since [ksys_pwrite64]
-         passes [&pos].  A source with nothing readable is -EFAULT with
-         the file extended to [pos] without O_APPEND and left alone with
-         it, the [write_fault_extend] / [write_fault_keep] split. *)
-      if negb (af_wr af) then err_ret EBADF
-      else
-      if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
-      else
-      if rw_pos_einvalb pos (bv_unsigned count) then err_ret EINVAL
-      else
-      let data := af_data af in
-      let dst := if af_append af then len_word data else pos in
-      let bs := write_source (in_mem i) buf count in
-      if negb (w_is0 count) && Nat.eqb (length bs) 0
-      then
-        match (if af_append af then Some write_fault_keep
-               else anon_fault_extend (m_fds m) id data pos) with
-        | None => unmodeled
-        | Some upd => upd (err_ret EFAULT)
-        end
-      else
-      if negb (modeled_file_gap data dst bs) then unmodeled
-        (* the hole [modeled_file_gap] bounds; never on O_APPEND
-           ([append_opens_no_gap]) *)
-      else
-      set_fds (anon_set_data (m_fds m) id (file_write data dst bs)) ;;
-      if w_is0 count
-      then ret_only (len_word bs)
-      else record_copyins [(buf, length bs)] (ret_only (len_word bs))
   end.
 
 (** [IOV_MAX] (= Linux UIO_MAXIOV) and [MAX_RW_COUNT] are in State.v,
@@ -2823,9 +2916,25 @@ Definition writev_ledger (iovs : list (word * word)) (bs : list byte)
     guards and before its update.  It is unreachable under the aggregate
     cap in any case — the note on this spec's header says why it is kept —
     and every decline around it is the same [writev_buf_gap], so the
-    position is not observable. *)
+    position is not observable.
+
+    THE FILE-SIZE LIMIT, for an append ([room = Some r], [r] the bytes
+    left below [Fs.MAX_LFS_FILESIZE]; [append_room] has the kernel
+    argument).  [vfs_writev] (fs/read_write.c:1051, Linux v6.18.46) calls
+    [rw_verify_area] (:451-478) and then the file's [write_iter], where
+    [generic_write_checks] moves an append's position to [i_size] and
+    answers -EFBIG when no room is left (:1726-1727), or cuts the count
+    to the room (:1729) and truncates the source to it (:1775), before a
+    byte is copied.  So the -EFBIG comes after the position test and
+    before the -EFAULT of an unreadable source, and the gather and the
+    ledger run over the cut range: [writev_cut r] of the gathered prefix
+    is the readable prefix of the first [r] bytes.  This replaces a
+    helper with no limit, under which an append writev landed every
+    gathered byte however long the file was, which was false for the same
+    kernel lines.  The write-only and read-write arms pass [None], under
+    which every step is the one it was. *)
 Definition writev_file_arm (mp : word -> option byte)
-    (iov iovcnt off : word)
+    (iov iovcnt off : word) (room : option Z)
     (fault : option (Sys SyscallEffect -> Sys SyscallEffect))
     (place : list byte -> option (Sys SyscallEffect -> Sys SyscallEffect))
   : Sys SyscallEffect :=
@@ -2835,9 +2944,14 @@ Definition writev_file_arm (mp : word -> option byte)
    | ImpInval => err_ret EINVAL
    | ImpOk iovs0 =>
        let total := iovs_total (cap_iovecs iovs0) in
-       let bs := writev_gathered mp iovs0 in
+       let bs := match room with
+                 | None => writev_gathered mp iovs0
+                 | Some r => writev_cut r (writev_gathered mp iovs0)
+                 end in                           (* the gather over the cut range *)
        if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, offset unchanged *)
        else if rw_pos_einvalb off total then err_ret EINVAL  (* [rw_verify_area], before the write *)
+       else if match room with None => false | Some r => (r <=? 0)%Z end
+       then err_ret EFBIG                         (* no room below the file-size limit *)
        else if Nat.eqb (length bs) 0
        then match fault with
             | None => writev_buf_gap
@@ -2858,7 +2972,7 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF *)
   | Some (FdFile _ _) => err_ret EBADF           (* fd open read-only: real -EBADF *)
-  | Some FdDir => err_ret EBADF                  (* directory fds are O_RDONLY *)
+  | Some (FdDir _) => err_ret EBADF              (* directory fds are O_RDONLY *)
   | Some (FdSocket _) => writev_buf_gap           (* A VECTORED SOCKET WRITE IS UNMODELED, and
                                                     unlike the scalar arm it stays so for every
                                                     socket state: [write_spec]'s socket arm answers
@@ -2914,21 +3028,18 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                 (ret_only (len_word ds))          (* the (possibly short) delivered length *)
         end)
   | Some (FdFileW p off) =>
-      writev_file_arm (in_mem i) iov iovcnt off
+      writev_file_arm (in_mem i) iov iovcnt off None
         (write_fault_extend (m_fs m) p off) (fun bs =>
-        match fs_lookup (m_fs m) p with
-        | None => None                  (* an FdFileW always points into the fs (see openat) *)
-        | Some data =>
+        let data := fs_ino_data (m_fs m) p in
             if negb (modeled_file_gap data off bs) then None
               (* a hole past end-of-file too large to zero-fill, as in [write_spec] *)
             else
             Some (fun k =>
-              set_fs (fs_set (m_fs m) p (file_write data off bs)) ;;
+              set_fs (fs_set_ino_data (m_fs m) p (file_write data off bs)) ;;
                 (* as the equivalent write *)
               set_fds (fd_insert (m_fds m) fd
                          (FdFileW p (off + len_word bs))) ;;   (* advance offset *)
-              k)
-        end)
+              k))
   | Some (FdFileRW p off) =>
       (* THE [FdFileW] ARM ABOVE with the entry written back under this
          kind, through the SAME [writev_file_arm]: everything the two
@@ -2937,19 +3048,16 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          the gathered bytes, and the advance — so the only thing this arm
          may state for itself is the entry.  The [FdFileA] arm below is
          the one that differs, and it differs in the destination. *)
-      writev_file_arm (in_mem i) iov iovcnt off
+      writev_file_arm (in_mem i) iov iovcnt off None
         (write_fault_extend (m_fs m) p off) (fun bs =>
-        match fs_lookup (m_fs m) p with
-        | None => None                  (* an FdFileRW always points into the fs (see openat) *)
-        | Some data =>
+        let data := fs_ino_data (m_fs m) p in
             if negb (modeled_file_gap data off bs) then None
             else
             Some (fun k =>
-              set_fs (fs_set (m_fs m) p (file_write data off bs)) ;;
+              set_fs (fs_set_ino_data (m_fs m) p (file_write data off bs)) ;;
               set_fds (fd_insert (m_fds m) fd
                          (FdFileRW p (off + len_word bs))) ;;
-              k)
-        end)
+              k))
   | Some (FdFileA p off) =>
       (* The [FdFileW] arm with one line moved and one line kept, and the
          line that is KEPT is the surprising one.  [rw_verify_area]
@@ -2966,14 +3074,18 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
          to [len_word data], not to [off] -- and with it the
          [modeled_file_gap] guard, which an append write cannot fail
          ([append_opens_no_gap]) and so does not carry.  Linux v6.18.46
-         throughout. *)
-      writev_file_arm (in_mem i) iov iovcnt off
+         throughout.
+
+         AND THE FILE-SIZE LIMIT, which [writev_file_arm] applies when
+         handed the room ([append_room]): -EFBIG when the file already
+         holds [Fs.MAX_LFS_FILESIZE] bytes, and a writev that would cross
+         that size cut to end at it, after the position test and before
+         the copy. *)
+      let data := fs_ino_data (m_fs m) p in
+      writev_file_arm (in_mem i) iov iovcnt off (Some (append_room data))
         (Some write_fault_keep) (fun bs =>
-        match fs_lookup (m_fs m) p with
-        | None => None                  (* an FdFileA always points into the fs (see openat) *)
-        | Some data =>
             Some (fun k =>
-              set_fs (fs_set (m_fs m) p
+              set_fs (fs_set_ino_data (m_fs m) p
                         (file_write data (len_word data) bs)) ;;
               set_fds (fd_insert (m_fds m) fd
                          (FdFileA p (append_new_pos data bs off))) ;;
@@ -2981,11 +3093,29 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                    anything, so [bs] is nonempty here and this is the
                    end-of-file arm of [append_new_pos]; naming the helper
                    keeps the two write arms reading alike *)
-              k)
-        end)
-  | Some FdUrandom => err_ret EBADF             (* O_RDONLY, always: [vfs_writev]'s FMODE_WRITE
-                                                    test (fs/read_write.c, v6.18.46), before the
+              k))
+  | Some (FdUrandom _ wr) =>
+      if negb wr then err_ret EBADF              (* O_RDONLY: [vfs_writev]'s FMODE_WRITE test
+                                                    (fs/read_write.c, v6.18.46), before the
                                                     iovec array is imported *)
+      else
+        record_copyins
+          (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+        (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
+        | ImpFault => err_ret EFAULT
+        | ImpInval => err_ret EINVAL
+        | ImpOk iovs0 =>
+            random_write (iovs_total (cap_iovecs iovs0))
+              (Z.of_nat (length (writev_gathered (in_mem i) iovs0)))
+              (fun r => iov_prefix_accesses (cap_iovecs iovs0) (Z.to_nat r))
+            (* a zero aggregate is [vfs_writev]'s [goto out] and
+               [random_write]'s 0 alike; [rw_verify_area] reads an
+               [f_pos] that is 0 on this device for good (the [write]
+               arm says why) beside an aggregate under [MAX_RW_COUNT],
+               so its position test cannot fire; then [random_write_iter]
+               over the gathered prefix, which [copy_from_iter] walks
+               across the segments in order *)
+        end)
   | Some (FdDevNull _ wr) =>
       if negb wr then err_ret EBADF              (* O_RDONLY: [vfs_writev]'s FMODE_WRITE test,
                                                     before the import *)
@@ -3068,25 +3198,43 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
       end)
   | Some (FdDgram _) => writev_buf_gap
       (* declined whole, as the scalar write is: see [write_spec] *)
-  | Some (FdAnon id af) =>
-      if negb (anon_agree (m_fds m) id af) then unmodeled
-        (* the replicas of this file disagree: [State.anon_agree] *)
-      else
-      (* THE FILE ARMS ABOVE, through the same [writev_file_arm], with
-         [write_spec]'s two unnamed-file middles: at [f_pos] without
-         O_APPEND, at the end of the file with it, the contents to every
-         descriptor of the file and the offset to this one.
-         [vfs_writev]'s FMODE_WRITE test comes first: a read-only
-         descriptor is -EBADF before the iovec array is imported
-         (fs/read_write.c, Linux v6.18.46).  [rw_verify_area]'s position
-         test reads this descriptor's [f_pos] in both cases, as the
-         [FdFileA] arm explains. *)
-      if negb (af_wr af) then err_ret EBADF
-      else
-      writev_file_arm (in_mem i) iov iovcnt (af_off af)
-        (anon_write_fault (m_fds m) id af)
-        (anon_write_place (m_fds m) fd id af)
   end.
+
+(** [pwritev2] ON THE RANDOM DEVICE, once [pwritev2_spec] has made the
+    tests in front of the descriptor and [vfs_writev]'s FMODE_WRITE test
+    (fs/read_write.c:1037-1038, Linux v6.18.46) has passed.  [do_pwritev]
+    reaches [vfs_writev] because the device carries FMODE_PWRITE
+    (:1151-1153; [pwrite64_spec]'s arm says where it is set), and
+    FMODE_CAN_WRITE holds because [urandom_fops] has a [.write_iter]
+    (drivers/char/random.c:1572-1574).  Then, in [vfs_writev]'s order:
+    the import and its two errnos (:1042-1045), the zero aggregate's 0
+    (:1047-1049), [rw_verify_area] on the NAMED position (:1051-1053,
+    fs/read_write.c:467-470: the device's [urandom_fops] carries no
+    FOP_UNSIGNED_OFFSET), and [do_iter_readv_writev] (:1057, :812-833).
+
+    THE FLAG WORD IS READ ONLY THERE, by [kiocb_set_rw_flags]
+    (:819-821): 0 returns at once (include/linux/fs.h:3861-3862), and
+    [RWF_NOAPPEND] is -EPERM only on an append-only inode whose [kiocb]
+    has IOCB_APPEND (:3890-3894).  SCOPE.md's attribute premise says no
+    inode of the launch file system is append-only, so both words get
+    the device's answers.  Then [random_write_iter] over the gathered
+    prefix, which reads no position ([random_write]).  The model is
+    unchanged on every answer. *)
+Definition pwritev2_urandom (mp : word -> option byte) (iov iovcnt pos : word)
+    : Sys SyscallEffect :=
+  record_copyins (import_iovecs_accesses mp iov (iovcnt32 iovcnt))
+  (match import_iovecs mp iov (iovcnt32 iovcnt) with
+   | ImpFault => err_ret EFAULT
+   | ImpInval => err_ret EINVAL
+   | ImpOk iovs0 =>
+       let total := iovs_total (cap_iovecs iovs0) in
+       if Z.eqb total 0 then ret_only (Z_to_bv 64 0)
+       else if rw_pos_einvalb pos total then err_ret EINVAL
+       else
+         random_write total
+           (Z.of_nat (length (writev_gathered mp iovs0)))
+           (fun r => iov_prefix_accesses (cap_iovecs iovs0) (Z.to_nat r))
+   end).
 
 (** [pwritev2 fd iov iovcnt pos_l pos_h flags] (riscv64 nr 287): a
     gathered write at a position the call names, with per-call [rwf_t]
@@ -3094,42 +3242,62 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
     (src/unistd/pwrite.c) issues exactly this call, with one iovec and
     [RWF_NOAPPEND], and falls back to [F_GETFL] plus [pwrite64] only on
     -EOPNOTSUPP or -ENOSYS, which v6.18.46 never answers it.  So a
-    program's [pwrite] on the unnamed file of a [tmpfile()] reaches the
-    kernel here, not at [pwrite64_spec].  It is answered on an unnamed
-    file ([State.FdAnon]) and declined on every other kind.
+    program's [pwrite] on the file of a [tmpfile()] reaches the
+    kernel here, not at [pwrite64_spec].  It is answered on a regular
+    file descriptor ([pwritev2_file]) and on the random device
+    ([pwritev2_urandom]), and declined on every other kind.
 
     THE ORDER IS LINUX v6.18.46's (fs/read_write.c):
 
-    - [SYSCALL_DEFINE6(pwritev2)] reads the position as
+    - [SYSCALL_DEFINE6(pwritev2)] (:1202-1212) reads the position as
       [pos_from_hilo(pos_h, pos_l)], which on a 64-bit kernel shifts
       [pos_h] out twice by [HALF_LONG_BITS] and leaves [pos_l] as the
       [loff_t]: [pos_h] is read by nothing.  A position of -1 means
-      "the current position" and goes to [do_writev]: DECLINED here.
+      "the current position" and goes to [do_writev] (:1208-1209):
+      DECLINED here.
       (musl turns an offset of -1 into -2 first, so its [pwrite] never
       sends one.)
-    - [do_pwritev]: [pos < 0] is -EINVAL BEFORE the descriptor is looked
-      up; then an empty slot is -EBADF; then a file without
-      FMODE_PWRITE is -ESPIPE, which no regular file is.
-    - [vfs_writev]: FMODE_WRITE clear is -EBADF, before the iovec array
-      is read; then the import and its two errnos, the zero aggregate's
-      0, and [rw_verify_area] on [pos] and the aggregate -- all of which
-      [writev_file_arm] carries for [writev], here at [pos].
+    - [do_pwritev] (fs/read_write.c:1141-1160): [pos < 0] is -EINVAL
+      BEFORE the descriptor is looked up (:1146-1147); then an empty
+      slot is -EBADF (:1144, :1149); then a file without FMODE_PWRITE is
+      -ESPIPE (:1151-1152), which no regular file is.
+    - [vfs_writev] (:1028-1066): FMODE_WRITE clear is -EBADF (:1037-1038),
+      before the iovec array is read; then the import and its two errnos
+      (:1042-1045), the zero aggregate's 0 (:1047-1049), and
+      [rw_verify_area] on [pos] and the aggregate (:1051-1053) -- all of
+      which [writev_file_arm] carries for [writev], here at [pos].
     - [do_iter_readv_writev]: only now [kiocb_set_rw_flags]
       (include/linux/fs.h).  A flag word with a bit outside
       [RWF_SUPPORTED] is -EOPNOTSUPP there, after everything above;
       the arm DECLINES every word but 0 and [RWF_NOAPPEND] outright, a
       narrower answer no target's flag word reaches.  [RWF_NOAPPEND]
       clears IOCB_APPEND (include/linux/fs.h:3890-3894) -- -EPERM first
-      for an append-only inode, an attribute the model does not carry
-      and a file this run made does not have -- so the bytes land at
+      for an append-only inode, which SCOPE.md's attribute premise
+      excludes and a file this run made never is -- so the bytes land at
       [pos] even on an O_APPEND descriptor.  Without it, an O_APPEND
       descriptor's write lands at the end of the file
       ([generic_write_checks_count]), as [pwrite64_spec]'s does.
 
-    THE EFFECT is [pwrite64_spec]'s unnamed-file arm with the source
-    gathered as [writev]'s is: the contents to every descriptor of the
-    file, and no offset moves, since [do_pwritev] passes [&pos], its own
-    stack slot. *)
+    THE EFFECT is [pwrite64_spec]'s file arm with the source gathered as
+    [writev]'s is: the bytes to the file's inode, and no offset moves,
+    since [do_pwritev] passes [&pos], its own stack slot (:1153), to
+    [vfs_writev], which hands it to [do_iter_readv_writev] (:1057).  An
+    append also meets the file-size limit, after the position test and
+    before the copy ([append_room], through [writev_file_arm]). *)
+Definition pwritev2_file (mp : word -> option byte) (fs : Fs) (p : ino)
+    (append : bool) (iov iovcnt pos_l : word) (fl : Z) : Sys SyscallEffect :=
+  let data := fs_ino_data fs p in
+  let app := (append && Z.eqb fl 0)%bool in
+  let dst := if app then len_word data else pos_l in
+  writev_file_arm mp iov iovcnt pos_l
+    (if app then Some (append_room data) else None)
+    (if app then Some write_fault_keep else write_fault_extend fs p pos_l)
+    (fun bs =>
+       if negb (modeled_file_gap data dst bs) then None
+         (* the hole [modeled_file_gap] bounds; never at the end of the
+            file ([append_opens_no_gap]) *)
+       else Some (fun k => set_fs (fs_set_ino_data fs p (file_write data dst bs)) ;; k)).
+
 Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
     : Sys SyscallEffect :=
   let fl := bv_unsigned flags in
@@ -3144,30 +3312,19 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* [do_pwritev]'s empty slot *)
-  | Some (FdAnon id af) =>
-      if negb (anon_agree (m_fds m) id af) then unmodeled
-        (* the replicas of this file disagree: [State.anon_agree] *)
-      else
-      if negb (af_wr af) then err_ret EBADF      (* [vfs_writev]'s FMODE_WRITE test,
+  | Some (FdFile _ _) => err_ret EBADF         (* [vfs_writev]'s FMODE_WRITE test,
+                                                  fs/read_write.c:1037-1038 *)
+  | Some (FdFileW p _) | Some (FdFileRW p _) =>
+      pwritev2_file (in_mem i) (m_fs m) p false iov iovcnt pos_l fl
+  | Some (FdFileA p _) =>
+      pwritev2_file (in_mem i) (m_fs m) p true iov iovcnt pos_l fl
+  | Some (FdUrandom _ wr) =>
+      if negb wr then err_ret EBADF              (* [vfs_writev]'s FMODE_WRITE test,
                                                     fs/read_write.c:1037-1038 *)
-      else
-      let data := af_data af in
-      let app := (af_append af && Z.eqb fl 0)%bool in
-      let dst := if app then len_word data else pos_l in
-      writev_file_arm (in_mem i) iov iovcnt pos_l
-        (if app then Some write_fault_keep
-         else anon_fault_extend (m_fds m) id data pos_l)
-        (fun bs =>
-           if negb (modeled_file_gap data dst bs) then None
-             (* the hole [modeled_file_gap] bounds; never at the end of
-                the file ([append_opens_no_gap]) *)
-           else Some (fun k =>
-             set_fds (anon_set_data (m_fds m) id (file_write data dst bs)) ;;
-             k))
-  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some FdDir
+      else pwritev2_urandom (in_mem i) iov iovcnt pos_l
+  | Some (FdChannel _) | Some (FdDir _)
   | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
-  | Some FdUrandom | Some (FdStream _ _ _) | Some (FdEventfd _)
+  | Some (FdStream _ _ _) | Some (FdEventfd _)
   | Some (FdDgram _) => unmodeled
       (* DECLINED: no target writes any other kind with this call *)
   end.
@@ -3214,8 +3371,8 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
        operations — set by a handful of drivers and by fs/proc/base.c
        for [/proc/PID/mem], by no filesystem the model reaches.  See
        [rw_pos_einvalb].  The LSM and fanotify hooks in
-       the same function are an ENVIRONMENT PREMISE: nothing in the
-       modeled configuration denies a read.
+       the same function answer 0: the configuration of record builds
+       no LSM and no fanotify (SCOPE.md), so both are stubs.
     6. The read operation.  A directory's is [generic_read_dir], which
        is [return -EISDIR] and never looks at the destination.  For the
        kinds that copy, the destination decides — see [readv_imported].
@@ -3239,7 +3396,7 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
     a case the gate has already excluded. *)
 Inductive ReadableFd : Type :=
   | RdChannel (chan : word)
-  | RdFile (p : path) (offset : word)
+  | RdFile (p : ino) (offset : word)
   (** The same file at the same offset, through an O_RDWR description.
       A SEPARATE CONSTRUCTOR RATHER THAN [RdFile], because
       [readv_imported] WRITES THE ENTRY BACK: folding an O_RDWR fd into
@@ -3247,7 +3404,7 @@ Inductive ReadableFd : Type :=
       read-only kind, silently turning the descriptor into one a later
       write answers -EBADF on.  That is a modeled wrong answer produced
       by a read, which is the hardest kind to notice. *)
-  | RdFileRW (p : path) (offset : word)
+  | RdFileRW (p : ino) (offset : word)
   | RdDir
   | RdSocket (sk : SockState)
   | RdPipe (id : word)
@@ -3272,12 +3429,7 @@ Inductive ReadableFd : Type :=
   (** An unconnected datagram socket ([State.FdDgram]): a socket file,
       O_RDWR, so it passes the gate for [RdSocket]'s reason, and its
       transfer declines for [read_spec]'s. *)
-  | RdAnon.
-  (** A descriptor of an unnamed file ([State.FdAnon]) opened for
-      reading, so it passes the gate: [vfs_readv]'s FMODE_READ test is
-      the access mode the open granted, and turning a readable one away
-      would be a false -EBADF.  It carries nothing because
-      [readv_imported] declines its transfer, as [RdEventfd]'s. *)
+  .
 
 (** [FMODE_READ] (fs/read_write.c [vfs_readv]'s first test, v6.18.46):
     an fd not open for reading is [-EBADF], decided BEFORE the iovec
@@ -3312,7 +3464,7 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
   | FdFileRW p off => Some (RdFileRW p off)
     (* O_RDWR carries FMODE_READ, so the gate must let it through, and
        [RdFileRW] is what keeps the write-back on the right kind *)
-  | FdDir => Some RdDir
+  | FdDir _ => Some RdDir
   | FdSocket sk => Some (RdSocket sk)
   | FdFileW _ _ => None
   | FdFileA _ _ => None
@@ -3327,9 +3479,9 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
     (* the access mode the open granted IS FMODE_READ, so the gate is
        exact in both directions: a write-only /dev/null gets
        [vfs_readv]'s -EBADF *)
-  | FdUrandom => Some RdUrandom
-    (* opened O_RDONLY by construction, so FMODE_READ is set on every
-       descriptor of the kind *)
+  | FdUrandom rd _ => if rd then Some RdUrandom else None
+    (* the access mode the open granted IS FMODE_READ, as for
+       [FdDevNull]: a write-only descriptor gets [vfs_readv]'s -EBADF *)
   | FdStream id side st => Some (RdStream id side st)
     (* a socket file: [sock_alloc_file] opens it O_RDWR, so FMODE_READ
        is set, and turning it away here would be [RdSocket]'s false
@@ -3340,9 +3492,6 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
        [eventfd_fops] has [.read_iter] *)
   | FdDgram _ => Some RdDgram
     (* a socket file, O_RDWR: [RdSocket]'s argument *)
-  | FdAnon _ af => if af_rd af then Some RdAnon else None
-    (* the access mode the open granted IS FMODE_READ, so the gate is
-       exact in both directions, as for /dev/null *)
   end.
 
 (** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
@@ -3491,10 +3640,10 @@ Definition readv_imported (fd : word) (r : ReadableFd)
           match rx with
           | NFin => ret_only (Z_to_bv 64 0)   (* the peer's FIN: 0, and sticky *)
           | NRst =>
-              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch))) ;;
+              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false false))) ;;
               err_ret ECONNRESET                (* delivered once, then end-of-stream *)
           | NTimedOut =>
-              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch))) ;;
+              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false))) ;;
               err_ret ETIMEDOUT
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -3533,7 +3682,46 @@ Definition readv_imported (fd : word) (r : ReadableFd)
                   end
               end
           end
-      | SkReset _ _ => ret_only (Z_to_bv 64 0)  (* error already delivered: reads as EOF *)
+      | SkReset peer ch rx pending bound =>
+          (* the [read] arm's [SkReset] rule over the scatter: the queue
+             first, then the end (see [read_spec]) *)
+          match rx with
+          | NFin => ret_only (Z_to_bv 64 0)
+          | NRst =>
+              if pending
+              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false bound))) ;;
+                    err_ret ECONNRESET)
+              else ret_only (Z_to_bv 64 0)
+          | NTimedOut =>
+              if pending
+              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false bound))) ;;
+                    err_ret ETIMEDOUT)
+              else ret_only (Z_to_bv 64 0)
+          | NCons _ _ =>
+              match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
+              | None => err_ret EFAULT
+              | Some _ =>
+                  match scatter_iovecs (in_wmem i) iovs
+                          (fst (net_take_z rx total)) with
+                  | None => readv_buf_gap
+                  | Some _ =>
+                      bs <- choose (fun bs : list byte =>
+                                      (1 <= Z.of_nat (length bs))%Z /\
+                                      (Z.of_nat (length bs) <= total)%Z /\
+                                      fst (net_take rx (length bs)) = bs /\
+                                      scatter_iovecs (in_wmem i) iovs bs <> None) ;;
+                      match scatter_iovecs (in_wmem i) iovs bs with
+                      | Some writes =>
+                          set_fds (fd_insert (m_fds m) fd
+                                     (FdSocket (SkReset peer ch
+                                                  (snd (net_take rx (length bs))) pending bound))) ;;
+                          emit (map (ReadEv ch) bs) ;;
+                          pure (mkEffect (len_word bs) writes [])
+                      | None => choose (fun _ => False)
+                      end
+                  end
+              end
+          end
       | _ => err_ret ENOTCONN                 (* fresh, bound or listening *)
       end
   | RdStream id side st =>
@@ -3577,13 +3765,6 @@ Definition readv_imported (fd : word) (r : ReadableFd)
   | RdDgram => readv_buf_gap
       (* declined for [read_spec]'s reason: an empty queue the file
          would wait on *)
-  | RdAnon => readv_buf_gap
-      (* DECLINED, by choice: [read_spec]'s [FdAnon] arm would carry
-         over as the [RdFileRW] arm carries the [FdFileRW] one, and no
-         target reads an unnamed file with readv (dispatch://OSSV-287/spec
-         R15 names the calls it answers).  The gate, the import's two
-         errnos and the zero aggregate above are answered, as for every
-         kind *)
   | RdDevNull => ret_only (Z_to_bv 64 0)
       (* [read_iter_null] (drivers/char/mem.c, v6.18.46) is [return 0],
          reached through [do_iter_readv_writev] because [null_fops]
@@ -3617,13 +3798,16 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          [ext4_dx_readdir] parks an exhausted listing at
          [EXT4_HTREE_EOF_64BIT] = LLONG_MAX *)
   | RdFile p off =>
-      match fs_lookup (m_fs m) p with
-      | None => readv_buf_gap      (* an FdFile always points into the fs; see openat *)
-      | Some data =>
+      let data := fs_ino_data (m_fs m) p in
           if rw_pos_einvalb off total then err_ret EINVAL
               (* [rw_verify_area], ahead of the read operation *)
           else
-          (* files are deterministic: exactly the bytes at the offset *)
+          (* files are deterministic: exactly the bytes at the offset.  A
+             file whose last name is gone reads the same: the descriptor
+             holds the inode, which [iput_final] (fs/inode.c:1874-1915)
+             frees only at the last [iput], and [inode_generic_drop]
+             (include/linux/fs.h:3345-3348) is about the link count, not
+             the page cache the read copies from *)
           let bs := file_read data off (Z_to_bv 64 total) in
           match scatter_iovecs (in_wmem i) iovs bs with
           | Some writes =>
@@ -3643,14 +3827,11 @@ Definition readv_imported (fd : word) (r : ReadableFd)
               | Some _ => readv_buf_gap                (* writable prefix, unwritable tail *)
               end
           end
-      end
   | RdFileRW p off =>
       (* THE [RdFile] ARM ABOVE, WORD FOR WORD, with the entry written
          back under the O_RDWR kind -- the reason [ReadableFd] carries
          two file constructors at all. *)
-      match fs_lookup (m_fs m) p with
-      | None => readv_buf_gap      (* an FdFileRW always points into the fs; see openat *)
-      | Some data =>
+      let data := fs_ino_data (m_fs m) p in
           if rw_pos_einvalb off total then err_ret EINVAL
               (* [rw_verify_area], ahead of the read operation *)
           else
@@ -3674,7 +3855,6 @@ Definition readv_imported (fd : word) (r : ReadableFd)
               | Some _ => readv_buf_gap                (* writable prefix, unwritable tail *)
               end
           end
-      end
   end.
 
 (** [readv fd iov iovcnt]: scatter the bytes a [read] of the same total
@@ -3864,7 +4044,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     that has an [.llseek].  Nothing to record: the
                                                     position it pins is the one the entry already
                                                     has none of *)
-      | FdUrandom => ret_only (Z_to_bv 64 0)       (* [noop_llseek] (fs/read_write.c, v6.18.46), the
+      | FdUrandom _ _ => ret_only (Z_to_bv 64 0)   (* [noop_llseek] (fs/read_write.c, v6.18.46), the
                                                     [.llseek] of [urandom_fops], is [return
                                                     file->f_pos] for EVERY whence and offset, and
                                                     [f_pos] is 0 on this kind: [urandom_read_iter]
@@ -3875,13 +4055,11 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     descriptor shares the same 0.  FMODE_LSEEK is
                                                     set because the table has an [.llseek], so
                                                     [vfs_llseek] dispatches rather than -ESPIPE *)
-      | FdDir => unmodeled                           (* real lseek on a directory fd succeeds, but [FdDir]
+      | FdDir _ => unmodeled                           (* real lseek on a directory fd succeeds, but [FdDir]
                                                     tracks no offset, so the model cannot judge the
                                                     call: unmodeled, fail closed *)
       | FdFile p cur =>
-          match fs_lookup (m_fs m) p with
-          | None => unmodeled   (* an FdFile always points into the fs; see openat *)
-          | Some data =>
+          let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
               | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: real filesystems answer
                                                     these, with a filesystem-dependent notion of a
@@ -3894,7 +4072,6 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                       ret_only r
                   end
               end
-          end
       | FdFileRW p cur =>
           (* NOR ON O_RDWR, and this arm is where "the two directions
              share one [f_pos]" becomes observable: the position an
@@ -3903,9 +4080,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              [FdFileRW] arms).  [generic_file_llseek] reads
              [file->f_pos] and the file's size and nothing else
              (fs/read_write.c, Linux v6.18.46). *)
-          match fs_lookup (m_fs m) p with
-          | None => unmodeled   (* an FdFileRW always points into the fs; see openat *)
-          | Some data =>
+          let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
               | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
@@ -3916,13 +4091,10 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                       ret_only r
                   end
               end
-          end
       | FdFileW p cur =>
           (* lseek does not depend on the access mode: a write-only file fd
              repositions exactly like a read-only one *)
-          match fs_lookup (m_fs m) p with
-          | None => unmodeled   (* an FdFileW always points into the fs; see openat *)
-          | Some data =>
+          let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
               | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
@@ -3933,7 +4105,6 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                       ret_only r
                   end
               end
-          end
       | FdFileA p cur =>
           (* NOR ON THE APPEND FLAG.  [ksys_lseek] reaches
              [generic_file_llseek], which moves [f_pos] out of
@@ -3947,9 +4118,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              what makes the position observable at all, and so is what
              puts [File.dup_modeled_entry]'s [FdFileA] arm on the
              declining side. *)
-          match fs_lookup (m_fs m) p with
-          | None => unmodeled   (* an FdFileA always points into the fs; see openat *)
-          | Some data =>
+          let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
               | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
@@ -3960,28 +4129,5 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                       ret_only r
                   end
               end
-          end
-      | FdAnon id af =>
-          if negb (anon_agree (m_fds m) id af) then unmodeled
-            (* the replicas of this file disagree: [State.anon_agree] *)
-          else
-          (* AN UNNAMED FILE REPOSITIONS LIKE THE FILE KINDS ABOVE, on this
-             descriptor's [f_pos] and the file's size, which is the length
-             of the contents every descriptor of it carries.  The
-             filesystem's [.llseek] for a regular file reads [f_pos] and
-             [i_size] and nothing about a name ([shmem_file_llseek],
-             mm/shmem.c, is [generic_file_llseek_size] for every whence
-             but SEEK_DATA and SEEK_HOLE, Linux v6.18.46).  Only this
-             entry's offset moves *)
-          match lseek_base whence (af_off af) (len_word (af_data af)) with
-          | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
-          | Some base =>
-              match lseek_dest base off with
-              | None => err_ret EINVAL           (* negative/unrepresentable result: real -EINVAL *)
-              | Some r =>
-                  set_fds (fd_insert (m_fds m) fd (FdAnon id (af_set_off af r))) ;;
-                  ret_only r
-              end
-          end
       end
   end.

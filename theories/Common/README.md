@@ -43,7 +43,8 @@ the shape of each input case:
 | read all of standard input, then write once | `DrainSim` |
 | `brk` allocation | `AllocSim` |
 | one anonymous `mmap` | `MmapSim` |
-| file operations; the result is the exit code and the final files | `FileSim` |
+| file operations; the result is the exit code and the final files | `FileSim` (with `FileSimWalk` for the open of a pathname the walk resolves, and the devices) |
+| file operations where a copy loop may not stop (an endless source) | `FileSimLoop` |
 | every source execution crashes | `ErrEscape` |
 | any combination of the above | `ShapeAlg` |
 
@@ -126,6 +127,7 @@ Limits:
 | `WxExec` | Steps in a segment that is writable and executable. |
 | `FPSteps` | Steps for the F and D instructions. |
 | `SimInv` | The general "no error on any path" argument that the behavior files use. |
+| `RunSegmentsLift` | A run's segment list is the image's segments followed by the vDSO pair (`Run.run_segments`): fetches, reads, stores and whole derivations over the image's segments carry over to it. |
 
 `mkst` takes an implicit `FPState` argument: the floating-point registers
 and `fcsr`. Files that use `mkst` must declare a section variable

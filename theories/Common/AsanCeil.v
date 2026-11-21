@@ -8,7 +8,8 @@
     grants by [State.alloc_top h = vm_init_sp h - stack_max_size] (the RUN's
     stack pointer) and has no floor (placement is admissibility, not a
     search).  The checker keeps its numeric constants
-    ([AsanPlanCore.CEIL] / [FLOOR]); soundness needs only that the constant
+    ([AsanPlanCore.FLOOR], and [alloc_ceiling] for the ceiling its sections
+    take as [CEIL]); soundness needs only that the constant
     ceiling lies at or below the spec's: for every admissible run
     [sp >= sp_window_lo = 0x7fff80000000] ([Run.valid_sp]), hence
     [alloc_top h = sp - 8 MiB >= 0x7fff7f800000 = alloc_ceiling], exactly, and the
@@ -211,7 +212,7 @@ Lemma init_sp_ok_mkVmMapsFull : forall h r m na sb b l mb,
   init_sp_ok h -> init_sp_ok (mkVmMapsFull r m na sb b l mb (vm_init_sp h)).
 Proof. intros. unfold init_sp_ok in *. cbn. assumption. Qed.
 
-(** [State.page_round_up_Z_ge] has a [0 <= z] hypothesis; the bound holds for every [z]. *)
+(** [VmMapsDisjoint.page_round_up_Z_ge] has a [0 <= z] hypothesis; the bound holds for every [z]. *)
 Lemma page_round_up_Z_ge_all : forall z, z <= page_round_up_Z z.
 Proof.
   intros z. unfold page_round_up_Z, page_size.
