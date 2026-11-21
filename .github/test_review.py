@@ -15854,6 +15854,43 @@ class ImportCheckTest(ReaderRunner):
                           for method, endpoint, body in label_comments(self.api)],
                          [("POST", f"repos/{REPO}/issues/7/comments", True, True)], self.logs)
 
+    def test_the_label_step_writes_the_owed_line_also_in_a_state_with_no_state_label(self):
+        """OSSV-221's architect, 2026-11-21 17:04Z: the line reaches the label comment whenever the label step runs.
+        #7 is a writer's pull request (outside false) with no label comment, and check run 901 stands on HEAD. alice
+        reviews HEAD by hand and gives a blocking finding; GitHub refuses the withdrawal of 901, so the post job's
+        output owed names HEAD and blocking. The comment job's step "Record a withdrawal that the post job owes" finds
+        no label comment and gives the line to the label step, which runs. The state is reviewed, which has no state
+        label: the label step must still post a label comment with the line, not drop it."""
+        listed, _others = self.recorded()
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        trust = dict(self.BY_HAND, outside="false", kind="writer", started=ago(1), named=HEAD)
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch", listed=[listed])
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                    "github.repository": REPO, "needs.trust.result": "success", "needs.gather.result": "success",
+                    "needs.gather.outputs.kind": "pr", "needs.review.result": "success",
+                    "needs.review.outputs.head": HEAD, "needs.review.outputs.verdict": "blocking",
+                    "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                    "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        outcomes = {}
+        for name in (self.OWE, self.LABEL):
+            s = step("comment", name)
+            self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
+            self.forget()
+            self.serve(f"repos/{REPO}/issues/7/comments", [])
+            self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+            env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+            rc, out, outs = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+            self.assertEqual(rc, 0, out)
+            ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
+            outcomes[name] = [body for _method, _endpoint, body in label_comments(self.api)]
+        self.assertEqual(outcomes[self.OWE], [])
+        self.assertEqual([line in body.split("\n") for body in outcomes[self.LABEL]], [True], outcomes)
+
     def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
         """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose
         post job failed, which writes neither the labels nor the text of the label comment, and every later write of
