@@ -490,10 +490,11 @@ Definition fstat_file_spec (ino : Fs.ino) (statbuf : word) : Sys SyscallEffect :
       ([Uapi.stat_dir_fixed]), the first included, so the hold restates
       the assertion.
 
-    LEFT FREE, because an answered call moves them: a regular file's
+    NOT HELD, because an answered call moves them: a regular file's
     [st_blocks] and timestamps (a write, a truncate, an O_TRUNC open; a
-    read's [file_accessed]); a folder's [st_size], [st_mtime] and
-    [st_ctime] (a name made or removed in it: [dir->i_size] by
+    read's [file_accessed]); a folder's [st_size], within the bound its
+    names give at every delivery ([Uapi.stat_dir_size_ok]), [st_mtime]
+    and [st_ctime] (a name made or removed in it: [dir->i_size] by
     [BOGO_DIRENT_SIZE] and the times, mm/shmem.c:3899-3900, :4015-4017)
     and its [st_atime] ([getdents64]'s [iterate_dir] calls
     [file_accessed] even when it answers -EINVAL, fs/readdir.c:111); and
@@ -501,10 +502,11 @@ Definition fstat_file_spec (ino : Fs.ino) (statbuf : word) : Sys SyscallEffect :
     fs/stat.c:589, and in a walk that follows it, fs/namei.c:1936, Linux
     v6.18.46).  bugs/fstat-unpinned-members-over-admit.md records what
     that admits.  A regular file's pin holds nothing here: its link
-    count and length are computed ([fstat_file_spec]). *)
+    count and length are computed ([fstat_file_spec]); nor does a
+    [State.IdDevShare] entry, which no stat reads. *)
 Definition stat_pin_held (id : StatId) (released : bool) (b1 b2 : list byte) : bool :=
   match id with
-  | IdIno _ => true
+  | IdIno _ | IdDevShare _ _ => true
   | IdDir _ => stat_field_eqb ST_BLOCKS_OFF 8 b1 b2
   | IdDev _ | IdDevFd _ _ =>
       (stat_field_eqb ST_NLINK_OFF 4 b1 b2 && stat_field_eqb ST_ATIME_OFF 48 b1 b2)%bool
@@ -515,7 +517,10 @@ Definition stat_pin_held (id : StatId) (released : bool) (b1 b2 : list byte) : b
   end.
 
 Lemma stat_pin_held_refl : forall id r b, stat_pin_held id r b b = true.
-Proof. intros [] r b; destruct r; cbn [stat_pin_held]; now rewrite ?stat_field_eqb_refl. Qed.
+Proof.
+  intros id r b; destruct id; destruct r; cbn [stat_pin_held];
+    now rewrite ?stat_field_eqb_refl.
+Qed.
 
 (** The model a pinned identity's stat leaves when its pin was [sp] and
     the stat delivered [bs]: the same model, or, when the pin's link
@@ -553,17 +558,21 @@ Definition pinned_after (id : StatId) (sp : StatPin) (bs : list byte) (m : Model
     count and ctime, must repeat every other member the pin holds, and
     becomes the pin ([pinned_after]).
 
-    THE PIN IS CHECKED AGAINST BOTH PREDICATES before it is used, where
-    the file arm checks [stat_buf_wf] alone.  The file arm patches
-    [st_size] into whatever pin it holds, and [st_size] is outside the
-    stable members, so any well-formed pin admits a delivery; here the
-    asserted members are INSIDE the stable region ([st_mode], [st_rdev]
-    and [st_blksize]) or asserted constant ([st_size], [st_blocks]), so a pin
-    that failed [stat_devnull_ok] would leave the [choose] below with no
-    satisfying buffer — a non-receptive spec, the one shape Monad.v
-    forbids.  Declining such a pin keeps the arm receptive on every
-    [Model]; the branch is unreachable, since the only writer is the
-    branch below, which has just checked both predicates.
+    THE PIN IS CHECKED AGAINST BOTH PREDICATES before it is used, as the
+    regular-file arm checks its pin against [stat_buf_wf] and
+    [stat_reg_fixed] ([fstat_file_spec]).  Each arm chooses a delivery
+    that meets its kind's assertions and repeats the pin's stable members
+    ([stat_stable_eqb]), the file arm with the computed size and link
+    count besides, and the asserted members lie INSIDE the stable region
+    ([st_mode], [st_rdev] and [st_blksize]) or are asserted constant
+    ([st_size], [st_blocks]); so a pin that failed [stat_devnull_ok]
+    would leave the [choose] below with no satisfying buffer — a
+    non-receptive spec, the one shape Monad.v forbids.  Declining such a
+    pin keeps the arm receptive on every [Model]; the branch is
+    unreachable, since the only writer is the branch below, which has
+    just checked both predicates, and a copy of such a pin is another
+    number's of the same kind ([State.with_statpin],
+    [State.with_fd_dup]).
 
     A device descriptor carries no key, so [fstat] on one reads the pin
     of its kind's node at the device's own name only when that node is
@@ -637,15 +646,22 @@ Definition dev_sole_node (fs : Fs.Fs) (d : DevKind) (k : Fs.path) : bool :=
     whole life, and [vfs_fstat] (fs/stat.c:276-281) reports that held
     file's inode at every call ([generic_fillattr], fs/stat.c:82-94).
     So two stats of one descriptor with nothing between them repeat the
-    node's members, as on Linux.  The pin never outlives the descriptor's
-    file: it is dropped by the arm that installs a device descriptor at
-    [fd] ([State.with_fd_unpinned]), and by the next image when [fd]
-    holds no descriptor of the kind ([State.stat_id_alive]).  Two
-    descriptors of one file, as a [dup] makes, hold two pins and may
-    report two [st_ino]s, which over-admits and refuses nothing Linux
-    reports.  Which branch answers depends on the image alone, which no
-    answered call changes for a device: no arm makes a device node, and
-    [unlinkat] declines the removal of one
+    node's members, as on Linux.  The pin is never READ once the
+    descriptor's file is gone from [fd]: the arm that installs a device
+    descriptor at [fd] drops it first ([State.with_fd_unpinned],
+    [State.with_fd_dup]), and the next image drops it when [fd] holds no
+    descriptor of the kind ([State.stat_id_alive]); a [close] or an
+    install of another kind leaves it in place but dead, and no stat of
+    [fd] reads it before a device descriptor is installed there.  TWO
+    NUMBERS OF ONE FILE SHARE THE PIN: [dup] and [dup3] install the same
+    [struct file] ([SYSCALL_DEFINE1(dup)], fs/file.c:1457-1467), so the
+    copy takes the old number's pin, or, while it has none, a pair with
+    it ([State.with_fd_dup], [State.IdDevShare]), and the first stat of
+    either pins both ([State.with_statpin]): the two numbers report one
+    [st_ino], whichever is statted first.  A later install at one of
+    them cuts that number's link alone.  Which branch answers depends on
+    the image alone, which no answered call changes for a device: no arm
+    makes a device node, and [unlinkat] declines the removal of one
     ([Fs.Namei.unlinkat_file_spec]). *)
 Definition fstat_devfd_spec (d : DevKind) (k : path) (ok : list byte -> bool)
     (fd statbuf : word) : Sys SyscallEffect :=
@@ -746,17 +762,35 @@ Definition dir_pin_after (k : Fs.path) (d : Fs.DirLinks) (sp : StatPin)
     the root file system, not symbolic links, by a launch premise,
     whether or not the image holds them ([Fs.root_unheld_dirs]).
 
+    THE SIZE IS BOUNDED BY THE NAMES ([Uapi.stat_dir_size_ok]): 0 on
+    ramfs, which never moves a folder's [i_size] from
+    [inode_init_always_gfp]'s 0 (fs/inode.c:251; fs/ramfs/inode.c:191-202),
+    and on tmpfs [2 * BOGO_DIRENT_SIZE] at the folder's making
+    (mm/shmem.c:3136) and [BOGO_DIRENT_SIZE] more for each name it holds
+    ([shmem_mknod], mm/shmem.c:3899; [shmem_link], :3991;
+    [shmem_symlink], :4180; less on [shmem_unlink], :4015), which
+    [generic_fillattr] reports (fs/stat.c:95).  The model does not know
+    which of the two holds the folder, so it asserts 0 or a multiple of
+    20 of at least 40 and 20 per name, and the names it counts are a
+    LOWER BOUND ([Fs.fs_dir_names]: the tree's entries, and at the root
+    the /proc and /sys it leaves out): the launch of record's root and
+    /cases hold files the declared image does not.  Every recorded folder
+    stat of the agreement corpus meets it (two of the root, 200 for its
+    eight names, the image showing seven; twelve of a folder the image
+    shows whole).  No folder at or below /proc or /sys is statted: the
+    walk declines both ([Fs.ROutside]), and the working folder lies
+    outside them ([Run.outside_proc_sysb]).
+
     THE STABLE MEMBERS ARE CHOSEN ONCE AND HELD, as for a file
     ([Uapi.stat_stable_eqb]): the device, inode, mode and ids; and
     [st_blocks], which a folder on tmpfs or ramfs never moves
     ([stat_pin_held]), is held too, restating its assertion.  [st_size]
     and the timestamps are NOT held: they move whenever an entry is
-    made or removed in the
-    folder — tmpfs adds and subtracts [BOGO_DIRENT_SIZE] on every
-    [shmem_mknod] (mm/shmem.c:3899) and [shmem_unlink]
-    (mm/shmem.c:4015), so creating a FILE in a folder an earlier stat
-    saw changes the folder's [st_size] — and [getdents64] moves the
-    atime.
+    made or removed in the folder, the size within its bound — tmpfs
+    adds and subtracts [BOGO_DIRENT_SIZE] on every [shmem_mknod]
+    (mm/shmem.c:3899) and [shmem_unlink] (mm/shmem.c:4015), so creating
+    a FILE in a folder an earlier stat saw changes the folder's
+    [st_size] — and [getdents64] moves the atime.
 
     THE PIN IS KEYED BY THE FOLDER'S KEY ([State.IdDir]), a folder's
     identity, and it dies with the folder: [rmdir]'s removal goes
@@ -788,6 +822,7 @@ Definition fstat_dir_spec (k : Fs.path) (statbuf : word)
                               /\ stat_dir_fixed bs = true
                               /\ dir_nlink_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp) bs
                                  = true
+                              /\ stat_dir_size_ok (Fs.fs_dir_names (m_fs m) k) bs = true
                               /\ stat_pin_held (IdDir k) (sp_released sp) bs (sp_bytes sp)
                                  = true
                               /\ stat_stable_eqb bs (sp_bytes sp) = true) ;;
@@ -797,7 +832,8 @@ Definition fstat_dir_spec (k : Fs.path) (statbuf : word)
             bs <- choose (fun bs : list byte =>
                             stat_buf_wf bs = true
                             /\ stat_dir_fixed bs = true
-                            /\ dir_nlink_ok (Fs.fs_dir_links (m_fs m) k) None bs = true) ;;
+                            /\ dir_nlink_ok (Fs.fs_dir_links (m_fs m) k) None bs = true
+                            /\ stat_dir_size_ok (Fs.fs_dir_names (m_fs m) k) bs = true) ;;
             set_statpin (IdDir k)
               (mkStatPin bs (dir_rule_after (Fs.fs_dir_links (m_fs m) k) None bs) false) ;;
             pure (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
@@ -855,7 +891,9 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     [Fs.resolve] finds the entry, and [stat_entry_spec] delivers it with
     the same machinery [fstat] uses for a descriptor on it: the padding
     pinned to zero; the type asserted for every kind; [st_size] for a
-    file, a device and a link; the link count for a file and a folder;
+    file, a device and a link, and for a folder 0 or a multiple of 20
+    its names bound ([Uapi.stat_dir_size_ok]); the link count for a file
+    and a folder;
     [st_rdev] and [st_blocks] for the two devices; and what tmpfs and
     ramfs fix of the other kinds ([Uapi.stat_reg_fixed],
     [Uapi.stat_dir_fixed], [Uapi.stat_lnk_fixed]): [st_rdev] 0 for a
@@ -874,7 +912,8 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     link's count and [st_ctime], and nothing else, until the link's next
     stat pins them again ([State.statpins_release_links]); the rest are
     chosen afresh at every call: a file's block count and timestamps, a
-    folder's [st_size] and timestamps, and a link's [st_atime].  On
+    folder's [st_size] (within that bound) and timestamps, and a link's
+    [st_atime].  On
     every failing arm [SYSCALL_DEFINE4(newfstatat)] reaches
     [cp_new_stat] only once [vfs_fstatat] has returned 0, so the kernel
     leaves [statbuf] untouched, and a bad [statbuf] with an absent file

@@ -4196,17 +4196,27 @@ Record FsState := mkFsState { fsst_image : Fs.Fs; fsst_cwd : Fs.path }.
     lives while the number holds a descriptor of the kind
     ([stat_id_alive]), and every arm that can install a device
     descriptor at a number drops that number's pin before it installs
-    ([with_fd_unpinned]): the new descriptor may hold another node of
-    the kind.  Two descriptors of one file (a [dup]) hold two such pins,
-    so their stats may report two [st_ino]s where Linux reports one: no
-    sameness is asked between identities either, and that over-admits
-    without refusing what Linux reports. *)
+    ([with_fd_unpinned], [with_fd_dup]): the new descriptor may hold
+    another node of the kind.
+
+    TWO NUMBERS THAT HOLD ONE FILE SHARE ONE PIN.  [dup] installs the
+    [struct file] the old number holds ([SYSCALL_DEFINE1(dup)],
+    fs/file.c:1457-1467), and so does dup3 ([do_dup2],
+    fs/file.c:1303-1304, Linux v6.18.46), and [vfs_fstat] stats that file
+    (fs/stat.c:276-281), so both numbers report one inode.  So the copy
+    takes the old number's pin when it has one ([with_fd_dup]); when it
+    has none, the table records that the two numbers share one
+    ([IdDevShare]), and the first stat of either pins both
+    ([with_statpin], [statpins_shares]).  An [IdDevShare] entry is no
+    stat identity: its pin is empty ([statpin_share]) and no stat reads
+    it. *)
 Inductive StatId :=
   | IdIno (i : Fs.ino)
   | IdDir (k : Fs.path)
   | IdDev (k : Fs.path)
   | IdLink (k : Fs.path)
-  | IdDevFd (fd : word) (d : Fs.DevKind).
+  | IdDevFd (fd : word) (d : Fs.DevKind)
+  | IdDevShare (a b : word).
 
 (** The two device kinds compared. *)
 Definition devkind_eqb (a b : Fs.DevKind) : bool :=
@@ -4220,6 +4230,7 @@ Definition stat_id_eqb (a b : StatId) : bool :=
   | IdIno i, IdIno j => Z.eqb i j
   | IdDir k, IdDir q | IdDev k, IdDev q | IdLink k, IdLink q => Fs.path_eqb k q
   | IdDevFd f d, IdDevFd g e => (bv_eqb f g && devkind_eqb d e)%bool
+  | IdDevShare a b, IdDevShare c d => (bv_eqb a c && bv_eqb b d)%bool
   | _, _ => false
   end.
 
@@ -4674,9 +4685,11 @@ Record ProcState := mkProcState {
 
        WHY A PIN AT ALL, and it is [procst_utsname]'s argument on a
        different value.  Of the twenty members of the delivered struct
-       the model derives the type, [st_size] and [st_nlink] for a file
-       and a folder, knows four more to be zero padding, and knows the
-       block size, the page size for every kind
+       the model derives the type and [st_nlink] for a file and a folder
+       and a file's [st_size], bounds a folder's [st_size] by the names
+       the folder holds ([Uapi.stat_dir_size_ok]: 0, or a multiple of 20
+       of at least 40 and 20 per name), knows four more to be zero
+       padding, and knows the block size, the page size for every kind
        ([Uapi.stat_page_blksize]); the rest -- the device, the inode, the
        permission bits, the owning ids, the block count and the three
        timestamps -- are the environment's, because [Fs.Fs] carries none
@@ -4706,7 +4719,10 @@ Record ProcState := mkProcState {
        identity with no pin ([IdIno] of a fresh inode; [IdDir] of a key
        [rmdir] emptied, whose pin [with_fs] drops; [IdDevFd] of a number
        a device descriptor was installed at, whose pin
-       [with_fd_unpinned] drops).  No distinctness is
+       [with_fd_unpinned] or [with_fd_dup] drops).  Two numbers of one
+       device file share one pin: a [dup] copy takes the old number's,
+       or a pair with it while it has none ([with_fd_dup],
+       [IdDevShare]).  No distinctness is
        asked between two identities' pins: tmpfs hands inode numbers out
        of a counter that wraps in its 32-bit mode ([shmem_reserve_inode],
        mm/shmem.c:362-376), and an image may hold several file systems.
@@ -5239,7 +5255,13 @@ Definition with_net (q : NetQueue) (m : Model) : Model :=
     holds a descriptor of its kind ([entry_dev_kind], the first entry at
     the number as [fd_lookup] reads it).  The installing arms drop the
     last one too, where the number may come to hold another node of the
-    kind with no change this test can see ([with_fd_unpinned]). *)
+    kind with no change this test can see ([with_fd_unpinned],
+    [with_fd_dup]).  A record that two numbers share one file
+    ([IdDevShare]) is kept: only those arms drop it, the one way a
+    number comes to hold another device file.  One whose number was
+    closed, or given a file of another kind, is dead, and a stat that
+    follows it pins that number to no avail: no stat reads the pin
+    before an installing arm drops it. *)
 Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId)
     : bool :=
   match id with
@@ -5264,6 +5286,7 @@ Definition stat_id_alive (fs : Fs.Fs) (fds : list (word * FdEntry)) (id : StatId
                   end
       | None => false
       end
+  | IdDevShare _ _ => true
   end.
 
 (** Install a new file-system image, DROPPING THE STAT PIN of every
@@ -5418,6 +5441,29 @@ Fixpoint statpin_lookup (ps : list (StatId * StatPin)) (id : StatId)
   | (q, sp) :: rest => if stat_id_eqb q id then Some sp else statpin_lookup rest id
   end.
 
+(** THE NUMBERS THAT SHARE DESCRIPTOR NUMBER [n]'S FILE, as the
+    [IdDevShare] entries of [ps] record them.  A copy pairs its new
+    number with the old one and with every number the old one is paired
+    with ([statpins_dup]), so every two numbers that hold one file the
+    pins do not yet know are a pair, and the numbers paired with [n] are
+    all of them. *)
+Definition statpins_shares (n : word) (ps : list (StatId * StatPin)) : list word :=
+  flat_map (fun e => match fst e with
+                     | IdDevShare a b =>
+                         if bv_eqb a n then [b] else if bv_eqb b n then [a] else []
+                     | _ => []
+                     end) ps.
+
+(** The pins recorded beside [id]'s pin [sp]: for a device descriptor's
+    identity ([IdDevFd n d]) the same pin for every number that shares
+    [n]'s file ([statpins_shares]), and none for any other identity. *)
+Definition statpin_copies (id : StatId) (sp : StatPin) (ps : list (StatId * StatPin))
+    : list (StatId * StatPin) :=
+  match id with
+  | IdDevFd n d => List.map (fun q => (IdDevFd q d, sp)) (statpins_shares n ps)
+  | _ => []
+  end.
+
 (** Record an identity's pin.  [Fs.Stat] writes one on the branch where
     [statpin_lookup] was [None]; writes a folder's pin again, with the
     same bytes, on the one branch where its rule is chosen ([StatPin]);
@@ -5434,7 +5480,13 @@ Fixpoint statpin_lookup (ps : list (StatId * StatPin)) (id : StatId)
     ([Uapi.stat_mode_killed]); for every other member it compares no
     syscall moves one -- no [chmod], [chown] or [link] arm exists in
     [Sys.SyscallTable.spec_table] -- so adding one means revisiting that
-    predicate in the same commit. *)
+    predicate in the same commit.
+
+    A DEVICE DESCRIPTOR'S PIN IS RECORDED FOR EVERY NUMBER THAT HOLDS ITS
+    FILE ([statpin_copies]): the first stat of any of the numbers a
+    [dup] left sharing one file pins them all, so a later stat of
+    another of them reports the same inode, whichever was statted
+    first. *)
 Definition with_statpin (id : StatId) (sp : StatPin) (m : Model) : Model :=
   mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
             (mkProcState (m_halted m) (m_tid m) (m_creds m)
@@ -5443,23 +5495,26 @@ Definition with_statpin (id : StatId) (sp : StatPin) (m : Model) : Model :=
                          (m_sigaltstack_installed m)
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
-                         ((id, sp) :: m_statpins m)
+                         ((id, sp) :: statpin_copies id sp (m_statpins m) ++ m_statpins m)
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
 
 (** The pins [ps] without the one a device descriptor at number [n]
-    holds ([IdDevFd n _], either kind). *)
+    holds ([IdDevFd n _], either kind), and without every record that
+    [n] shares a file with another number ([IdDevShare]). *)
 Definition statpins_unpin_fd (n : word) (ps : list (StatId * StatPin))
     : list (StatId * StatPin) :=
   List.filter (fun e => match fst e with
                         | IdDevFd q _ => negb (bv_eqb q n)
+                        | IdDevShare a b => negb (bv_eqb a n || bv_eqb b n)
                         | _ => true
                         end) ps.
 
 (** DROP THE STAT PIN OF DESCRIPTOR NUMBER [n] ([statpins_unpin_fd]).
-    Every arm that can install a DEVICE descriptor at a number calls it
-    before it installs: [Fs.Open.open_devnull], [Fs.Open.open_urandom],
+    Every arm that can install a DEVICE descriptor at a number calls it,
+    or [with_fd_dup], which drops the pin the same way, before it
+    installs: [Fs.Open.open_devnull], [Fs.Open.open_urandom],
     [Fs.File.dup_spec] and [Fs.File.dup3_spec] ([F_DUPFD] and
     [F_DUPFD_CLOEXEC] are declined, [Fs.Fcntl.fcntl_spec]).  The new
     descriptor may hold another node of the kind than the one whose stat
@@ -5482,6 +5537,53 @@ Definition with_fd_unpinned (n : word) (m : Model) : Model :=
                          (procst_killed (m_proc m)) (m_sigabrt_pending m)
                          (m_abort_terminal m)
                          (statpins_unpin_fd n (m_statpins m))
+                         (m_sigpipe_pending m) (m_channel_reader m)
+                         (m_sigpipe_action m) (m_sigpipe_terminal m))
+            (m_lim m) (m_time m).
+
+(** The empty pin an [IdDevShare] entry carries: the entry records a
+    pair of numbers, and no stat reads its pin. *)
+Definition statpin_share : StatPin := mkStatPin [] None false.
+
+(** The pins after a copy of descriptor number [src] to [tgt] whose
+    entry is a device descriptor of kind [k] ([None] for any other kind):
+    [tgt]'s old pin and pairs are dropped first ([statpins_unpin_fd]),
+    and then [tgt] takes [src]'s pin when [src] has one, or is paired
+    with [src] and with every number paired with [src]
+    ([statpins_shares]) when it has none. *)
+Definition statpins_dup (k : option Fs.DevKind) (src tgt : word)
+    (ps : list (StatId * StatPin)) : list (StatId * StatPin) :=
+  let ps' := statpins_unpin_fd tgt ps in
+  match k with
+  | None => ps'
+  | Some d =>
+      match statpin_lookup ps' (IdDevFd src d) with
+      | Some sp => (IdDevFd tgt d, sp) :: ps'
+      | None => List.map (fun q => (IdDevShare tgt q, statpin_share))
+                         (src :: statpins_shares src ps') ++ ps'
+      end
+  end.
+
+(** THE PINS OF A COPY: [dup] and [dup3] call it as they install a copy
+    of number [src]'s entry, of device kind [k], at [tgt]
+    ([statpins_dup]).  The copy is the same [struct file]
+    ([SYSCALL_DEFINE1(dup)], fs/file.c:1457-1467; [do_dup2],
+    :1303-1304, Linux v6.18.46), which [vfs_fstat] stats
+    (fs/stat.c:276-281), so the two numbers report one inode: [tgt]
+    takes [src]'s pin, or, while [src] has none, a pair with it, so
+    that the first stat of either pins both ([with_statpin]).  [tgt]'s
+    old pin goes first, as [with_fd_unpinned] drops it, and with it
+    every pair [tgt] was in: only [tgt]'s link to its old file is cut,
+    and the numbers left holding that file stay paired. *)
+Definition with_fd_dup (k : option Fs.DevKind) (src tgt : word) (m : Model) : Model :=
+  mkModelOf (m_fd m) (m_vm m) (m_io m) (m_fsys m)
+            (mkProcState (m_halted m) (m_tid m) (m_creds m)
+                         (m_setsid_succeeded m) (m_sigmask m)
+                         (m_has_children m) (m_utsname m)
+                         (m_sigaltstack_installed m)
+                         (procst_killed (m_proc m)) (m_sigabrt_pending m)
+                         (m_abort_terminal m)
+                         (statpins_dup k src tgt (m_statpins m))
                          (m_sigpipe_pending m) (m_channel_reader m)
                          (m_sigpipe_action m) (m_sigpipe_terminal m))
             (m_lim m) (m_time m).
@@ -7951,6 +8053,11 @@ Lemma m_kernel_with_fd_unpinned : forall n m,
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_kernel_with_fd_unpinned : model.
 
+Lemma m_kernel_with_fd_dup : forall k src tgt m,
+  m_kernel (with_fd_dup k src tgt m) = m_kernel m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_kernel_with_fd_dup : model.
+
 Lemma m_kernel_with_abort_terminal : forall v m,
   m_kernel (with_abort_terminal v m) = m_kernel m.
 Proof. reflexivity. Qed.
@@ -9806,8 +9913,9 @@ Proof. reflexivity. Qed.
 (** The stat pins against every other move of the model.  One row and
     one column of the matrix above: [Fs.Stat]'s stats are the only
     readers, and [with_statpin], [with_fs] (which drops and releases
-    pins, [statpins_restrict], [statpins_release_links]) and
-    [with_fd_unpinned] (which drops a device descriptor's) the only
+    pins, [statpins_restrict], [statpins_release_links]),
+    [with_fd_unpinned] (which drops a device descriptor's) and
+    [with_fd_dup] (which drops one and copies or pairs another) the only
     writers, so every other entry is [m_statpins m].
 
     The column is what the framing obligations need.  A [fstat] that
@@ -10007,7 +10115,8 @@ Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_creds_with_statpin : model.
 
 Lemma m_statpins_with_statpin : forall (id : StatId) (sp : StatPin) (m : Model),
-  m_statpins (with_statpin id sp m) = (id, sp) :: m_statpins m.
+  m_statpins (with_statpin id sp m)
+  = (id, sp) :: statpin_copies id sp (m_statpins m) ++ m_statpins m.
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_statpin : model.
 
@@ -10111,6 +10220,107 @@ Lemma m_statpins_with_fd_unpinned : forall (n : word) (m : Model),
   m_statpins (with_fd_unpinned n m) = statpins_unpin_fd n (m_statpins m).
 Proof. reflexivity. Qed.
 #[export] Hint Rewrite m_statpins_with_fd_unpinned : model.
+
+(** [with_fd_dup] moves the pins alone. *)
+Lemma m_fds_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_fds (with_fd_dup k src tgt m) = m_fds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fds_with_fd_dup : model.
+
+Lemma m_pipes_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_pipes (with_fd_dup k src tgt m) = m_pipes m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_pipes_with_fd_dup : model.
+
+Lemma m_vmmaps_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vmmaps (with_fd_dup k src tgt m) = m_vmmaps m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vmmaps_with_fd_dup : model.
+
+Lemma m_vm_lazy_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vm_lazy (with_fd_dup k src tgt m) = m_vm_lazy m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_lazy_with_fd_dup : model.
+
+Lemma m_vm_materialized_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_vm_materialized (with_fd_dup k src tgt m) = m_vm_materialized m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_vm_materialized_with_fd_dup : model.
+
+Lemma m_stdin_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_stdin (with_fd_dup k src tgt m) = m_stdin m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_stdin_with_fd_dup : model.
+
+Lemma m_net_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_net (with_fd_dup k src tgt m) = m_net m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_net_with_fd_dup : model.
+
+Lemma m_conn_ix_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_conn_ix (with_fd_dup k src tgt m) = m_conn_ix m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_conn_ix_with_fd_dup : model.
+
+Lemma m_fs_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_fs (with_fd_dup k src tgt m) = m_fs m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_fs_with_fd_dup : model.
+
+Lemma m_halted_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_halted (with_fd_dup k src tgt m) = m_halted m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_halted_with_fd_dup : model.
+
+Lemma m_tid_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_tid (with_fd_dup k src tgt m) = m_tid m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_tid_with_fd_dup : model.
+
+Lemma m_setsid_succeeded_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_setsid_succeeded (with_fd_dup k src tgt m) = m_setsid_succeeded m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_setsid_succeeded_with_fd_dup : model.
+
+Lemma m_has_children_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_has_children (with_fd_dup k src tgt m) = m_has_children m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_has_children_with_fd_dup : model.
+
+Lemma m_sigmask_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_sigmask (with_fd_dup k src tgt m) = m_sigmask m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_sigmask_with_fd_dup : model.
+
+Lemma m_utsname_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_utsname (with_fd_dup k src tgt m) = m_utsname m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_utsname_with_fd_dup : model.
+
+Lemma m_rlimit_core_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_rlimit_core (with_fd_dup k src tgt m) = m_rlimit_core m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_rlimit_core_with_fd_dup : model.
+
+Lemma m_nofile_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_nofile (with_fd_dup k src tgt m) = m_nofile m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_nofile_with_fd_dup : model.
+
+Lemma m_clock_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_clock (with_fd_dup k src tgt m) = m_clock m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_clock_with_fd_dup : model.
+
+Lemma m_creds_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_creds (with_fd_dup k src tgt m) = m_creds m.
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_creds_with_fd_dup : model.
+
+Lemma m_statpins_with_fd_dup : forall k (src tgt : word) (m : Model),
+  m_statpins (with_fd_dup k src tgt m) = statpins_dup k src tgt (m_statpins m).
+Proof. reflexivity. Qed.
+#[export] Hint Rewrite m_statpins_with_fd_dup : model.
 
 Lemma m_statpins_mkModel : forall fds vm stdin fs halted tid rlim,
   m_statpins (mkModel fds vm stdin fs halted tid rlim) = [].

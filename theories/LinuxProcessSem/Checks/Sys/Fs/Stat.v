@@ -607,11 +607,12 @@ Definition stat_reg_ok (n l : nat) (bs : list byte) : bool :=
   (stat_reg_fixed bs && stat_size_ok n bs && stat_nlink_ok l bs)%bool.
 
 (** What a folder's must carry: what tmpfs and ramfs fix of a folder
-    ([Uapi.stat_dir_fixed]) and the link count of the rule the pin chose
-    ([Stat.dir_nlink_ok]). *)
-Definition stat_dir_ok (d : Fs.DirLinks) (r : option DirRule) (bs : list byte)
+    ([Uapi.stat_dir_fixed]), the link count of the rule the pin chose
+    ([Stat.dir_nlink_ok]), and a size the names [n] bound
+    ([Uapi.stat_dir_size_ok]). *)
+Definition stat_dir_ok (d : Fs.DirLinks) (r : option DirRule) (n : nat) (bs : list byte)
     : bool :=
-  (stat_dir_fixed bs && dir_nlink_ok d r bs)%bool.
+  (stat_dir_fixed bs && dir_nlink_ok d r bs && stat_dir_size_ok n bs)%bool.
 
 Lemma check_fstat_deliver_gen_no_unmodeled : forall ok statbuf held post eff,
   check_fstat_deliver_gen ok statbuf held post eff <> CheckUnmodeled.
@@ -1051,13 +1052,15 @@ Definition check_fstat_dir (k : Fs.path) (i : SyscallInput) (statbuf : word)
             if negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool
             then CheckUnmodeled
             else check_fstat_deliver_gen
-                   (fun bs => stat_dir_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp) bs
+                   (fun bs => stat_dir_ok (Fs.fs_dir_links (m_fs m) k) (sp_rule sp)
+                                (Fs.fs_dir_names (m_fs m) k) bs
                               && stat_pin_held (IdDir k) (sp_released sp) bs (sp_bytes sp))%bool
                    statbuf (Some (sp_bytes sp))
                    (fun bs => dir_pin_after k (Fs.fs_dir_links (m_fs m) k) sp bs m) eff
         | None =>
             check_fstat_deliver_gen
-              (stat_dir_ok (Fs.fs_dir_links (m_fs m) k) None) statbuf None
+              (stat_dir_ok (Fs.fs_dir_links (m_fs m) k) None (Fs.fs_dir_names (m_fs m) k))
+              statbuf None
               (fun bs => with_statpin (IdDir k)
                            (mkStatPin bs (dir_rule_after (Fs.fs_dir_links (m_fs m) k) None bs)
                               false)
@@ -1085,11 +1088,13 @@ Proof.
       apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & HS & ->).
       specialize (HS _ eq_refl). cbv beta in HOK.
       apply andb_true_iff in HOK as [HOK HPH].
-      unfold stat_dir_ok in HOK. apply andb_true_iff in HOK as [HDIR HNL].
+      unfold stat_dir_ok in HOK. apply andb_true_iff in HOK as [HOK HSZ].
+      apply andb_true_iff in HOK as [HDIR HNL].
       eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
     + apply check_fstat_deliver_gen_ok in H as (bs & -> & -> & HWF & HOK & _ & ->).
-      unfold stat_dir_ok in HOK. apply andb_true_iff in HOK as [HDIR HNL].
+      unfold stat_dir_ok in HOK. apply andb_true_iff in HOK as [HOK HSZ].
+      apply andb_true_iff in HOK as [HDIR HNL].
       eapply bind_ok0; [apply (choose_ok _ bs); repeat split; eassumption|].
       eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
 Qed.
@@ -1133,10 +1138,10 @@ Proof.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
       | H1 : stat_buf_wf ?b = true, H2 : stat_dir_fixed ?b = true,
-        H4 : dir_nlink_ok _ _ ?b = true,
+        H4 : dir_nlink_ok _ _ ?b = true, H6 : stat_dir_size_ok _ ?b = true,
         H5 : stat_pin_held _ _ ?b _ = true,
         H3 : stat_stable_eqb ?b _ = true |- _ =>
-          rewrite H1, H2, H4, H5; cbn [andb negb]; rewrite H3
+          rewrite H1, H2, H4, H6, H5; cbn [andb negb]; rewrite H3
       end.
       reflexivity.
     + sys_unfold; inv_ok; hall Ha; hall Hw; hall Hp; inv_ok.
@@ -1144,8 +1149,8 @@ Proof.
       rewrite !bv_eqb_refl; cbn [andb negb].
       match goal with
       | H1 : stat_buf_wf ?b = true, H2 : stat_dir_fixed ?b = true,
-        H4 : dir_nlink_ok _ _ ?b = true |- _ =>
-          rewrite H1, H2, H4
+        H4 : dir_nlink_ok _ _ ?b = true, H6 : stat_dir_size_ok _ ?b = true |- _ =>
+          rewrite H1, H2, H4, H6
       end.
       cbn [andb negb]. reflexivity.
 Qed.

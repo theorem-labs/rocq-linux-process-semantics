@@ -1167,7 +1167,16 @@ Definition proc_self_fd (p : path) : option word :=
       words admit beside them ([open_write_existing]): the inode may be
       the one an [execve] runs, which a read-only descriptor of it can
       hold, unless a descriptor of the model holds write access to it,
-      the one at [N] included.
+      the one at [N] included.  Beside every answer of this row stands
+      the walk's -ENOENT for a procfs entry that gets no inode
+      ([Fs.Namei.walk_errnos], whose [Fs.ROutside] column this pathname
+      takes): [proc_fd_instantiate] answers it when
+      [proc_pid_make_inode] finds no memory (fs/proc/fd.c:204-206,
+      Linux v6.18.46), as the components before it do
+      ([proc_pid_instantiate], fs/proc/base.c:3474-3477;
+      [proc_pident_instantiate], :2675-2677), and [lookup_open] returns
+      it (fs/namei.c:3773-3780); beside the row above it changes
+      nothing, that row's answer being -ENOENT already.
     - any other kind at [N]: declined.  A socket, a pipe end, an eventfd
       and a device each reach their own [->open] through [vfs_open]; a
       directory reached this way is not stated; and a channel is
@@ -1351,9 +1360,11 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     What they DO admit beside their answer is the walk's own -EACCES and
     -ENOMEM ([Fs.Namei.walk_refusals], applied in [openat_core_spec];
     a "/proc/self/fd/N" pathname is walked by Linux like any other, so
-    it takes them too).  The empty pathname is answered before the walk
-    and takes neither of the walk's, like the -ENAMETOOLONG and -EFAULT
-    arms.  Every arm takes [getname_flags]' -ENOMEM, with the copy-in
+    it takes them too, and with them the -ELOOP and -ENOENT of a walk
+    that ends outside the image, [Fs.Namei.walk_errnos]).  The empty
+    pathname is answered before the walk and takes neither of the
+    walk's, like the -ENAMETOOLONG and -EFAULT arms.  Every arm takes
+    [getname_flags]' -ENOMEM, with the copy-in
     made when its allocation failed ([Fs.Namei.getname_refusals]).
     (Those three fetch arms are NOT approximate in the fd-table way:
     [getname()] runs before [get_unused_fd_flags] (fs/open.c:1431-1435),

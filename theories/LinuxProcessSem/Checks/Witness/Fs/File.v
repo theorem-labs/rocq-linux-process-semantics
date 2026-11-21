@@ -59,11 +59,13 @@ Definition dup3_witness (oldfd newfd flags : word) (m : Model)
           | None =>
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then ret_outcome newfd
-                     (with_fds (fd_insert (m_fds m) newfd e) (with_fd_unpinned newfd m))
+                     (with_fds (fd_insert (m_fds m) newfd e)
+                        (with_fd_dup (entry_dev_kind e) oldfd newfd m))
               else Unmodeled
           | Some _ =>
               ret_outcome newfd
-                (with_fds (fd_insert (m_fds m) newfd e) (with_fd_unpinned newfd m))
+                (with_fds (fd_insert (m_fds m) newfd e)
+                   (with_fd_dup (entry_dev_kind e) oldfd newfd m))
           end
     end.
 

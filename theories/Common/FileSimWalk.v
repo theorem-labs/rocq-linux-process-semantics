@@ -62,17 +62,18 @@ Proof. vm_compute. reflexivity. Qed.
 Lemma wr_create_flags_ne0 : Z.eqb wr_create_flags 0 = false.
 Proof. vm_compute. reflexivity. Qed.
 
-(** Every refusal of the walk is an errno in range: the four
-    [Namei.walk_errnos] can name are -ENOMEM, -EACCES, -ELOOP and
-    -ENAMETOOLONG. *)
+(** Every refusal of the walk is an errno in range: the five
+    [Namei.walk_errnos] can name are -ENOMEM, -EACCES, -ELOOP, -ENOENT
+    and -ENAMETOOLONG. *)
 Lemma walk_errnos_range : forall lk w e,
   In e (walk_errnos lk w) -> (1 <= e <= 4095)%Z.
 Proof.
   intros lk w e H. unfold walk_errnos in H.
   rewrite !in_app_iff in H.
-  destruct H as [H | [H | H]];
+  destruct H as [H | [H | [H | H]]];
     [ destruct lk
     | match type of H with context [if ?b then _ else _] => destruct b end
+    | destruct (Fs.wr_res w)
     | match type of H with context [if ?b then _ else _] => destruct b end ];
     cbn [In] in H;
     repeat match goal with
@@ -80,7 +81,7 @@ Proof.
            | H : False |- _ => contradiction
            | H : _ = e |- _ => subst e
            end;
-    cbv [ENOMEM EACCES ELOOP ENAMETOOLONG]; lia.
+    cbv [ENOMEM EACCES ELOOP ENOENT ENAMETOOLONG]; lia.
 Qed.
 
 (* ========================================================================= *)

@@ -1590,7 +1590,8 @@ Qed.
     [st_blocks] (which moves with it, and is the filesystem's own
     allocation rather than a function of the length — a sparse file has
     fewer), and the three timestamp pairs (which every read and write
-    moves), of a regular file; and a folder's [st_size] and timestamps
+    moves), of a regular file; and a folder's [st_size] (which
+    [stat_dir_size_ok] bounds instead) and timestamps
     and a link's [st_atime], which modeled calls move too
     ([Fs.Stat.stat_pin_held] names them).  Requiring any of those to
     repeat would reject a conforming trace.  Those besides [st_size]
@@ -1676,6 +1677,34 @@ Definition stat_reg_fixed (bs : list byte) : bool :=
     fs/libfs.c:752-761, :787-795). *)
 Definition stat_dir_fixed (bs : list byte) : bool :=
   (stat_is_dir bs && stat_no_rdev bs && stat_page_blksize bs && stat_no_blocks bs)%bool.
+
+(** [BOGO_DIRENT_SIZE] (mm/shmem.c:92, Linux v6.18.46): the bytes a tmpfs
+    folder's [i_size] counts for each name it holds. *)
+Definition BOGO_DIRENT_SIZE : Z := 20%Z.
+
+(** A FOLDER'S [st_size], [n] a lower bound on the names it holds
+    ([Fs.fs_dir_names]).  [generic_fillattr] (fs/stat.c:95) copies the
+    inode's size, which a ramfs folder never moves from the 0
+    [inode_init_always_gfp] gives every inode (fs/inode.c:251; no
+    operation of [ramfs_dir_inode_operations], fs/ramfs/inode.c:191-202,
+    sets it), and which tmpfs sets to [2 * BOGO_DIRENT_SIZE] when it makes
+    the folder ([__shmem_get_inode], mm/shmem.c:3136) and moves by
+    [BOGO_DIRENT_SIZE] for each name made or removed in it
+    ([shmem_mknod] :3899, [shmem_link] :3991, [shmem_unlink] :4015,
+    [shmem_symlink] :4180, and both folders of [shmem_rename2]
+    :4123-4124, Linux v6.18.46).  The model does not know which of the
+    two holds a folder, so the size is 0, or a multiple of
+    [BOGO_DIRENT_SIZE] of at least two of them and one per name. *)
+Definition stat_dir_size_ok (n : nat) (bs : list byte) : bool :=
+  let s := stat_field_le ST_SIZE_OFF 8 bs in
+  (Z.eqb s 0
+   || (Z.eqb (Z.modulo s BOGO_DIRENT_SIZE) 0
+       && Z.leb (2 * BOGO_DIRENT_SIZE + BOGO_DIRENT_SIZE * Z.of_nat n) s))%bool.
+
+(** A folder of size 0 meets it, whatever the names: a ramfs folder. *)
+Lemma stat_dir_size_ok_zero : forall n bs,
+  stat_field_le ST_SIZE_OFF 8 bs = 0%Z -> stat_dir_size_ok n bs = true.
+Proof. intros n bs H. unfold stat_dir_size_ok. rewrite H. reflexivity. Qed.
 
 (** [SHORT_SYMLINK_LEN] (mm/shmem.c:98, Linux v6.18.46): the longest
     link body, its NUL included, tmpfs keeps inline. *)
@@ -2130,4 +2159,44 @@ Proof.
   apply stat_bytes_eqb_eq in H1a, H1c, H1d, H2a, H2c, H2d.
   rewrite H1a, H1c, H1d, H2a, H2c, H2d, !stat_bytes_eqb_refl.
   rewrite (stat_mode_stable_trans _ _ _ H1b H2b). reflexivity.
+Qed.
+
+(** WHAT A CHANGED [st_size] LEAVES ALONE: every member before byte 48
+    or at or past byte 56 reads alike out of the patched buffer and the
+    one it patched, and so the members a folder's [struct stat] carries
+    fixed ([stat_dir_fixed]) survive it.  A folder's witness patches the
+    size to 0, which [stat_dir_size_ok] admits whatever the names
+    ([stat_set_size_zero_size]). *)
+Lemma stat_set_size_field_le_head : forall n off k bs,
+  (off + k <= 48)%nat -> (48 <= length bs)%nat ->
+  stat_field_le off k (stat_set_size n bs) = stat_field_le off k bs.
+Proof.
+  intros n off k bs Hb Hlen.
+  apply stat_field_le_head; [exact Hb | now apply stat_set_size_head].
+Qed.
+
+Lemma stat_set_size_field_le_tail : forall n off k bs,
+  (56 <= off)%nat -> (48 <= length bs)%nat ->
+  stat_field_le off k (stat_set_size n bs) = stat_field_le off k bs.
+Proof.
+  intros n off k bs Hb Hlen.
+  apply stat_field_le_tail; [exact Hb | now apply stat_set_size_tail].
+Qed.
+
+Lemma stat_set_size_dir_fixed : forall n bs,
+  (48 <= length bs)%nat -> stat_dir_fixed (stat_set_size n bs) = stat_dir_fixed bs.
+Proof.
+  intros n bs H.
+  unfold stat_dir_fixed, stat_is_dir, stat_ifmt, stat_no_rdev, stat_page_blksize, stat_no_blocks.
+  rewrite (stat_set_size_field_le_head n ST_MODE_OFF), (stat_set_size_field_le_head n ST_RDEV_OFF),
+    (stat_set_size_field_le_tail n ST_BLKSIZE_OFF), (stat_set_size_field_le_tail n ST_BLOCKS_OFF)
+    by (exact H || (cbv [ST_MODE_OFF ST_RDEV_OFF ST_BLKSIZE_OFF ST_BLOCKS_OFF]; lia)).
+  reflexivity.
+Qed.
+
+Lemma stat_set_size_zero_size : forall bs,
+  (48 <= length bs)%nat -> stat_field_le ST_SIZE_OFF 8 (stat_set_size 0 bs) = 0%Z.
+Proof.
+  intros bs Hlen. unfold stat_field_le, ST_SIZE_OFF.
+  rewrite (stat_set_size_field 0 bs Hlen). vm_compute. reflexivity.
 Qed.

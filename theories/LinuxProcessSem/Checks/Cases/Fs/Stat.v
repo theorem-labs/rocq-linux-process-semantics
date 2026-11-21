@@ -1178,7 +1178,7 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 Definition st_dir : Model :=
   init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs [([100], SDir)]) IEof).
 
-Definition dir_stat (nl : Z) : list byte := stat_of_nl 4711 S_IFDIR nl 4096 0 1700000000.
+Definition dir_stat (nl : Z) : list byte := stat_of_nl 4711 S_IFDIR nl 0 0 1700000000.
 
 Definition mkdir_d_e : SyscallInput * SyscallEffect :=
   st_call 34 [100; 47; 101]%Z 493 (mkEffect 0 [] []).
@@ -1211,7 +1211,7 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
     folder left in place, the second stat must repeat the pinned
     [st_ino]. *)
 Definition dir_stat_ino (ino nl : Z) : list byte :=
-  stat_of_nl ino S_IFDIR nl 4096 0 1700000000.
+  stat_of_nl ino S_IFDIR nl 0 0 1700000000.
 
 Definition rmdir_d : SyscallInput * SyscallEffect :=
   st_call 35 [100]%Z (Z_to_bv 64 AT_REMOVEDIR) (mkEffect 0 [] []).
@@ -1326,8 +1326,9 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
     tmpfs and ramfs ([__shmem_get_inode], mm/shmem.c:3096;
     [ramfs_dir_inode_operations], fs/ramfs/inode.c:191, Linux v6.18.46),
     and asserted 0 at every stat besides
-    ([first_stat_carries_what_tmpfs_and_ramfs_fix] below), and leaves its
-    [st_size] and timestamps free: a name made in it moves
+    ([first_stat_carries_what_tmpfs_and_ramfs_fix] below), and holds
+    neither its [st_size], which stays within the names' bound
+    ([Uapi.stat_dir_size_ok]), nor its timestamps: a name made in it moves
     them ([shmem_mknod], mm/shmem.c:3899-3900), and [getdents64] the
     atime (fs/readdir.c:111).  So across [mkdirat] of "d/e" the count is
     3, the size and times may move, and the blocks may not. *)
@@ -1342,6 +1343,38 @@ Example folder_pin_holds_its_blocks :
               st_two_links)
   /\ st_seq [stat_d 2 40 0 T T T; mkdir_d_e; stat_d 3 60 8 T (T + 2) (T + 2)] st_two_links
      = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** A FOLDER'S [st_size] IS 0, OR A MULTIPLE OF 20 OF AT LEAST 40 AND 20
+    PER NAME ([Uapi.stat_dir_size_ok]): ramfs keeps every folder at the 0
+    [inode_init_always_gfp] gives it (fs/inode.c:251), and tmpfs makes a
+    folder at [2 * BOGO_DIRENT_SIZE] ([__shmem_get_inode],
+    mm/shmem.c:3136) and adds [BOGO_DIRENT_SIZE] for each name made in it
+    ([shmem_mknod], mm/shmem.c:3899); [BOGO_DIRENT_SIZE] is 20
+    (mm/shmem.c:92).  The names the image shows are a
+    lower bound ([Fs.fs_dir_names]), so a size above the least one is
+    admitted.  The empty "d" admits 0, 40 and 60 and refuses 1, 20 and
+    50; once "d/e" is made it refuses 40 and admits 60 and 0.  The root
+    holds "/dev" at least, so 40 is refused there and 0 admitted (its
+    first stat may report the fixed rule's count, 1). *)
+Definition stat_root (size : Z) : SyscallInput * SyscallEffect :=
+  st_stat [47]%Z 0 (stat_full 4711 S_IFDIR 1 0 size 0 1700000000 1700000000 1700000000).
+
+Example folder_size_is_bounded_by_its_names :
+  let T := 1700000000%Z in
+  st_ok (st_seq [stat_d 2 0 0 T T T] st_two_links)
+  /\ st_ok (st_seq [stat_d 2 40 0 T T T] st_two_links)
+  /\ st_ok (st_seq [stat_d 2 60 0 T T T] st_two_links)
+  /\ st_seq [stat_d 2 1 0 T T T] st_two_links = CheckReject
+  /\ st_seq [stat_d 2 20 0 T T T] st_two_links = CheckReject
+  /\ st_seq [stat_d 2 50 0 T T T] st_two_links = CheckReject
+  (* a name made in it *)
+  /\ st_seq [mkdir_d_e; stat_d 3 40 0 T T T] st_two_links = CheckReject
+  /\ st_ok (st_seq [mkdir_d_e; stat_d 3 60 0 T T T] st_two_links)
+  /\ st_ok (st_seq [mkdir_d_e; stat_d 3 0 0 T T T] st_two_links)
+  (* the root *)
+  /\ st_seq [stat_root 40] st_two_links = CheckReject
+  /\ st_ok (st_seq [stat_root 0] st_two_links).
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 
 (** A [struct stat] like [stat_full] with [st_blksize] given too. *)
@@ -1489,11 +1522,11 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
     fs/inode.c:2253), and a setgid folder is the common kind.  "d"
     pinned as 02755 may not report 0755, and repeats 02755. *)
 Example folder_setgid_is_held :
-  st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 0 1700000000);
-          st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 493)%Z 2 4096 0 1700000000)] st_dir
+  st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 40 0 1700000000);
+          st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 493)%Z 2 40 0 1700000000)] st_dir
   = CheckReject
-  /\ st_ok (st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 0 1700000000);
-                    st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 4096 0 1700000000)]
+  /\ st_ok (st_seq [st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 40 0 1700000000);
+                    st_stat [100]%Z 0 (stat_of_nl 4711 (S_IFDIR + 1517)%Z 2 40 0 1700000000)]
               st_dir).
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 
@@ -1636,9 +1669,9 @@ Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
     descriptor on "/dev/x" onto 3, which leaves at 3 an entry equal to
     the old one ([do_dup2] stores the other file there,
     fs/file.c:1303-1304, Linux v6.18.46).  The opening arm and [dup3]
-    drop number 3's pin as they install ([State.with_fd_unpinned]).  The
-    control: an [openat] of "/dev/x" that answers 4 leaves 3's file and
-    its pin alone. *)
+    drop number 3's pin as they install ([State.with_fd_unpinned],
+    [State.with_fd_dup]).  The control: an [openat] of "/dev/x" that
+    answers 4 leaves 3's file and its pin alone. *)
 Definition devx_name : list Z := [47; 100; 101; 118; 47; 120]%Z.
 
 Definition devx_open (ret : word) : SyscallInput * SyscallEffect :=
@@ -1662,4 +1695,44 @@ Example device_descriptor_pin_dies_with_its_file :
   (* the control: an open at another number keeps 3's pin *)
   /\ st_seq [st_fstat (devfd_stat 17 259); devx_open 4;
              st_fstat (devfd_stat 18 259)] devfd_two = CheckReject.
+Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(** TWO NUMBERS OF ONE FILE REPORT ONE INODE.  [dup] installs at 4 the
+    [struct file] number 3 holds ([SYSCALL_DEFINE1(dup)],
+    fs/file.c:1457-1467, Linux v6.18.46), and [vfs_fstat] stats that file
+    (fs/stat.c:276-281).  With /dev/x beside /dev/null, a stat of 4 must
+    repeat the [st_ino] a stat of 3 reported before the [dup] (4 takes
+    3's pin), and a stat of 3 the one a stat of 4 reported first (4 is
+    paired with 3 while 3 has none, and the first stat pins both:
+    [State.with_fd_dup], [State.with_statpin]).  A [dup3] of a
+    descriptor on "/dev/x" onto 4 cuts 4's link alone: 4 may then report
+    another [st_ino], in either order, and 3 still holds its own. *)
+Definition fstat_at (fd : word) (out : list byte) : SyscallInput * SyscallEffect :=
+  (mkInput 80 [fd; 4096; 0; 0; 0; 0] (fun _ => None) stat_out, mkEffect 0 [(4096, out)] []).
+
+Definition dup_3 : SyscallInput * SyscallEffect :=
+  (mkInput 23 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None), mkEffect 4 [] []).
+
+Definition dup3_5_4 : SyscallInput * SyscallEffect :=
+  (mkInput 24 [5; 4; 0; 0; 0; 0] (fun _ => None) (fun _ => None), mkEffect 4 [] []).
+
+Example device_descriptor_dup_shares_its_pin :
+  (* stat 3, dup, stat 4 *)
+  st_seq [st_fstat (devfd_stat 17 259); dup_3; fstat_at 4 (devfd_stat 18 259)] devfd_two
+  = CheckReject
+  /\ st_ok (st_seq [st_fstat (devfd_stat 17 259); dup_3; fstat_at 4 (devfd_stat 17 259)]
+              devfd_two)
+  (* dup, stat 4 first, then stat 3 *)
+  /\ st_seq [dup_3; fstat_at 4 (devfd_stat 17 259); st_fstat (devfd_stat 18 259)] devfd_two
+     = CheckReject
+  /\ st_ok (st_seq [dup_3; fstat_at 4 (devfd_stat 17 259); st_fstat (devfd_stat 17 259)]
+              devfd_two)
+  (* a dup3 of a descriptor on the other node onto 4 *)
+  /\ st_ok (st_seq [st_fstat (devfd_stat 17 259); dup_3; devx_open 5; dup3_5_4;
+                    fstat_at 4 (devfd_stat 18 259)] devfd_two)
+  /\ st_ok (st_seq [dup_3; devx_open 5; dup3_5_4; fstat_at 4 (devfd_stat 18 259);
+                    st_fstat (devfd_stat 17 259)] devfd_two)
+  /\ st_seq [st_fstat (devfd_stat 17 259); dup_3; devx_open 5; dup3_5_4;
+             fstat_at 4 (devfd_stat 18 259); st_fstat (devfd_stat 18 259)] devfd_two
+     = CheckReject.
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.

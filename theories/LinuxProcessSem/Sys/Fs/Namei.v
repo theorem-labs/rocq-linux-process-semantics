@@ -281,6 +281,23 @@ Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EROFS; EOVERFLOW; ENOSPC]
       OUTSIDE the image admits it too: "/proc/self" is a link
       ([proc_self_get_link], fs/proc/self.c) and an fd entry under it a
       magic link, both followed through [pick_link].
+    - -ENOENT beside every walk that ends OUTSIDE the image
+      ([Fs.ROutside]): procfs answers it for a lookup that cannot
+      allocate the inode it would hand back.  [proc_lookupfd_common]
+      (fs/proc/fd.c:236) builds an fd entry through
+      [proc_fd_instantiate], whose [proc_pid_make_inode] (:204) gets no
+      inode from [new_inode] (fs/proc/base.c:1939) and returns
+      [ERR_PTR(-ENOENT)] (fs/proc/fd.c:205-206); [proc_alloc_inode]
+      allocates with GFP_KERNEL (fs/proc/inode.c:57) from a
+      SLAB_ACCOUNT cache (:92-97), so a memory-cgroup charge can fail
+      it.  The components before the fd entry are built the same way
+      ([proc_pid_instantiate], fs/proc/base.c:3474-3477;
+      [proc_pident_instantiate], :2675-2677), each on its first lookup,
+      and [lookup_open] hands such an error back as it is
+      (fs/namei.c:3773-3780).  The one walk outside the image an arm
+      answers is "/proc/self/fd/N" ([Fs.Open.openat_procfd_spec]); every
+      other arm declines [Fs.ROutside], and [walk_refusals] admits
+      nothing beside a declined call.
     - -ENAMETOOLONG beside every walk that handed a component over
       [Fs.name_max] to a file system's [->lookup] ([Fs.wr_long]): the
       limit is the file system's ([simple_lookup], fs/libfs.c:71-72, the
@@ -300,6 +317,7 @@ Definition walk_errnos (lk : Fs.LastKind) (w : Fs.WalkRes) : list Z :=
   ++ (if Fs.wr_followed w
          || match Fs.wr_res w with Fs.ROutside => true | _ => false end
       then [ELOOP] else [])
+  ++ (match Fs.wr_res w with Fs.ROutside => [ENOENT] | _ => [] end)
   ++ (if Fs.wr_long w then [ENAMETOOLONG] else []).
 
 (** THE REFUSAL [getname_flags] CAN GIVE AHEAD OF ITS OWN ANSWERS: the

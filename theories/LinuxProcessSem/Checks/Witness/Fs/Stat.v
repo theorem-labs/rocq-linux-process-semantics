@@ -466,12 +466,25 @@ Proof.
   - rewrite stat_set_nlink_nlink_ok by exact Hlen. reflexivity.
 Qed.
 
+(** A size patched in leaves a folder's link count alone: [st_nlink] is
+    bytes 20..23, before the size. *)
+Lemma dir_nlink_ok_set_size : forall d r n bs,
+  (48 <= length bs)%nat -> dir_nlink_ok d r (stat_set_size n bs) = dir_nlink_ok d r bs.
+Proof.
+  intros d r n bs Hlen. unfold dir_nlink_ok, stat_nlink_ok.
+  rewrite (stat_set_size_field_le_head n ST_NLINK_OFF 4 bs)
+    by (exact Hlen || (cbv [ST_NLINK_OFF]; lia)).
+  reflexivity.
+Qed.
+
 (** fstat's directory arm, mirroring [Stat.fstat_dir_spec] branch for
     branch.  On the pinned branch it delivers THE PIN ITSELF with the
-    link count the pin's rule gives: the spec has just checked the pin
-    against both predicates, and neither [Uapi.stat_stable_eqb], nor
-    [Uapi.stat_dir_fixed], nor the [st_blocks] [Stat.stat_pin_held]
-    holds reads [st_nlink]. *)
+    link count the pin's rule gives and the size 0, which
+    [Uapi.stat_dir_size_ok] admits whatever the names: the spec has just
+    checked the pin against both predicates, and neither
+    [Uapi.stat_stable_eqb], nor [Uapi.stat_dir_fixed], nor the
+    [st_blocks] [Stat.stat_pin_held] holds reads [st_nlink] or
+    [st_size]. *)
 Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
     (i : SyscallInput) (m : Model) : outcome SyscallEffect :=
   let d := Fs.fs_dir_links (m_fs m) k in
@@ -485,7 +498,8 @@ Definition fstat_dir_witness (k : Fs.path) (statbuf : word)
             if negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool
             then Unmodeled
             else
-              let bs := stat_set_nlink (dir_witness_nlink d (sp_rule sp)) (sp_bytes sp) in
+              let bs := stat_set_size 0
+                          (stat_set_nlink (dir_witness_nlink d (sp_rule sp)) (sp_bytes sp)) in
               Ok (mkEffect (Z_to_bv 64 0) [(statbuf, bs)] [])
                  (dir_pin_after k d sp bs m) []
         | None =>
@@ -510,27 +524,39 @@ Proof.
       eqn:Hb0; cbv iota; [apply unmodeled_intro|].
     apply Bool.negb_false_iff in Hb0. apply andb_true_iff in Hb0 as [HWF HOK].
     pose proof (stat_buf_wf_length _ HWF) as Hlen.
+    set (bn := stat_set_nlink (dir_witness_nlink (Fs.fs_dir_links (m_fs m) k) (sp_rule sp))
+                 (sp_bytes sp)).
+    assert (Hwfn : stat_buf_wf bn = true) by now apply stat_set_nlink_wf.
+    pose proof (stat_buf_wf_length _ Hwfn) as Hlenn.
     eapply bind_step;
-      [apply (choose_ok _ (stat_set_nlink
-                             (dir_witness_nlink (Fs.fs_dir_links (m_fs m) k) (sp_rule sp))
-                             (sp_bytes sp)));
-       refine (conj _ (conj _ (conj _ (conj _ _))))|].
-    + now apply stat_set_nlink_wf.
-    + rewrite stat_set_nlink_dir_fixed by lia. exact HOK.
-    + apply dir_witness_nlink_ok. lia.
-    + cbn [stat_pin_held]. apply stat_set_nlink_field_eqb; [unfold ST_BLOCKS_OFF; lia | lia].
-    + now apply stat_set_nlink_stable.
+      [apply (choose_ok _ (stat_set_size 0 bn));
+       refine (conj _ (conj _ (conj _ (conj _ (conj _ _)))))|].
+    + now apply stat_set_size_wf.
+    + rewrite stat_set_size_dir_fixed by lia. unfold bn.
+      rewrite stat_set_nlink_dir_fixed by lia. exact HOK.
+    + rewrite dir_nlink_ok_set_size by lia. unfold bn. apply dir_witness_nlink_ok. lia.
+    + apply stat_dir_size_ok_zero, stat_set_size_zero_size. lia.
+    + cbn [stat_pin_held]. unfold stat_field_eqb.
+      rewrite (stat_set_size_field_le_tail 0 ST_BLOCKS_OFF 8 bn)
+        by (lia || (cbv [ST_BLOCKS_OFF]; lia)).
+      unfold bn. rewrite stat_set_nlink_field_le by (lia || (cbv [ST_BLOCKS_OFF]; lia)).
+      apply Z.eqb_refl.
+    + eapply stat_stable_eqb_trans; [apply stat_set_size_stable; exact Hlenn|].
+      unfold bn. now apply stat_set_nlink_stable.
     + eapply bind_step; [apply modify_ok|]. apply pure_ok.
   - eapply bind_step;
       [apply (choose_ok _ (stat_set_nlink (Fs.dl_counting (Fs.fs_dir_links (m_fs m) k))
                              stat_dir_witness_base));
-       refine (conj _ (conj _ _))|].
+       refine (conj _ (conj _ (conj _ _)))|].
     + apply stat_set_nlink_wf, stat_dir_witness_base_wf.
     + rewrite stat_set_nlink_dir_fixed by (rewrite stat_dir_witness_base_length; lia).
       apply stat_dir_witness_base_fixed.
     + change (Fs.dl_counting (Fs.fs_dir_links (m_fs m) k))
         with (dir_witness_nlink (Fs.fs_dir_links (m_fs m) k) None).
       apply dir_witness_nlink_ok. rewrite stat_dir_witness_base_length. lia.
+    + apply stat_dir_size_ok_zero.
+      rewrite stat_set_nlink_size by (rewrite stat_dir_witness_base_length; lia).
+      vm_compute. reflexivity.
     + eapply bind_step; [apply modify_ok|]. apply pure_ok.
 Qed.
 

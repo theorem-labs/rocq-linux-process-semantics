@@ -1605,6 +1605,40 @@ Example proc_self_fd_beats_routside :
      = CheckUnmodeled.
 Proof. split; [vm_compute; exact I | check_eq]. Qed.
 
+(** A REOPEN THROUGH "/proc/self/fd/N" ADMITS PROCFS'S -ENOENT beside
+    its answers ([Fs.Namei.walk_errnos], the [Fs.ROutside] column).  The
+    walk builds each procfs entry it looks up for the first time, and
+    one that gets no inode is -ENOENT: [proc_fd_instantiate]
+    (fs/proc/fd.c:204-206, Linux v6.18.46) for the fd entry,
+    [proc_pid_instantiate] (fs/proc/base.c:3474-3477) and
+    [proc_pident_instantiate] (:2675-2677) for the components before it,
+    and [lookup_open] hands it back (fs/namei.c:3773-3780).  So with
+    descriptor 3 on a file, -ENOENT, the pathname read, is admitted under
+    each of the three words and leaves the model as it was; -EPERM is
+    still refused. *)
+Example proc_self_fd_admits_procfs_enoent :
+  check_syscall
+    (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0]
+       (at_8192 [47;112;114;111;99;47;115;101;108;102;47;102;100;47;51]%Z) (fun _ => None))
+    (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) procfd_model
+  = CheckOk procfd_model []
+  /\ check_syscall
+       (mkInput 56 [AT_FDCWD; 8192; 577; 0; 0; 0]
+          (at_8192 [47;112;114;111;99;47;115;101;108;102;47;102;100;47;51]%Z) (fun _ => None))
+       (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) procfd_model
+     = CheckOk procfd_model []
+  /\ check_syscall
+       (mkInput 56 [AT_FDCWD; 8192; 1089; 0; 0; 0]
+          (at_8192 [47;112;114;111;99;47;115;101;108;102;47;102;100;47;51]%Z) (fun _ => None))
+       (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ENOENT) [] [])) procfd_model
+     = CheckOk procfd_model []
+  /\ check_syscall
+       (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0]
+          (at_8192 [47;112;114;111;99;47;115;101;108;102;47;102;100;47;51]%Z) (fun _ => None))
+       (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret EPERM) [] [])) procfd_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
 (** /proc AND /sys AT THE ROOT ARE DECLINED BY THE ARM, whatever the
     answer offered: the walk's [Fs.ROutside], read through [openat]. *)
 Example proc_and_sys_at_the_root_are_unmodeled :

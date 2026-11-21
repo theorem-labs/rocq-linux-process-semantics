@@ -235,9 +235,11 @@ Definition dup_errnos : list Z := [ENOMEM; EMFILE].
     live.  [fget_raw] (not [fget]) means an O_PATH fd is dup-able too;
     the model has no O_PATH fds, so nothing turns on it.  The new
     descriptor's close-on-exec bit is cleared, [flags] being 0.  The new
-    number's old stat pin is dropped before the entry is installed
-    ([State.with_fd_unpinned]): a device descriptor copied there may
-    hold another node than the one a descriptor once there held.
+    number's old stat pin is dropped before the entry is installed, and
+    the copy, the same [struct file], shares [oldfd]'s pin
+    ([State.with_fd_dup]): a device descriptor copied there may hold
+    another node than the one a descriptor once there held, and it
+    reports the inode [oldfd] reports.
 
     [oldfd] arrives already truncated to 32 bits (see
     [Syscall.fd32]), so [dup(2^32)] duplicates stdin and [dup(-1)] is
@@ -251,7 +253,8 @@ Definition dup_spec (oldfd : word) : Sys SyscallEffect :=
       else
         alt (er <- errno_from dup_errnos ;; err_ret er)  (* untracked env failure or no free fd *)
             (fd <- lowest_fd (m_fds m) ;;
-             modify (fun m' => with_fds (fd_insert (m_fds m) fd e) (with_fd_unpinned fd m')) ;;
+             modify (fun m' => with_fds (fd_insert (m_fds m) fd e)
+                                 (with_fd_dup (entry_dev_kind e) oldfd fd m')) ;;
              ret_only fd)
   end.
 
@@ -362,9 +365,10 @@ Definition dup3_flags_ok (flags : word) : bool :=
     ignore O_CLOEXEC here stands or falls with [Fcntl.fcntl_spec]'s
     decision to admit both answers to [F_GETFD].  The displaced entry is
     dropped exactly as [Open.close_spec] drops one, and [newfd]'s stat
-    pin with it ([State.with_fd_unpinned]): a device descriptor copied
-    over a device descriptor of the same kind leaves an entry equal to
-    the old one, though the two may hold two nodes. *)
+    pin with it, and the copy shares [oldfd]'s pin ([State.with_fd_dup]):
+    a device descriptor copied over a device descriptor of the same kind
+    leaves an entry equal to the old one, though the two may hold two
+    nodes. *)
 Definition dup3_newfd_under_limit (newfd : word) (m : Model) : bool :=
   Z.ltb (bv_unsigned newfd) (bv_unsigned (m_nofile m)).
 
@@ -384,10 +388,12 @@ Definition dup3_spec (oldfd newfd flags : word) : Sys SyscallEffect :=
               (* free: answered only below the embedded table's floor *)
               if Z.ltb (bv_unsigned newfd) NR_OPEN_DEFAULT
               then modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
-                                       (with_fd_unpinned newfd m')) ;; ret_only newfd
+                                       (with_fd_dup (entry_dev_kind e) oldfd newfd m')) ;;
+                   ret_only newfd
               else unmodeled
           | Some _ => modify (fun m' => with_fds (fd_insert (m_fds m) newfd e)
-                                          (with_fd_unpinned newfd m')) ;; ret_only newfd
+                                          (with_fd_dup (entry_dev_kind e) oldfd newfd m')) ;;
+                      ret_only newfd
           end
     end.
 

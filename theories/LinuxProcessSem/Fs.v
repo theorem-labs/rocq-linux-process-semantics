@@ -1767,6 +1767,27 @@ Proof.
   destruct (path_eqb k root) eqn:E; [apply path_eqb_eq in E; contradiction | lia].
 Qed.
 
+(** How many names the tree shows DIRECTLY under [k], of every kind: the
+    folder's own entries.  The root is its own parent
+    ([path_parent_root]) and is not its own entry. *)
+Definition fs_nchildren (fs : Fs) (k : path) : nat :=
+  length (List.filter
+            (fun ke => path_eqb (path_parent (fst ke)) k && negb (path_eqb (fst ke) root))
+            (fs_tree fs)).
+
+(** THE NAMES A FOLDER HOLDS, AS FAR AS THE IMAGE SHOWS THEM: its entries
+    in the tree ([fs_nchildren]), and at the root the folders /proc and
+    /sys the tree leaves out ([root_unheld_dirs]).  [Sys.Fs.Stat]'s
+    folder arm reads it as a LOWER BOUND on the folder's names, not as
+    their count: the launch of record's root holds the tracer's own
+    /init (testing/vm/mkinitramfs.py:41), and its /cases the probe files
+    the tracer's PutFile writes there (testing/vm/tracer.c:338,
+    :2132-2133), and the image the tracer declares holds neither.  Every
+    name the image holds is one the folder holds (the header's NO
+    CONCURRENT WRITER for every name a run makes or removes). *)
+Definition fs_dir_names (fs : Fs) (k : path) : nat :=
+  (fs_nchildren fs k + (if path_eqb k root then root_unheld_dirs fs else 0))%nat.
+
 (** A FOLDER'S COUNT UNDER EACH RULE.  A folder the image gives a row
     has the counts the row holds; a folder with none has the count the
     image implies under the counting rule ([fs_tree_count]: two, plus
