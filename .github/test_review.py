@@ -15647,6 +15647,22 @@ class KindTableTest(Scheduled, ReaderRunner):
                     self.assertNotIn(("+", THEOREM_LABEL), state_labels(self.api), got["log"])
                     self.assertNotIn(("+", AUTHOR_LABEL), state_labels(self.api), got["log"])
 
+    def test_the_pass_reports_an_item_whose_authors_access_github_does_not_give_and_goes_on_to_the_next(self):
+        """OSSV-221's architect, 2026-11-21 00:50Z, on the Stop row of the author-kind table (unknown): the rescreen
+        pass takes no item whose author's access GitHub does not give (held.sh, access_of), so it starts no stop for
+        carol's #7, whose review it tried REVIEW_TRIES times since its hold, and reports the error; that error does not
+        stop the pass's work on its other items. #8, mallory's issue after #7 in the list, is held at the limit an hour
+        ago: the same pass starts its rescreen, and then exits with the status of its error path (1)."""
+        self.start("stop", "hold-review", "unknown", want(stop=self.KNOWN))
+        self.origin(51, "mallory", event="issue_comment")
+        self.item(8, "issue", "mallory", labels=("review-held",), comments=[limit_hold(51, kind="limit", tries=0)])
+        rc, out, runs = self.started()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::GitHub did not say whether carol has write access.\n", out)
+        self.assertEqual([r[:3] for r in runs if r[0] == "7"], [], out)
+        self.assertEqual([r[:3] for r in runs if r[0] == "8"], [("8", "rescreen", "mallory")], out)
+        self.assertLess(out.index("carol"), out.index("#8: started rescreen"), out)
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
