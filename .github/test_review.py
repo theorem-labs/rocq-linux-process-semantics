@@ -10425,6 +10425,42 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
 
+    def test_the_stop_of_an_approval_keeps_the_screens_hold_of_the_head_that_a_relabel_reads(self):
+        """R12 and round 12, item 2 (OSSV-221's architect, 2026-11-21 01:06Z: "a later hold keeps the screen's hold"):
+        the CI run of mallory's #7 screened HEAD, its review passed it, and its post job recorded the check run. A later
+        approve run of HEAD, whose screen held it, posted the screen's hold of the approval (50), which names HEAD, and
+        withdrew the check run. GitHub then holds runs 61 and 62 of HEAD, made after that hold, and REVIEW_TRIES
+        approve runs of them passed the screen and failed at the approval: the pass starts the stop head-approve. The
+        stop's hold comment must not take the place of the screen's hold: a relabel of HEAD reads the hold comments of
+        the screen that name HEAD (rules.py verdict, held.sh relabel_withdraws), and with that hold gone it reads the
+        screened pass as the newest word on HEAD, and records the check run again on a head that the screen held."""
+        refused = post_job({self.HELD: "success", MINT_B: "success", self.APPROVE: "failure"})
+        reviewed = review_of(HEAD, at=ago(600))
+        screen_hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(400), "updated_at": ago(400),
+                       "body": "<!-- review-held -->\n**Automated start of the checks held.**\n\nThe automated screen "
+                               "held this pull request, so its checks have not run. You do not need to do anything."
+                               f"\n\n<!-- review-held-head {HEAD} -->"}
+        self.assertEqual(rules.review_verdict([reviewed, screen_hold], HEAD)[1:], ("held", "screen"))
+        self.item(kind="pr", labels=("review-held",), comments=[reviewed, screen_hold])
+        self.held_runs(made=300)
+        for i in range(self.TRIES):
+            self.ran(10 + i, f"approve #7 at {HEAD} of mallory", made=250 - 70 * i,
+                     jobs=[attempt_job("gather"), self.screened(), refused])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
+        _trust, steps = write_stop(self, "head-approve", head=HEAD)
+        self.assertEqual(steps[STOP_STEP], "success", self.logs)
+        (post, body), = [(c, a[len("body="):]) for c in writes(self.api) for a in c
+                         if a.startswith("body=<!-- review-held -->")]
+        # The item's comments after the stop: a PATCH of comment 50 replaces its body, a POST adds a comment.
+        after = [reviewed, screen_hold]
+        if post[:3] == ["--method", "PATCH", f"repos/{REPO}/issues/comments/50"]:
+            after = [reviewed, dict(screen_hold, body=body, updated_at=ago(0))]
+        else:
+            after.append({"id": 51, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body})
+        self.assertEqual(rules.review_verdict(after, HEAD)[1:], ("held", "screen"),
+                         "after the stop, a relabel of HEAD would record the check run again: " + str(post[:3]))
+
     def test_an_approval_that_approved_the_held_runs_settles_its_hold(self):
         """b8 (D16): a hold of an approval whose newest approve run since the hold had a post job that approved the
         held runs is settled, so the head, whose CI now runs before the workflow_run review, gets no second approve
