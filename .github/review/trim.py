@@ -58,7 +58,9 @@ the line "The review below asks the other questions." (ASKED_OTHERS) follows the
 followed by "each question is in the review below." (ASKED_BELOW) when the list holds a question item. With no
 question item, it is followed by "the review is at the end of this comment." (ASKED_WHOLE) when the review's own
 first line was the bare form, which the reader dropped, else by "this review lists none." (NONE_ASKED): the colon
-opens no empty list. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps the
+opens no empty list. When a comment over MAX_COMMENT characters cuts its collapsed copy so that the copy keeps nothing
+of the review under that bare form, "the review is in the summary of this workflow run." (ASKED_SUMMARY) takes the
+place of ASKED_WHOLE. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps the
 reader's "Blocking findings." line and the findings after it, after the result line. The posted result never says
 another verdict than the one of code: for example, a review that the soundness rule made person never starts with
 "No blocking finding.". With no --verdict, the form is the one that the review's first line starts with. An issue's
@@ -149,9 +151,12 @@ REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # each question item of the list, or the list holds no question item. So the colon of the form opens no empty list.
 # ASKED_WHOLE is for a review whose first line was the bare form, which the reader dropped, with no question item: it
 # points to the collapsed copy at the end of the comment. That copy can be cut (CUT_WHOLE), so the line does not say
-# that it is whole. NONE_ASKED is for any other review: the model opened no list of questions.
+# that it is whole. ASKED_SUMMARY takes its place when the cut copy keeps nothing of the review under the bare form
+# (comment): the review is then in the run's summary alone. NONE_ASKED is for any other review: the model opened no
+# list of questions.
 ASKED_BELOW = "each question is in the review below."
 ASKED_WHOLE = "the review is at the end of this comment."
+ASKED_SUMMARY = "the review is in the summary of this workflow run."
 NONE_ASKED = "this review lists none."
 # The line after the bullets of a result line that lists only some question items, as the trimmed text holds the
 # others. Without it, the bullets would read as the whole list of questions.
@@ -1406,7 +1411,7 @@ def without_contradicted(text, verdict, items):
     return closed("\n".join(lines).strip("\n")) if changed else text
 
 
-def with_result(review, trimmed, head, verdict="", items=()):
+def with_result(review, trimmed, head, verdict="", items=(), kept=True):
     """trimmed, whose first line that is not empty starts with the form of RESULTS for verdict (FORMS), the verdict
     after the rules of code, in a pull request's review (head holds REVIEW_HEAD). First trimmed loses each form at the
     start of its first line that verdict or items contradict (without_contradicted). A trimmed text whose first line
@@ -1418,10 +1423,12 @@ def with_result(review, trimmed, head, verdict="", items=()):
     name it (present), so that missing gives no second copy of the question. When trimmed holds the other question
     items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by ASKED_BELOW when items
     hold a question item. Else it is followed by ASKED_WHOLE when the line of review was the bare form, and by
-    NONE_ASKED when it was not. So under person, a list with a blocking finding (the soundness rule keeps each one)
-    keeps the reader's "Blocking findings." line and what follows it, after the result line. With no verdict, the form
-    is the one that the first line of review starts with, and the verdict is that form's. An issue's review, and a
-    review with no verdict whose first line has no such form, stay as the reader gave them."""
+    NONE_ASKED when it was not. kept is False when the collapsed copy keeps nothing of review under that bare form
+    (comment): ASKED_SUMMARY then takes the place of ASKED_WHOLE. So under person, a list with a blocking finding (the
+    soundness rule keeps each one) keeps the reader's "Blocking findings." line and what follows it, after the result
+    line. With no verdict, the form is the one that the first line of review starts with, and the verdict is that
+    form's. An issue's review, and a review with no verdict whose first line has no such form, stay as the reader gave
+    them."""
     line = first_line(review)
     form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
@@ -1442,7 +1449,8 @@ def with_result(review, trimmed, head, verdict="", items=()):
             others = ["", ASKED_OTHERS] if len(questions) < len(asked) else []
             line = "\n".join([form, "", *(f"- {q}" for q in questions), *others])
         else:
-            line = f"{form} {ASKED_BELOW if asked else ASKED_WHOLE if bare else NONE_ASKED}"
+            whole = ASKED_WHOLE if kept else ASKED_SUMMARY
+            line = f"{form} {ASKED_BELOW if asked else whole if bare else NONE_ASKED}"
     return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
 
@@ -1450,17 +1458,23 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
     read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
     the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
-    its end when the comment would be over MAX_COMMENT characters."""
-    trimmed = with_result(review, closed(inert(trimmed)), head, verdict, items)
-    extra = added(missing(items, trimmed))
-
-    def build(whole):
-        return (framed((head, trimmed, section, extra), foot)
+    its end when the comment would be over MAX_COMMENT characters. When the cut copy then keeps nothing of the review
+    under its first line, ASKED_SUMMARY takes the place of ASKED_WHOLE in the result line (with_result), and the copy
+    is cut again for that longer line."""
+    def build(whole, kept=True):
+        shown = with_result(review, closed(inert(trimmed)), head, verdict, items, kept)
+        return (framed((head, shown, section, added(missing(items, shown))), foot)
                 + f"\n\n<details>\n<summary>{WHOLE}</summary>\n\n{whole}\n\n</details>\n")
+
+    def room(text):
+        return max(0, len(review) - (len(text) - MAX_COMMENT) - len(CUT_WHOLE) - 200)
     text = build(review)
     if len(text) > MAX_COMMENT:
-        keep = max(0, len(review) - (len(text) - MAX_COMMENT) - len(CUT_WHOLE) - 200)
-        text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE)
+        keep = room(text)
+        kept = bool(review[:keep].strip().partition("\n")[2].strip())
+        if not kept:
+            keep = room(build(review, kept))
+        text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE, kept)
     if len(text) > MAX_COMMENT:
         raise ReaderError(f"the comment is {len(text)} characters long even with no copy of the whole review")
     return text

@@ -112,7 +112,9 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments and revi
 # place of <endpoint>.json, when that file exists: the list that GitHub gives for that filter (status=success, say).
 # <endpoint>.then.json, when there is one, takes the place of <endpoint>.json after the first read: an answer that
 # changes in between. The file of --input, the request's body, goes to $FAKE_GH/inputs (gh_inputs), and the GH_TOKEN
-# of each call to $FAKE_GH/tokens (gh_tokens).
+# of each call to $FAKE_GH/tokens (gh_tokens). repos/<repo>/commits/<ref>/check-runs gives on each page only the newest
+# check run of each name (the latest completed_at, then the highest id), as GitHub's default filter=latest does, unless
+# the call has the field filter=all.
 # gh pr view <n> and gh issue view <n> answer the --json fields from $FAKE_GH/pr_view_<n>.json or issue_view_<n>.json.
 FAKE_GH = r"""#!/usr/bin/env bash
 if [ "$1" = pr ] || [ "$1" = issue ]; then
@@ -159,10 +161,18 @@ for field in "${fields[@]}"; do
   [ ! -f "${file%.json}.$field.json" ] || { file=${file%.json}.$field.json; break; }
 done
 [ -f "$file" ] || { echo "gh: Not Found (HTTP 404): $endpoint" >&2; exit 1; }
-jq -r "$filter" "$file"
+pick=.
+if [[ $endpoint =~ ^repos/[^/]+/[^/]+/commits/[^/]+/check-runs$ ]]; then
+  pick='if type == "object" and (.check_runs | type) == "array" then .check_runs |= (. as $all | map(select(. as $c
+    | all($all[]; .name != $c.name or [.completed_at // "", .id // 0] <= [$c.completed_at // "", $c.id // 0]))))
+    else . end'
+  for field in "${fields[@]}"; do [ "$field" != filter=all ] || pick=.; done
+fi
+answer() { if [ "$pick" = . ]; then jq -r "$filter" "$1"; else jq "$pick" "$1" | jq -r "$filter"; fi; }
+answer "$file"
 n=2
 while [ -n "$paginate" ] && [ -f "${file%.json}.$n.json" ]; do
-  jq -r "$filter" "${file%.json}.$n.json"; n=$((n + 1))
+  answer "${file%.json}.$n.json"; n=$((n + 1))
 done
 [ ! -f "${file%.json}.then.json" ] || mv "${file%.json}.then.json" "$file"
 """
@@ -5790,7 +5800,8 @@ class FreshReaderTest(ReaderRunner):
         collapsed copy loses its end and ends with CUT_WHOLE. The line "Questions for Sami: the review is at the end of
         this comment." still goes back first, as it does not say that the copy is full. The list holds a blocking
         finding and no question item; the reader drops the bare line and the question. The copy is cut after the
-        question, or before it."""
+        question, or before it: then it keeps no word of the review, and the line points to the run's summary
+        (OSSV-221's architect, 2026-11-21 14:00Z)."""
         head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
@@ -5803,7 +5814,8 @@ class FreshReaderTest(ReaderRunner):
             with self.subTest(case=case):
                 posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
                 shown, whole = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
-                self.assertEqual(shown.split("\n\n")[1:3], [line, "Blocking findings."], shown[:300])
+                first = line if held else "Questions for Sami: the review is in the summary of this workflow run."
+                self.assertEqual(shown.split("\n\n")[1:3], [first, "Blocking findings."], shown[:300])
                 self.assertIn(trim.CUT_WHOLE, whole)
                 self.assertEqual(question in whole, held)
                 self.assertLessEqual(len(posted), trim.MAX_COMMENT)
@@ -15721,6 +15733,63 @@ class ImportCheckTest(ReaderRunner):
                                  ("success", "", HEAD), self.logs)
                 self.assertEqual(self.owe(got, relabel, [blocking, marked]), [old["body"]])
 
+    def test_an_older_success_under_a_newer_withdrawn_check_run_of_the_same_name_is_withdrawn(self):
+        """Round 14, item 6 (OSSV-221's architect, 2026-11-21 14:43Z): GitHub lists only the newest check run of each
+        name of a commit unless the read asks for filter=all, and so does the stand-in gh. Check run 901 of mallory's
+        #7 at HEAD, with conclusion success, stands under 905, a newer one of the same name that a withdrawal made
+        neutral. The label comment holds the line <!-- withdraw-owed <head> blocking -->. A relabel of HEAD reads every
+        check run of HEAD: it withdraws 901, and only a withdrawal that GitHub took takes the line out. When GitHub
+        refuses it, the line stays. A read of the newest check runs alone would find 905 alone, withdraw nothing, and
+        take the line out while 901 stands."""
+        listed, _others = self.recorded()
+        older = dict(listed, completed_at=ago(120))
+        newer = dict(listed, id=905, conclusion="neutral", completed_at=ago(60))
+        blocking = review_of(HEAD, "blocking", at=ago(90))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("change", "", [rules.import_marker(HEAD, self.LPS)])}
+        marked = dict(old, updated_at=ago(30),
+                      body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking -->"))
+        relabel = dict(self.RELABEL, started=ago(-1))
+        for case, refused, withdrawn, label in (("GitHub withdraws 901", False, HEAD, [old["body"]]),
+                                               ("GitHub refuses it", True, "", [])):
+            with self.subTest(case=case):
+                if refused:
+                    self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=[blocking, marked], listed=[newer, older])
+                self.assertEqual([(e, b["conclusion"]) for _t, e, b in got["withdrawn"]],
+                                 [(f"repos/{REPO}/check-runs/901", "neutral")], self.logs)
+                self.assertEqual(got["post"]["withdrawn"], withdrawn, self.logs)
+                self.assertEqual(self.owe(got, relabel, [blocking, marked]), label)
+
+    def test_a_reason_that_the_decision_reads_from_the_comments_is_owed_before_its_next_command_that_can_fail(self):
+        """Round 14, item 2 (OSSV-221's architect, 2026-11-21 14:43Z, write ahead): the decision step of the post job
+        writes the output owed as soon as it reads a reason to withdraw from the comments of the item. alice's blocking
+        review of mallory's #7 at HEAD, with no screen, replaced a screened pass in place. alice reviews HEAD by hand
+        again, and the review passes it: the decision reads her blocking review as the reason, and then the import
+        check fails, as GitHub lists a file in a form that the rules refuse (a previous_filename that is no text). The
+        job fails before its withdrawal. Its output owed names HEAD and blocking, so the comment job records the line
+        before this run's pass replaces the blocking review in place. With no key of the App, no step withdraws, and
+        nothing is owed."""
+        listed, _others = self.recorded()
+        blocked = review_of(HEAD, "blocking", at=ago(30), screened=False)
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("change", "", [rules.import_marker(HEAD, self.LPS)])}
+        by_hand = dict(self.BY_HAND, started=ago(1))
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        for case, key, owed, label in (("the key of the App", True, f"{HEAD} blocking",
+                                        [rules.with_marker(old["body"], line)]),
+                                       ("no key of the App", False, "", None)):
+            with self.subTest(case=case):
+                start = len(self.logs)
+                got = self.judge([("README.md", 7)], "pass", self.LPS, trust=by_hand, event="workflow_dispatch",
+                                 comments=[blocked, old], listed=[listed], named=HEAD, key=key)
+                self.assertEqual((got["result"], got["steps"][self.DECIDE], got["withdrawn"]),
+                                 ("failure", "failure", []), self.logs)
+                self.assertIn(f"the import check of {HEAD} could not be decided.", "\n".join(self.logs[start:]))
+                self.assertEqual((got["post"]["owed"], got["post"]["withdrawn"]), (owed, ""), self.logs)
+                self.assertEqual(self.owe(got, by_hand, [blocked, old]), label)
+
     def test_a_screen_hold_whose_withdrawal_github_refuses_leaves_the_line_of_the_owed_withdrawal(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z): a refused withdrawal leaves the line
         <!-- withdraw-owed <head> <why> --> in the label comment. The CI run of mallory's #7 recorded check run 901 on
@@ -15766,6 +15835,42 @@ class ImportCheckTest(ReaderRunner):
                         self.assertEqual(rc, 0, out)
                         bodies += [body for _method, _endpoint, body in label_comments(self.api)]
                 self.assertEqual(bodies, [marked])
+
+    def test_a_screen_hold_whose_post_job_did_not_withdraw_gets_the_line_from_the_hold_job(self):
+        """Round 14, item 2 (OSSV-221's architect, 2026-11-21 14:43Z): the hold job writes the line
+        <!-- withdraw-owed <head> screen --> for a screen of its run that held the head, unless the post job's output
+        withdrawn names that head. The screen of a review or an approval of mallory's #7 holds HEAD, and its post job
+        gave no output: it failed before the step that owes, or the environment post holds no key. The hold job writes
+        the line. A post job that withdrew for HEAD takes the line out instead. An answer withdraws nothing (the
+        author-kind table), and a hold at the limit is no hold of the screen: no line for either."""
+        self.checkout()
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} screen -->")
+        s = step("hold", "Record a withdrawal that the post job owes")
+        for case, task, route, screen, withdrawn, label, want in (
+                ("no output of the post job", "review", "screen", ("success", "held"), "", old["body"], [marked]),
+                ("an approval", "approve", "screen", ("success", "held"), "", old["body"], [marked]),
+                ("the post job withdrew for HEAD", "review", "screen", ("success", "held"), HEAD, marked,
+                 [old["body"]]),
+                ("an answer", "answer", "screen", ("success", "held"), "", old["body"], None),
+                ("a hold at the limit", "review", "limit", ("skipped", ""), "", old["body"], None)):
+            with self.subTest(case=case):
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(self.REVIEWED, task=task, route=route).items()}
+                ctx.update({"needs.screen.result": screen[0], "needs.screen.outputs.verdict": screen[1],
+                            "needs.post.outputs.owed": "", "needs.post.outputs.withdrawn": withdrawn,
+                            "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+                started = {f"env.{k}": v for k, v in filled(JOBS["hold"]["env"], ctx).items()}
+                if not evaluate(s["if"], {**started, **ctx}):
+                    self.assertIsNone(want)
+                    continue
+                self.forget()
+                self.serve(f"repos/{REPO}/issues/7/comments", [dict(old, body=label)])
+                env = filled({**WF["env"], **JOBS["hold"]["env"], **s["env"]}, ctx)
+                rc, out, _ = self.run_script(s["run"],
+                                             **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                self.assertEqual(rc, 0, out)
+                self.assertEqual([body for _method, _endpoint, body in label_comments(self.api)], want)
 
     def test_the_line_of_a_refused_withdrawal_gives_a_reason_and_never_the_text_that_a_screen_passed_the_head(self):
         """Round 13, part B, F2 (OSSV-221's architect, 2026-11-21 06:38Z): the line <!-- withdraw-owed <head> <why> -->

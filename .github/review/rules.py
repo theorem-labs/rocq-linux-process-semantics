@@ -61,9 +61,12 @@ state. <line> takes the place of the line of its kind. An item with no label com
 The comment job of a catch-up records the line <!-- review-catchup <head> --> with it. The rescreen pass reads that
 line, so that each head gets one catch-up.
 
-owed: records in the label comment of <number> the withdrawal of the import check runs of a head that the post job
-owes (owe), and changes nothing else. owed=<head> <why> (the post job's output owed: a withdrawal that it found a
-reason for and did not finish) gives the line <!-- withdraw-owed <head> <why> --> of KEPT (OWED), as mark does.
+owed: records in the label comment of <number> the withdrawal of the import check runs of a head that a run owes
+(owe), and changes nothing else: the comment job calls it, and the hold job for a held screen, before the steps that
+can fail. owed=<head> <why> (the post job's output owed: a withdrawal that it found a reason for and did not finish;
+or <head> screen from the hold job, for a screen that held the head in a review, a rescreen or an approval of its run,
+when the post job did not withdraw for that head) gives the line <!-- withdraw-owed <head> <why> --> of KEPT (OWED), as
+mark does.
 withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as it found no import check run of the
 head with conclusion success or withdrew each one) takes the line of that head out. The run's task and the trust job's
 outputs outside, outsider and kind are given as for label: when the author-kind table's answer label is unchanged, this
@@ -418,16 +421,19 @@ NUMBER = re.compile(r"[1-9][0-9]*")
 # reopened the pull request at (D16 (a): once for each head), the head whose runs the post job did not approve,
 # because it changes a file under .github/ or because the environment post held no key of the OSS Verify App
 # (R10: the rescreen pass starts no approval of it again), and the withdrawal of the import check runs of a head
-# that the post job owes (OWED).
+# that a run owes (OWED).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
                   r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->"
                   r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|screen) -->")
-# The marker line of a withdrawal of the import check runs of a head (R12) that GitHub refused, or that the post job
-# did not reach after it found a reason for it: the head, and why (WITHDRAWN). A relabel and a review by hand of that
-# head withdraw for why while the line stands, whatever the newest review says (review_verdict). Only a run that
-# finished the withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew
-# each one) takes the line out (owe). Each head has a line of its own (marker_kind).
+# The marker line of a withdrawal of the import check runs of a head (R12) that a run found a reason for and did not
+# finish: GitHub refused it, or the job failed or stopped before it. The head, and why (WITHDRAWN). Each job writes it
+# ahead, before its first step that can fail or that withdraws: the post job through its output owed, which the
+# comment job or the hold job records, and the hold job for a screen that held the head in a review, a rescreen or an
+# approval of its run, unless the post job withdrew for that head. A relabel and a review by hand of that head withdraw
+# for why while the line stands, whatever the newest review says (review_verdict). Only a run that finished the
+# withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew each one)
+# takes the line out (owe). Each head has a line of its own (marker_kind).
 OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) -->")
 
 
@@ -804,6 +810,8 @@ def unmark(number, kind, what):
 #
 # The tasks are the trust job's (the top of review.yml), and hold is the hold job. The hold job makes no App write: in
 # the same run, the post job withdraws the import check runs of a head that the screen held, by the row of the task.
+# The hold job records the line of OWED of that withdrawal with the task of the run, when the post job did not finish
+# it.
 TASKS = ("review", "rescreen", "approve", "relabel", "answer", "draft", "reply", "conflict", "stop", "catchup", "hold")
 # The classes of an author (author_class): outside, unknown, and other (a writer, or a kind that the step did not give).
 CLASSES = ("outside", "unknown", "other")
@@ -920,12 +928,13 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
 
 
 def owe(number, run, owed="", withdrawn=""):
-    """Records in the label comment of the item number the withdrawal of the import check runs of a head that the post
-    job owes (OWED), from its outputs: owed, "<head> <why>" of a withdrawal that it found a reason for and did not
-    finish, gives the line <!-- withdraw-owed <head> <why> --> (mark). withdrawn, a head whose withdrawal the job
-    finished, takes the line of that head out (unmark), and then owed is not read. The state label and the text of
-    the label comment stay as they are. As for set_state, the label answer of the author-kind table for run unchanged
-    writes nothing, and gives a notice."""
+    """Records in the label comment of the item number the withdrawal of the import check runs of a head that a run
+    owes (OWED), from the post job's outputs: owed, "<head> <why>" of a withdrawal that it found a reason for and did
+    not finish (or "<head> screen" from the hold job, for a screen that held the head in a review, a rescreen or an
+    approval of its run), gives the line <!-- withdraw-owed <head> <why> --> (mark). withdrawn, a head whose withdrawal
+    the job finished, takes the line of that head out (unmark), and then owed is not read. The state label and the text
+    of the label comment stay as they are. As for set_state, the label answer of the author-kind table for run
+    unchanged writes nothing, and gives a notice."""
     head, _, why = owed.partition(" ")
     line = f"<!-- withdraw-owed {head} {why} -->" if owed else ""
     if owed and not OWED.fullmatch(line):

@@ -233,8 +233,8 @@ no_key_of() {
 # verdict, its why). screen when a hold comment of the screen that names <head> (its text holds "The automated screen
 # held ", and it has no marker of a hold that is tried again) is newer than each review comment of <head> whose run
 # screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
-# held. Else the reason of a withdrawal of the import check runs of <head> that a run owes, as GitHub refused it or the
-# run failed before it, while a label comment holds its marker line <!-- withdraw-owed <head> <why> -->: "<why> owed",
+# held. Else the reason of a withdrawal of the import check runs of <head> that a run owes, as it found a reason for it
+# and did not finish it, while a label comment holds its marker line <!-- withdraw-owed <head> <why> -->: "<why> owed",
 # whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out. Else
 # blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none is
 # screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel of
@@ -1324,7 +1324,8 @@ due_unreviewed() {
 # pull request: the newer of the label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and
 # the same line in the output text of the head's check run repo-pairs/import-approved, by the OSS Verify App,
 # of this pull request: a check run belongs to a commit, so only one whose external_id is <number>:<head>
-# counts, and one of another pull request of the same commit does not. When it is not the value now
+# counts, and one of another pull request of the same commit does not. The read asks for every check run of
+# the head (filter=all): by default GitHub lists only the newest of each name. When it is not the value now
 # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
 # R12 again by the value now and sets the label again. Once an hour.
 due_variable() {
@@ -1339,7 +1340,7 @@ due_variable() {
   [ -n "$found" ] || [ "$review" = new ] || return 0
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   checks=$(SHA=$head NUMBER=$number gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
-    -f check_name=repo-pairs/import-approved -F per_page=100 --jq '.check_runs[]
+    -f check_name=repo-pairs/import-approved -f filter=all -F per_page=100 --jq '.check_runs[]
       | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
                and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
                and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
