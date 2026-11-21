@@ -43,9 +43,9 @@ parts, in this order:
     <details>                          the review, made inert, cut and closed, collapsed
 
 The first line of a pull request's review is its result (.github/review.md, "The comment"): a line that starts with
-the form of RESULTS for its verdict, but in one case of person below. A pull request's review is one whose head holds
-the marker <!-- review-head <commit> -->. --verdict is the review's verdict after the rules of code (rules.py soundness
-and blocking), and the posted first line takes its form: "No blocking finding." for pass, "Blocking findings." for
+the form of RESULTS for its verdict. A pull request's review is one whose head holds the marker
+<!-- review-head <commit> -->. --verdict is the review's verdict after the rules of code (rules.py soundness and
+blocking), and the posted first line takes its form: "No blocking finding." for pass, "Blocking findings." for
 blocking, and "Questions for Sami:" for person. First the trimmed text loses each form at the start of its first line
 that the verdict or the list rules out: "No blocking finding." under blocking or person, and "Blocking findings."
 under pass or person when the list holds no blocking finding (a change item that is not optional). The text after
@@ -56,18 +56,13 @@ for each question item whose text the trimmed text does not hold: that text, and
 not name it, so that no added item asks the question again. When the trimmed text holds the other question items,
 the line "The review below asks the other questions." (ASKED_OTHERS) follows the bullets. With no bullet, the form is
 followed by "each question is in the review below." (ASKED_BELOW) when the list holds a question item. With no
-question item, it is followed by "this review lists none." (NONE_ASKED) when the review's own first line was not the
-bare form: the colon opens no empty list. When it was the bare form, it is followed by "the review at the end of this
-comment asks them. The text below may not hold all of them." (ASKED_WHOLE). This line goes back only when the
-collapsed copy holds each part that the model put under the bare form. The parts go to the end of the review: each
-list item, heading and paragraph, as a question of .github/review.md needs no question mark. A line that is a result
-form alone, for example "Blocking findings.", is no part. A part whose text is that of a change item of the list does
-not count, as a finding asks Sami nothing, and some other part must be left. Else no result line goes back, and the
-text starts with the trimmed text. So under person, a list with a blocking finding (the soundness rule keeps each
-one) keeps the reader's "Blocking findings." line and the findings after it, after the result line. The posted result
-never says another verdict than the one of code: for example, a review that the soundness rule made person never
-starts with "No blocking finding.". With no --verdict, the form is the one that the review's first line starts with.
-An issue's review has no fixed form, and its trimmed text stays as the reader gave it.
+question item, it is followed by "the review is at the end of this comment." (ASKED_WHOLE) when the review's own
+first line was the bare form, which the reader dropped, else by "this review lists none." (NONE_ASKED): the colon
+opens no empty list. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps the
+reader's "Blocking findings." line and the findings after it, after the result line. The posted result never says
+another verdict than the one of code: for example, a review that the soundness rule made person never starts with
+"No blocking finding.". With no --verdict, the form is the one that the review's first line starts with. An issue's
+review has no fixed form, and its trimmed text stays as the reader gave it.
 
 An item is in the trimmed text when each path and each line number that its ref names are in it, with the Markdown
 formatting of both taken out (backticks, emphasis, escapes, link syntax). An item with no ref, or with a ref that
@@ -152,19 +147,12 @@ FORMS = dict(zip(("pass", "blocking", "person"), RESULTS))
 REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # The text after the form of person in a result line that lists no question (with_result): the trimmed text holds
 # each question item of the list, or the list holds no question item. So the colon of the form opens no empty list.
-# ASKED_WHOLE is for a review whose first line was the bare form, which the reader dropped, with no question item. It
-# goes back only when the collapsed copy at the end of the comment holds each part under that line (asked_under). A
-# part that is the text of a change item of the list does not count, and some other part must be left. The reader
-# can drop any of these parts, so the line does not say that the text below holds them. Else no result line goes
-# back. NONE_ASKED is for any other review: the model opened no list of questions.
+# ASKED_WHOLE is for a review whose first line was the bare form, which the reader dropped, with no question item: it
+# points to the collapsed copy at the end of the comment. That copy can be cut (CUT_WHOLE), so the line does not say
+# that it is whole. NONE_ASKED is for any other review: the model opened no list of questions.
 ASKED_BELOW = "each question is in the review below."
-ASKED_WHOLE = "the review at the end of this comment asks them. The text below may not hold all of them."
+ASKED_WHOLE = "the review is at the end of this comment."
 NONE_ASKED = "this review lists none."
-# The marker at the start of a line of a Markdown list: -, * or +, or a number with . or ), then white space.
-LIST_ITEM = re.compile(r"[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+")
-# A Markdown heading of the ATX form: one to six # at the start of a line, then white space or the end of the line.
-# asked_under counts it as a part of its own: a heading can ask a question too.
-HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 # The line after the bullets of a result line that lists only some question items, as the trimmed text holds the
 # others. Without it, the bullets would read as the whole list of questions.
 ASKED_OTHERS = "The review below asks the other questions."
@@ -1370,32 +1358,6 @@ def result_of(line):
     return next((form for form in RESULTS if start.startswith(form)), None)
 
 
-def asked_under(review):
-    """The parts under the first line of review that is not empty, its bare form of person, to the end of review. A
-    part is an item of a list, a heading (HEADING) or a paragraph. A question of .github/review.md names what Sami
-    checks next and why the review cannot check it. So it needs no question mark, and each part counts. A line that
-    is a form of RESULTS alone, as plain reads it (for example "Blocking findings."), is no part. It ends the item or
-    the paragraph before it, and the parts after it count too. A line that LIST_ITEM starts opens an item, with its
-    marker taken out. A heading is a part of its own. Each other line that is not empty goes on the item or the
-    paragraph before it, or opens a paragraph. An empty line ends both. An empty list when there is none."""
-    lines = review.split("\n")
-    k = next((n for n, line in enumerate(lines) if line.strip()), len(lines)) + 1
-    parts, part = [], None
-    for line in lines[k:]:
-        m = LIST_ITEM.match(line)
-        if not line.strip() or plain(line).strip() in RESULTS:
-            part = None
-        elif HEADING.match(line):
-            parts.append([line])
-            part = None
-        elif m or part is None:
-            part = [line[m.end():] if m else line]
-            parts.append(part)
-        else:
-            part[0] += " " + line
-    return [p[0] for p in parts]
-
-
 def blocking_finding(item):
     """Whether item of the list is a blocking finding: a change item whose optional is false, as rules.py
     blocking_finding reads it. An item with no optional key is not optional."""
@@ -1444,7 +1406,7 @@ def without_contradicted(text, verdict, items):
     return closed("\n".join(lines).strip("\n")) if changed else text
 
 
-def with_result(review, trimmed, head, verdict="", items=(), whole=None):
+def with_result(review, trimmed, head, verdict="", items=()):
     """trimmed, whose first line that is not empty starts with the form of RESULTS for verdict (FORMS), the verdict
     after the rules of code, in a pull request's review (head holds REVIEW_HEAD). First trimmed loses each form at the
     start of its first line that verdict or items contradict (without_contradicted). A trimmed text whose first line
@@ -1455,16 +1417,11 @@ def with_result(review, trimmed, head, verdict="", items=(), whole=None):
     plain reads them, with their white space made one space): that text, and the item's ref when the text does not
     name it (present), so that missing gives no second copy of the question. When trimmed holds the other question
     items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by ASKED_BELOW when items
-    hold a question item, and by NONE_ASKED when the line of review was not the bare form. When it was the bare form,
-    the form is followed by ASKED_WHOLE only when whole holds each part under it, to the end of review (asked_under).
-    A part whose text is the text of a change item of items does not count, as a finding asks Sami nothing. So some
-    other part must be left. whole is the collapsed copy at the end of the comment, review when None. Each part, each
-    change item and the copy are compared as plain reads them, with their white space made one space. A part joins
-    its lines with a space, so each line break of the copy is a space first. Else no result line goes back: the text
-    starts with the first line of trimmed. So under person, a list with a blocking finding (the soundness rule keeps
-    each one) keeps the reader's "Blocking findings." line and what follows it, after the result line. With no
-    verdict, the form is the one that the first line of review starts with, and the verdict is that form's. An
-    issue's review, and a review with no verdict whose first line has no such form, stay as the reader gave them."""
+    hold a question item. Else it is followed by ASKED_WHOLE when the line of review was the bare form, and by
+    NONE_ASKED when it was not. So under person, a list with a blocking finding (the soundness rule keeps each one)
+    keeps the reader's "Blocking findings." line and what follows it, after the result line. With no verdict, the form
+    is the one that the first line of review starts with, and the verdict is that form's. An issue's review, and a
+    review with no verdict whose first line has no such form, stay as the reader gave them."""
     line = first_line(review)
     form = FORMS.get(verdict) or result_of(line)
     if not REVIEW_HEAD.search(head) or form is None:
@@ -1484,14 +1441,8 @@ def with_result(review, trimmed, head, verdict="", items=(), whole=None):
         elif questions:
             others = ["", ASKED_OTHERS] if len(questions) < len(asked) else []
             line = "\n".join([form, "", *(f"- {q}" for q in questions), *others])
-        elif asked or not bare:
-            line = f"{form} {ASKED_BELOW if asked else NONE_ASKED}"
         else:
-            changes = {" ".join(plain(inert(i["text"])).split()) for i in items if i.get("kind") == "change"}
-            parts = (" ".join(plain(inert(q)).split()) for q in asked_under(review))
-            under = [q for q in parts if q not in changes]
-            copy = " ".join(plain(" ".join((review if whole is None else whole).split("\n"))).split())
-            line = f"{form} {ASKED_WHOLE}" if under and all(q in copy for q in under) else ""
+            line = f"{form} {ASKED_BELOW if asked else ASKED_WHOLE if bare else NONE_ASKED}"
     return "\n\n".join(p for p in (closed(inert(line.strip())), trimmed) if p)
 
 
@@ -1499,19 +1450,17 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
     read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
     the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
-    its end when the comment would be over MAX_COMMENT characters, and the result line is then made again for the copy
-    that posts (with_result, whole)."""
-    trimmed = closed(inert(trimmed))
-    shown = with_result(review, trimmed, head, verdict, items)
+    its end when the comment would be over MAX_COMMENT characters."""
+    trimmed = with_result(review, closed(inert(trimmed)), head, verdict, items)
+    extra = added(missing(items, trimmed))
 
-    def build(text, whole):
-        return (framed((head, text, section, added(missing(items, text))), foot)
+    def build(whole):
+        return (framed((head, trimmed, section, extra), foot)
                 + f"\n\n<details>\n<summary>{WHOLE}</summary>\n\n{whole}\n\n</details>\n")
-    text = build(shown, review)
+    text = build(review)
     if len(text) > MAX_COMMENT:
         keep = max(0, len(review) - (len(text) - MAX_COMMENT) - len(CUT_WHOLE) - 200)
-        whole = closed(review[:keep]) + "\n\n" + CUT_WHOLE
-        text = build(with_result(review, trimmed, head, verdict, items, whole), whole)
+        text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE)
     if len(text) > MAX_COMMENT:
         raise ReaderError(f"the comment is {len(text)} characters long even with no copy of the whole review")
     return text

@@ -5666,12 +5666,12 @@ class FreshReaderTest(ReaderRunner):
         self.assertNotIn(f"Questions for Sami:\n\n{trimmed}", shown)
 
     def test_a_bare_person_line_that_the_reader_dropped_points_to_the_collapsed_copy(self):
-        """Fresh reader of round 12 (M4), and OSSV-221's architect (2026-11-21 09:39Z): the model gives the verdict
+        """Fresh reader of round 12 (M4), and OSSV-221's architect (2026-11-21 11:19Z): the model gives the verdict
         person with no question item, and its first line is a bare "Questions for Sami:" with its question on the
         lines after it. The reader drops that line and keeps the question. The result line goes back, but it does not
-        say that the review lists no question: it says that the review at the end of the comment asks them, which the
-        collapsed copy does. A review whose first line is not the form, with no question item, still says that the
-        review lists none (test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list)."""
+        say that the review lists no question: it says that the review is at the end of the comment, in the collapsed
+        copy. A review whose first line is not the form, with no question item, still says that the review lists none
+        (test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list)."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
         question = "Is the change useful for the goal of the work?"
@@ -5679,8 +5679,7 @@ class FreshReaderTest(ReaderRunner):
         trimmed = f"- {question}\n\nThe change adds a lemma to the examples."
         posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
         shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-        line = ("Questions for Sami: the review at the end of this comment asks them. The text below may not hold all "
-                "of them.")
+        line = "Questions for Sami: the review is at the end of this comment."
         self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
         self.assertNotIn(trim.NONE_ASKED, shown)
 
@@ -5698,247 +5697,86 @@ class FreshReaderTest(ReaderRunner):
         self.assertNotIn(question, shown)
         self.assertNotIn("is in the text below", shown)
 
-    def test_a_bare_person_line_goes_back_whatever_the_reader_kept_of_the_questions_under_it(self):
-        """OSSV-221's architect, 2026-11-21 09:39Z, in the place of round 13, item 3: under the verdict person with no
-        question item, a bare "Questions for Sami:" that the reader dropped goes back as "Questions for Sami: the review
-        at the end of this comment asks them. The text below may not hold all of them." It goes back when the
-        collapsed copy holds each part that the model put under it (trim.py asked_under: each list item, heading and
-        paragraph, here also the closing sentence). The line says nothing of what the trimmed text holds, so it goes
-        back whatever the reader kept. Two questions are under the line, the second on two lines; the reader keeps
-        both, the first alone, or neither. The comment as it posts: the head, the result line, the trimmed text, the
-        section and the foot."""
+    def test_a_bare_person_line_that_the_reader_dropped_always_points_to_the_review_at_the_end(self):
+        """OSSV-221's architect, 2026-11-21 11:19Z, in the place of the rules of 04:57Z, 06:38Z and 09:39Z: under the
+        verdict person with no question item, a bare "Questions for Sami:" that the reader dropped goes back as
+        "Questions for Sami: the review is at the end of this comment." The line has no condition on what the model
+        wrote under the bare line, or on what the reader kept. So it goes back in each case of those rules: findings
+        alone, a question after the findings, an intro or a heading dropped, a link split over two lines, a bar
+        sentence alone, every part kept, and nothing under the bare line. The comment as it posts: the head, the line,
+        the trimmed text, the section and the foot."""
         head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
         section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        line = "Questions for Sami: the review is at the end of this comment."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        findings = f"Blocking findings.\n\n- {change['text']}"
         first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
-        review = (f"Questions for Sami:\n\n1. {first}\n2. Is the change useful\n   for the goal of the work?\n\n"
-                  "The change fails the bar.")
-        self.assertEqual([" ".join(q.split()) for q in trim.asked_under(review)],
-                         [first, second, "The change fails the bar."])
-        line = f"Questions for Sami: {trim.ASKED_WHOLE}\n\n"
-        for case, trimmed in (("both", f"- {first}\n- {second}\n\nThe change fails the bar."),
-                              ("the first alone", f"- {first}\n\nThe change fails the bar."),
-                              ("neither", "The change fails the bar.")):
-            with self.subTest(case=case):
-                posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
-                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                self.assertEqual(shown, f"{head}\n\n{line}{trimmed}\n\n{section}\n\n---\n{foot}")
-        # The fresh reader of d43cb879 (finding 1): a bar sentence alone, with an empty list, still gets the line.
+        checks = "Sami also checks that `exec` resets the handlers: the review cannot run Linux."
+        linked = ("Blocking findings.\n\n- `theories/A.v` line 12 admits `foo`. See [the\n  proof]"
+                  "(https://github.com/x/y/blob/main/A.v#L12).")
         bar = "The change fails the bar: it models `vfork`, which SCOPE.md leaves out."
-        with self.subTest(case="a bar sentence alone"):
-            posted = trim.comment(f"Questions for Sami:\n\n{bar}", bar, [], head, section, foot, verdict="person")
-            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-            self.assertEqual(shown, f"{head}\n\n{line}{bar}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_bare_person_line_counts_every_part_under_it_to_the_end_of_the_review(self):
-        """Round 13, part B, F1 (OSSV-221's architect, 2026-11-21 06:38Z), the fresh reader of 58e1d7d5 (findings 1
-        and 2), and the architect's rule of 09:39Z: trim.asked_under counts every list item, heading and paragraph
-        under the bare "Questions for Sami:", to the end of the review. That is more than the first block, and more
-        than the paragraphs with a question mark. A line that is a result form alone, plain or in bold, is no part,
-        and the parts after it count. A line that starts with a result form and goes on is a part. The reader's two
-        cases of r13, two blocks of questions and an intro line before the list, get ASKED_WHOLE, whatever the
-        reader keeps, as the collapsed copy holds each part."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
-        first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
-        blocks = f"Questions for Sami:\n\n1. {first}\n\n2. {second}\n\nThe change fails the bar."
-        intro = (f"Questions for Sami:\n\nThe review has two questions.\n\n- {first}\n- {second}\n\n"
-                 "The change fails the bar.")
-        self.assertEqual(trim.asked_under(blocks), [first, second, "The change fails the bar."])
-        self.assertEqual(trim.asked_under(intro),
-                         ["The review has two questions.", first, second, "The change fails the bar."])
-        self.assertEqual(trim.asked_under(f"Questions for Sami:\n\n- {first}\n\n## Notes\n\n- {second}"),
-                         [first, "## Notes", second])
-        self.assertEqual(trim.asked_under(f"Questions for Sami:\n\n- {first}\n\nBlocking findings.\n\n- {second}"),
-                         [first, second])
-        self.assertEqual(trim.asked_under(f"Questions for Sami:\n- {first}\n**Blocking findings.**\n{second}"),
-                         [first, second])
-        self.assertEqual(trim.asked_under(f"Questions for Sami:\n\nBlocking findings. {second}"),
-                         [f"Blocking findings. {second}"])
-        line = f"Questions for Sami: {trim.ASKED_WHOLE}\n\n"
-        for case, review, trimmed in (
-                ("two blocks, the first kept", blocks, f"1. {first}\n\nThe change fails the bar."),
-                ("two blocks, both kept", blocks, f"1. {first}\n\n2. {second}\n\nThe change fails the bar."),
-                ("the intro kept", intro, "The review has two questions.\n\nThe change fails the bar."),
-                ("the intro and the list kept", intro,
-                 f"The review has two questions.\n\n- {first}\n- {second}\n\nThe change fails the bar.")):
+        for case, under, kept, items in (
+                ("findings alone", findings, findings, [change]),
+                ("a question after the findings", f"The change fails the bar.\n\n{findings}\n\n{checks}",
+                 f"The change fails the bar.\n\n{findings}", [change]),
+                ("an intro dropped", f"The review has two questions.\n\n- {first}\n- {second}\n\n{findings}",
+                 f"- {first}\n- {second}\n\n{findings}", [change]),
+                ("a heading dropped", f"### Fork\n\n{first}\n\n### Exec\n\n{second}", f"{first}\n\n{second}", []),
+                ("a split link", f"- {first}\n\n{linked}", linked, [change]),
+                ("a bar sentence alone", bar, bar, []),
+                ("every part kept", f"- {first}\n\n{checks}", f"- {first}\n\n{checks}", []),
+                ("nothing under the bare line", "", "", [])):
             with self.subTest(case=case):
-                posted = trim.comment(review, trimmed, [], head, section, foot, verdict="person")
+                review = f"Questions for Sami:\n\n{under}".strip()
+                posted = trim.comment(review, kept, items, head, section, foot, verdict="person")
                 shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                self.assertEqual(shown, f"{head}\n\n{line}{trimmed}\n\n{section}\n\n---\n{foot}")
+                self.assertEqual(shown, "\n\n".join(p for p in (head, line, kept, section) if p) + f"\n\n---\n{foot}")
 
-    def test_a_question_with_no_question_mark_or_after_a_heading_counts_under_a_bare_person_line(self):
-        """The fresh reader of 58e1d7d5 (findings 1 and 2; OSSV-221's architect): .github/review.md defines a question
-        as what Sami checks next and why the review cannot check it, so it needs no question mark. Case A: under the
-        bare "Questions for Sami:", an item with a question mark, then a paragraph question with none. Case B: the
-        same, with a "### Exec" heading before the paragraph. Each of them is a part (asked_under), and the collapsed
-        copy holds each, so ASKED_WHOLE goes back whatever the reader keeps. Finding 2's case: the only question is a
-        paragraph with no question mark, the reader drops it, and the list holds a blocking finding. The comment then
-        starts with ASKED_WHOLE, not with "Blocking findings."."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
-        asked = "Does `fork` keep the parent's signal mask on Linux?"
-        checks = "Sami also checks that `exec` resets the handlers: the review cannot run Linux."
-        line = f"Questions for Sami: {trim.ASKED_WHOLE}\n\n"
-        for case, under, parts in (("A", f"- {asked}\n\n{checks}", [asked, checks]),
-                                   ("B", f"- {asked}\n\n### Exec\n\n{checks}", [asked, "### Exec", checks])):
-            review = f"Questions for Sami:\n\n{under}"
-            self.assertEqual(trim.asked_under(review), parts)
-            for kept in (f"- {asked}", under):
-                with self.subTest(case=case, kept=kept):
-                    posted = trim.comment(review, kept, [], head, section, foot, verdict="person")
-                    shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                    self.assertEqual(shown, f"{head}\n\n{line}{kept}\n\n{section}\n\n---\n{foot}")
-        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
-                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
-        findings = f"Blocking findings.\n\n- {change['text']}"
-        review = ("Questions for Sami:\n\nSami checks that `fork` keeps the parent's signal mask on Linux: the review "
-                  f"cannot run Linux.\n\n{findings}")
-        with self.subTest(case="finding 2"):
-            posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
-            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-            self.assertEqual(shown, f"{head}\n\n{line}{findings}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_question_after_the_blocking_findings_gets_the_line_only_while_the_collapsed_copy_holds_it(self):
-        """The fresh reader of 9a45919d, finding 1 (OSSV-221's architect, 2026-11-21 09:39Z): .github/review.md puts
-        the blocking findings first and the questions after them. Under the bare "Questions for Sami:", the model
-        writes a sentence, "Blocking findings." with a finding, and then a question with no question mark. The reader
-        keeps the sentence and the findings, and drops the question. The scan of asked_under goes past "Blocking
-        findings.", so the question counts. With the whole copy, ASKED_WHOLE goes back, and it says that the text
-        below may not hold the question. A copy that holds all but the question gives no result line: the comment
-        then starts with the sentence that the reader kept."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness.** The section.", "The foot."
-        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
-                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
-        checks = "Sami also checks that `exec` resets the handlers: the review cannot run Linux."
-        findings = f"Blocking findings.\n\n- {change['text']}"
-        review = f"Questions for Sami:\n\nThe change fails the bar.\n\n{findings}\n\n{checks}"
-        trimmed = f"The change fails the bar.\n\n{findings}"
-        line = ("Questions for Sami: the review at the end of this comment asks them. The text below may not hold all "
-                "of them.")
-        with self.subTest(case="the parts"):
-            self.assertEqual(trim.asked_under(review), ["The change fails the bar.", change["text"], checks])
-        with self.subTest(case="the whole copy"):
-            posted = trim.comment(review, trimmed, [change], head, section, foot, verdict="person")
-            shown, whole = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
-            self.assertEqual(shown, f"{head}\n\n{line}\n\n{trimmed}\n\n{section}\n\n---\n{foot}")
-            self.assertIn(checks, whole)
-        with self.subTest(case="a copy that holds all but the question"):
-            cut = trim.closed(review[:review.index(checks)]) + "\n\n" + trim.CUT_WHOLE
-            self.assertEqual(trim.with_result(review, trimmed, head, "person", [change], cut), trimmed)
-        # The fresh reader of d43cb879: in the order of .github/review.md:327, the findings and then the question, all
-        # kept. The finding does not count, as it is the text of a change item, and the question does.
-        with self.subTest(case="the findings first, then the question"):
-            kept = f"{findings}\n\n{checks}"
-            posted = trim.comment(f"Questions for Sami:\n\n{kept}", kept, [change], head, section, foot,
-                                  verdict="person")
-            shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-            self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_dropped_intro_or_heading_under_a_bare_person_line_gets_a_line_that_is_true(self):
-        """The fresh reader of 9a45919d, finding 2 (OSSV-221's architect, 2026-11-21 09:39Z): an intro sentence and a
-        heading are parts under the bare "Questions for Sami:" (asked_under). When the reader drops only such a part,
-        the text below holds each question. So the line must not say that only the copy holds them. ASKED_WHOLE goes
-        back: the review at the end of the comment asks them, and the text below may not hold all of them. Case
-        intro: an intro sentence, two questions, then "Blocking findings." and a finding; the reader drops the intro.
-        Case heading: a "### Fork" and a "### Exec" heading over two questions, and no finding; the reader drops the
-        headings."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
-        first, second = "Does `fork` keep the parent's signal mask?", "Is the change useful for the goal of the work?"
-        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
-                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
-        findings = f"Blocking findings.\n\n- {change['text']}"
-        line = ("Questions for Sami: the review at the end of this comment asks them. The text below may not hold all "
-                "of them.")
-        for case, under, items, kept in (
-                ("intro", f"The review has two questions.\n\n- {first}\n- {second}\n\n{findings}", [change],
-                 f"- {first}\n- {second}\n\n{findings}"),
-                ("heading", f"### Fork\n\n{first}\n\n### Exec\n\n{second}", [], f"{first}\n\n{second}")):
-            with self.subTest(case=case):
-                posted = trim.comment(f"Questions for Sami:\n\n{under}", kept, items, head, section, foot,
-                                      verdict="person")
-                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_bare_person_line_over_findings_alone_gets_no_line_that_says_the_review_asks_them(self):
-        """The fresh reader of d43cb879, finding 1 (OSSV-221's architect's rule of 09:39Z, and its fix): a person
-        verdict whose list holds a change item and no question item, and whose review is the bare "Questions for
-        Sami:", then "Blocking findings." and the finding. The reader drops the bare line. The review asks nothing, so
-        "the review at the end of this comment asks them" would be false. A part whose text is the text of a change
-        item of the list (blocking or optional, both as plain reads them) does not count, and no other part is left.
-        So no result line goes back, and the comment starts with "Blocking findings."."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
-        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
-                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
-        optional = {"kind": "change", "ref": "theories/B.v:3", "optional": True,
-                    "text": "`theories/B.v` line 3 can be  shorter."}
-        for case, kept, items in (
-                ("a blocking finding", f"Blocking findings.\n\n- {change['text']}", [change]),
-                ("a blocking and an optional finding",
-                 f"Blocking findings.\n\n- {change['text']}\n- `theories/B.v` line 3\n  can be shorter.",
-                 [change, optional])):
-            with self.subTest(case=case):
-                posted = trim.comment(f"Questions for Sami:\n\n{kept}", kept, items, head, section, foot,
-                                      verdict="person")
-                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                self.assertEqual(shown, f"{head}\n\n{kept}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_link_whose_text_a_line_break_splits_is_read_the_same_in_a_part_and_in_the_copy(self):
-        """The fresh reader of d43cb879, finding 2: a part joins its lines with a space, so plain reads a link whose
-        text a line break splits as a link there. The collapsed copy must be read the same way, with each line break
-        a space, else it never holds that part and no line goes back. The review: the bare "Questions for Sami:", a
-        question, "Blocking findings." and a finding whose link text is on two lines. The list holds a change item
-        whose text is not that line, so the finding counts. Whether the reader drops the question or keeps it,
-        ASKED_WHOLE goes back."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
-        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
-                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
-        asked = "Does `fork` keep the parent's signal mask on Linux?"
-        findings = ("Blocking findings.\n\n- `theories/A.v` line 12 admits `foo`. See [the\n  proof]"
-                    "(https://github.com/x/y/blob/main/A.v#L12).")
-        review = f"Questions for Sami:\n\n- {asked}\n\n{findings}"
-        line = ("Questions for Sami: the review at the end of this comment asks them. The text below may not hold all "
-                "of them.")
-        for case, kept in (("the question dropped", findings), ("the question kept", f"- {asked}\n\n{findings}")):
-            with self.subTest(case=case):
-                posted = trim.comment(review, kept, [change], head, section, foot, verdict="person")
-                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
-                self.assertEqual(shown, f"{head}\n\n{line}\n\n{kept}\n\n{section}\n\n---\n{foot}")
-
-    def test_a_person_review_whose_blocking_finding_would_open_the_comment_points_to_the_collapsed_copy(self):
-        """Round 13, part B, M1 (OSSV-221's architect, 2026-11-21 06:38Z), and the architect's rule of 09:39Z: the
-        verdict is person, the list holds no question item, and the reader drops the bare "Questions for Sami:" and the
-        question under it. Else the comment would start with "Blocking findings." under the verdict person. So the
-        line ASKED_WHOLE goes first, which names no model. It goes first only while the collapsed copy at the end of
-        the comment holds all that the model wrote under the bare line, to the end of the review. A section so long
-        that the copy loses the end of the review leaves no such line, also when the copy still holds the question.
-        A list with no blocking finding gets the line too: the trim then loses its "Blocking findings." line, which
-        the list contradicts."""
-        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
-        foot = "The foot."
+    def test_a_bare_person_line_points_to_the_review_at_the_end_also_when_the_copy_is_cut(self):
+        """OSSV-221's architect, 2026-11-21 11:19Z: when the comment would be over MAX_COMMENT characters, the
+        collapsed copy loses its end and ends with CUT_WHOLE. The line "Questions for Sami: the review is at the end of
+        this comment." still goes back first, as it does not say that the copy is full. The list holds a blocking
+        finding and no question item; the reader drops the bare line and the question. The copy is cut after the
+        question, or before it."""
+        head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
         change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
                   "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
         question = "Does `fork` keep the parent's signal mask on Linux?"
         findings = f"Blocking findings.\n\n- {change['text']}"
         review = (f"Questions for Sami:\n\n- {question}\n\n{findings}\n\n" + "The rest of the review. " * 400).strip()
-        line = f"Questions for Sami: {trim.ASKED_WHOLE}"
-        self.assertNotIn("Claude", line)
-        for case, items, section, first, held in (
-                ("the whole copy", [change], "**Soundness.** The section.", line, True),
-                ("a copy cut after the question", [change], "S" * (trim.MAX_COMMENT - 2000), "Blocking findings.",
-                 True),
-                ("a copy cut before the question", [change], "S" * (trim.MAX_COMMENT - 400), "Blocking findings.",
-                 False),
-                ("no blocking finding", [], "**Soundness.** The section.", line, True)):
+        line = "Questions for Sami: the review is at the end of this comment."
+        for case, section, held in (("a copy cut after the question", "S" * (trim.MAX_COMMENT - 2000), True),
+                                    ("a copy cut before the question", "S" * (trim.MAX_COMMENT - 400), False)):
             with self.subTest(case=case):
-                posted = trim.comment(review, findings, items, head, section, foot, verdict="person")
+                posted = trim.comment(review, findings, [change], head, section, foot, verdict="person")
                 shown, whole = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
-                self.assertEqual(shown.split("\n\n")[1], first, shown[:300])
+                self.assertEqual(shown.split("\n\n")[1:3], [line, "Blocking findings."], shown[:300])
+                self.assertIn(trim.CUT_WHOLE, whole)
                 self.assertEqual(question in whole, held)
                 self.assertLessEqual(len(posted), trim.MAX_COMMENT)
+
+    def test_a_bare_person_line_gets_no_pointer_when_the_reader_kept_it_or_the_list_holds_a_question(self):
+        """OSSV-221's architect, 2026-11-21 11:19Z: the line "Questions for Sami: the review is at the end of this
+        comment." is only for a bare "Questions for Sami:" that the reader dropped, with no question item. When the
+        reader keeps the bare line, the trimmed text starts with it and posts as it is. When the list holds a question
+        item, the result line lists each question that the trimmed text lacks, or says that each question is in the
+        review below."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        section, foot = "**Soundness of the proofs.** The section of code.", "The foot."
+        asked = {"kind": "question", "ref": "", "optional": False, "text": "Does `fork` keep the parent's signal mask?"}
+        review = f"Questions for Sami:\n\n- {asked['text']}\n\nThe change fails the bar."
+        for case, kept, items, first in (
+                ("the bare line kept", review, [], "Questions for Sami:\n\n"),
+                ("a question item that the reader dropped", "The change fails the bar.", [asked],
+                 f"Questions for Sami:\n\n- {asked['text']}\n\nThe change fails the bar."),
+                ("a question item that the reader kept", f"- {asked['text']}\n\nThe change fails the bar.", [asked],
+                 "Questions for Sami: each question is in the review below.\n\n")):
+            with self.subTest(case=case):
+                posted = trim.comment(review, kept, items, head, section, foot, verdict="person")
+                shown = posted.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)[0]
+                self.assertTrue(shown.startswith(f"{head}\n\n{first}"), shown)
+                self.assertNotIn("at the end of this comment", shown)
 
     def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
         """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends

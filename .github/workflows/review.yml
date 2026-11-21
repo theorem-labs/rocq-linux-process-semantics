@@ -2262,10 +2262,8 @@ jobs:
       # with_result): for person, "Questions for Sami:" with one bullet for each question whose text the trimmed text
       # does not hold. The trimmed text loses the model's "No blocking finding.", and loses its "Blocking findings."
       # only when the list holds no blocking finding: else that line and its findings stay below the questions. A bare
-      # "Questions for Sami:" that the reader dropped, with no question item, goes back as a line that points to the
-      # collapsed copy. It goes back only when there is a part under it that is not the text of a change item of the
-      # list, and that copy holds each such part: else no result line goes back. A verdict blocking whose list holds no
-      # question stays blocking.
+      # "Questions for Sami:" that the reader dropped, with no question item, goes back with a pointer to the collapsed
+      # copy of the review. A verdict blocking whose list holds no question stays blocking.
       # .github/review/trim.py makes the comment unable to notify anyone, to link another issue or pull request, or to
       # link or load anything outside github.com (trim.py's inert), cuts it at 20,000 characters, and closes what it
       # leaves open (trim.py's closed). Then it runs the fresh reader: one request to Claude, with no tools, that holds
