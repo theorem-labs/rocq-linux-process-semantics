@@ -3059,7 +3059,7 @@ class Holding(Runner):
     def run_hold(self, route, outsider="mallory", review="skipped", origin="", tries="", comments=(), capped=False,
                  uncounted=False, runs=(), task="review", number=7, prs=(), jobs=None, kind="pr",
                  labels=("review-held",), comment="", head="", total=None, run_jobs=None, account=None, author=None,
-                 unread=False, outside="true", author_kind="outsider", now=None):
+                 unread=False, outside="true", author_kind="outsider", now=None, owed_line=""):
         """Run the hold step for a run of the task of #number, a pull request or an issue (kind) with labels;
         capped: this run's review stopped at the cap; uncounted: its count of the hour's reviews failed, so it stopped
         before the cap's step; runs: this workflow's runs, (id, name[, its trust job's conclusion, success when absent,
@@ -3071,7 +3071,8 @@ class Holding(Runner):
         API gives it (none when None); unread: the trust job's output uncounted, true when it did not read every run
         that could count on the account; outside and author_kind: the trust job's outputs outside and kind (true and
         outsider by default, as for mallory's item; false and writer: the author has write access; false and unknown:
-        GitHub did not say); now: the head of the pull request that GitHub gives now (head when None).
+        GitHub did not say); now: the head of the pull request that GitHub gives now (head when None); owed_line: the
+        output line of the step "Record a withdrawal that this run owes" (OWED_LINE), empty when it gave none.
         posts are the calls that post or edit the hold comment, and body the first."""
         n = number
         self.checkout()
@@ -3114,7 +3115,7 @@ class Holding(Runner):
                                      REVIEW_TRIES=WF["env"]["REVIEW_TRIES"],
                                      SCREENED_HOURLY_CAP=WF["env"]["SCREENED_HOURLY_CAP"],
                                      OUTSIDE_HOURLY_LIMIT=WF["env"]["OUTSIDE_HOURLY_LIMIT"],
-                                     GITHUB_STEP_SUMMARY=summary)
+                                     GITHUB_STEP_SUMMARY=summary, OWED_LINE=owed_line)
         posts = [c for c in gh_calls(self.api) if any(a.startswith("body=<!-- review-held -->") for a in c)]
         body = next((a for c in posts for a in c if a.startswith("body=")), "body=")[len("body="):]
         return rc, out, posts, body
@@ -3831,6 +3832,34 @@ class HoldTest(Holding):
                                          else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
                         self.assertNotIn(["--method", "PATCH", f"repos/{REPO}/issues/comments/50"],
                                          [c[:3] for c in calls])
+
+    def test_an_owed_record_makes_no_label_comment_and_the_label_step_writes_the_line(self):
+        """The fresh reader of round 14, finding 1: a record of an owed withdrawal never makes a label
+        comment. Before, the hold job's step posted a new label comment in the state working ("The workflow tries
+        again.") on an item with none, for a hold of the screen that is never tried again. The screen of a review of
+        mallory's #7 holds HEAD, #7 has no label comment, and the post job gave no output. The step "Record a withdrawal
+        that this run owes" writes no label comment and gives the line as its output line. The label step gives it to
+        the one label comment that it posts, the comment of the hold of the screen."""
+        line = f"<!-- withdraw-owed {HEAD} screen -->"
+        trust = {"task": "review", "route": "screen", "outsider": "mallory", "outside": "true", "kind": "outsider",
+                 "number": "7", "head": HEAD}
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.screen.result": "success", "needs.screen.outputs.verdict": "held",
+                    "needs.post.outputs.owed": "", "needs.post.outputs.withdrawn": "",
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+        s = step("hold", "Record a withdrawal that this run owes")
+        started = {f"env.{k}": v for k, v in filled(JOBS["hold"]["env"], ctx).items()}
+        self.assertTrue(evaluate(s["if"], {**started, **ctx}))
+        self.checkout()
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        env = filled({**WF["env"], **JOBS["hold"]["env"], **s["env"]}, ctx)
+        rc, out, got = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+        self.assertEqual((rc, label_comments(self.api), got), (0, [], {"line": line}), out)
+        rc, out, _posts, _body = self.run_hold("screen", head=HEAD, owed_line=got["line"])
+        self.assertEqual(rc, 0, out)
+        state = rules.label_state(outsider=True, screen_held=True)
+        self.assertEqual(label_comments(self.api),
+                         [("POST", f"repos/{REPO}/issues/7/comments", rules.label_comment(state, "", [line]))], out)
 
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
@@ -5819,6 +5848,43 @@ class FreshReaderTest(ReaderRunner):
                 self.assertIn(trim.CUT_WHOLE, whole)
                 self.assertEqual(question in whole, held)
                 self.assertLessEqual(len(posted), trim.MAX_COMMENT)
+
+    def test_a_bare_person_line_points_to_the_summary_when_the_cut_copy_keeps_only_markup(self):
+        """The fresh reader of round 14, finding 2 (OSSV-221's architect, 2026-11-21 14:00Z: a cut copy that keeps no
+        word of the review): the question item starts with "- **". When the cut of the collapsed copy lands after
+        "-", "- ", "- *" or "- **", the copy keeps markup and no word under the bare "Questions for Sami:". The line
+        then points to the run's summary, not to the end of the comment. For each size of the section near the cut that
+        changes the line, the line says "at the end of this comment" only when the copy keeps a word under the bare
+        line, and the comment stays at most MAX_COMMENT characters."""
+        head, foot = f"<!-- review -->\n<!-- review-head {HEAD} -->", "The foot."
+        change = {"kind": "change", "ref": "theories/A.v:12", "optional": False,
+                  "text": "`theories/A.v` line 12 admits `foo`. Prove it."}
+        findings = f"Blocking findings.\n\n- {change['text']}"
+        review = ("Questions for Sami:\n\n- **Does `fork` keep the parent's signal mask on Linux?**\n\n"
+                  f"{findings}\n\n" + "The rest of the review. " * 400).strip()
+        at_end = "Questions for Sami: the review is at the end of this comment."
+        in_summary = "Questions for Sami: the review is in the summary of this workflow run."
+
+        def posted(n):
+            text = trim.comment(review, findings, [change], head, "S" * n, foot, verdict="person")
+            shown, whole = text.split(f"\n\n<details>\n<summary>{trim.WHOLE}</summary>", 1)
+            copy = whole.strip().removesuffix("</details>").strip().removesuffix(trim.CUT_WHOLE).strip()
+            return len(text), shown.split("\n\n")[1], copy.partition("\n")[2].strip()
+        low, high = trim.MAX_COMMENT - 2000, trim.MAX_COMMENT - 400
+        self.assertEqual((posted(low)[1], posted(high)[1]), (at_end, in_summary))
+        while high - low > 1:
+            mid = (low + high) // 2
+            if posted(mid)[1] == at_end:
+                low = mid
+            else:
+                high = mid
+        # The largest section with the line at_end keeps the first word of the question, and no more.
+        self.assertEqual(posted(low)[2], "- **D")
+        for n in range(low - 8, high + 8):
+            with self.subTest(section=n):
+                size, line, under = posted(n)
+                self.assertLessEqual(size, trim.MAX_COMMENT)
+                self.assertEqual(line, at_end if re.search(r"\w", under) else in_summary, under)
 
     def test_a_bare_person_line_never_points_to_a_copy_that_holds_none_of_the_review(self):
         """Fresh reader b7 of round 13 (OSSV-221's architect, 2026-11-21 04:09Z: the line must be true where it posts):
@@ -9496,8 +9562,10 @@ class RescreenJobTest(Held):
                 patches = [c[2] for c in gh_calls(self.api) if c[:2] == ["--method", "PATCH"]]
                 if changed:
                     self.assertEqual((patches, writes(self.api)), ([], []), self.logs)
-                    self.assertIn("a comment of the workflow on it changed after the trust job read it",
-                                  "".join(self.logs))
+                    self.assertRegex("".join(self.logs), r"#7: a comment of the workflow on it changed at or after "
+                                     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z, the time before the "
+                                     r"trust job read the comments\. So this run writes nothing\. The next rescreen "
+                                     r"pass decides again\.\n")
                 else:
                     self.assertEqual(patches, [f"repos/{REPO}/issues/comments/50"])
 
@@ -15701,6 +15769,43 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(outcomes["Post the review, or replace the one posted before"], "failure", self.logs)
         self.assertEqual([body for _method, _endpoint, body in label_comments(self.api)], [marked], outcomes)
 
+    def test_an_owed_record_of_the_comment_job_makes_no_label_comment_and_the_label_step_writes_the_line(self):
+        """The fresh reader of round 14, finding 1: a record of an owed withdrawal never makes a label comment. The
+        screened CI run of mallory's #7 recorded check run 901 on HEAD, and #7 has no label comment. alice reviews HEAD
+        by hand and gives a blocking finding; GitHub refuses the withdrawal of 901, so the post job's output owed names
+        HEAD and blocking. The comment job's step "Record a withdrawal that the post job owes" writes no label comment
+        and gives the line as its output line. Its label step then posts the one label comment of #7, in the state of
+        the blocking review, with the line."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        by_hand = dict(self.BY_HAND, started=ago(1), named=HEAD)
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=by_hand, event="workflow_dispatch",
+                         comments=[screened], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)
+        blocked = review_of(HEAD, "blocking", screened=False)
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in by_hand.items()}
+        ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                    "github.repository": REPO, "github.token": self.RUN_TOKEN, "needs.trust.result": "success",
+                    "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                    "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                    "needs.review.outputs.verdict": "blocking", "needs.review.outputs.body": blocked["body"],
+                    "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                    "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", [screened])
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        outcomes = run_job(self, "comment", ctx, self.TOKENS)
+        self.assertEqual((outcomes["Record a withdrawal that the post job owes"], outcomes[self.LABEL]),
+                         ("success", "success"), self.logs)
+        self.assertEqual([(method, endpoint, line in body.split("\n"), body.endswith(f"\n<!-- {AUTHOR_LABEL} -->"))
+                          for method, endpoint, body in label_comments(self.api)],
+                         [("POST", f"repos/{REPO}/issues/7/comments", True, True)], self.logs)
+
     def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
         """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose
         post job failed, which writes neither the labels nor the text of the label comment, and every later write of
@@ -15847,7 +15952,7 @@ class ImportCheckTest(ReaderRunner):
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} screen -->")
-        s = step("hold", "Record a withdrawal that the post job owes")
+        s = step("hold", "Record a withdrawal that this run owes")
         for case, task, route, screen, withdrawn, label, want in (
                 ("no output of the post job", "review", "screen", ("success", "held"), "", old["body"], [marked]),
                 ("an approval", "approve", "screen", ("success", "held"), "", old["body"], [marked]),

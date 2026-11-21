@@ -58,7 +58,7 @@ the line "The review below asks the other questions." (ASKED_OTHERS) follows the
 followed by "each question is in the review below." (ASKED_BELOW) when the list holds a question item. With no
 question item, it is followed by "the review is at the end of this comment." (ASKED_WHOLE) when the review's own
 first line was the bare form, which the reader dropped, else by "this review lists none." (NONE_ASKED): the colon
-opens no empty list. When a comment over MAX_COMMENT characters cuts its collapsed copy so that the copy keeps nothing
+opens no empty list. When a comment over MAX_COMMENT characters cuts its collapsed copy so that the copy keeps no word
 of the review under that bare form, "the review is in the summary of this workflow run." (ASKED_SUMMARY) takes the
 place of ASKED_WHOLE. So under person, a list with a blocking finding (the soundness rule keeps each one) keeps the
 reader's "Blocking findings." line and the findings after it, after the result line. The posted result never says
@@ -151,7 +151,7 @@ REVIEW_HEAD = re.compile(r"(?m)^<!-- review-head [0-9a-f]{40} -->$")
 # each question item of the list, or the list holds no question item. So the colon of the form opens no empty list.
 # ASKED_WHOLE is for a review whose first line was the bare form, which the reader dropped, with no question item: it
 # points to the collapsed copy at the end of the comment. That copy can be cut (CUT_WHOLE), so the line does not say
-# that it is whole. ASKED_SUMMARY takes its place when the cut copy keeps nothing of the review under the bare form
+# that it is whole. ASKED_SUMMARY takes its place when the cut copy keeps no word of the review under the bare form
 # (comment): the review is then in the run's summary alone. NONE_ASKED is for any other review: the model opened no
 # list of questions.
 ASKED_BELOW = "each question is in the review below."
@@ -1423,7 +1423,7 @@ def with_result(review, trimmed, head, verdict="", items=(), kept=True):
     name it (present), so that missing gives no second copy of the question. When trimmed holds the other question
     items, the line ASKED_OTHERS follows the bullets. With no bullet, the form is followed by ASKED_BELOW when items
     hold a question item. Else it is followed by ASKED_WHOLE when the line of review was the bare form, and by
-    NONE_ASKED when it was not. kept is False when the collapsed copy keeps nothing of review under that bare form
+    NONE_ASKED when it was not. kept is False when the collapsed copy keeps no word of review under that bare form
     (comment): ASKED_SUMMARY then takes the place of ASKED_WHOLE. So under person, a list with a blocking finding (the
     soundness rule keeps each one) keeps the reader's "Blocking findings." line and what follows it, after the result
     line. With no verdict, the form is the one that the first line of review starts with, and the verdict is that
@@ -1458,9 +1458,9 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     """The comment of a review: the parts of this file's docstring, in its order. review is the text that the reader
     read, made inert, cut and closed; the trimmed text, the result line that goes back to it (with_result, for verdict,
     the verdict after the rules of code) and the added items are made inert and closed here. The collapsed copy loses
-    its end when the comment would be over MAX_COMMENT characters. When the cut copy then keeps nothing of the review
-    under its first line, ASKED_SUMMARY takes the place of ASKED_WHOLE in the result line (with_result), and the copy
-    is cut again for that longer line."""
+    its end when the comment would be over MAX_COMMENT characters. When the cut copy then keeps no word of the review
+    under its first line (only white space or markup such as "- **"), ASKED_SUMMARY takes the place of ASKED_WHOLE in
+    the result line (with_result), and the copy is cut again for that longer line."""
     def build(whole, kept=True):
         shown = with_result(review, closed(inert(trimmed)), head, verdict, items, kept)
         return (framed((head, shown, section, added(missing(items, shown))), foot)
@@ -1471,7 +1471,7 @@ def comment(review, trimmed, items, head="", section="", foot="", verdict=""):
     text = build(review)
     if len(text) > MAX_COMMENT:
         keep = room(text)
-        kept = bool(review[:keep].strip().partition("\n")[2].strip())
+        kept = bool(re.search(r"\w", review[:keep].strip().partition("\n")[2]))
         if not kept:
             keep = room(build(review, kept))
         text = build(closed(review[:keep]) + "\n\n" + CUT_WHOLE, kept)
