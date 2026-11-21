@@ -641,7 +641,7 @@ stopped() {
   [ "$of" != rescreen ] || of=review runs="rescreen or review"
   [ -z "${3:-}" ] || from="after run $3, which settled its hold"
   echo "::error::#$number: $from, $2 runs of $runs were tries that settled nothing, with no new hold. The work" \
-    "of the hold is not tried again. The label comment names the next step for Sami."
+    "of the hold is not tried again. The label comment will name the next step for Sami."
   case $1 in
     answer) title="Automated answer held." work="the automated answer" ;;
     draft) title="Automated reply held." work="the automated reply" ;;
@@ -688,7 +688,7 @@ head_stopped() {
       title="Automated close and reopen held."
       text="The workflow tried $2 times to close and reopen this pull request so that GitHub starts the checks of $commit. No try finished." ;;
   esac
-  echo "::error::#$number at $head: $text It is not tried again, and the label comment names the next step" \
+  echo "::error::#$number at $head: $text It is not tried again, and the label comment will name the next step" \
     "for Sami."
   halt "head-$of" tries_used_up "$of" "$title" "$text The workflow does not try it again."
 }
@@ -698,7 +698,7 @@ head_stopped() {
 # comment of a catch-up. That comment ends each later read of the item's runs (gave_up).
 left_stopped() {
   echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
-    "tried again, and the label comment names the next step for Sami."
+    "tried again, and the label comment will name the next step for Sami."
   halt reopen left_closed catchup "Automated close and reopen held." \
     "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
 }
@@ -845,7 +845,7 @@ answer_stopped() {
   local what="this issue"
   [ "$kind" != pr ] || what="this pull request"
   echo "::error::#$number: the comment job of $2 answer runs of comment $1 failed: the answer is not tried" \
-    "again, and the label comment names the next step for Sami."
+    "again, and the label comment will name the next step for Sami."
   halt answer-post tries_used_up answer "Automated answer held." "The workflow wrote the automated answer to your comment on $what $2 times, and could not post it. The workflow does not try it again. You do not need to do anything."
 }
 # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is

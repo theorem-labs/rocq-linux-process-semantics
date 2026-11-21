@@ -10497,7 +10497,7 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, started), (1, [("7", "stop", "", HEAD if pr else "", stop)]), out)
                 self.assertIn(f"::error::#7: after run 10, which settled its hold, {self.TRIES} runs of {runs} were "
                               "tries that settled nothing, with no new hold. The work of the hold is not tried again. "
-                              "The label comment names the next step for Sami.", out)
+                              "The label comment will name the next step for Sami.", out)
                 _trust, steps = write_stop(self, stop, head=HEAD if pr else "")
                 self.assertEqual(steps[STOP_STEP], "success", self.logs)
                 posts = [a[len("body="):] for c in writes(self.api) for a in c
