@@ -3770,6 +3770,16 @@ class HoldTest(Holding):
                     self.assertEqual((rc, len(held)), (0, 1), out)
                     self.assertEqual(f"repos/{REPO}/pulls/7" in self.calls(), now == HEAD)
 
+    def test_the_writers_of_a_hold_comment_are_found_in_any_quoting(self):
+        """assertWriters finds a writer only by the marker in single quotes ('<!-- review-held -->'). A step that
+        writes a comment of an item (POST or PATCH of issues/.../comments) and names the marker in any quoting is a
+        writer too: the writers are the hold job's step and STOP_STEP alone. A new one fails this."""
+        write = re.compile(r"--method (POST|PATCH) \"repos/\$REPO/issues/(\$NUMBER/comments|comments/\$[a-z]+)\"")
+        found = {(job, s["name"]) for wf in (WF, RESCREEN, SCREEN_START, CI) for job, value in wf["jobs"].items()
+                 for s in value.get("steps", []) if write.search(s.get("run", ""))
+                 and "<!-- review-held -->" in s.get("run", "")}
+        self.assertEqual(found, {("hold", self.STEP), ("comment", STOP_STEP)})
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
