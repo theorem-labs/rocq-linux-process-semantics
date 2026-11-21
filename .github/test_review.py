@@ -5449,6 +5449,24 @@ class FreshReaderTest(ReaderRunner):
                 self.assertEqual(shown.count(asked["text"]), 1, shown)
                 self.assertIn("theories/A.v:12", shown)
 
+    def test_a_person_result_line_that_the_reader_dropped_opens_no_empty_list(self):
+        """Fresh reader b7 of round 10 (M3) and round 11, part B (impl v14: "the colon opens no empty list in either
+        case"): the review gives the verdict person, and its first line is "Questions for Sami:" with the question on
+        the lines after it. The reader drops that line and the question, and keeps the rest. The result line goes back
+        (trim.py with_result), but as the review's own line: "Questions for Sami:" and then the trimmed text, which is
+        no question. The question has no ref, so no added item puts it back either (trim.py missing). The posted review
+        must ask Sami the question once, under the result line, and never end that line with a colon that opens an
+        empty list."""
+        head = f"<!-- review -->\n<!-- review-head {HEAD} -->"
+        asked = {"kind": "question", "ref": "", "optional": False,
+                 "text": "Is the change useful for the goal of the work?"}
+        review = f"Questions for Sami:\n\n- {asked['text']}\n\nThe change adds a lemma to the examples."
+        trimmed = "The change adds a lemma to the examples."
+        posted = trim.comment(review, trimmed, [asked], head, verdict="person")
+        shown = posted.split(f"<summary>{trim.WHOLE}</summary>", 1)[0]
+        self.assertEqual(shown.count(asked["text"]), 1, shown)
+        self.assertNotIn(f"Questions for Sami:\n\n{trimmed}", shown)
+
     def test_a_result_line_whose_questions_the_trim_holds_opens_no_empty_list(self):
         """Fresh reader b7 of round 10 (M3): under the verdict person, a result line that lists no question never ends
         with the colon of "Questions for Sami:", which would open an empty list, so that the next lines would read as
