@@ -3545,6 +3545,33 @@ class HoldTest(Holding):
                 self.assertIn("<!-- review-held-limit 50 0" + {"answer": " answer 901", "approve": " approve"}.get(task, "")
                               + " -->", body)
 
+    def test_a_later_hold_of_the_review_keeps_the_screen_hold_that_a_relabel_reads(self):
+        """R12 and the author-kind table (v5, section 4, Relabel, outsider: "R: pass with the screened marker and no
+        newer screen hold"): the CI run of mallory's #7 screened HEAD, its review passed it, and its post job recorded
+        the check run. A later screen held HEAD: its hold comment (5) names HEAD and is newer than the review comment,
+        and its run withdrew the check run. Then a CI run of HEAD (mallory closes and reopens #7) finds mallory at her
+        limit, and the hold job holds the review again at the limit. That hold must not take the place of the screen's
+        hold comment: a relabel of HEAD reads the hold comments of the screen that name HEAD (rules.py verdict, held.sh
+        relabel_withdraws), and with the screen's hold gone it reads the screened pass as the newest word on HEAD, and
+        records the check run again on a head that the screen held."""
+        review = review_of(HEAD, at=ago(120))
+        screen_hold = {"id": 5, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60),
+                       "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                               "request, so the automated review did not run. You do not need to do anything.\n\n"
+                               f"<!-- review-held-head {HEAD} -->"}
+        self.assertEqual(rules.review_verdict([review, screen_hold], HEAD)[1:], ("held", "screen"))
+        calls, post, body = self.hold("limit", comments=[review, screen_hold], head=HEAD)
+        self.assertIn(f"<!-- review-held-head {HEAD} -->", body)
+        # The item's comments after the hold: a PATCH of comment 5 replaces its body, a POST adds a comment.
+        after = [review, screen_hold]
+        if post[:3] == ["--method", "PATCH", f"repos/{REPO}/issues/comments/5"]:
+            after = [review, dict(screen_hold, body=body, updated_at=ago(0))]
+        else:
+            after.append({"id": 6, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body})
+        verdict, state, why = rules.review_verdict(after, HEAD)
+        self.assertEqual((state, why), ("held", "screen"),
+                         "after the limit hold, a relabel of HEAD would record the check run again: " + str(post[:3]))
+
     def test_the_job_gets_nothing_of_the_screen_but_its_route(self):
         e = JOBS["hold"]["env"]
         self.assertEqual(set(e), {"GH_TOKEN", "REPO", "NUMBER", "TASK", "ROUTE", "OUTSIDER", "OUTSIDE", "AUTHOR_KIND",
