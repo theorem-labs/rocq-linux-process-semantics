@@ -1922,15 +1922,15 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
              socket, so this precedes the state dispatch below *)
       else
       match sk with
-      | SkConnected peer ch rx =>
+      | SkConnected peer ch rx sent =>
           match rx with
           | NFin =>
               check_access_ok_zero buf count eff m
                 (check_ret_only eff (Z_to_bv 64 0) m [])
           | NRst =>
-              check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false) buf count i eff m
+              check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false sent) buf count i eff m
           | NTimedOut =>
-              check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false) buf count i eff m
+              check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false sent) buf count i eff m
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count))
               then check_ret_only eff (errno_ret EFAULT) m []
@@ -1960,7 +1960,7 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
                                 (fd_insert (m_fds m) fd
                                    (FdSocket
                                       (SkConnected peer ch
-                                         (snd (net_take rx (length bs)))))) m)
+                                         (snd (net_take rx (length bs))) sent))) m)
                              (map (ReadEv ch) bs)
                       else CheckReject
                   | _ => CheckReject
@@ -1968,7 +1968,7 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
               end
               end
           end
-      | SkReset peer ch rx pending bound =>
+      | SkReset peer ch rx pending bound sent =>
           (* [ReadWrite.read_spec]'s [SkReset] arm: the queue first, then
              the end, whose error is reported only while [pending] *)
           match rx with
@@ -1977,12 +1977,12 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
                 (check_ret_only eff (Z_to_bv 64 0) m [])
           | NRst =>
               if pending
-              then check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound) buf count i eff m
+              then check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound sent) buf count i eff m
               else check_access_ok_zero buf count eff m
                      (check_ret_only eff (Z_to_bv 64 0) m [])
           | NTimedOut =>
               if pending
-              then check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound) buf count i eff m
+              then check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound sent) buf count i eff m
               else check_access_ok_zero buf count eff m
                      (check_ret_only eff (Z_to_bv 64 0) m [])
           | NCons _ _ =>
@@ -2009,7 +2009,7 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
                                 (fd_insert (m_fds m) fd
                                    (FdSocket
                                       (SkReset peer ch
-                                         (snd (net_take rx (length bs))) pending bound))) m)
+                                         (snd (net_take rx (length bs))) pending bound sent))) m)
                              (map (ReadEv ch) bs)
                       else CheckReject
                   | _ => CheckReject
@@ -6954,17 +6954,17 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
       end
   | RdSocket sk =>
       match sk with
-      | SkConnected peer ch rx =>
+      | SkConnected peer ch rx sent =>
           match rx with
           | NFin => check_ret_only eff (Z_to_bv 64 0) m []
           | NRst =>
               check_ret_only eff (errno_ret ECONNRESET)
                 (with_fds (fd_insert (m_fds m) fd
-                             (FdSocket (SkReset peer ch NRst false false))) m) []
+                             (FdSocket (SkReset peer ch NRst false false sent))) m) []
           | NTimedOut =>
               check_ret_only eff (errno_ret ETIMEDOUT)
                 (with_fds (fd_insert (m_fds m) fd
-                             (FdSocket (SkReset peer ch NTimedOut false false))) m) []
+                             (FdSocket (SkReset peer ch NTimedOut false false sent))) m) []
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
               | None => check_ret_only eff (errno_ret EFAULT) m []
@@ -6992,7 +6992,7 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
                                         (fd_insert (m_fds m) fd
                                            (FdSocket
                                               (SkConnected peer ch
-                                                 (snd (net_take rx (length bs)))))) m)
+                                                 (snd (net_take rx (length bs))) sent))) m)
                                      (map (ReadEv ch) bs)
                               else CheckReject
                           end
@@ -7001,7 +7001,7 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
                   end
               end
           end
-      | SkReset peer ch rx pending bound =>
+      | SkReset peer ch rx pending bound sent =>
           (* [ReadWrite.readv_imported]'s [SkReset] arm: the queue first,
              then the end, reported only while [pending] *)
           match rx with
@@ -7010,13 +7010,13 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
               if pending
               then check_ret_only eff (errno_ret ECONNRESET)
                      (with_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkReset peer ch NRst false bound))) m) []
+                                  (FdSocket (SkReset peer ch NRst false bound sent))) m) []
               else check_ret_only eff (Z_to_bv 64 0) m []
           | NTimedOut =>
               if pending
               then check_ret_only eff (errno_ret ETIMEDOUT)
                      (with_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkReset peer ch NTimedOut false bound))) m) []
+                                  (FdSocket (SkReset peer ch NTimedOut false bound sent))) m) []
               else check_ret_only eff (Z_to_bv 64 0) m []
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -7042,7 +7042,7 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
                                         (fd_insert (m_fds m) fd
                                            (FdSocket
                                               (SkReset peer ch
-                                                 (snd (net_take rx (length bs))) pending bound))) m)
+                                                 (snd (net_take rx (length bs))) pending bound sent))) m)
                                      (map (ReadEv ch) bs)
                               else CheckReject
                           end

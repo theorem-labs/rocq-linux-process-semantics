@@ -3539,7 +3539,7 @@ Fixpoint rw_net_of (l : list byte) : NetStream :=
 
 (** fd 3 is a connection on channel 3 with [rx] queued. *)
 Definition rw_sock_model (rx : NetStream) : Model :=
-  mkModel [(3, FdSocket (SkConnected rw_sock_peer 3 rx))]
+  mkModel [(3, FdSocket (SkConnected rw_sock_peer 3 rx false))]
     (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** Sixteen queued bytes and a sixteen-byte read at the wrapping buffer.
@@ -4367,7 +4367,7 @@ Proof. split_conj; check_eq. Qed.
     [pending] whether the end's error is still to be reported.  The
     connection's channel is 7. *)
 Definition rdpin_reset_model (rx : NetStream) (pending : bool) : Model :=
-  mkModel [(25, FdSocket (SkReset rw_sock_peer 7 rx pending false))]
+  mkModel [(25, FdSocket (SkReset rw_sock_peer 7 rx pending false false))]
     (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** One end of a stream pair holding [rx], blocking, open both ways, no
@@ -4418,7 +4418,7 @@ Example read_reset_socket_reports_its_pending_error_once :
   check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret ECONNRESET) [] []) (rdpin_reset_model NRst true)
   = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NRst true)) 25
-                         (FdSocket (SkReset rw_sock_peer 7 NRst false false)))
+                         (FdSocket (SkReset rw_sock_peer 7 NRst false false false)))
                (rdpin_reset_model NRst true)) []
   /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) (rdpin_reset_model NRst true)
@@ -4426,7 +4426,7 @@ Example read_reset_socket_reports_its_pending_error_once :
   /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ETIMEDOUT) [] []) (rdpin_reset_model NTimedOut true)
      = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NTimedOut true)) 25
-                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false)))
+                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false false)))
                   (rdpin_reset_model NTimedOut true)) []
   /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) (rdpin_reset_model NTimedOut true)
@@ -4448,7 +4448,7 @@ Example readv_reset_socket_reports_its_pending_error_once :
     (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret ECONNRESET) [] []))
     (rdpin_reset_model NRst true)
   = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NRst true)) 25
-                         (FdSocket (SkReset rw_sock_peer 7 NRst false false)))
+                         (FdSocket (SkReset rw_sock_peer 7 NRst false false false)))
                (rdpin_reset_model NRst true)) []
   /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
        (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect 0 [] []))
@@ -4458,7 +4458,7 @@ Example readv_reset_socket_reports_its_pending_error_once :
        (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret ETIMEDOUT) [] []))
        (rdpin_reset_model NTimedOut true)
      = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NTimedOut true)) 25
-                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false)))
+                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false false)))
                   (rdpin_reset_model NTimedOut true)) []
   /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
        (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect 0 [] []))
@@ -4479,13 +4479,13 @@ Example read_reset_socket_delivers_the_bytes_ahead_of_the_end :
   check_syscall (mkInput 63 [25; 4096; 100; 0; 0; 0] (fun _ => None) (wmem_first 5))
     (mkEffect 2 [(4096, [104; 105])] []) (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true)
   = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true)) 25
-                         (FdSocket (SkReset rw_sock_peer 7 NRst true false)))
+                         (FdSocket (SkReset rw_sock_peer 7 NRst true false false)))
                (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true))
       [ReadEv 7 104; ReadEv 7 105]
   /\ check_syscall (mkInput 63 [25; 4096; 1; 0; 0; 0] (fun _ => None) (wmem_first 5))
        (mkEffect 1 [(4096, [104])] []) (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true)
      = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true)) 25
-                            (FdSocket (SkReset rw_sock_peer 7 (NCons 105 NRst) true false)))
+                            (FdSocket (SkReset rw_sock_peer 7 (NCons 105 NRst) true false false)))
                   (rdpin_reset_model (NCons 104 (NCons 105 NRst)) true))
          [ReadEv 7 104]
   /\ check_syscall (mkInput 63 [25; 4096; 1; 0; 0; 0] (fun _ => None) (wmem_first 5))
@@ -4507,12 +4507,12 @@ Example readv_reset_socket_delivers_the_bytes_ahead_of_the_end :
   let m := rdpin_reset_model (NCons 104 (NCons 105 NRst)) true in
   check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
     (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect 2 [(4096, [104; 105])] [])) m
-  = CheckOk (with_fds (fd_insert (m_fds m) 25 (FdSocket (SkReset rw_sock_peer 7 NRst true false))) m)
+  = CheckOk (with_fds (fd_insert (m_fds m) 25 (FdSocket (SkReset rw_sock_peer 7 NRst true false false))) m)
       [ReadEv 7 104; ReadEv 7 105]
   /\ check_syscall (mkInput 65 [25; 8192; 1; 0; 0; 0] mem_readv_iov wmem_readv_one)
        (with_copyins (import_iovecs_accesses mem_readv_iov 8192 1) (mkEffect 1 [(4096, [104])] [])) m
      = CheckOk (with_fds (fd_insert (m_fds m) 25
-                            (FdSocket (SkReset rw_sock_peer 7 (NCons 105 NRst) true false))) m)
+                            (FdSocket (SkReset rw_sock_peer 7 (NCons 105 NRst) true false false))) m)
          [ReadEv 7 104]
   /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
        (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect 0 [] [])) m

@@ -544,7 +544,7 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                   alt (e <- errno_from bind_errnos ;; err_ret e)
                       (set_fds (fd_insert (m_fds m) fd (FdSocket SkBound)) ;;
                        ret_only (Z_to_bv 64 0))
-              | SkBound | SkListening | SkReset _ _ _ _ true =>
+              | SkBound | SkListening | SkReset _ _ _ _ true _ =>
                   err_ret EINVAL
                   (* [__inet_bind]'s
                      [sk->sk_state != TCP_CLOSE || inet->inet_num]
@@ -552,11 +552,11 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      socket has a port, a listening one is TCP_LISTEN, and
                      a reset socket the program has bound since has the
                      port that bind took. *)
-              | SkConnected peer ch rx =>
+              | SkConnected peer ch rx sent =>
                   alt (err_ret EINVAL)
                       (alt (e <- errno_from bind_errnos ;; err_ret e)
                            (set_fds (fd_insert (m_fds m) fd
-                                       (FdSocket (SkReset peer ch rx true true))) ;;
+                                       (FdSocket (SkReset peer ch rx true true sent))) ;;
                             ret_only (Z_to_bv 64 0)))
                   (* EITHER ANSWER, BECAUSE THE PROGRAM CANNOT SEE WHEN THE
                      PEER'S END WAS PROCESSED.  Before it, the connection is
@@ -575,22 +575,24 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      are the same text in v6.16 and v6.17.  A reset can
                      follow every script, the FIN included: a closed peer
                      answers new data with one (net/ipv4/tcp_input.c
-                     :7177-7189, net/ipv4/tcp_minisocks.c:160-165), and a
-                     peer that stops acknowledging ends it by the
-                     retransmit timer ([end_more_errnos]).
+                     :7177-7189, net/ipv4/tcp_minisocks.c:160-165), and,
+                     once a send has moved bytes ([State.SockState]'s
+                     [sent]), a peer that stops acknowledging ends it by
+                     the retransmit timer ([end_more_errnos]).
                      The 0 shows the end was processed and the error is
                      still pending ([sock_error] was not called), so the
                      socket moves to [SkReset] with [pending] and [bound]
-                     set.  The -EADDRINUSE leaves the model as it was: it
-                     still admits every later answer of either timing,
-                     which is wider than Linux and never narrower.
+                     set and [sent] kept.  The -EADDRINUSE leaves the model
+                     as it was: it still admits every later answer of
+                     either timing, which is wider than Linux and never
+                     narrower.
                      testing/syscall-check/tests/socket_peer_reset.c
                      records the 0 behind a byte and behind a FIN on
                      the pinned kernel. *)
-              | SkReset peer ch rx pending false =>
+              | SkReset peer ch rx pending false sent =>
                   alt (e <- errno_from bind_errnos ;; err_ret e)
                       (set_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkReset peer ch rx pending true))) ;;
+                                  (FdSocket (SkReset peer ch rx pending true sent))) ;;
                        ret_only (Z_to_bv 64 0))
                   (* the end was processed, so the port is gone and the
                      test above is false: the autobind, as for [SkFresh].
@@ -729,8 +731,8 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
   | None => err_ret EBADF
   | Some (FdSocket sk) =>
       match sk with
-      | SkConnected _ _ _ => err_ret EINVAL      (* not SS_UNCONNECTED: real -EINVAL *)
-      | SkReset _ _ _ _ _ => err_ret EINVAL
+      | SkConnected _ _ _ _ => err_ret EINVAL    (* not SS_UNCONNECTED: real -EINVAL *)
+      | SkReset _ _ _ _ _ _ => err_ret EINVAL
           (* ALSO -EINVAL, but NOT for the reason the arm above gives, and the
              difference is worth stating.  [__inet_listen_sk]'s state test is
              [(1 << old_state) & (TCPF_CLOSE | TCPF_LISTEN)], which ACCEPTS
@@ -887,7 +889,8 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
                                 (FdSocket
                                    (SkConnected (nq_peer (m_net m))
                                                 (conn_channel (m_conn_ix m))
-                                                (nq_script (m_net m)))))) ;;
+                                                (nq_script (m_net m))
+                                                false)))) ;;
                    ret_only nfd)
           | _ => alt (err_ret EINVAL)
                      (er <- errno_from accept_notlisten_errnos ;; err_ret er)
@@ -1070,12 +1073,12 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
       destroys the accept queue.  The queue this model has is the
       ENVIRONMENT's [m_net], not the socket's, and there is no way to
       say that a socket has dropped it.
-    - [SkConnected _ _ (NCons _ _)] and [SkConnected _ _ NFin]: a live or
+    - [SkConnected _ _ (NCons _ _) _] and [SkConnected _ _ NFin _]: a live or
       half-closed connection is TCP_ESTABLISHED or TCP_CLOSE_WAIT, both
       inside [tcp_need_reset]'s mask, so [tcp_disconnect] really does
       send an RST — and leaves a socket that is neither connected nor
       fresh in this model's vocabulary.
-    - [SkConnected _ _ NRst], [SkConnected _ _ NTimedOut] and [SkReset]:
+    - [SkConnected _ _ NRst _], [SkConnected _ _ NTimedOut _] and [SkReset]:
       NO RST IS SENT, and saying otherwise would contradict this file
       two paragraphs up.  [tcp_done] has already run for [SkReset]
       ([State.v] says so: that is what the constructor MEANS) and may
@@ -1201,13 +1204,13 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                      (* [tcp_disconnect] on a socket with nothing to
                         disconnect: returns 0, changes nothing modeled *)
                  | SkBound | SkListening
-                 | SkConnected _ _ _ | SkReset _ _ _ _ _ => unmodeled
+                 | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ => unmodeled
                      (* a real disconnect: port release, accept-queue
                         teardown, or an RST — see above *)
                  end
                else
                  match sk with
-                 | SkListening | SkConnected _ _ _ | SkReset _ _ _ _ _ =>
+                 | SkListening | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ =>
                      err_ret EISCONN
                      (* NOT -EINVAL.  Listening is SS_UNCONNECTED with
                         [sk_state] TCP_LISTEN, which the SS_UNCONNECTED
@@ -1621,7 +1624,7 @@ Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
       [tcp_set_state(sk, TCP_CLOSE)] and does NOT clear [inet_dport].
       The dport survives; the STATE test fires.  A consumed FIN, by
       contrast, leaves TCP_CLOSE_WAIT, which is in NEITHER disjunct — so
-      [SkConnected peer ch NFin] SUCCEEDS and returns the peer, while
+      [SkConnected peer ch NFin sent] SUCCEEDS and returns the peer, while
       [SkReset peer ch] is -ENOTCONN.  Collapsing the two states would
       have made this call answer confidently and wrongly on one of them.
 
@@ -1644,8 +1647,8 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
       | SkFresh            => err_ret ENOTCONN   (* inet_dport == 0 *)
       | SkBound            => err_ret ENOTCONN
       | SkListening        => err_ret ENOTCONN
-      | SkReset _ _ _ _ _  => err_ret ENOTCONN   (* tcp_done left TCP_CLOSE; dport still set *)
-      | SkConnected _ _ _  => unmodeled          (* succeeds, writing the peer: no address export *)
+      | SkReset _ _ _ _ _ _ => err_ret ENOTCONN  (* tcp_done left TCP_CLOSE; dport still set *)
+      | SkConnected _ _ _ _ => unmodeled         (* succeeds, writing the peer: no address export *)
       end
   | SoPair _ _ _ =>
       i <- input ;;
@@ -1968,8 +1971,8 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
             if (bv_unsigned how =? SHUT_WR)%Z
             then ret_only (Z_to_bv 64 0)              (* case TCP_LISTEN: break, nothing written *)
             else unmodeled                            (* SHUT_RD/SHUT_RDWR: tcp_disconnect *)
-        | SkConnected _ _ _ => unmodeled              (* default: the bits, maybe a FIN *)
-        | SkReset _ _ _ _ _ => unmodeled              (* tcp_done: TCP_CLOSE again *)
+        | SkConnected _ _ _ _ => unmodeled            (* default: the bits, maybe a FIN *)
+        | SkReset _ _ _ _ _ _ => unmodeled            (* tcp_done: TCP_CLOSE again *)
         end
   | SoPair id side st =>
       if negb (shut_how_ok how) then err_ret EINVAL
@@ -2228,9 +2231,12 @@ Definition send_flag (fl : word) (bit : Z) : bool :=
     answers -EPIPE because there is no connection to send on
     ([SendDead]), or is declined ([SendUnknown]).  The error is [e] or
     one of [more]: [end_errno] and [end_more_errnos] of the script's end.
-    [after] is the state an error answer leaves. *)
+    [after] is the state an error answer leaves, and [delivered] the
+    state a delivery leaves: the connection with [sent] set
+    ([State.SockState]). *)
 Inductive SendState :=
   | SendGoes (chan : word) (e : Z) (more : list Z) (after : SockState)
+      (delivered : SockState)
       (* ESTABLISHED or CLOSE_WAIT, or already closed *)
   | SendErr (e : Z) (more : list Z) (after : SockState)   (* one pending error *)
   | SendDead                                            (* no connection: -EPIPE, port or no port *)
@@ -2246,8 +2252,9 @@ Inductive SendState :=
     sends one in answer to new data (tcp_input.c:7177-7189,
     net/ipv4/tcp_minisocks.c:160-165), so an [NFin] end may carry it;
     and a peer that stops acknowledging after its FIN ends the
-    connection by the timer, so an [NFin] end may carry the timer's
-    error instead ([end_more_errnos]).  An [NTimedOut] end answers
+    connection by the timer once the connection has sent, so an [NFin]
+    end may then carry the timer's error instead ([end_more_errnos]).  An
+    [NTimedOut] end answers
     ETIMEDOUT here, as its read does ([State.NetStream]).  Linux
     v6.18.46; the same text in v6.16 and v6.17. *)
 Definition end_errno (t : NetStream) : Z :=
@@ -2292,31 +2299,63 @@ Definition end_errno (t : NetStream) : Z :=
       CONFIG_NET_KEY is not set, and a socket's own policy needs one of
       them, net/xfrm/xfrm_state.c:3005-3012).
     The other writers are [tcp_v4_err]'s handshake arm (tcp_ipv4.c:630),
-    which a connection [accept] hands over has left, and IPv6's
-    (net/ipv6/tcp_ipv6.c:498, :515), which an AF_INET socket never
-    reaches; [tcp_v6_err]'s values (net/ipv6/icmp.c:1111-1175) are in
-    the list all the same.  A superset where it is wide, so that no
-    error Linux stores is refused. *)
+    which a connection [accept] hands over has left, and IPv6's four,
+    which an AF_INET socket never reaches: [tcp_v6_err]'s
+    (net/ipv6/tcp_ipv6.c:498, :515), [inet6_sk_rebuild_header]'s
+    (net/ipv6/af_inet6.c:851) and [inet6_csk_xmit]'s
+    (net/ipv6/inet6_connection_sock.c:108); [tcp_v6_err]'s values
+    (net/ipv6/icmp.c:1111-1175) are in the list all the same.  A superset
+    where it is wide, so that no error Linux stores is refused. *)
 Definition tcp_soft_errnos : list Z :=
   [EPROTO; ENETUNREACH; EHOSTUNREACH; ENOPROTOOPT; ECONNREFUSED; EOPNOTSUPP;
    EHOSTDOWN; ENONET; EMSGSIZE; EINVAL; ENODEV; EACCES; ENOBUFS].
 
 (** THE OTHER ERRORS A PROCESSED END MAY HAVE STORED, beside
-    [end_errno]'s.  Behind the peer's FIN the connection is CLOSE_WAIT,
-    and it still sends; a peer that then stops acknowledging ends it by
-    the retransmit timer, whose [tcp_write_err] stores the soft error or
-    ETIMEDOUT (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46) and runs
-    [tcp_done] (net/ipv4/tcp_input.c:4663-4674), as the RST does.  A
-    send then answers that error through [sk_stream_wait_connect]
-    (net/core/stream.c:67-69), and [sk_stream_error] keeps it
-    (:190-197).  So an [NFin] end carries ETIMEDOUT and
-    [tcp_soft_errnos] beside [end_errno]'s EPIPE.  A RST or a timeout
-    the script itself ends with carries its own error alone here. *)
-Definition end_more_errnos (t : NetStream) : list Z :=
+    [end_errno]'s, by whether the connection has [sent]
+    ([State.SockState]).  Behind the peer's FIN the connection is
+    CLOSE_WAIT, and it still sends; a peer that then stops acknowledging
+    ends it by the retransmit timer, whose [tcp_write_err] stores the
+    soft error or ETIMEDOUT (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46)
+    and runs [tcp_done] (net/ipv4/tcp_input.c:4663-4674), as the RST
+    does.  A send then answers that error through
+    [sk_stream_wait_connect] (net/core/stream.c:67-69), and
+    [sk_stream_error] keeps it (:190-197).
+
+    THE TIMER NEEDS BYTES THE CONNECTION SENT, so the error is admitted
+    only once a send has moved one into the write queue
+    ([send_bytes]).  [tcp_write_err]'s callers, all in
+    net/ipv4/tcp_timer.c, are these:
+    - [tcp_write_timeout] (:295) and the zero-window give-up (:593), both
+      under [tcp_retransmit_timer], which returns at once with no packet
+      out (:554-555);
+    - [tcp_probe_timer] (:434), which returns with a packet out or no
+      queued byte (:397-400);
+    - [tcp_fastopen_synack_timer] (:473), reached only for a child Fast
+      Open made before the handshake ended (:542-551), and SCOPE.md's
+      premise on TCP Fast Open rules such a child out;
+    - [tcp_keepalive_timer] (:841), which needs SOCK_KEEPOPEN (:816-818):
+      only SO_KEEPALIVE sets it, on the connection or on the listener it
+      is cloned from (net/ipv4/tcp_minisocks.c:598-599), and
+      [setsockopt_spec] declines the option table.
+    An accepted connection has no packet out and no queued byte:
+    [tcp_create_openreq_child] sets [snd_una], [snd_nxt] and [write_seq]
+    past the SYN its SYN-ACK acknowledged (tcp_minisocks.c:578-596), and
+    [inet_csk_init_xmit_timers] arms nothing
+    (net/ipv4/inet_connection_sock.c:751-754).  Nor can the send that
+    returns the error be the one that queued the bytes: a send that has
+    copied a byte answers the count and not the error
+    ([tcp_sendmsg_locked]'s [do_error:], net/ipv4/tcp.c:1387-1391), and a
+    zero-length or faulting send queues nothing.  So an [NFin] end
+    carries ETIMEDOUT and [tcp_soft_errnos] beside [end_errno]'s EPIPE
+    when [sent] holds, and EPIPE alone before.  The flag is wider than
+    Linux once set, since the peer may have acknowledged every byte; a
+    RST or a timeout the script itself ends with carries its own error
+    alone here. *)
+Definition end_more_errnos (sent : bool) (t : NetStream) : list Z :=
   match t with
   | NRst => []
   | NTimedOut => []
-  | _ => ETIMEDOUT :: tcp_soft_errnos
+  | _ => if sent then ETIMEDOUT :: tcp_soft_errnos else []
   end.
 
 (** What is left of the script past the first [rw_bytes_max] bytes still
@@ -2351,14 +2390,15 @@ Arguments net_end : simpl never.
       [xchg] (include/net/sock.h:2496) — whatever bytes are still queued
       in front of the end, which is why the error is the one of the
       script's END ([net_end], [end_errno], [end_more_errnos]) and not of
-      its head.  Behind the peer's FIN that error is the RST's EPIPE or
-      the retransmit timer's ETIMEDOUT or soft error, since the program
-      cannot see which of the two ended the connection.  The error
-      answer moves the socket to [SkReset] with the error consumed and
-      the queue intact: tcp_done purges only the write queue
-      (tcp_input.c:4669).
+      its head.  Behind the peer's FIN that error is the RST's EPIPE, or,
+      once the connection has [sent], the retransmit timer's ETIMEDOUT
+      or soft error, since the program cannot see which of the two ended
+      the connection.  The error answer moves the socket to [SkReset]
+      with the error consumed and the queue intact: tcp_done purges only
+      the write queue (tcp_input.c:4669).  The delivery moves it to
+      [SkConnected] with [sent] set ([delivered]).
     - A reset connection with its error pending: that error, once.
-      Behind a FIN it is any of the three above, because a [bind] that
+      Behind a FIN it is any of those above, because a [bind] that
       autobinds ([bind_spec]) shows that the end was processed, not by what.
       Reported ONCE because [sock_error] consumes it, by whichever of
       read and send reaches it first, which is why the send transitions
@@ -2393,17 +2433,17 @@ Arguments net_end : simpl never.
       by assuming a closed peer means a closed connection. *)
 Definition send_state (sk : SockState) : SendState :=
   match sk with
-  | SkConnected peer ch rx =>
+  | SkConnected peer ch rx sent =>
       if net_ended (net_end rx)
-      then SendGoes ch (end_errno (net_end rx)) (end_more_errnos (net_end rx))
-             (SkReset peer ch rx false false)
+      then SendGoes ch (end_errno (net_end rx)) (end_more_errnos sent (net_end rx))
+             (SkReset peer ch rx false false sent) (SkConnected peer ch rx true)
       else SendUnknown
-  | SkReset peer ch rx true bound =>
+  | SkReset peer ch rx true bound sent =>
       if net_ended (net_end rx)
-      then SendErr (end_errno (net_end rx)) (end_more_errnos (net_end rx))
-             (SkReset peer ch rx false bound)
+      then SendErr (end_errno (net_end rx)) (end_more_errnos sent (net_end rx))
+             (SkReset peer ch rx false bound sent)
       else SendUnknown
-  | SkReset _ _ _ false _         => SendDead
+  | SkReset _ _ _ false _ _       => SendDead
   | SkBound | SkListening         => SendDead
   | SkFresh                       => SendDead      (* no autobind for TCP *)
   end.
@@ -2447,9 +2487,15 @@ Definition send_state (sk : SockState) : SendState :=
     decided here and not before [send_state].  It records [pre] and
     nothing more: no payload byte is read, so the ledger carries no
     zero-length payload range, exactly as
-    [Fs.ReadWrite.write_spec]'s zero-count file arm does not. *)
+    [Fs.ReadWrite.write_spec]'s zero-count file arm does not.
+
+    A DELIVERY LEAVES THE DESCRIPTOR TABLE [fds]: the caller's, with
+    the connection marked [sent] ([State.SockState], [end_more_errnos]).
+    The zero-length request and the fault leave the table as it was,
+    because they queue no byte. *)
 Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
-    (total : word) (bs : list byte) (ch : word) : Sys SyscallEffect :=
+    (total : word) (bs : list byte) (ch : word) (fds : list (word * FdEntry))
+    : Sys SyscallEffect :=
   if w_is0 total then record_copyins pre (ret_only (Z_to_bv 64 0))
   else if Nat.eqb (length bs) 0 then record_copyins pre (err_ret EFAULT)
   else
@@ -2457,6 +2503,7 @@ Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
                     (1 <= Z.of_nat (length ds))%Z
                     /\ (Z.of_nat (length ds) <= bv_unsigned total)%Z
                     /\ ds = firstn (length ds) bs) ;;
+    set_fds fds ;;
     emit (map (WriteEv ch) ds) ;;   (* one event per byte, on the CONNECTION's
                                        channel — the same alphabet a channel
                                        write emits, on a different channel *)
@@ -2464,7 +2511,7 @@ Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
 
 (** The socket half of both calls: dispatch on the connection's state,
     then send.  [total] and [bs] are the caller's; [fd] and [m] are
-    needed to record an error's consumption. *)
+    needed to record an error's consumption and a delivery's [sent]. *)
 Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * nat))
     (fd : word) (sk : SockState) (total : word) (bs : list byte) (m : Model)
     : Sys SyscallEffect :=
@@ -2481,14 +2528,14 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
          the read side: one [sk_err], one [xchg], whichever direction
          gets there first.  The NEXT send is then -EPIPE, which is the
          classic two-step a program sees after a peer reset *)
-  | SendGoes ch e more after =>
+  | SendGoes ch e more after delivered =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then unmodeled
         (* both callers have already declined a larger total
            ([modeled_rw_count], and [sendmsg_spec]'s gathered total), so
            this never fires; it is the bound that keeps a delivered count
            apart from an errno return *)
       else
-      alt (send_bytes pre acc total bs ch)
+      alt (send_bytes pre acc total bs ch (fd_insert (m_fds m) fd (FdSocket delivered)))
           (record_copyins pre
              (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
               e' <- errno_from (e :: more) ;; err_ret e'))

@@ -1986,8 +1986,8 @@ Qed.
     ([last_type], fs/namei.c:2475-2486) and [do_rmdir] switches on BEFORE
     it looks anything up.  Trailing separators do not change which
     component is the last one, so they do not change this; a path with no
-    component at all (the root, "//", and the empty pathname every arm
-    answers ahead of resolution) is [LastRoot] (fs/namei.c:2446,
+    component at all (the root, "//", and the empty pathname, which no arm
+    hands to [resolve]; see there) is [LastRoot] (fs/namei.c:2446,
     :2455-2458). *)
 Inductive LastKind := LastNorm | LastDot | LastDotDot | LastRoot.
 
@@ -2349,9 +2349,18 @@ Definition resolve_res (md : WalkMode) (fs : Fs) (cwd p : path) : WalkRes :=
   walk_from fs md link_max (resolve_start cwd p) p.
 
 (** THE RESOLUTION every path-taking arm matches on: the outcome with
-    the last component's type and separator.  The empty pathname never
-    reaches here with any meaning: every arm answers [-ENOENT] for it
-    ahead of resolution, as [getname_flags] does before any walk. *)
+    the last component's type and separator.  No arm hands it the empty
+    pathname, and the arms do not all answer that name alike.  [openat],
+    [faccessat], [unlinkat], [mkdirat], and [newfstatat] without
+    AT_EMPTY_PATH, answer it -ENOENT before any walk, as [getname_flags]
+    does without LOOKUP_EMPTY (fs/namei.c:167-171, Linux v6.18.46).
+    [newfstatat] under AT_EMPTY_PATH from AT_FDCWD stats the working
+    folder: [__getname_maybe_null] hands back no name (fs/namei.c:233-234)
+    and [vfs_fstatat] stats the descriptor's own folder (fs/stat.c:370-375).
+    [readlinkat] answers the -ENOENT [do_readlinkat] gives once its walk of
+    the empty name has ended on no link (fs/stat.c:569, :576, :593); from
+    AT_FDCWD that walk ends on the working folder, so the arm answers it
+    without walking. *)
 Definition resolve (md : WalkMode) (fs : Fs) (cwd p : path)
     : Resolved * LastKind * bool :=
   let w := resolve_res md fs cwd p in (wr_res w, wr_kind w, wr_slash w).
@@ -2985,9 +2994,8 @@ Qed.
     working directory being a directory: [handle_dots] on a [LAST_DOT]
     component is a no-op on the walk's own position (fs/namei.c:2096-2132),
     so a descriptor opened on "." names the working directory.  The last
-    kind is [LastDot], which the parent-end arms switch on.  The empty
-    pathname never reaches here: every arm answers -ENOENT for it ahead
-    of resolution, as [getname_flags] does. *)
+    kind is [LastDot], which the parent-end arms switch on.  No arm hands
+    [resolve] the empty pathname ([resolve] says how each answers it). *)
 Lemma resolve_dot : forall md fs cwd,
   mode_parent md = false ->
   fs_lookup fs cwd = Some EDir ->

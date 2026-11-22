@@ -424,7 +424,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           (* count = 0 short-circuits before the protocol *)
       else
       match sk with
-      | SkConnected peer ch rx =>
+      | SkConnected peer ch rx sent =>
           match rx with
           | NFin =>
               access_ok_zero_witness buf count m
@@ -432,11 +432,11 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
           | NRst =>
               access_ok_zero_witness buf count m
                 (ret_outcome (errno_ret ECONNRESET)
-                   (with_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false false))) m))
+                   (with_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false false sent))) m))
           | NTimedOut =>
               access_ok_zero_witness buf count m
                 (ret_outcome (errno_ret ETIMEDOUT)
-                   (with_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false))) m))
+                   (with_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false sent))) m))
           | NCons b rest =>
               if negb (access_okb buf (bv_unsigned count))
               then ret_outcome (errno_ret EFAULT) m  (* [vfs_read]'s [access_ok], named count *)
@@ -450,12 +450,12 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               | Some _ =>                        (* the one-byte delivery is always available *)
                   Ok (mkEffect (Z_to_bv 64 1) [(buf, [b])] [])
                      (with_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkConnected peer ch rest))) m)
+                                  (FdSocket (SkConnected peer ch rest sent))) m)
                      [ReadEv ch b]
               end
               end
           end
-      | SkReset peer ch rx pending bound =>
+      | SkReset peer ch rx pending bound sent =>
           (* the queue first, then the end, reported only while pending *)
           match rx with
           | NFin =>
@@ -465,14 +465,14 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               then access_ok_zero_witness buf count m
                      (ret_outcome (errno_ret ECONNRESET)
                         (with_fds (fd_insert (m_fds m) fd
-                                     (FdSocket (SkReset peer ch NRst false bound))) m))
+                                     (FdSocket (SkReset peer ch NRst false bound sent))) m))
               else access_ok_zero_witness buf count m (ret_outcome (Z_to_bv 64 0) m)
           | NTimedOut =>
               if pending
               then access_ok_zero_witness buf count m
                      (ret_outcome (errno_ret ETIMEDOUT)
                         (with_fds (fd_insert (m_fds m) fd
-                                     (FdSocket (SkReset peer ch NTimedOut false bound))) m))
+                                     (FdSocket (SkReset peer ch NTimedOut false bound sent))) m))
               else access_ok_zero_witness buf count m (ret_outcome (Z_to_bv 64 0) m)
           | NCons b rest =>
               if negb (access_okb buf (bv_unsigned count))
@@ -487,7 +487,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
               | Some _ =>
                   Ok (mkEffect (Z_to_bv 64 1) [(buf, [b])] [])
                      (with_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkReset peer ch rest pending bound))) m)
+                                  (FdSocket (SkReset peer ch rest pending bound sent))) m)
                      [ReadEv ch b]
               end
               end
@@ -2427,17 +2427,17 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
               | RdDir => ret_outcome (errno_ret EISDIR) m
               | RdSocket sk =>
                   match sk with
-                  | SkConnected peer ch rx =>
+                  | SkConnected peer ch rx sent =>
                       match rx with
                       | NFin => ret_outcome (Z_to_bv 64 0) m
                       | NRst =>
                           ret_outcome (errno_ret ECONNRESET)
                             (with_fds (fd_insert (m_fds m) fd
-                                         (FdSocket (SkReset peer ch NRst false false))) m)
+                                         (FdSocket (SkReset peer ch NRst false false sent))) m)
                       | NTimedOut =>
                           ret_outcome (errno_ret ETIMEDOUT)
                             (with_fds (fd_insert (m_fds m) fd
-                                         (FdSocket (SkReset peer ch NTimedOut false false))) m)
+                                         (FdSocket (SkReset peer ch NTimedOut false false sent))) m)
                       | NCons b rest =>
                           match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
                           | None => ret_outcome (errno_ret EFAULT) m
@@ -2453,26 +2453,26 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                                   | Some writes =>
                                       Ok (mkEffect (Z_to_bv 64 1) writes [])
                                          (with_fds (fd_insert (m_fds m) fd
-                                            (FdSocket (SkConnected peer ch rest))) m)
+                                            (FdSocket (SkConnected peer ch rest sent))) m)
                                          [ReadEv ch b]
                                   end
                               end
                           end
                       end
-                  | SkReset peer ch rx pending bound =>
+                  | SkReset peer ch rx pending bound sent =>
                       match rx with
                       | NFin => ret_outcome (Z_to_bv 64 0) m
                       | NRst =>
                           if pending
                           then ret_outcome (errno_ret ECONNRESET)
                                  (with_fds (fd_insert (m_fds m) fd
-                                              (FdSocket (SkReset peer ch NRst false bound))) m)
+                                              (FdSocket (SkReset peer ch NRst false bound sent))) m)
                           else ret_outcome (Z_to_bv 64 0) m
                       | NTimedOut =>
                           if pending
                           then ret_outcome (errno_ret ETIMEDOUT)
                                  (with_fds (fd_insert (m_fds m) fd
-                                              (FdSocket (SkReset peer ch NTimedOut false bound))) m)
+                                              (FdSocket (SkReset peer ch NTimedOut false bound sent))) m)
                           else ret_outcome (Z_to_bv 64 0) m
                       | NCons b rest =>
                           match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -2487,7 +2487,7 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
                                   | Some writes =>
                                       Ok (mkEffect (Z_to_bv 64 1) writes [])
                                          (with_fds (fd_insert (m_fds m) fd
-                                            (FdSocket (SkReset peer ch rest pending bound))) m)
+                                            (FdSocket (SkReset peer ch rest pending bound sent))) m)
                                          [ReadEv ch b]
                                   end
                               end

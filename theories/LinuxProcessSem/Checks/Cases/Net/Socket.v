@@ -202,7 +202,7 @@ Definition listening_socket_model : Model :=
     out in full rather than derived. *)
 Definition accepted_socket_model : Model :=
   with_accepted
-    [ (4, FdSocket (SkConnected (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NFin));
+    [ (4, FdSocket (SkConnected (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NFin false));
       (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     listening_socket_model.
@@ -700,7 +700,7 @@ Proof. repeat split; check_eq. Qed.
 Definition reset_socket_model : Model :=
   with_accepted
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-      (3, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false)) ]
+      (3, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false false)) ]
     listening_socket_model.
 
 Definition fresh_socket_model : Model :=
@@ -964,7 +964,7 @@ Definition demo_peer : PeerAddr := mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0).
     them does not pin the property it is named for. *)
 Definition connected_socket_model (rx : NetStream) : Model :=
   with_accepted
-    [ (4, FdSocket (SkConnected demo_peer 3 rx));
+    [ (4, FdSocket (SkConnected demo_peer 3 rx false));
       (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     listening_socket_model.
@@ -977,6 +977,14 @@ Definition retired_socket_model (e : FdEntry) : Model :=
     [ (4, e); (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     listening_socket_model.
+
+(** The state a DELIVERING SEND leaves behind: the connection running
+    script [rx], marked [sent] ([State.SockState]), reseated at the head
+    as [retired_socket_model] says.  [accepted_socket_model] is
+    [connected_socket_model NFin], so a delivery on it leaves
+    [sent_socket_model NFin]. *)
+Definition sent_socket_model (rx : NetStream) : Model :=
+  retired_socket_model (FdSocket (SkConnected demo_peer 3 rx true)).
 
 (** [read(4, 4096, 16)] answering [r] with write ledger [ws]. *)
 Definition read_answering (m : Model) (r : word)
@@ -992,7 +1000,7 @@ Definition read_answering (m : Model) (r : word)
     that answered the error without retiring the connection. *)
 Example read_on_rst_delivers_econnreset_and_retires :
   read_answering (connected_socket_model NRst) (errno_ret ECONNRESET) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false))) []
   /\ read_answering (connected_socket_model NRst) (errno_ret ETIMEDOUT) []
     = CheckReject
   /\ read_answering (connected_socket_model NRst) (Z_to_bv 64 0) []
@@ -1004,7 +1012,7 @@ Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
     case refuses the other's errno. *)
 Example read_on_timeout_delivers_etimedout_and_retires :
   read_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
   /\ read_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET) []
     = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
@@ -1012,16 +1020,16 @@ Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 (** THE ERROR IS ONE-SHOT, NOT STICKY.  A retired connection reads as
     end-of-stream, and re-answering either protocol error is refused.
     This is the case that fails if the [set_fds] above is dropped: with
-    the connection left in [SkConnected _ _ NRst] the error would repeat
+    the connection left in [SkConnected _ _ NRst _] the error would repeat
     forever, which is a plausible answer Linux does not give. *)
 Example read_on_a_retired_connection_is_end_of_stream :
-  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
       (Z_to_bv 64 0) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false))) []
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
        (errno_ret ECONNRESET) []
     = CheckReject
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
        (errno_ret ETIMEDOUT) []
     = CheckReject.
 Proof. split; [check_eq | split; vm_compute; reflexivity]. Qed.
@@ -1050,7 +1058,7 @@ Example read_on_a_byte_delivers_it_and_advances :
   read_answering (connected_socket_model (NCons (Z_to_bv 8 65) NFin))
       (Z_to_bv 64 1) [(4096, [Z_to_bv 8 65])]
     = CheckOk (retired_socket_model
-                 (FdSocket (SkConnected demo_peer 3 NFin)))
+                 (FdSocket (SkConnected demo_peer 3 NFin false)))
         [ReadEv 3 (Z_to_bv 8 65)]
   /\ read_answering (connected_socket_model (NCons (Z_to_bv 8 65) NFin))
        (Z_to_bv 64 2) [(4096, [Z_to_bv 8 65; Z_to_bv 8 66])]
@@ -1081,7 +1089,7 @@ Example read_over_rw_bytes_max_is_judged :
        (fun _ => None) sock_read_buf)
     (mkEffect (Z_to_bv 64 1) [(4096, [Z_to_bv 8 65])] [])
     (connected_socket_model (NCons (Z_to_bv 8 65) NFin))
-  = CheckOk (retired_socket_model (FdSocket (SkConnected demo_peer 3 NFin)))
+  = CheckOk (retired_socket_model (FdSocket (SkConnected demo_peer 3 NFin false)))
       [ReadEv 3 (Z_to_bv 8 65)]
   /\ check_syscall
        (mkInput 63 [4; 4096; Z_to_bv 64 (rw_bytes_max + 1); 0; 0; 0]
@@ -1546,8 +1554,8 @@ Definition socket_states_model : Model :=
     (mkModel
        [ (0, FdChannel 0); (3, FdFile 1 0);
          (6, FdSocket SkFresh); (7, FdSocket SkBound); (8, FdSocket SkListening);
-         (9, FdSocket (SkConnected (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin));
-         (10, FdSocket (SkReset (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin false false)) ]
+         (9, FdSocket (SkConnected (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin false));
+         (10, FdSocket (SkReset (mkPeer (Z_to_bv 32 16909060) (Z_to_bv 16 443)) 3 NFin false false false)) ]
        (mkVmMaps [] [] 0 0 demo_limit) IEof
        (raw_files [([102], [104; 105])]) None None None).
 
@@ -1839,8 +1847,9 @@ Definition sendto_answering (m : Model) (r : word) : check_result :=
     stdout's 1 -- [Net.Socket.conn_channel] starts at 3 because 0-2 are
     stdio, and a send that emitted on the wrong channel would be
     indistinguishable from a write to stdout in the trace.  One
-    [WriteEv] per byte, and the model is left ALONE: a send on a live
-    connection changes no descriptor.
+    [WriteEv] per byte, and the connection is marked [sent]
+    ([sent_socket_model]): the bytes it queued are what the
+    retransmit timer would need to end it ([Net.Socket.end_more_errnos]).
 
     THE LEDGER IS THE TWO BYTES IT ACTUALLY MOVED, and it is what makes
     a dropped [record_copyins] visible: without it the admissible effect
@@ -1848,7 +1857,7 @@ Definition sendto_answering (m : Model) (r : word) : check_result :=
     stop holding in both directions at once. *)
 Example send_emits_on_the_connections_channel :
   sendto_answering_with accepted_socket_model 2 [(4096, 2%nat)]
-  = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98]
+  = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98]
   /\ sendto_answering accepted_socket_model 2 = CheckReject.
 Proof. split; check_eq. Qed.
 
@@ -1862,7 +1871,7 @@ Proof. split; check_eq. Qed.
     or reports an errno, it never reports 0. *)
 Example send_short_is_a_prefix_and_zero_is_not :
   sendto_answering_with accepted_socket_model 1 [(4096, 1%nat)]
-  = CheckOk accepted_socket_model [WriteEv 3 97]
+  = CheckOk (sent_socket_model NFin) [WriteEv 3 97]
   /\ sendto_answering_with accepted_socket_model 3 [(4096, 3%nat)] = CheckReject
   /\ sendto_answering accepted_socket_model 0 = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
@@ -1902,7 +1911,7 @@ Example send_flag_word_must_be_exactly_nosignal :
      The same fd, buffer, count and ledger with flags = MSG_NOSIGNAL is
      the point on the other side of the gate. *)
   /\ sendto_answering_with accepted_socket_model 2 [(4096, 2%nat)]
-     = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98].
+     = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98].
 Proof. split; [|split]; check_eq. Qed.
 
 (** A model whose fd 4 carries a connection with a PENDING RESET, and
@@ -1915,14 +1924,14 @@ Proof. split; [|split]; check_eq. Qed.
     what an accept really left. *)
 Definition reset_pending_socket_model : Model :=
   with_fds
-    [ (4, FdSocket (SkConnected (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst));
+    [ (4, FdSocket (SkConnected (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false));
       (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     accepted_socket_model.
 
 Definition reset_consumed_socket_model : Model :=
   with_fds
-    [ (4, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false));
+    [ (4, FdSocket (SkReset (mkPeer (Z_to_bv 32 0) (Z_to_bv 16 0)) 3 NRst false false false));
       (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
       (3, FdSocket SkListening) ]
     accepted_socket_model.
@@ -1957,7 +1966,7 @@ Example sendmsg_gathers_onto_the_same_channel :
                    (fun _ => None))
     (mkEffectU 2 [] [] [] []
        [(8192, 56%nat); (8320, 16%nat); (4096, 2%nat)]) accepted_socket_model
-  = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98].
+  = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98].
 Proof. check_eq. Qed.
 
 (** THE SINGLE EASIEST WAY TO GET THIS FEATURE WRONG, pinned in both
@@ -1980,7 +1989,7 @@ Example sendmsg_reads_the_argument_never_the_struct_field :
                    (send_msghdr_mem 0) (fun _ => None))
     (mkEffectU 2 [] [] [] []
        [(8192, 56%nat); (8320, 16%nat); (4096, 2%nat)]) accepted_socket_model
-  = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98]
+  = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98]
   /\ check_syscall (mkInput 211 [4; 8192; 0; 0; 0; 0]
                      (send_msghdr_mem 16384) (fun _ => None))
        (mkEffectU 2 [] [] [] []
@@ -2796,7 +2805,7 @@ Example sendmsg_ordinary_header_still_sends :
                    (fun _ => None))
     (mkEffectU 2 [] [] [] []
        [(8192, 56%nat); (8320, 16%nat); (4096, 2%nat)]) accepted_socket_model
-  = CheckOk accepted_socket_model [WriteEv 3 97; WriteEv 3 98]
+  = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98]
   /\ check_syscall (mkInput 211 [4; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
                      (fun _ => None))
        (mkEffect (errno_ret EFAULT) [] []) accepted_socket_model
@@ -2830,7 +2839,7 @@ Definition byte_then (t : NetStream) : NetStream := NCons (Z_to_bv 8 65) t.
 Example bind_behind_a_byte_and_a_reset :
   bind4_answering (connected_socket_model (byte_then NRst)) 0
     = CheckOk (retired_socket_model
-                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) true true))) []
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) true true false))) []
   /\ bind4_answering (connected_socket_model (byte_then NRst)) (errno_ret EINVAL)
     = CheckOk (connected_socket_model (byte_then NRst)) []
   /\ bind4_answering (connected_socket_model (byte_then NRst)) (errno_ret EAFNOSUPPORT)
@@ -2842,12 +2851,12 @@ Proof. split; [|split]; check_eq. Qed.
     it took and is -EINVAL, never 0 again. *)
 Example bind_behind_a_fin_autobinds_once :
   bind4_answering (connected_socket_model NFin) 0
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) []
-  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) 0
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false))) []
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false))) 0
     = CheckReject
-  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true)))
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false)))
        (errno_ret EINVAL)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) [].
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false))) [].
 Proof. split; [|split]; check_eq. Qed.
 
 (** SEND BEHIND A BYTE AND A PROCESSED RST (send-byte-rst): the stored
@@ -2859,18 +2868,18 @@ Proof. split; [|split]; check_eq. Qed.
 Example send_behind_a_byte_and_a_reset :
   sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret ECONNRESET)
     = CheckOk (retired_socket_model
-                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false))) []
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false))) []
   /\ sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret EPIPE)
     = CheckReject
   /\ sendto_answering (connected_socket_model (byte_then NRst)) (errno_ret ETIMEDOUT)
     = CheckReject
   /\ sendto_answering (retired_socket_model
-                        (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+                        (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false)))
        (errno_ret EPIPE)
     = CheckOk (retired_socket_model
-                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false))) []
+                 (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false))) []
   /\ sendto_answering_with (retired_socket_model
-                             (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+                             (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false)))
        2 [(4096, 2%nat)]
     = CheckReject.
 Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.
@@ -2879,15 +2888,15 @@ Proof. split; [|split; [|split; [|split]]]; check_eq. Qed.
     the error is gone, and RCV_SHUTDOWN answers (net/ipv4/tcp.c:2749). *)
 Example read_after_the_send_took_the_reset :
   read_answering (retired_socket_model
-                    (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+                    (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false)))
       1 [(4096, [Z_to_bv 8 65])]
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
         [ReadEv 3 (Z_to_bv 8 65)]
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
        (Z_to_bv 64 0) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false))) []
   /\ read_answering (retired_socket_model
-                       (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false)))
+                       (FdSocket (SkReset demo_peer 3 (byte_then NRst) false false false)))
        (Z_to_bv 64 0) []
     = CheckReject.
 Proof. split; [|split]; check_eq. Qed.
@@ -2895,10 +2904,10 @@ Proof. split; [|split]; check_eq. Qed.
 (** A RESET STILL PENDING AFTER AN AUTOBIND IS READ ONCE (bind-byte-rst's
     reads): the bind consumed nothing. *)
 Example read_reports_a_reset_the_bind_left_pending :
-  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+  read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true false)))
       (errno_ret ECONNRESET) []
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
-  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true false))) []
+  /\ read_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true false)))
        (Z_to_bv 64 0) []
     = CheckReject.
 Proof. split; check_eq. Qed.
@@ -2908,7 +2917,7 @@ Proof. split; check_eq. Qed.
     (net/ipv4/tcp_input.c:4695-4697), never ECONNRESET. *)
 Example send_behind_the_fin_finds_epipe :
   sendto_answering (connected_socket_model NFin) (errno_ret EPIPE)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false false))) []
   /\ sendto_answering (connected_socket_model NFin) (errno_ret ECONNRESET)
     = CheckReject.
 Proof. split; check_eq. Qed.
@@ -2918,25 +2927,65 @@ Proof. split; check_eq. Qed.
     then stops acknowledging ends it by the timer, whose [tcp_write_err]
     stores the soft error or ETIMEDOUT (net/ipv4/tcp_timer.c:76-80,
     Linux v6.18.46) and runs [tcp_done], and the next send answers that
-    error through [sk_stream_wait_connect] (net/core/stream.c:67-69).  So
-    the send behind a FIN admits -ETIMEDOUT, and a soft error such as the
-    -EHOSTUNREACH a router's host unreachable leaves
-    ([Net.Socket.tcp_soft_errnos]), each consumed into [SkReset].  A bind
-    that autobinds behind the FIN shows the end processed, not by what,
-    so the send after it answers the same errors once.  -ECONNRESET, which
-    no end behind a FIN stores, stays refused.  (6f9e46a4 refused the
-    -ETIMEDOUT and the -EHOSTUNREACH here.) *)
+    error through [sk_stream_wait_connect] (net/core/stream.c:67-69).
+    The timer needs bytes in flight or queued
+    ([Net.Socket.end_more_errnos]), so the trace here is send, FIN, send:
+    a first send moves two bytes and marks the connection [sent], the
+    read finds the FIN, and the second send admits -ETIMEDOUT, and a soft
+    error such as the -EHOSTUNREACH a router's host unreachable leaves
+    ([Net.Socket.tcp_soft_errnos]), each consumed into [SkReset] with
+    [sent] kept.  A bind that autobinds behind the FIN shows the end
+    processed, not by what, so the send after it answers the same errors
+    once.  -ECONNRESET, which no end behind a FIN stores, stays refused.
+    (6f9e46a4 refused the -ETIMEDOUT and the -EHOSTUNREACH here.) *)
 Example send_behind_the_fin_finds_the_timers_error :
-  sendto_answering (connected_socket_model NFin) (errno_ret ETIMEDOUT)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false))) []
-  /\ sendto_answering (connected_socket_model NFin) (errno_ret EHOSTUNREACH)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false))) []
-  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true)))
+  sendto_answering_with (connected_socket_model NFin) 2 [(4096, 2%nat)]
+    = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98]
+  /\ read_answering (sent_socket_model NFin) (Z_to_bv 64 0) []
+    = CheckOk (sent_socket_model NFin) []
+  /\ sendto_answering (sent_socket_model NFin) (errno_ret ETIMEDOUT)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false true))) []
+  /\ sendto_answering (sent_socket_model NFin) (errno_ret EHOSTUNREACH)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false true))) []
+  /\ sendto_answering (sent_socket_model NFin) (errno_ret EPIPE)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false true))) []
+  /\ bind4_answering (sent_socket_model NFin) 0
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true true))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true true)))
        (errno_ret ETIMEDOUT)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false true))) []
-  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false true true))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true true)))
        (errno_ret ECONNRESET)
     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** THE FIRST SEND BEHIND THE FIN FINDS NO TIMER'S ERROR (Sol's round-19
+    trace: accept, FIN, first send).  An accepted connection has sent
+    nothing: [tcp_create_openreq_child] sets [snd_una], [snd_nxt] and
+    [write_seq] past the SYN (net/ipv4/tcp_minisocks.c:578-596) and arms
+    no timer (net/ipv4/inet_connection_sock.c:751-754), and the
+    retransmit timer returns at once with no packet out
+    (net/ipv4/tcp_timer.c:554-555).  So after the accept and the read of
+    the FIN, the send answers the delivery or a RST's -EPIPE, and
+    -ETIMEDOUT and -EHOSTUNREACH are refused; so are they after a bind
+    that autobinds there.  (be8f4b9a admitted all four.) *)
+Example first_send_behind_the_fin_finds_no_timers_error :
+  accept4_answering listening_socket_model 4 = CheckOk accepted_socket_model []
+  /\ read_answering accepted_socket_model (Z_to_bv 64 0) []
+    = CheckOk accepted_socket_model []
+  /\ sendto_answering accepted_socket_model (errno_ret ETIMEDOUT) = CheckReject
+  /\ sendto_answering accepted_socket_model (errno_ret EHOSTUNREACH) = CheckReject
+  /\ sendto_answering accepted_socket_model (errno_ret EPIPE)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false false false))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false)))
+       (errno_ret ETIMEDOUT)
+    = CheckReject
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false)))
+       (errno_ret EHOSTUNREACH)
+    = CheckReject
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false)))
+       (errno_ret EPIPE)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin false true false))) [].
 Proof. split_conj; check_eq. Qed.
 
 (** A RESET OR TIMEOUT AT THE HEAD NOT PROCESSED YET: the copy loop runs
@@ -2945,9 +2994,9 @@ Proof. split_conj; check_eq. Qed.
     `conform --mutate sendto#1:ret=1` case is this one. *)
 Example send_before_the_end_is_processed_goes_out :
   sendto_answering_with (connected_socket_model NRst) 2 [(4096, 2%nat)]
-    = CheckOk (connected_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
+    = CheckOk (sent_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
   /\ sendto_answering_with (connected_socket_model NTimedOut) 2 [(4096, 2%nat)]
-    = CheckOk (connected_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
+    = CheckOk (sent_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
 Proof. split; check_eq. Qed.
 
 (** THE TIMER'S END, the same two answers: the stored ETIMEDOUT
@@ -2955,7 +3004,7 @@ Proof. split; check_eq. Qed.
     TCP_CLOSE, consumed into [SkReset]; a RST's errno is refused. *)
 Example send_behind_a_timeout_finds_etimedout :
   sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET)
     = CheckReject.
 Proof. split; check_eq. Qed.
@@ -2964,9 +3013,9 @@ Proof. split; check_eq. Qed.
     with the reset, so the bind autobinds (0 here; -EADDRINUSE when the
     autobind fails) and only then is -EINVAL. *)
 Example bind_after_a_read_consumed_the_reset :
-  bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false))) 0
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
-  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false)))
+  bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false))) 0
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true false))) []
+  /\ bind4_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false false false)))
        (errno_ret EINVAL)
     = CheckReject.
 Proof. split; check_eq. Qed.
@@ -3015,7 +3064,7 @@ Example bind_on_a_live_connection_admits_einval_or_the_autobind :
     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 65) NFin)) []
   /\ bind_connected_answering (NCons (Z_to_bv 8 65) NFin) 0 [(4096, 16%nat)]
      = CheckOk (retired_socket_model
-                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 65) NFin) true true))) []
+                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 65) NFin) true true false))) []
   /\ bind_connected_answering (NCons (Z_to_bv 8 65) NFin) (errno_ret EINVAL) []
      = CheckReject
   /\ bind_connected_answering (NCons (Z_to_bv 8 65) NRst) (errno_ret EINVAL)
@@ -3032,7 +3081,7 @@ Example bind_on_a_half_closed_connection_admits_einval_or_the_autobind :
   bind_connected_answering NFin (errno_ret EINVAL) [(4096, 16%nat)]
     = CheckOk (connected_socket_model NFin) []
   /\ bind_connected_answering NFin 0 [(4096, 16%nat)]
-     = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true))) []
+     = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NFin true true false))) []
   /\ bind_connected_answering NFin (errno_ret EINVAL) [] = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
@@ -3040,8 +3089,10 @@ Proof. split_conj; check_eq. Qed.
     [Net.Socket.send_state] maps a connection whose script ends in a
     reset to [SendGoes 3 ECONNRESET []], and one whose script ends in a
     retransmission timeout to [SendGoes 3 ETIMEDOUT []], each with
-    [SkReset demo_peer 3 rx false false] as the state the error answer
-    leaves: the program cannot see whether Linux has processed the end.
+    [SkReset demo_peer 3 rx false false false] as the state the error
+    answer leaves and the connection marked [sent] as the state the
+    delivery leaves: the program cannot see whether Linux has processed
+    the end.
     Not processed, the connection is ESTABLISHED, inside the mask that
     [tcp_sendmsg_locked] (net/ipv4/tcp.c:1159-1164) tests, and the bytes
     go out, as [send_before_the_end_is_processed_goes_out] shows.
@@ -3055,13 +3106,15 @@ Proof. split_conj; check_eq. Qed.
     with no error pending; the reset's -ECONNRESET and the dead socket's
     -EPIPE are refused.  Linux v6.18.46. *)
 Example send_on_a_pending_error_answers_it_and_retires :
-  send_state (SkConnected demo_peer 3 NRst)
-    = SendGoes 3 ECONNRESET [] (SkReset demo_peer 3 NRst false false)
-  /\ send_state (SkConnected demo_peer 3 NTimedOut)
-     = SendGoes 3 ETIMEDOUT [] (SkReset demo_peer 3 NTimedOut false false)
+  send_state (SkConnected demo_peer 3 NRst false)
+    = SendGoes 3 ECONNRESET [] (SkReset demo_peer 3 NRst false false false)
+        (SkConnected demo_peer 3 NRst true)
+  /\ send_state (SkConnected demo_peer 3 NTimedOut false)
+     = SendGoes 3 ETIMEDOUT [] (SkReset demo_peer 3 NTimedOut false false false)
+         (SkConnected demo_peer 3 NTimedOut true)
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
      = CheckOk (retired_socket_model
-                  (FdSocket (SkReset demo_peer 3 NTimedOut false false))) []
+                  (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET)
      = CheckReject
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret EPIPE)
@@ -3073,26 +3126,32 @@ Proof. split_conj; check_eq. Qed.
     [SendGoes] on the connection's channel: both states are inside the
     mask [tcp_sendmsg_locked] tests (net/ipv4/tcp.c, v6.18.46).  Any
     nonempty prefix of "ab" goes out as [WriteEv 3], ledgered at the range
-    it came out of, the model left as it was; the -EFAULT of an unreadable
-    source is refused.  Behind a FIN a reset may already be processed, and
-    [tcp_reset] then stores EPIPE (net/ipv4/tcp_input.c:4695-4696), so the
-    -EPIPE that retires the descriptor is admitted beside the delivery,
-    and so are the retransmit timer's errors
+    it came out of, the connection marked [sent]; the -EFAULT of an
+    unreadable source is refused.  Behind a FIN a reset may already be
+    processed, and [tcp_reset] then stores EPIPE
+    (net/ipv4/tcp_input.c:4695-4696), so the -EPIPE that retires the
+    descriptor is admitted beside the delivery, and so, once the
+    connection has [sent], are the retransmit timer's errors
     ([send_behind_the_fin_finds_the_timers_error]).
     (Main's flat model refused that -EPIPE.) *)
 Example send_on_a_live_connection_goes_out :
-  send_state (SkConnected demo_peer 3 NFin)
-    = SendGoes 3 EPIPE (ETIMEDOUT :: tcp_soft_errnos) (SkReset demo_peer 3 NFin false false)
-  /\ send_state (SkConnected demo_peer 7 (NCons (Z_to_bv 8 97) NFin))
-     = SendGoes 7 EPIPE (ETIMEDOUT :: tcp_soft_errnos)
-         (SkReset demo_peer 7 (NCons (Z_to_bv 8 97) NFin) false false)
+  send_state (SkConnected demo_peer 3 NFin false)
+    = SendGoes 3 EPIPE [] (SkReset demo_peer 3 NFin false false false)
+        (SkConnected demo_peer 3 NFin true)
+  /\ send_state (SkConnected demo_peer 3 NFin true)
+    = SendGoes 3 EPIPE (ETIMEDOUT :: tcp_soft_errnos) (SkReset demo_peer 3 NFin false false true)
+        (SkConnected demo_peer 3 NFin true)
+  /\ send_state (SkConnected demo_peer 7 (NCons (Z_to_bv 8 97) NFin) false)
+     = SendGoes 7 EPIPE []
+         (SkReset demo_peer 7 (NCons (Z_to_bv 8 97) NFin) false false false)
+         (SkConnected demo_peer 7 (NCons (Z_to_bv 8 97) NFin) true)
   /\ sendto_answering_with (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
        2 [(4096, 2%nat)]
-     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+     = CheckOk (sent_socket_model (NCons (Z_to_bv 8 97) NFin))
          [WriteEv 3 97; WriteEv 3 98]
   /\ sendto_answering_with (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
        1 [(4096, 1%nat)]
-     = CheckOk (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
+     = CheckOk (sent_socket_model (NCons (Z_to_bv 8 97) NFin))
          [WriteEv 3 97]
   /\ sendto_answering (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
        (errno_ret EFAULT)
@@ -3100,7 +3159,7 @@ Example send_on_a_live_connection_goes_out :
   /\ sendto_answering (connected_socket_model (NCons (Z_to_bv 8 97) NFin))
        (errno_ret EPIPE)
      = CheckOk (retired_socket_model
-                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 97) NFin) false false))) [].
+                  (FdSocket (SkReset demo_peer 3 (NCons (Z_to_bv 8 97) NFin) false false false))) [].
 Proof. split_conj; check_eq. Qed.
 
 (** Everything readable, nothing writable, at EVERY address: past
@@ -3432,14 +3491,14 @@ Proof. split_conj; check_eq. Qed.
     script the end whose error is pending lies past the scan, and the
     send is declined. *)
 Example send_on_a_reset_the_bind_left_pending_answers_it_once :
-  sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+  sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true false)))
       (errno_ret ECONNRESET)
-    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true))) []
-  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true)))
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst false true false))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true true false)))
        (errno_ret EPIPE)
     = CheckReject
   /\ sendto_answering_with
-       (retired_socket_model (FdSocket (SkReset demo_peer 3 net_forever true true)))
+       (retired_socket_model (FdSocket (SkReset demo_peer 3 net_forever true true false)))
        2 [(4096, 2%nat)]
     = CheckUnmodeled.
 Proof. split_conj; check_eq. Qed.

@@ -2739,9 +2739,9 @@ Qed.
 
 (** The send path.  [check_send_on_socket] is the shared body
     both entry points funnel through, and it is the only place either
-    touches the model: the delivering arm returns the model it was
-    handed and the [SendErr] arm rewrites the descriptor with [with_fds].
-    Neither moves a mapping.  Its [pre]/[acc] parameters carry the
+    touches the model: the delivering arm marks the connection [sent]
+    and the error arms consume the error, each rewriting the descriptor
+    with [with_fds].  None moves a mapping.  Its [pre]/[acc] parameters carry the
     copy-in ledger. *)
 Lemma check_send_on_socket_frame :
   forall pre acc fd sk total bs eff m m' evs,

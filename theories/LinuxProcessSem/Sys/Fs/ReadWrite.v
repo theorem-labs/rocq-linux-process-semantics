@@ -838,7 +838,7 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
            still faces [access_ok] in [vfs_read] — see [access_ok_zero] *)
       else
       match sk with
-      | SkConnected peer ch rx =>
+      | SkConnected peer ch rx sent =>
           match rx with
           | NFin =>
               access_ok_zero buf count (ret_only (Z_to_bv 64 0))
@@ -849,8 +849,8 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  sk_err, so END-OF-STREAM DOMINATES A LATER ERROR: once
                  EOF has been observed a subsequent RST cannot turn this
                  back into an error *)
-          | NRst => socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false) buf count i m
-          | NTimedOut => socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false) buf count i m
+          | NRst => socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false sent) buf count i m
+          | NTimedOut => socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false sent) buf count i m
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
                 (* [vfs_read]'s [access_ok] on the count the call NAMED,
@@ -911,14 +911,14 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                                   /\ read_bytes_map (in_wmem i) buf (len_word bs) <> None) ;;
                   set_fds (fd_insert (m_fds m) fd
                              (FdSocket (SkConnected peer ch
-                                          (snd (net_take rx (length bs)))))) ;;
+                                          (snd (net_take rx (length bs))) sent))) ;;
                   emit (map (ReadEv ch) bs) ;;     (* one event per delivered byte, on the
                                                     CONNECTION's channel — not stdin's *)
                   pure (mkEffect (len_word bs) [(buf, bs)] [])
               end
               end
           end
-      | SkReset peer ch rx pending bound =>
+      | SkReset peer ch rx pending bound sent =>
           (* THE END WAS PROCESSED, and what was queued before it is still
              read: tcp_done purges only the write queue (net/ipv4/
              tcp_input.c:4669, Linux v6.18.46), so the bytes come first
@@ -932,11 +932,11 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
           | NFin => access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NRst =>
               if pending
-              then socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound) buf count i m
+              then socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound sent) buf count i m
               else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NTimedOut =>
               if pending
-              then socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound) buf count i m
+              then socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound sent) buf count i m
               else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
@@ -956,7 +956,7 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                                   /\ read_bytes_map (in_wmem i) buf (len_word bs) <> None) ;;
                   set_fds (fd_insert (m_fds m) fd
                              (FdSocket (SkReset peer ch
-                                          (snd (net_take rx (length bs))) pending bound))) ;;
+                                          (snd (net_take rx (length bs))) pending bound sent))) ;;
                   emit (map (ReadEv ch) bs) ;;
                   pure (mkEffect (len_word bs) [(buf, bs)] [])
               end
@@ -3636,14 +3636,14 @@ Definition readv_imported (fd : word) (r : ReadableFd)
       end
   | RdSocket sk =>
       match sk with
-      | SkConnected peer ch rx =>
+      | SkConnected peer ch rx sent =>
           match rx with
           | NFin => ret_only (Z_to_bv 64 0)   (* the peer's FIN: 0, and sticky *)
           | NRst =>
-              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false false))) ;;
+              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false false sent))) ;;
               err_ret ECONNRESET                (* delivered once, then end-of-stream *)
           | NTimedOut =>
-              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false))) ;;
+              set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false sent))) ;;
               err_ret ETIMEDOUT
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -3671,7 +3671,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
                       | Some writes =>
                           set_fds (fd_insert (m_fds m) fd
                                      (FdSocket (SkConnected peer ch
-                                                  (snd (net_take rx (length bs)))))) ;;
+                                                  (snd (net_take rx (length bs))) sent))) ;;
                           emit (map (ReadEv ch) bs) ;;   (* one event per byte, on the
                                                             connection's channel *)
                           pure (mkEffect (len_word bs) writes [])
@@ -3682,19 +3682,19 @@ Definition readv_imported (fd : word) (r : ReadableFd)
                   end
               end
           end
-      | SkReset peer ch rx pending bound =>
+      | SkReset peer ch rx pending bound sent =>
           (* the [read] arm's [SkReset] rule over the scatter: the queue
              first, then the end (see [read_spec]) *)
           match rx with
           | NFin => ret_only (Z_to_bv 64 0)
           | NRst =>
               if pending
-              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false bound))) ;;
+              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NRst false bound sent))) ;;
                     err_ret ECONNRESET)
               else ret_only (Z_to_bv 64 0)
           | NTimedOut =>
               if pending
-              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false bound))) ;;
+              then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false bound sent))) ;;
                     err_ret ETIMEDOUT)
               else ret_only (Z_to_bv 64 0)
           | NCons _ _ =>
@@ -3714,7 +3714,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
                       | Some writes =>
                           set_fds (fd_insert (m_fds m) fd
                                      (FdSocket (SkReset peer ch
-                                                  (snd (net_take rx (length bs))) pending bound))) ;;
+                                                  (snd (net_take rx (length bs))) pending bound sent))) ;;
                           emit (map (ReadEv ch) bs) ;;
                           pure (mkEffect (len_word bs) writes [])
                       | None => choose (fun _ => False)

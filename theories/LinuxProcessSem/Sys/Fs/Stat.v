@@ -1042,7 +1042,7 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     is short by up to 7 bytes, because [strncpy_from_user] reads a word
     at a time, and this spec inherits that bound rather than restating it.
 
-    SHARED WITH [Open.openat_spec] WITHOUT AT_EMPTY_PATH, AND DELIBERATELY
+    SHARED WITH FOUR OTHER BODIES WITHOUT AT_EMPTY_PATH, AND DELIBERATELY
     LEFT INLINE.  The three steps between the flag word and the path —
     [read_cstr]'s three answers, the empty pathname, and the AT_FDCWD
     gate — come in [Open.openat_body_spec]'s order: the empty pathname is
@@ -1050,31 +1050,34 @@ Definition stat_entry_spec (k : Fs.path) (e : Entry) (statbuf : word)
     LOOKUP_EMPTY, fs/namei.c:167-171, Linux v6.18.46).  This body takes
     that order and that -ENOENT only without AT_EMPTY_PATH.  Under
     AT_EMPTY_PATH the empty pathname is no -ENOENT: it passes to the
-    AT_FDCWD gate and stats the working folder (the arm above).  The
-    sequence is wrapped in the same ledger as openat's, and those two
-    specs are its only copies (mirrored once more by
-    [Open.check_openat] and [Stat.check_newfstatat], whose soundness and
+    AT_FDCWD gate and stats the working folder (the first arm below).
+    [Open.openat_body_spec], [Open.faccessat_body_spec],
+    [Namei.unlinkat_body_spec] and [Namei.mkdirat_body_spec] run the same
+    sequence in the same order, each wrapped in the same ledger as this
+    body, and those five bodies are its only copies (mirrored once more by
+    [Open.check_openat], [Open.check_faccessat], [Namei.check_unlinkat],
+    [Namei.check_mkdirat] and [Stat.check_newfstatat], whose soundness and
     completeness lemmas discharge by destructing [read_cstr] directly).
     They are kept side by side rather than hoisted into a shared
     combinator: what repeats is a few lines of already shared primitives
     ([read_cstr], [Fs.path_eqb], [Uapi.AT_FDCWD32], [err_ret]) under one
     already shared wrapper ([Syscall.record_copyins]), and hoisting them
-    would have to thread a continuation through both checkers, where the
-    arm-for-arm mirroring is what keeps those four lemmas short.  The
-    price is that any later correction to this precedence or to the
-    recorded range must be made in both places.  ([getname_flags]'s own
-    -ENOMEM is not repeated: it is [Fs.Namei.getname_refusals]', one
+    would have to thread a continuation through every one of those
+    checkers, where the arm-for-arm mirroring is what keeps their lemmas
+    short.  The price is that any later correction to this precedence or
+    to the recorded range must be made in all five.  ([getname_flags]'s
+    own -ENOMEM is not repeated: it is [Fs.Namei.getname_refusals]', one
     definition every pathname arm applies.)  [readlinkat_body_spec]
     above takes the same three steps in ANOTHER order: the AT_FDCWD gate
     comes before the empty pathname.  [do_readlinkat] fetches with
     LOOKUP_EMPTY (fs/stat.c:569, :575, Linux v6.18.46), so the empty
     name is walked from the descriptor (:576), and its -ENOENT is the
     answer for an empty name that resolved to no link (:593), after the
-    walk.  So the three share the steps and not one order, and none of
-    them is extracted, for the reason above.  What the three DO share
-    already is the walk: [newfstatat_body_spec] and [readlinkat_spec]
-    answer the trailing separator through [Fs.resolve] alone, which is
-    what stops them from drifting. *)
+    walk.  So the six share the steps and not one order, and none of
+    them is extracted, for the reason above.  What the six DO share
+    already is the walk: each hands a nonempty name to [Fs.resolve] or
+    [Fs.resolve_parent], and that one walk, trailing separator included,
+    is what stops them from drifting. *)
 Definition newfstatat_body_spec (i : SyscallInput) (m : Model)
     (dirfd pathp statbuf flag : word) : Sys SyscallEffect :=
     (* [getname_flags()]: all three of its answers are real errnos, and

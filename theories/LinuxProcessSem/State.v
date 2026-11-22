@@ -2694,12 +2694,15 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        have, and is declined rather than guessed.
     - [SkListening]  — [listen] accepted.  [accept] draws from the
                        environment's queue; [read] is -ENOTCONN.
-    - [SkConnected peer chan rx] — handed over by [accept].  [peer] is
+    - [SkConnected peer chan rx sent] — handed over by [accept].  [peer] is
                        the address the SYN carried, [chan] is the trace
                        channel this connection's bytes are reported on
                        (see [Net.Socket.conn_channel]), and [rx] is what the
-                       peer has left to say.
-    - [SkReset peer chan rx pending bound] — the kernel has PROCESSED the
+                       peer has left to say.  [sent] says a send on the
+                       connection has moved a byte into its write queue
+                       ([Net.Socket.send_bytes]); [accept] hands the
+                       connection over with it false.
+    - [SkReset peer chan rx pending bound sent] — the kernel has PROCESSED the
                        connection's end: net/ipv4/tcp_input.c [tcp_reset]
                        (:4678-4704) or the retransmit timer stored the
                        error in [sk_err] and ran net/ipv4/tcp.c
@@ -2725,6 +2728,7 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        bound the socket since the reset: __inet_bind's
                        [sk_state != TCP_CLOSE || inet_num] test
                        (net/ipv4/af_inet.c:528) then answers -EINVAL.
+                       [sent] is [SkConnected]'s, kept.
                        THE STATE IS NOT [SkConnected] WITH A FLAG because
                        the send side differs: a consumed FIN leaves
                        CLOSE_WAIT, inside [tcp_sendmsg_locked]'s accepted
@@ -2738,6 +2742,22 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        timing and move here only on the answer that shows
                        it ([Net.Socket.send_state], [Net.Socket.bind_spec]);
                        a read moves here when it reports the error.
+                       [sent] IS A FLAG, and that argument does not reach
+                       it: it changes no state test of the send path, only
+                       which error a processed end can have stored.  A RST
+                       stores its error whatever the program sent; the
+                       retransmit timer's [tcp_write_err]
+                       (net/ipv4/tcp_timer.c:76-80) needs bytes the
+                       connection sent or queued, and an accepted
+                       connection starts with none: [tcp_create_openreq_child]
+                       sets [snd_una], [snd_nxt] and [write_seq] past the
+                       SYN (net/ipv4/tcp_minisocks.c:578-596), and
+                       [inet_csk_init_xmit_timers] arms no timer
+                       (net/ipv4/inet_connection_sock.c:751-754); SCOPE.md's
+                       premise on TCP Fast Open and [Net.Socket.end_more_errnos]
+                       carry the rest of the argument.  So both values of
+                       [sent] share every answer but that error's, and one
+                       constructor carries both.
 
     THE PER-CONNECTION STATE LIVES IN THE CONSTRUCTOR, not in fields
     beside it, so a listening socket cannot carry a byte stream and a
@@ -2751,9 +2771,9 @@ Inductive SockState :=
   | SkFresh
   | SkBound
   | SkListening
-  | SkConnected (peer : PeerAddr) (chan : word) (rx : NetStream)
+  | SkConnected (peer : PeerAddr) (chan : word) (rx : NetStream) (sent : bool)
   | SkReset (peer : PeerAddr) (chan : word) (rx : NetStream)
-            (pending : bool) (bound : bool).
+            (pending : bool) (bound : bool) (sent : bool).
 
 (** THE SOCKET HAS NO CONNECTION TO SEND ON, as a boolean over the
     representation.  TCP has NO -ENOTCONN on the send path: net/core/stream.c
@@ -2792,8 +2812,8 @@ Inductive SockState :=
 Definition sock_send_dead (sk : SockState) : bool :=
   match sk with
   | SkFresh | SkBound | SkListening => true
-  | SkReset _ _ _ pending _ => negb pending
-  | SkConnected _ _ _ => false
+  | SkReset _ _ _ pending _ _ => negb pending
+  | SkConnected _ _ _ _ => false
   end.
 
 (** [PIPE_BUF] (include/uapi/linux/limits.h), which on riscv64 is also

@@ -1223,6 +1223,24 @@ not apply.
   from `State.KernelBuild`, which a launch states once; `Run.valid_input`
   fixes them at `State.default_kernel`'s values. Another process that writes
   `/proc/sys/net/core/*` during the run makes this assumption false.
+- The server half of TCP Fast Open is off. The `net.ipv4.tcp_fastopen`
+  sysctl does not have both `TFO_SERVER_ENABLE` (2) and
+  `TFO_SERVER_WO_SOCKOPT1` (0x400) set (`include/net/tcp.h:273`, `:282`).
+  Its default is `TFO_CLIENT_ENABLE`, 1 (`tcp_sk_init`,
+  `net/ipv4/tcp_ipv4.c:3667`). The only other way to turn the server half
+  on is the listener's `TCP_FASTOPEN` socket option, and
+  `Net.Socket.setsockopt_spec` declines it. So `__inet_listen_sk`
+  (`net/ipv4/af_inet.c:212-217`) gives a listener no Fast Open queue,
+  `tcp_try_fastopen` (`net/ipv4/tcp_fastopen.c:365-370`) makes no
+  connection before the handshake ends, and a connection that `accept`
+  hands over has nothing in flight until the program sends
+  (`Net.Socket.end_more_errnos`). With both bits set, `accept` can hand
+  over a connection whose SYN-ACK the peer has not acknowledged. The
+  retransmit timer can then end that connection
+  (`tcp_fastopen_synack_timer`, `net/ipv4/tcp_timer.c:458-475`), and the
+  program's first send can answer `-ETIMEDOUT`, which the model refuses.
+  An administrator who sets both bits before or during the run makes
+  this assumption false.
 - A send on a stream-pair end never fails with `-ENOBUFS`. Linux's
   `sock_alloc_send_pskb` returns it when the kernel cannot allocate an
   skb, under memory pressure; the model leaves that answer out of

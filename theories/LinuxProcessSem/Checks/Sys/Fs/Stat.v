@@ -502,11 +502,10 @@ Qed.
 (** The four inversions the completeness lemmas need, to strip
     [newfstatat_spec]'s [input] bind and its [record_copyins] wrapper.
     They are mirrored from [Checks.Sys.Fs.Open], where the same four are
-    [Local], rather than hoisted into [Checks.Sys.Prelude]: the two
-    checkers are kept arm-for-arm side by side on purpose (see the
-    SHARED WITH paragraph on [Stat.newfstatat_spec]), and the shared
-    combinator is worth extracting when [readlinkat] becomes the third
-    call site, not before. *)
+    [Local], rather than hoisted into [Checks.Sys.Prelude]: the checkers
+    of the bodies that share the pathname fetch are kept arm-for-arm side
+    by side on purpose (see the SHARED WITH paragraph on
+    [Stat.newfstatat_body_spec]). *)
 Local Lemma input_bind_ok_inv {A : Type} : forall (k : SyscallInput -> Sys A)
     i m x m' evs,
   bind input k i m (Ok x m' evs) -> k i i m (Ok x m' evs).

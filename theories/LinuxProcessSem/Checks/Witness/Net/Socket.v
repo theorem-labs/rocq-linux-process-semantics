@@ -146,10 +146,10 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
             else
               match sk with
               | SkFresh => ret_outcome (errno_ret EADDRINUSE) m  (* [get_port] can fail *)
-              | SkBound | SkListening | SkReset _ _ _ _ true | SkConnected _ _ _ =>
+              | SkBound | SkListening | SkReset _ _ _ _ true _ | SkConnected _ _ _ _ =>
                   ret_outcome (errno_ret EINVAL) m
                   (* on a connection: the answer before its end is processed *)
-              | SkReset _ _ _ _ false =>
+              | SkReset _ _ _ _ false _ =>
                   ret_outcome (errno_ret EADDRINUSE) m  (* the autobind's [get_port] can fail *)
               end)
       end
@@ -233,8 +233,8 @@ Definition listen_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdSocket sk) =>
       match sk with
-      | SkConnected _ _ _ => ret_outcome (errno_ret EINVAL) m
-      | SkReset _ _ _ _ _ => ret_outcome (errno_ret EINVAL) m
+      | SkConnected _ _ _ _ => ret_outcome (errno_ret EINVAL) m
+      | SkReset _ _ _ _ _ _ => ret_outcome (errno_ret EINVAL) m
       | SkListening => ret_outcome (Z_to_bv 64 0) m       (* re-listen *)
       | SkBound =>
           ret_outcome (Z_to_bv 64 0)
@@ -344,11 +344,11 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
                  match sk with
                  | SkFresh => ret_outcome (Z_to_bv 64 0) m
                  | SkBound | SkListening
-                 | SkConnected _ _ _ | SkReset _ _ _ _ _ => Unmodeled
+                 | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ => Unmodeled
                  end
                else
                  match sk with
-                 | SkListening | SkConnected _ _ _ | SkReset _ _ _ _ _ =>
+                 | SkListening | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ =>
                      ret_outcome (errno_ret EISCONN) m
                  | SkFresh | SkBound =>
                      if Z.ltb al SOCKADDR_IN_SIZE
@@ -577,8 +577,8 @@ Definition getpeername_witness (fd : word) (i : SyscallInput) (m : Model)
       | SkFresh           => ret_outcome (errno_ret ENOTCONN) m
       | SkBound           => ret_outcome (errno_ret ENOTCONN) m
       | SkListening       => ret_outcome (errno_ret ENOTCONN) m
-      | SkReset _ _ _ _ _ => ret_outcome (errno_ret ENOTCONN) m
-      | SkConnected _ _ _ => Unmodeled
+      | SkReset _ _ _ _ _ _ => ret_outcome (errno_ret ENOTCONN) m
+      | SkConnected _ _ _ _ => Unmodeled
       end
   | SoPair _ _ _ => stream_getname_witness (in_arg i 1) (in_arg i 2) i m
   | SoInert _ => Unmodeled
@@ -727,7 +727,8 @@ Qed.
     need.
 
     The ledger travels with the outcome: [pre] on every arm, and the
-    one delivered byte's ranges on the arm that delivers.
+    one delivered byte's ranges on the arm that delivers.  The delivery
+    carries the connection marked [sent], as the spec's [set_fds] does.
 
     [Net.Socket.SendErr] consumes the pending error, so its witness
     carries the UPDATED model: the same [fd_insert] the spec performs,
@@ -737,14 +738,15 @@ Definition send_on_socket_witness (pre : list (word * nat))
     (acc : nat -> list (word * nat)) (fd : word) (sk : SockState)
     (total : word) (bs : list byte) (m : Model) : outcome SyscallEffect :=
   match send_state sk with
-  | SendGoes ch _ _ _ =>
+  | SendGoes ch _ _ _ delivered =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then Unmodeled
       else if w_is0 total
       then outcome_copyins pre (ret_outcome (Z_to_bv 64 0) m)   (* zero-length request *)
       else if Nat.eqb (length bs) 0
       then outcome_copyins pre (ret_outcome (errno_ret EFAULT) m)  (* nothing readable *)
       else outcome_copyins (pre ++ acc (length (firstn 1 bs)))
-             (Ok (mkEffect (len_word (firstn 1 bs)) [] []) m
+             (Ok (mkEffect (len_word (firstn 1 bs)) [] [])
+                 (with_fds (fd_insert (m_fds m) fd (FdSocket delivered)) m)
                  (map (WriteEv ch) (firstn 1 bs)))            (* the one-byte send *)
   | SendErr e _ after =>
       outcome_copyins pre
@@ -759,7 +761,7 @@ Lemma send_on_socket_witness_ok : forall pre acc fd sk total bs i m,
     (send_on_socket_witness pre acc fd sk total bs m).
 Proof.
   intros. unfold send_on_socket, send_on_socket_witness.
-  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta.
+  destruct (send_state sk) as [ch e more after delivered|e more after| |]; cbv beta iota zeta.
   - (* SendGoes: the connection takes bytes (the end not processed yet) *)
     destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z); cbv beta iota zeta;
       [apply unmodeled_intro|].
@@ -781,7 +783,9 @@ Proof.
       - rewrite Hl1. lia.
       - rewrite Hl1. exact Hpos.
       - rewrite Hl1. reflexivity. }
-    cbv beta. unfold outcome_copyins.
+    cbv beta.
+    eapply bind_step; [apply modify_ok|]. cbv beta.
+    unfold outcome_copyins.
     eapply witness_bind_ok_eq with
       (evs1 := map (WriteEv ch) (firstn 1 bs)) (evs2 := []);
       [apply emit_ok| |now rewrite app_nil_r].

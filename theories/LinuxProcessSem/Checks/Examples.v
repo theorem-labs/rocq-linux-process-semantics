@@ -1401,9 +1401,10 @@ Proof. vm_compute. reflexivity. Qed.
     with no error stored and no SEND_SHUTDOWN, so its -EPIPE test does not
     fire (:1193-1195) and the copy loop queues both bytes (:1197 on) and
     returns their count (:1374-1385).  The checker answers [CheckOk] with
-    one [WriteEv] per byte on the connection's channel 3 and the model
-    unchanged: the end is still at the head of the script, for the next
-    call to find.  Checks/Cases/Net/Socket.v's
+    one [WriteEv] per byte on the connection's channel 3 and the
+    connection marked [sent] ([State.SockState]); the script is
+    unchanged: the end is still at its head, for the next call to find.
+    Checks/Cases/Net/Socket.v's
     [send_before_the_end_is_processed_goes_out] states the same two sends
     beside the other connected-socket cases.
 
@@ -1432,9 +1433,9 @@ Proof. vm_compute. reflexivity. Qed.
     of [sk_stream_error] (net/ipv4/tcp.c:1387-1405). *)
 Example send_over_an_unprocessed_reset_or_timeout_goes_out :
   sendto_answering_with (connected_socket_model NRst) 2 [(4096, 2%nat)]
-    = CheckOk (connected_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
+    = CheckOk (sent_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
   /\ sendto_answering_with (connected_socket_model NTimedOut) 2 [(4096, 2%nat)]
-    = CheckOk (connected_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
+    = CheckOk (sent_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
 Proof. split; check_eq. Qed.
 
 Example send_over_an_unprocessed_reset_or_timeout_0_of_2_rejected :

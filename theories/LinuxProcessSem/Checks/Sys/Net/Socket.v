@@ -284,10 +284,10 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
                     (check_errno_or_success bind_errnos
                        (fd_insert (m_fds m) fd (FdSocket SkBound))
                        (Z_to_bv 64 0) (clear_copyins eff) m)
-              | SkBound | SkListening | SkReset _ _ _ _ true =>
+              | SkBound | SkListening | SkReset _ _ _ _ true _ =>
                   check_ret_only_copyins [(addrp, Z.to_nat al)] eff
                     (errno_ret EINVAL) m []
-              | SkConnected peer ch rx =>
+              | SkConnected peer ch rx sent =>
                   (* -EINVAL if the peer's end is not processed yet, the
                      autobind's answers if it is: [Net.Socket.bind_spec] *)
                   if bv_eqb (eff_ret eff) (errno_ret EINVAL)
@@ -295,12 +295,12 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
                          (errno_ret EINVAL) m []
                   else check_copyins [(addrp, Z.to_nat al)] eff
                          (check_errno_or_success bind_errnos
-                            (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch rx true true)))
+                            (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch rx true true sent)))
                             (Z_to_bv 64 0) (clear_copyins eff) m)
-              | SkReset peer ch rx pending false =>
+              | SkReset peer ch rx pending false sent =>
                   check_copyins [(addrp, Z.to_nat al)] eff
                     (check_errno_or_success bind_errnos
-                       (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch rx pending true)))
+                       (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch rx pending true sent)))
                        (Z_to_bv 64 0) (clear_copyins eff) m)
               end
       end
@@ -345,8 +345,8 @@ Definition check_listen (fd backlog : word) (eff : SyscallEffect) (m : Model)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdSocket sk) =>
       match sk with
-      | SkConnected _ _ _ => check_ret_only eff (errno_ret EINVAL) m []
-      | SkReset _ _ _ _ _ => check_ret_only eff (errno_ret EINVAL) m []
+      | SkConnected _ _ _ _ => check_ret_only eff (errno_ret EINVAL) m []
+      | SkReset _ _ _ _ _ _ => check_ret_only eff (errno_ret EINVAL) m []
       | SkListening => check_ret_only eff (Z_to_bv 64 0) m []
       | SkBound =>
           check_ret_only eff (Z_to_bv 64 0)
@@ -396,7 +396,8 @@ Definition check_accept4 (fd addrp addrlenp flags : word)
                      (fd_insert (m_fds m) nfd
                         (FdSocket (SkConnected (nq_peer (m_net m))
                                                (conn_channel (m_conn_ix m))
-                                               (nq_script (m_net m))))) m)
+                                               (nq_script (m_net m))
+                                               false))) m)
           | _ => check_errno_or_list EINVAL accept_notlisten_errnos eff m
           end
       | FdStream _ _ _ => CheckUnmodeled   (* a socket: [unix_accept]'s allocations *)
@@ -435,11 +436,11 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
                 | SkFresh =>
                     check_ret_only_copyins copied eff (Z_to_bv 64 0) m []
                 | SkBound | SkListening
-                | SkConnected _ _ _ | SkReset _ _ _ _ _ => CheckUnmodeled
+                | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ => CheckUnmodeled
                 end
               else
                 match sk with
-                | SkListening | SkConnected _ _ _ | SkReset _ _ _ _ _ =>
+                | SkListening | SkConnected _ _ _ _ | SkReset _ _ _ _ _ _ =>
                     check_ret_only_copyins copied eff (errno_ret EISCONN) m []
                 | SkFresh | SkBound =>
                     if Z.ltb al SOCKADDR_IN_SIZE
@@ -1979,8 +1980,8 @@ Definition check_getpeername (i : SyscallInput) (fd : word) (eff : SyscallEffect
       | SkFresh           => check_ret_only eff (errno_ret ENOTCONN) m []
       | SkBound           => check_ret_only eff (errno_ret ENOTCONN) m []
       | SkListening       => check_ret_only eff (errno_ret ENOTCONN) m []
-      | SkReset _ _ _ _ _ => check_ret_only eff (errno_ret ENOTCONN) m []
-      | SkConnected _ _ _ => CheckUnmodeled
+      | SkReset _ _ _ _ _ _ => check_ret_only eff (errno_ret ENOTCONN) m []
+      | SkConnected _ _ _ _ => CheckUnmodeled
       end
   | SoPair _ _ _ => check_stream_getname (in_arg i 1) (in_arg i 2) i eff m
   | SoInert _ => CheckUnmodeled
@@ -2045,8 +2046,8 @@ Definition check_shutdown (fd how : word) (eff : SyscallEffect) (m : Model)
             if (bv_unsigned how =? SHUT_WR)%Z
             then check_ret_only eff (Z_to_bv 64 0) m []
             else CheckUnmodeled
-        | SkConnected _ _ _ => CheckUnmodeled
-        | SkReset _ _ _ _ _ => CheckUnmodeled
+        | SkConnected _ _ _ _ => CheckUnmodeled
+        | SkReset _ _ _ _ _ _ => CheckUnmodeled
         end
   | SoPair id side st =>
       if negb (shut_how_ok how) then check_ret_only eff (errno_ret EINVAL) m []
@@ -2516,13 +2517,16 @@ Definition check_end_err (pre : list (word * nat)) (es : list Z)
     onto [SkReset] — because the spec consumes it, and a checker that
     accepted the unchanged model would let a program read the same reset
     twice.  On both arms the error is [e] or one of [more]
-    ([check_end_err]). *)
+    ([check_end_err]).  The delivery accepts the model with the
+    connection marked [sent] ([delivered]), which decides whether a later
+    send may find the retransmit timer's error
+    ([Net.Socket.end_more_errnos]). *)
 Definition check_send_on_socket (pre : list (word * nat))
     (acc : nat -> list (word * nat)) (fd : word) (sk : SockState)
     (total : word) (bs : list byte) (eff : SyscallEffect) (m : Model)
     : check_result :=
   match send_state sk with
-  | SendGoes ch e more after =>
+  | SendGoes ch e more after delivered =>
       if negb (bv_unsigned total <=? rw_bytes_max)%Z then CheckUnmodeled
       else
       if errno_ret_in (e :: more) (eff_ret eff)
@@ -2544,8 +2548,8 @@ Definition check_send_on_socket (pre : list (word * nat))
                  [andb] operand, and this one converts [ret] to a unary
                  [nat] -- see [Fs.ReadWrite.check_write]'s channel arm *)
               if access_ranges_eqb copyins (pre ++ acc (Z.to_nat (bv_unsigned ret)))
-              then CheckOk m (map (WriteEv ch)
-                                (firstn (Z.to_nat (bv_unsigned ret)) bs))
+              then CheckOk (with_fds (fd_insert (m_fds m) fd (FdSocket delivered)) m)
+                     (map (WriteEv ch) (firstn (Z.to_nat (bv_unsigned ret)) bs))
               else CheckReject
             else CheckReject
         | _ => CheckReject
@@ -2732,7 +2736,7 @@ Lemma check_send_on_socket_sound_ok :
 Proof.
   intros pre acc fd sk total bs eff m m' evs i H.
   unfold check_send_on_socket in H. unfold send_on_socket.
-  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after delivered|e more after| |]; cbv beta iota zeta in H |- *.
   - (* SendGoes: the processed end's error, or the delivery *)
     destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z) eqn:Htm;
       cbv beta iota zeta in H |- *; [discriminate|].
@@ -2777,6 +2781,7 @@ Proof.
       assert (Hlnat : length ds = Z.to_nat (bv_unsigned ret)) by lia.
       rewrite Hlnat. reflexivity. }
     cbv beta.
+    eapply bind_ok0; [apply modify_ok|]. cbv beta.
     eapply bind_ok_eq; [apply emit_ok| |].
     { eapply record_copyins_ok_empty with (eff := mkEffect (len_word ds) [] []);
         [reflexivity|apply pure_ok]. }
@@ -2795,11 +2800,12 @@ Qed.
 
 (** The errors a processed end can store are errnos, and none is the
     -EFAULT a send of an unreadable buffer answers. *)
-Lemma end_errnos_ok : forall t,
-  errnos_ok (end_errno t :: end_more_errnos t) = true
-  /\ errno_ret_in (end_errno t :: end_more_errnos t) (errno_ret EFAULT) = false.
+Lemma end_errnos_ok : forall sent t,
+  errnos_ok (end_errno t :: end_more_errnos sent t) = true
+  /\ errno_ret_in (end_errno t :: end_more_errnos sent t) (errno_ret EFAULT) = false.
 Proof.
-  intros t. destruct t; cbn [end_errno end_more_errnos]; split; vm_compute; reflexivity.
+  intros sent t. destruct sent, t; cbn [end_errno end_more_errnos];
+    split; vm_compute; reflexivity.
 Qed.
 
 (** Read off [send_state] with [net_end] FOLDED, and with no tactic that
@@ -2809,18 +2815,18 @@ Qed.
     shared subterms, written back out, grow exponentially in the count's
     bit length.  The equation is projected by an explicit [match] and
     reduced by [cbv] with [send_state] as the only constant unfolded. *)
-Lemma send_state_goes_errnos : forall sk ch e more after,
-  send_state sk = SendGoes ch e more after ->
+Lemma send_state_goes_errnos : forall sk ch e more after delivered,
+  send_state sk = SendGoes ch e more after delivered ->
   errnos_ok (e :: more) = true /\ errno_ret_in (e :: more) (errno_ret EFAULT) = false.
 Proof.
-  intros sk ch e more after H.
+  intros sk ch e more after delivered H.
   assert (Hp : match send_state sk with
-               | SendGoes _ e' more' _ => e' = e /\ more' = more
+               | SendGoes _ e' more' _ _ => e' = e /\ more' = more
                | _ => False
                end)
     by (rewrite H; cbv beta iota; split; reflexivity).
   clear H.
-  destruct sk as [| | |peer ch0 rx|peer ch0 rx [|] bound];
+  destruct sk as [| | |peer ch0 rx sent|peer ch0 rx [|] bound sent];
     cbv beta iota delta [send_state] in Hp.
   - exact (False_ind _ Hp).
   - exact (False_ind _ Hp).
@@ -2845,12 +2851,12 @@ Qed.
 
 (** What a delivering-or-faulting [send_bytes] can return: -EFAULT, or a
     count no larger than the total, itself bounded by its caller. *)
-Lemma send_bytes_ret : forall pre acc total bs ch i m eff m' evs,
-  send_bytes pre acc total bs ch i m (Ok eff m' evs) ->
+Lemma send_bytes_ret : forall pre acc total bs ch fds i m eff m' evs,
+  send_bytes pre acc total bs ch fds i m (Ok eff m' evs) ->
   (bv_unsigned total <= rw_bytes_max)%Z ->
   eff_ret eff = errno_ret EFAULT \/ (bv_unsigned (eff_ret eff) <= rw_bytes_max)%Z.
 Proof.
-  intros pre acc total bs ch i m eff m' evs H Ht.
+  intros pre acc total bs ch fds i m eff m' evs H Ht.
   unfold send_bytes in H.
   destruct (w_is0 total); cbv beta iota in H.
   { apply record_copyins_ok_inv in H. destruct H as (core & Hc & ->).
@@ -2867,6 +2873,8 @@ Proof.
   destruct HP as (H1 & H2 & _).
   inversion Heq; subst.
   cbv beta iota in Hk.
+  destruct Hk as (u0 & m3 & e3 & e4 & Hsf & Hk & _).
+  unfold set_fds, modify in Hsf. cbv beta in Hsf. inversion Hsf; subst.
   destruct Hk as (u & m2 & e1 & e2 & Hem & Hrc & _).
   unfold emit in Hem. cbv beta in Hem. inversion Hem; subst.
   apply record_copyins_ok_inv in Hrc. destruct Hrc as (core & Hc & ->).
@@ -2891,7 +2899,7 @@ Lemma check_send_on_socket_sound_unmodeled :
 Proof.
   intros pre acc fd sk total bs eff m i H.
   unfold check_send_on_socket in H. unfold send_on_socket.
-  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after delivered|e more after| |]; cbv beta iota zeta in H |- *.
   4: apply unmodeled_intro.
   3: (exfalso; now apply check_ret_only_copyins_no_unmodeled in H).
   2: (exfalso; now apply check_end_err_no_unmodeled in H).
@@ -2919,7 +2927,7 @@ Lemma check_send_on_socket_complete_unmodeled :
 Proof.
   intros pre acc fd sk total bs eff m i H.
   unfold send_on_socket in H. unfold check_send_on_socket.
-  destruct (send_state sk) as [ch e more after|e more after| |]; cbv beta iota zeta in H |- *.
+  destruct (send_state sk) as [ch e more after delivered|e more after| |]; cbv beta iota zeta in H |- *.
   4: reflexivity.
   2-3: (exfalso; sys_unfold; cbv beta iota zeta in H; inv_ok).
   destruct (negb (bv_unsigned total <=? rw_bytes_max)%Z); cbv beta iota zeta in H |- *;
@@ -2938,7 +2946,7 @@ Lemma check_send_on_socket_complete_ok :
 Proof.
   intros pre acc fd sk total bs eff m m' evs i H.
   unfold send_on_socket in H. unfold check_send_on_socket.
-  destruct (send_state sk) as [ch e more after|e more after| |] eqn:Hss;
+  destruct (send_state sk) as [ch e more after delivered|e more after| |] eqn:Hss;
     cbv beta iota zeta in H |- *.
   4: (sys_unfold; cbv beta iota zeta in H; inv_ok).
   3: (sys_unfold; cbv beta iota zeta in H |- *; inv_ok;
@@ -2960,8 +2968,8 @@ Proof.
     apply check_end_err_intro. exact HIn. }
   (* the delivery: its return is no errno of a processed end *)
   assert (Hne : errno_ret_in (e :: more) (eff_ret eff) = false).
-  { destruct (send_state_goes_errnos sk ch e more after Hss) as [Hok Hfault].
-    destruct (send_bytes_ret pre acc total bs ch i m eff m' evs H Htot) as [Hf|Hb].
+  { destruct (send_state_goes_errnos sk ch e more after delivered Hss) as [Hok Hfault].
+    destruct (send_bytes_ret pre acc total bs ch _ i m eff m' evs H Htot) as [Hf|Hb].
     - rewrite Hf. exact Hfault.
     - apply errno_ret_in_bounded; [exact Hok|exact Hb]. }
   rewrite Hne.
