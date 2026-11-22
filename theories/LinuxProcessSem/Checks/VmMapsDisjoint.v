@@ -1725,6 +1725,11 @@ Qed.
    invariant survives the whole dispatcher rather than five of its arms.
    ------------------------------------------------------------------------- *)
 
+(** [check_pending_errno] is a leaf, and is never unfolded: its test
+    [errno_ret_in _ (eff_ret eff)] names no variable of an arm, so the
+    [if] case below could split on it before the arms are split, and take
+    every arm still in [H] apart once per branch (unfolded, it doubled
+    this file's peak memory). *)
 Ltac vm_step H :=
   match type of H with
   | CheckReject = CheckOk _ _ => discriminate H
@@ -1734,6 +1739,10 @@ Ltac vm_step H :=
       apply check_ret_only_model in H; subst
   | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ =>
       apply check_ret_only_copyins_model in H; subst
+  | check_pending_errno _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pending_errno_ok in H;
+      let Hm := fresh in
+      destruct H as (? & _ & _ & Hm & _); subst
   | Prelude.check_copyins_after _ _ _ = CheckOk _ _ =>
       apply check_copyins_after_model in H
   | check_copyin_prefix _ _ _ = CheckOk _ _ =>
@@ -1873,7 +1882,7 @@ Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_urandom, check_socket_pending_error, check_pending_errno,
+  unfold check_read, check_read_urandom, check_socket_pending_error,
     check_access_ok_zero, check_eventfd_read in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
@@ -2005,7 +2014,7 @@ Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd r iovs0 eff m m' evs H.
-  unfold check_readv_imported, check_pending_errno in H.
+  unfold check_readv_imported in H.
   vm_frame3 H.
 Qed.
 
