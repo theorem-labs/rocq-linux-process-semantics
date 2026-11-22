@@ -13792,7 +13792,7 @@ class LabelRuleTest(unittest.TestCase):
                     self.assertTrue(body.endswith("\n<!-- waits-on-author -->"), body)
                 else:
                     steps = ("**Next step:** The automated ", "**Next step:** The workflow ",
-                             "**Next step:** The newest hold comment of the workflow ")
+                             "**Next step:** The hold comments of the workflow ")
                     self.assertTrue(step_line.startswith(steps), step_line)
                     self.assertNotIn("<!-- waits-on-", body)
                     self.assertNotIn("Sami", body)
@@ -15977,7 +15977,7 @@ class ImportCheckTest(ReaderRunner):
         at HEAD that the workflow does not try again: a hold of the screen, or a stop after the last try. Such a hold
         writes no label comment when GitHub did not say whether the author of its run has write access, or when its
         label call failed after its hold comment posted. #7 has no label comment, so the label step posts one with the
-        line, in the state after-hold: its next step names the newest hold comment, and it never says that the workflow
+        line, in the state after-hold: its next step names the hold comments, and it never says that the workflow
         tries again. The log says that the step posted it."""
         listed, _others = self.recorded()
         line = f"<!-- withdraw-owed {HEAD} blocking -->"

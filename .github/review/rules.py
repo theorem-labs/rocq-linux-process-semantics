@@ -62,7 +62,7 @@ state. <line> takes the place of the line of its kind. An item with no label com
 or of state=<state>, which must be a state with no state label. The comment job of a catch-up records the line
 <!-- review-catchup <head> --> with it. The rescreen pass reads that line, so that each head gets one catch-up. The
 comment job's label step records the line of an owed withdrawal (OWED) with it, with state=after-hold, when a hold
-made after its run started stops that step. That hold comment says what happens next. When mark posts a new label
+made after its run started stops that step. The hold comments say what happens next. When mark posts a new label
 comment, its log says so.
 
 owed: records in the label comment of <number> the withdrawal of the import check runs of a head that a run owes
@@ -418,9 +418,9 @@ STATES = {
         "After a push, the automated review runs again."),
     # The label comment that the comment job's label step posts (mark) for the line of a withdrawal that its run owes
     # (OWED), on an item with no label comment, when a hold made after its run started stops that step. That hold can
-    # be one that the workflow tries again or one that it does not, so the text names only the hold comment.
+    # be one that the workflow tries again or one that it does not, so the text names only the hold comments.
     # label_state never gives this state.
-    "after-hold": (None, "The newest hold comment of the workflow on this item says what happens next.", ""),
+    "after-hold": (None, "The hold comments of the workflow on this pull request say what happens next.", ""),
 }
 
 FIRST = "<!-- review-label -->"
