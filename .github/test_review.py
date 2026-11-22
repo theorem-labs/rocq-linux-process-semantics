@@ -16390,6 +16390,76 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(outcomes["Post the review, or replace the one posted before"], "failure", self.logs)
         self.assertEqual([body for _method, _endpoint, body in label_comments(self.api)], [marked], outcomes)
 
+    def test_a_relabel_records_nothing_after_a_withdrawal_whose_review_comment_did_not_post(self):
+        """OSSV-221's architect, 2026-11-22 13:38Z: the screened CI run of mallory's #7 recorded check run 901 on HEAD,
+        and its screened pass (30) is #7's review comment. A later review of HEAD, a screened rescreen or a review by
+        hand, gives a blocking finding: its post job withdraws 901 (withdrawn names HEAD), and its comment job's step
+        "Record a withdrawal that the post job owes" runs first. GitHub then refuses the edit of 30 that the blocking
+        review makes, so that review is nowhere on #7 and the label step does not run. Or GitHub refused the withdrawal
+        too, so that the step records the line <!-- withdraw-owed <head> blocking -->, and the next relabel finishes
+        the withdrawal. Relabels of HEAD, as the rescreen pass starts one when REPO_PAIRS_IMPORT_PATHS changed (held.sh
+        due_variable), read the screened pass as HEAD's newest review: none may record a check run on HEAD, whose
+        newest verdict asks for a change. The line of HEAD stays until the review comment of the verdict that owed it
+        posts."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        refused = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_issues_comments_30.fail")
+        unwithdrawn = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail")
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(1))
+        by_hand = dict(self.BY_HAND, started=ago(1))
+        record = ["--method", "POST", f"repos/{REPO}/check-runs"]
+        for case, trust, blocked, owing in (
+                ("a screened rescreen", rescreen, review_of(HEAD, "blocking"), False),
+                ("a review by hand", by_hand, review_of(HEAD, "blocking", screened=False), False),
+                ("a review by hand whose withdrawal GitHub refused", by_hand,
+                 review_of(HEAD, "blocking", screened=False), True)):
+            with self.subTest(case=case):
+                comments = [screened, old]
+                self.serve(f"repos/{REPO}/check-runs/901", {"id": 901, "conclusion": "neutral"})
+                if owing:
+                    self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+                got = self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch",
+                                 comments=comments, listed=[listed], named=HEAD)
+                self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]),
+                                 ("failure", f"{HEAD} blocking", "") if owing else ("success", "", HEAD), self.logs)
+                if owing:
+                    os.remove(unwithdrawn)
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(trust, named=HEAD).items()}
+                ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                            "github.repository": REPO, "github.token": self.RUN_TOKEN, "needs.trust.result": "success",
+                            "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                            "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                            "needs.review.outputs.verdict": "blocking", "needs.review.outputs.body": blocked["body"],
+                            "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                            "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                            "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                            **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+                self.forget()
+                self.serve(f"repos/{REPO}/issues/7/comments", comments)
+                self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+                self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
+                outcomes = run_job(self, "comment", ctx, self.TOKENS)
+                self.assertEqual((outcomes[self.OWE], outcomes["Post the review, or replace the one posted before"],
+                                  outcomes[self.LABEL]), ("success", "failure", "skipped"), self.logs)
+                # The label comment as the comment job left it: its own edit when it made one, else as it was.
+                label = ([dict(old, updated_at=ago(30), body=b) for _m, _e, b in label_comments(self.api)] or [old])[-1]
+                os.remove(refused)
+                # Two relabels in a row, as the rescreen pass starts one an hour after another while the variable
+                # changes: each one's comment job runs its step OWE, which takes the line out after a withdrawal. The
+                # first withdraws 901 when it still stands.
+                standing = [listed] if owing else [dict(listed, conclusion="neutral")]
+                for value in (self.LPS + "\nCHANGES.md", self.LPS + "\nNEWS.md"):
+                    relabel = dict(self.RELABEL, started=ago(-1))
+                    got = self.judge(["README.md"], value=value, trust=relabel, event="workflow_dispatch",
+                                     comments=[screened, label], listed=standing)
+                    standing = [dict(listed, conclusion="neutral")]
+                    self.assertEqual([c for c in got["writes"] if c[:3] == record], [], self.logs)
+                    self.assertEqual((got["post"]["recorded"], got["steps"][self.RECORD]), ("false", "skipped"))
+                    edited = self.owe(got, relabel, [screened, label]) or []
+                    label = dict(label, body=edited[-1]) if edited else label
+
     def test_an_owed_record_of_the_comment_job_makes_no_label_comment_and_the_label_step_writes_the_line(self):
         """The fresh reader of round 14, finding 1: a record of an owed withdrawal never makes a label comment. The
         screened CI run of mallory's #7 recorded check run 901 on HEAD, and #7 has no label comment. alice reviews HEAD
