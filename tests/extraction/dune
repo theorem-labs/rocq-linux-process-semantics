@@ -4,7 +4,8 @@
 ; theories/Riscv/Extraction.v, which theories/dune excludes from the
 ; batch build because compiling either writes a .ml file as a side
 ; effect; here that side effect is the point, and a change that breaks
-; extraction now breaks the build rather than nothing.
+; extraction, or fails a check on the extracted code, now breaks the
+; build rather than nothing.
 ;
 ; The directory is its own because tests/dune's (rocq.theory) takes every
 ; .v beside it, and the copies below are .v files that must not join that
@@ -41,10 +42,20 @@
  (flags
   (:standard -w -a)))
 
+; Run the checks.  A plain `dune build` builds the file targets of this
+; directory but not its `default` alias, so each run is a rule with a
+; target: as `(rule (alias default) ...)` the checks ran only under
+; `dune build @default`, which no CI lane runs.  The executable prints one
+; line per check to the build log and exits 1 when a check fails, which
+; fails the build and names the check; with-stdout-to would hide those
+; lines on a failure.  The target is an empty stamp, so dune runs the
+; checks again only when the executable changes.
 (rule
- (alias default)
+ (target checked_input_smoke.passed)
  (action
-  (run ./checked_input_smoke.exe)))
+  (progn
+   (run ./checked_input_smoke.exe)
+   (write-file %{target} ""))))
 
 (rule
  (target RiscvExtraction.v)
@@ -72,6 +83,8 @@
   (:standard -w -a)))
 
 (rule
- (alias default)
+ (target checked_isa_smoke.passed)
  (action
-  (run ./checked_isa_smoke.exe)))
+  (progn
+   (run ./checked_isa_smoke.exe)
+   (write-file %{target} ""))))
