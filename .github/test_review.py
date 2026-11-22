@@ -10295,6 +10295,33 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
                 self.assertEqual([c for c in writes(self.api) if any(a.startswith("body=") for a in c)], [])
 
+    def test_screen_held_rescreens_whose_hold_job_wrote_no_hold_count_tries_when_the_post_job_could_not_sign_in(self):
+        """OSSV-221's architect, 2026-11-22 03:13Z: the hold job holds a screen-held run whose post job failed at
+        "Sign in as the OSS Verify App" (the screen judged the item), so held.sh facts() must not count that step as a
+        sign-in that judged nothing. A limit hold of mallory's #7 over an hour old, then REVIEW_TRIES + 2 rescreens of
+        HEAD, each held by its screen, whose hold job failed before its hold comment. With the post job's sign-in as
+        the App passed or failed alike, the pass stops the work of the hold (its stop hold-review may wait behind the
+        App's retry, a relabel) and starts no rescreen again: a run that judged the item is a try, or the pass
+        rescreens #7 each hour without bound."""
+        hold_failed = attempt_job("hold", "Label it and say that it was held")
+        withdraw = "Withdraw the import check runs of the head"
+        for case, post in (("sign-in passed", post_job({MINT_A: "success", withdraw: "success"})),
+                           ("sign-in failed", post_job({MINT_A: "failure"}))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.origin(50, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+                self.item(kind="pr", labels=("review-held",),
+                          comments=[dict(limit_hold(50, at=ago(2000), tries=0, head=HEAD), id=5)])
+                self.ci(ended=2100)
+                for i in range(self.TRIES + 2):
+                    self.ran(10 + i, f"rescreen #7 at {HEAD} of mallory", made=70 + 90 * i,
+                             jobs=[attempt_job("gather"), self.screened(), post, hold_failed])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, [r for r in runs if r[1] == "rescreen"]), (1, []), out)
+                self.assertIn(f"runs of rescreen or review were tries that settled nothing, with no new hold. The work "
+                              "of the hold is not tried again.", out)
+
     def test_the_runs_of_item_123_are_not_item_12s(self):
         """#<n> in a name ends at a space or at the end of the name: neither an unfinished run of #123 nor the answer
         runs of #123 since #12's hold hold #12 back or use up its tries."""
