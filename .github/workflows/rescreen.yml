@@ -100,25 +100,29 @@ jobs:
   #   answer    a comment of an outside item's author that waits for an answer (as the gather job lists them) and is
   #             over 15 minutes old, on an issue only after its first reply posted: once for each comment, then once
   #             an hour while the newest run of that comment posted nothing of its own (it ended at a failed sign-in,
-  #             its comment job failed, or its hold job held it and no hold takes it again), up to REVIEW_TRIES runs
-  #             whose comment job failed. A run of the comment's own event names the comment too. A run that its trust
-  #             job stopped takes no comment, nor does a run that left its answer to a later run because another run
-  #             answered a comment of it first.
+  #             its hold job held it and no hold takes it again, or its comment job failed, was cancelled or did not
+  #             run). Each run of the comment that counts a try (held.sh try_rule) and posted nothing, with no hold,
+  #             counts: after REVIEW_TRIES of them, the answer is not tried again (the stop answer-post, below). A run
+  #             of the comment's own event names the comment too. A run that its trust job stopped takes no comment,
+  #             nor does a run that left its answer to a later run because another run answered a comment of it first.
   #   draft     an outside issue whose label comment holds no stored draft and no posted reply, once an hour after its
-  #             newest draft run ended.
+  #             newest draft run ended. Each draft run of the issue that counts a try counts: after REVIEW_TRIES of
+  #             them, the draft is not tried again (the stop hold-draft, below).
   #   approve   a first-time contributor's pull request whose head has runs that GitHub holds, from its own head
   #             repository and head branch (never another fork's runs of the same commit), while no approval run
-  #             screened that head with a verdict since the newest held run (its screen job passed and its post job did
-  #             not fail, or a hold that is not tried again names the head), once an hour. Never a head that its label
-  #             comment records as one that changes a file under .github/ (<!-- review-steering <head> -->): the post
-  #             job approves no run of such a head, and a person at Theorem approves them.
-  #   retry     the App's retry: a run of a head whose post job failed, at a sign-in or at a write of the App, gets an
-  #             approval again for an approval, a relabel for a review or a relabel (it records the import check run
-  #             with no model), and a catch-up for a catch-up, once an hour. A head that a hold comment names, when the
-  #             workflow does not try the work of that hold again, gets no other App write again. While a relabel of
-  #             the head withdraws its import check run (a screen held the head after each review that screened it, or
-  #             the newest review of the head gives a blocking finding or the verdict person), a review, a rescreen, a
-  #             relabel or an approval of it whose post job failed gets a relabel, which only withdraws that check run.
+  #             screened that head with a verdict since the newest held run (its screen job passed and its post job
+  #             neither failed nor was cancelled, or a hold that is not tried again names the head), once an hour.
+  #             Never a head that its label comment records as one that changes a file under .github/
+  #             (<!-- review-steering <head> -->): the post job approves no run of such a head, and a person at
+  #             Theorem approves them.
+  #   retry     the App's retry: a run of a head whose post job failed, at a sign-in or at a write of the App, or was
+  #             cancelled (it ran out of time, say), gets an approval again for an approval, a relabel for a review or
+  #             a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an hour.
+  #             A head that a hold comment names, when the workflow does not try the work of that hold again, gets no
+  #             other App write again. While a relabel of the head withdraws its import check run (a screen held the
+  #             head after each review that screened it, or the newest review of the head gives a blocking finding or
+  #             the verdict person), a review, a rescreen, a relabel or an approval of it whose post job failed or was
+  #             cancelled gets a relabel, which only withdraws that check run.
   #             While the environment post holds the App's key, a sign-in that GitHub refuses fails the post job. While
   #             it holds no key (until the LPS move of dispatch://OSSV-321), the post job writes nothing with the App
   #             and ends with success, so no retry follows.
@@ -141,22 +145,22 @@ jobs:
   #   review    an outside pull request whose head has a review in the form of before this workflow's move off
   #             pull_request_target, and not one of now, under the CI conditions of catchup: a review of that head from
   #             the API, with no close and no reopen. Once for each head, and again once an hour while its runs end at a
-  #             failed sign-in or a failed comment job (up to REVIEW_TRIES of the second). Also each open pull request
-  #             into main, a writer's too, whose head a run of this workflow names, no review and no hold comment
-  #             names, and whose CI runs from its head repository and head branch all finished (an approval's CI run
-  #             comes before its review). For a writer's pull request, the name of that run ends with " of <login>"
-  #             when <login>, the account that started the newest of those CI runs, has no write access and is not one
-  #             of the APPS: its trust job screens the head first, on the limit of <login>, as the run of that CI run's
-  #             own event does. Each such review is due at the next run when each run that named the head stopped at
-  #             its trust job, gave a conflict or was a relabel (a draft, another base, a conflict that went away, a
-  #             head that more than one open pull request has, whose CI runs count for none of them), and else once the
-  #             newest of them ended over an hour ago. A workflow_run's name gives its head alone, so its run is taken
-  #             as a run of the pull request into main with that head; when more than one into main has it, as a run of
-  #             the one that the notice of its trust job names, and of each when no notice names one. A CI run that its
-  #             trust job stopped is never the newest run of a head: it reviewed nothing, and it can be another pull
-  #             request's. After REVIEW_TRIES such reviews that ended with no failed sign-in and gave no conflict,
-  #             the head is not tried again. When the newest run of the head is a review
-  #             whose screen passed and whose review job failed at a sign-in, its failed jobs run again (POST
+  #             failed sign-in that judges nothing or a failed comment job (up to REVIEW_TRIES of the second). Also each
+  #             open pull request into main, a writer's too, whose head a run of this workflow names, no review and no
+  #             hold comment names, and whose CI runs from its head repository and head branch all finished (an
+  #             approval's CI run comes before its review). For a writer's pull request, the name of that run ends with
+  #             " of <login>" when <login>, the account that started the newest of those CI runs, has no write access
+  #             and is not one of the APPS: its trust job screens the head first, on the limit of <login>, as the run of
+  #             that CI run's own event does. Each such review is due at the next run when each run that named the head
+  #             stopped at its trust job, gave a conflict or was a relabel (a draft, another base, a conflict that went
+  #             away, a head that more than one open pull request has, whose CI runs count for none of them), and else
+  #             once the newest of them ended over an hour ago. A workflow_run's name gives its head alone, so its run
+  #             is taken as a run of the pull request into main with that head; when more than one into main has it, as
+  #             a run of the one that the notice of its trust job names, and of each when no notice names one. A CI run
+  #             that its trust job stopped is never the newest run of a head: it reviewed nothing, and it can be another
+  #             pull request's. After REVIEW_TRIES such reviews that counted a try (held.sh try_rule) and gave no
+  #             conflict, the head is not tried again. When the newest run of the head is a review whose screen passed
+  #             and whose review job failed at a sign-in, its failed jobs run again (POST
   #             actions/runs/<id>/rerun-failed-jobs) in the place of a new run, at most once an hour: the screen's
   #             verdict stands and is paid once, and the hourly caps count that run once. A new run instead when the run
   #             was made 23 hours ago or more (its review job reads the artifact of its gather job, which GitHub keeps a
@@ -174,11 +178,13 @@ jobs:
   #             hold comment that says so and waits-on-theorem with the label comment's step "Sami reopens the pull
   #             request", and this pass fails once. Its workflow_dispatch runs are read one day at a time back to the
   #             day before its close, however long ago.
-  # A post job of an approval, a review, a relabel or a catch-up that failed at a step that is not a sign-in counts a
-  # try of the head. After REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that names the
-  # head and says that its automated work did not finish and is not tried again, and waits-on-theorem with the label
-  # comment's step "Sami starts again, by hand, the work that the hold comment names" (.github/review/rules.py), and
-  # this pass fails for that run.
+  # A post job of an approval, a review, a relabel or a catch-up that failed or was cancelled counts a try of the head,
+  # but one that failed at "Sign in as the OSS Verify App to approve" (held.sh try_rule). Of an approval, a run whose
+  # post job did not run counts a try too when the rule counts one (its screen job ran out of time, say). After
+  # REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that names the head and says that its
+  # automated work did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami
+  # starts again, by hand, the work that the hold comment names" (.github/review/rules.py), and this pass fails for that
+  # run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the time
   # between two runs of this pass, and a second run would use the hour's screens twice. It reads review.yml's runs of
@@ -214,9 +220,10 @@ jobs:
   # The stop: this pass writes no label and no comment. When it decides that the work of an item is not tried again
   # (each bound above), it starts a run of review.yml with the task stop, named "stop #<n>[ at <head>] for <stop>",
   # where <stop> names the bound: hold-<work> for the hold of a review, an answer, a draft or an approval whose task ran
-  # REVIEW_TRIES times; head-<work> for the review, the approval, the import check or the catch-up of a head; reopen
-  # for a catch-up left closed; answer-post for an answer whose comment job failed REVIEW_TRIES times. That run's trust
-  # job decides the stop again from the API, for that item alone, with the functions of .github/review/held.sh
+  # REVIEW_TRIES times, and hold-draft also for REVIEW_TRIES draft runs of an issue with no hold that stored no draft;
+  # head-<work> for the review, the approval, the import check or the catch-up of a head; reopen for a catch-up left
+  # closed; answer-post for an answer whose REVIEW_TRIES runs counted a try and posted nothing, with no hold. That run's
+  # trust job decides the stop again from the API, for that item alone, with the functions of .github/review/held.sh
   # (consider), and its comment job gives the item the state label and writes the hold comment, in the item's group
   # label-<n>. While this run starts another run of the item, the item's stop waits for a later run: the trust job of
   # the stop would find that run unfinished, and stop. At most one stop of an item in each run.

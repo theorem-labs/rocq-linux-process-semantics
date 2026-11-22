@@ -63,7 +63,9 @@ or of state=<state>, which must be a state with no state label. The comment job 
 <!-- review-catchup <head> --> with it. The rescreen pass reads that line, so that each head gets one catch-up. The
 comment job's label step records the line of an owed withdrawal (OWED) with it when a hold made after its run started
 stops that step. It gives state=working when the rescreen pass tries that hold again. Else it gives state=after-hold,
-which names Sami's next step and has no state label. When mark posts a new label comment, its log says so.
+which names Sami's next step and has no state label. When the review job failed after its verdict, the comment job's
+step "Record a withdrawal that the post job owes" runs alone and records the line with it: state=working when the
+rescreen pass tries that run again, else state=rerun. When mark posts a new label comment, its log says so.
 
 owed: records in the label comment of <number> the withdrawal of the import check runs of a head that a run owes
 (owe), and changes nothing else: the comment job calls it, and the hold job for a held screen, before the steps that
@@ -72,8 +74,9 @@ or <head> screen from the hold job, for a screen that held the head in a review,
 when the post job did not withdraw for that head) gives the line <!-- withdraw-owed <head> <why> --> of KEPT (OWED), as
 mark does, but it never makes a label comment. When the item has none, it writes nothing, a line says so, and the
 status is 3: the step then gives the line to the label step of its job, which gives it as marker=<line> to the call
-that writes the label comment. withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as it
-found no import check run of the head with conclusion success or withdrew each one) takes the line of that head out.
+that writes the label comment, or, when no label step runs (the review job failed), writes it with mark itself.
+withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as it found no import check run of the
+head with conclusion success or withdrew each one) takes the line of that head out.
 The run's task and the trust job's outputs outside, outsider and kind are given as for label: when the author-kind
 table's answer label is unchanged, this writes nothing, and a notice says why.
 
@@ -423,6 +426,14 @@ STATES = {
     # hold that the rescreen pass tries again, the step gives the state working. label_state never gives this state.
     "after-hold": (
         None, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
+    # The label comment that the comment job's step "Record a withdrawal that the post job owes" posts (mark) for the
+    # line of a withdrawal that its run owes (OWED), on an item with no label comment, when the review job of the run
+    # failed after it gave its verdict: that step runs alone in such a run, so no label step writes the line. The state
+    # is rerun when the rescreen pass does not try that run again (held.sh due_retry takes only an outside author's run
+    # whose name gives the head), and working when it does. It names Sami's next step, but has no state label, as mark
+    # writes none. label_state never gives this state.
+    "rerun": (
+        None, "Sami runs the automated review of the head commit again, by hand.", "You do not need to do anything."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -766,7 +777,8 @@ def mark(number, line, make=True, state="working"):
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
     of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
     no state label, as mark writes no state label: a ValueError for any other. The comment job's label step gives
-    working or after-hold, by the hold that stopped it. When make is False (owe: a line of OWED), such an item gets
+    working or after-hold, by the hold that stopped it, and its step that records an owed withdrawal gives working or
+    rerun, by whether the rescreen pass tries the run again. When make is False (owe: a line of OWED), such an item gets
     nothing, and the result is False. Else the result is True."""
     marker_kind(line)
     if state not in STATES or label_of(state) is not None:
@@ -979,9 +991,9 @@ def owe(number, run, owed="", withdrawn=""):
     if withdrawn:
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}")
     elif line and not mark(number, line, make=False):
-        print(f"#{number}: it has no label comment, and this step writes none. If a later step of this job writes a "
-              f"label comment, that comment gets {line}. If no later step writes one, the workflow does not record "
-              f"{line}.")
+        print(f"#{number}: it has no label comment, and this command writes none. If a later command of this job "
+              f"writes a label comment, that comment gets {line}. If no later command writes one, the workflow does "
+              f"not record {line}.")
         return False
     return True
 
