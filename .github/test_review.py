@@ -13770,8 +13770,10 @@ class LabelRuleTest(unittest.TestCase):
         Theorem, who approves the checks of a pull request that changes a file under .github/, or of one whose screen
         passed while the environment post held no key of the App: R10 names no one) and whose last line is the marker
         of Sami, for each state of the variable and each decision of the post job too; each waits-on-author with one
-        whose next step is the author's; no label, with one that names no one at Theorem. No text says that anyone
-        decides or will look at the item."""
+        whose next step is the author's; no label, with one that names no one at Theorem. The one exception is
+        after-hold, mark's alone, for a later hold that the workflow does not try again: it names Sami's next step in
+        the words of the state screen, with no marker of a state label. No text says that anyone decides or will look
+        at the item."""
         variants = [(state, None) for state in rules.STATES] + [
             (state, (value, decision)) for state in ("decide", "person") for value in (None, "README.md")
             for decision in rules.DECISIONS]
@@ -13790,9 +13792,13 @@ class LabelRuleTest(unittest.TestCase):
                 elif label == AUTHOR_LABEL:
                     self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-author -->"), body)
+                elif state == "after-hold":
+                    self.assertEqual(body.split("\n")[1:4], [
+                        "**Next step:** Sami starts the work that the hold comment names, by hand.", "",
+                        "You do not need to do anything."])
+                    self.assertNotIn("<!-- waits-on-", body)
                 else:
-                    steps = ("**Next step:** The automated ", "**Next step:** The workflow ",
-                             "**Next step:** The hold comments of the workflow ")
+                    steps = ("**Next step:** The automated ", "**Next step:** The workflow ")
                     self.assertTrue(step_line.startswith(steps), step_line)
                     self.assertNotIn("<!-- waits-on-", body)
                     self.assertNotIn("Sami", body)
@@ -15972,13 +15978,14 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual([line in body.split("\n") for body in outcomes[self.LABEL]], [True], logs[self.LABEL])
 
     def test_the_owed_line_after_a_later_hold_that_is_not_tried_again_names_the_hold_comment(self):
-        """Round 15, F1 of the fresh reader: the case of
+        """Round 15, F1 of the fresh reader, and OSSV-221's architect's rule of 2026-11-22 02:02Z: the case of
         test_the_owed_line_survives_the_label_steps_exit_for_a_hold_made_after_the_run_started, with a later hold of #7
         at HEAD that the workflow does not try again: a hold of the screen, or a stop after the last try. Such a hold
         writes no label comment when GitHub did not say whether the author of its run has write access, or when its
         label call failed after its hold comment posted. #7 has no label comment, so the label step posts one with the
-        line, in the state after-hold: its next step names the hold comments, and it never says that the workflow
-        tries again. The log says that the step posted it."""
+        line, in the state after-hold: Sami's next step, in the words of the state screen, and no state label. It never
+        says that the workflow tries again. A later limit hold, which the workflow tries again, gives the state working
+        instead. The log says that the step posted the label comment."""
         listed, _others = self.recorded()
         line = f"<!-- withdraw-owed {HEAD} blocking -->"
         trust = dict(self.BY_HAND, started=ago(1), named=HEAD)
@@ -15995,16 +16002,20 @@ class ImportCheckTest(ReaderRunner):
                      "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
                      **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
         tries = WF["env"]["REVIEW_TRIES"]
-        for case, text in (
-                ("a hold of the screen", "The automated screen held this pull request, so the automated review did not "
-                                         "run. You do not need to do anything."),
-                ("a stop after the last try", f"The workflow tried the automated review again {tries} times after it "
-                                              "held this pull request, and none of these tries finished. The workflow "
-                                              "does not try it again. You do not need to do anything.")):
+
+        def hold(text):
+            return {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
+                    "body": f"<!-- review-held -->\n**Automated review held.**\n\n{text}\n\n"
+                            f"<!-- review-held-head {HEAD} -->"}
+        for case, held, state in (
+                ("a hold of the screen", hold("The automated screen held this pull request, so the automated review "
+                                              "did not run. You do not need to do anything."), "after-hold"),
+                ("a stop after the last try", hold(f"The workflow tried the automated review again {tries} times after "
+                                                   "it held this pull request, and none of these tries finished. The "
+                                                   "workflow does not try it again. You do not need to do anything."),
+                 "after-hold"),
+                ("a limit hold, which is tried again", limit_hold(41, at=ago(0), tries=0, head=HEAD), "working")):
             with self.subTest(case=case):
-                held = {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
-                        "body": f"<!-- review-held -->\n**Automated review held.**\n\n{text}\n\n"
-                                f"<!-- review-held-head {HEAD} -->"}
                 ctx, outcomes, logs = dict(base), {}, {}
                 for name in (self.OWE, self.LABEL):
                     s = step("comment", name)
@@ -16021,9 +16032,10 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((outcomes[self.OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[self.OWE])
                 self.assertIn(f"after this run started at {trust['started']}: the labels stay.", logs[self.LABEL])
                 self.assertEqual(outcomes[self.LABEL], [("POST", f"repos/{REPO}/issues/7/comments",
-                                                         rules.label_comment("after-hold", markers=[line]))],
+                                                         rules.label_comment(state, markers=[line]))],
                                  logs[self.LABEL])
-                self.assertNotIn("tries again", outcomes[self.LABEL][0][2])
+                if state == "after-hold":
+                    self.assertNotIn("tries again", outcomes[self.LABEL][0][2])
                 self.assertEqual(state_labels(self.api), [])
                 self.assertIn(f"#7: it had no label comment, so this step posted one, with {line}.\n", logs[self.LABEL])
 

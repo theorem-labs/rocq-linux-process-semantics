@@ -3857,15 +3857,17 @@ jobs:
               | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
                  "close and reopen": "catchup"}[.t])
             // "review"; '
-          # What the hold comments of github-actions[bot] say, as "<last> <pending> <unsettled> <own>". last: when
-          # GitHub last changed the newest hold that stops this run's labels, - for none: each hold for an answer's
-          # run, and for any other run each hold but one of an answer that is tried again. pending: true when the
-          # newest hold of another work than this run's is one that the rescreen pass tries again and that work posted
-          # nothing since: no review that names the head of the hold (its marker <!-- review-head <head> --> on the
-          # line after <!-- review -->, where the workflow writes it, never in the text), for a held review or
-          # approval; no answer, for a held answer; no stored draft and no posted reply, for a held draft. unsettled:
-          # true when the newest hold of another such work, tried again or not (the screen's, which waits on Sami), is
-          # one that its work posted nothing since. own: true when the newest hold of this run's work is tried again.
+          # What the hold comments of github-actions[bot] say, as "<last> <pending> <unsettled> <own> <tried>".
+          # last: when GitHub last changed the newest hold that stops this run's labels, - for none: each hold for an
+          # answer's run, and for any other run each hold but one of an answer that is tried again. pending: true
+          # when the newest hold of another work than this run's is one that the rescreen pass tries again and that
+          # work posted nothing since: no review that names the head of the hold (its marker
+          # <!-- review-head <head> --> on the line after <!-- review -->, where the workflow writes it, never in the
+          # text), for a held review or approval; no answer, for a held answer; no stored draft and no posted reply, for
+          # a held draft. unsettled: true when the newest hold of another such work, tried again or not (the screen's,
+          # which waits on Sami), is one that its work posted nothing since. own: true when the newest hold of this
+          # run's work is tried again. tried: true when the hold of last, the newest hold that stops this run's labels,
+          # is tried again.
           found=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[] | @json') \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           # shellcheck disable=SC2016 # $ENV and the names bound in the filter are jq's
@@ -3883,22 +3885,27 @@ jobs:
                          or (.body | startswith("<!-- review -->\n<!-- review-head " + $h.head + " -->\n"))))
                   end;
               ($holds | group_by(.work) | map(max_by(.at) | select(.work != $ENV.W))) as $others
-              | [($holds | map(select($ENV.W == "answer" or ((.work == "answer" and .tried) | not)) | .at) | max // "-"),
+              | ($holds | map(select($ENV.W == "answer" or ((.work == "answer" and .tried) | not)))) as $stops
+              | [($stops | map(.at) | max // "-"),
                  any($others[]; .tried and (posted | not)),
                  any($others[]; (.work | IN("review", "answer", "draft", "approve")) and (posted | not)),
-                 ($holds | map(select(.work == $ENV.W)) | max_by(.at) | .tried // false)]
+                 ($holds | map(select(.work == $ENV.W)) | max_by(.at) | .tried // false),
+                 ($stops | max_by(.at) | .tried // false)]
               | map(tostring) | join(" ")' <<< "$found") \
             || { echo "::error::the hold comments of #$NUMBER could not be read"; exit 1; }
-          read -r last pending unsettled own <<< "$held"
+          read -r last pending unsettled own tried <<< "$held"
           if [[ ${TASK:-} != reply && $last != - && ! $last < $STARTED ]]; then
             echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
             # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
-            # with no label comment gets one of the state after-hold, which has no state label. The hold made after this
-            # run started can be one that the workflow tries again or one that it does not (a hold of the screen, or a
-            # stop). So the text of after-hold says only that the hold comments say what happens next.
+            # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
+            # For a hold that the rescreen pass tries again, it is working: that hold comment gives the time from which
+            # the workflow tries again. For any other hold (a hold of the screen, or a stop), it is after-hold, which
+            # names Sami's next step in the words of the state screen (the state stopped says the same).
+            state=after-hold
+            [ "$tried" != true ] || state=working
             [ -z "${OWED_LINE:-}" ] \
-              || python3 .github/review/rules.py mark "$NUMBER" "$OWED_LINE" state=after-hold || exit 1
+              || python3 .github/review/rules.py mark "$NUMBER" "$OWED_LINE" "state=$state" || exit 1
             exit 0
           fi
           take_off() {

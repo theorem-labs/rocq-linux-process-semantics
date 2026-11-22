@@ -61,9 +61,9 @@ mark: records the marker line <line> of KEPT in the label comment of <number>, a
 state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working,
 or of state=<state>, which must be a state with no state label. The comment job of a catch-up records the line
 <!-- review-catchup <head> --> with it. The rescreen pass reads that line, so that each head gets one catch-up. The
-comment job's label step records the line of an owed withdrawal (OWED) with it, with state=after-hold, when a hold
-made after its run started stops that step. The hold comments say what happens next. When mark posts a new label
-comment, its log says so.
+comment job's label step records the line of an owed withdrawal (OWED) with it when a hold made after its run started
+stops that step. It gives state=working when the rescreen pass tries that hold again. Else it gives state=after-hold,
+which names Sami's next step and has no state label. When mark posts a new label comment, its log says so.
 
 owed: records in the label comment of <number> the withdrawal of the import check runs of a head that a run owes
 (owe), and changes nothing else: the comment job calls it, and the hold job for a held screen, before the steps that
@@ -417,10 +417,12 @@ STATES = {
         None, "The automated review of the head commit names the next step and who takes it.",
         "After a push, the automated review runs again."),
     # The label comment that the comment job's label step posts (mark) for the line of a withdrawal that its run owes
-    # (OWED), on an item with no label comment, when a hold made after its run started stops that step. That hold can
-    # be one that the workflow tries again or one that it does not, so the text names only the hold comments.
-    # label_state never gives this state.
-    "after-hold": (None, "The hold comments of the workflow on this pull request say what happens next.", ""),
+    # (OWED), on an item with no label comment, when a hold made after its run started stops that step, and the
+    # rescreen pass does not try that hold again: a hold of the screen, or a stop. It names Sami's next step in the
+    # words of the state screen (the state stopped says the same), but has no state label, as mark writes none. For a
+    # hold that the rescreen pass tries again, the step gives the state working. label_state never gives this state.
+    "after-hold": (
+        None, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -764,8 +766,8 @@ def mark(number, line, make=True, state="working"):
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
     of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
     no state label, as mark writes no state label: a ValueError for any other. The comment job's label step gives
-    after-hold. When make is False (owe: a line of OWED), such an item gets nothing, and the result is False. Else the
-    result is True."""
+    working or after-hold, by the hold that stopped it. When make is False (owe: a line of OWED), such an item gets
+    nothing, and the result is False. Else the result is True."""
     marker_kind(line)
     if state not in STATES or label_of(state) is not None:
         raise ValueError(f"mark makes a label comment only in a state with no state label, not {state!r}")
