@@ -11497,6 +11497,31 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_refused_withdrawal_is_tried_again_after_a_relabel_that_its_trust_job_stopped(self):
+        """Ruling 2 (OSSV-221's architect, 2026-11-20 07:33Z) and review.yml's trust job: "The rescreen pass starts a
+        relabel that is refused here again at its next run." The review of mallory's #7 recorded the check run on
+        HEAD; a later review run of HEAD, whose screen held it, failed at the PATCH that withdraws it. The relabel that
+        the pass then started was stopped by its trust job (GitHub had not computed the merge state yet, say), which
+        tried nothing. An hour after it, the head gets one relabel run again. Else no run ever withdraws the import
+        check run of a head that the screen held."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        for stopped in (False, True):
+            with self.subTest(stopped=stopped):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(500)), hold])
+                self.ran(10, f"review {HEAD} by mallory", made=280, ended=270, event="workflow_run", jobs=[
+                    attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
+                if stopped:
+                    self.ran(11, f"relabel #7 at {HEAD}", made=200, ended=199, jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+
     def test_a_withdrawal_after_a_held_screen_whose_post_job_ran_out_of_time_gets_one_relabel_after_an_hour(self):
         """R10 (OSSV-221's architect, 2026-11-22 04:30Z: a job that failed or was cancelled counts a try) and ruling 2
         of 2026-11-20 07:33Z. The review of mallory's #7 recorded the check run on HEAD. A later review run of HEAD,
