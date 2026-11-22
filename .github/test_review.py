@@ -10425,6 +10425,26 @@ class ScheduleTest(Scheduled):
                 self.assertIn(f"runs of rescreen or review were tries that settled nothing, with no new hold. The work "
                               "of the hold is not tried again.", out)
 
+    def test_a_rescreen_that_its_trust_job_stopped_is_not_a_try_of_the_held_review(self):
+        """OSSV-221's architect, 2026-11-22 13:57Z: a run that its trust job stopped counts no try, as held.sh try_rule
+        gives it, and held_work reads that answer alone. A limit hold of mallory's #7 over an hour old, then
+        REVIEW_TRIES - 1 rescreens of HEAD that its screen held and whose hold job failed before its hold comment
+        (tries), and one rescreen that its trust job stopped, which tried nothing: the pass starts a rescreen of #7,
+        and no stop hold-review, whose hold comment would say REVIEW_TRIES tries."""
+        hold_failed = attempt_job("hold", "Label it and say that it was held")
+        post = post_job({MINT_A: "success", "Withdraw the import check runs of the head": "success"})
+        self.origin(50, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+        self.item(kind="pr", labels=("review-held",),
+                  comments=[dict(limit_hold(50, at=ago(2000), tries=0, head=HEAD), id=5)])
+        self.ci(ended=2100)
+        self.ran(9, f"rescreen #7 at {HEAD} of mallory", made=70 + 90 * self.TRIES, jobs=self.stopped_jobs())
+        for i in range(self.TRIES - 1):
+            self.ran(10 + i, f"rescreen #7 at {HEAD} of mallory", made=70 + 90 * i,
+                     jobs=[attempt_job("gather"), self.screened(), post, hold_failed])
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "rescreen", "mallory", HEAD, "")]), out)
+        self.assertNotIn("hold-review", out)
+
     def test_held_approvals_whose_hold_job_wrote_no_hold_count_tries_when_the_post_job_could_not_sign_in(self):
         """OSSV-221's architect, 2026-11-22 03:13Z, the approve path of
         test_screen_held_rescreens_whose_hold_job_wrote_no_hold_count_tries_when_the_post_job_could_not_sign_in. GitHub
