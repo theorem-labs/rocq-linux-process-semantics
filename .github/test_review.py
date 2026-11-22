@@ -10708,6 +10708,20 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
 
+    def test_answer_runs_whose_trust_job_failed_are_tries_and_review_tries_of_them_stop_it(self):
+        """OSSV-221's architect, 2026-11-22 14:00Z: only a trust job that succeeded and decided no task stops a run
+        with no try; a trust job that failed (a refused read, say) counts a try. Comment 900 of mallory on #7 waits for
+        an answer, and REVIEW_TRIES answer runs of it each ended at a failed trust job, the newest over an hour ago:
+        the pass stops the answer (stop answer-post) and starts no answer run again. Else it starts one at each of its
+        runs, with no hour between them and no bound."""
+        failed_trust = dict(attempt_job("trust"), conclusion="failure")
+        self.item(comments=[self.REPLIED, said(900, 900)])
+        for i in range(self.TRIES):
+            self.ran(10 + i, "answer #7 for 900 of mallory", made=70 + 90 * i)
+            self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": [failed_trust, *self.stopped_jobs()]})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "answer-post")]), out)
+
     def test_an_answer_whose_screen_ran_out_of_time_is_a_try_and_review_tries_of_them_stop_it(self):
         """Round 16, part 2, item 4 (OSSV-221's architect, 2026-11-22 06:21Z, residual (b)): the screen job of an answer
         run ran out of time, which GitHub gives as cancelled. No job after it runs: no review, no comment job, and no
