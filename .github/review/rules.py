@@ -54,9 +54,11 @@ given only when it is set, and decision, the post job's decision (DECISIONS). Wi
 an outside pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose
 review gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
 outcome of an outside author's item), is in the state reviewed, whoever started the run: its review names the next
-step. A review whose job failed after its verdict (the fact unfinished=true) posted no review: it is in the state
-rerun, waits-on-theorem, whatever its verdict. GH_TOKEN and REPO come from the job's environment, as for gh in the
-workflow.
+step. A review whose job failed after its verdict (the fact unfinished=true, with head=<commit>) posted no review: it
+is in the state rerun, waits-on-theorem, whatever its verdict, and its label comment records
+<!-- review-rerun <head> --> (rerun_line), no line of KEPT: the label comment of any other state loses it, as it loses
+the conflict-state line. A relabel reads it (rerun_kept). GH_TOKEN and REPO come from the job's environment, as for gh
+in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -614,18 +616,26 @@ def no_key_line(head):
     return f"<!-- review-no-key {head} -->"
 
 
+def rerun_line(head):
+    """The marker line of the label comment while it gives head the state rerun: the newest review of head gave a
+    verdict and posted no review comment, as its job failed after the verdict. It names the state, so that a relabel of
+    head keeps that state (rerun_kept) whatever the text of the state says. No line of KEPT: the label comment of any
+    other state loses it."""
+    return f"<!-- review-rerun {head} -->"
+
+
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
     or markers gives (a marker of markers takes the place of old's line of its kind), with the steering line of head
-    in the state steering and its no-key line in the state no-key, the conflict-state line of head for a conflict, and
-    the marker of the state label. imports is (value, decision) of import_steps for an outside pull request, and None
-    for any other item. The state decide is an outside pull request's alone, so there None reads as no variable and no
-    decision."""
+    in the state steering and its no-key line in the state no-key, the conflict-state line of head for a conflict, the
+    rerun line of head in the state rerun, and the marker of the state label. imports is (value, decision) of
+    import_steps for an outside pull request, and None for any other item. The state decide is an outside pull
+    request's alone, so there None reads as no variable and no decision."""
     label, step, text = STATES[state]
     if state == "decide" or (state == "person" and imports is not None):
         step, text = import_steps(state, *(imports or (None, "")))
-    if state in ("conflict", "steering", "no-key") and not HEAD.fullmatch(head):
+    if state in ("conflict", "steering", "no-key", "rerun") and not HEAD.fullmatch(head):
         raise ValueError(f"the state {state} needs its head commit, not {head!r}")
     if state == "steering":
         markers = [*markers, steering_line(head)]
@@ -642,6 +652,8 @@ def label_comment(state, old="", markers=(), head="", imports=None):
     lines = list(kept.values())
     if state == "conflict":
         lines.append(conflict_state(head))
+    if state == "rerun":
+        lines.append(rerun_line(head))
     if label == AUTHOR:
         lines.append(f"<!-- {AUTHOR} -->")
     elif label == THEOREM:
@@ -2172,20 +2184,17 @@ def relabel_facts(comments, reviews, head, history):
 
 def rerun_kept(comments, head):
     """Whether the label comment of BOT among comments (the last one, as label reads it) is in the state rerun for
-    head: its next step is the one of STATES rerun, and it holds the marker line of R12 for head (import_marker), which
-    set_state writes into the label comment of an outside pull request for the head that its run read. The comment
-    job gives that state after a review job that failed after its verdict, blocking or person (the fact unfinished):
-    that review posted no review comment, so an older review comment of head that passes is not the newest review of
-    head (OSSV-221's architect, 2026-11-22 09:54Z). A relabel that finishes the withdrawal of that verdict reads no line
-    of OWED: the comment job's step that records the withdrawal takes the line out before the label step reads the
-    comments. A later review of head that posts sets the state of its own outcome, and with it this ends."""
+    head: it holds the marker line <!-- review-rerun <head> --> (rerun_line), which names that state and head, for an
+    outside author's pull request and a writer's alike. The rule reads that line alone, never the text of the state, so
+    a change of the text of rerun does not end it (OSSV-221's architect, 2026-11-22 10:21Z). The comment job gives that
+    state after a review job that failed after its verdict, blocking or person (the fact unfinished): that review
+    posted no review comment, so an older review comment of head that passes is not the newest review of head
+    (OSSV-221's architect, 2026-11-22 09:54Z). A relabel that finishes the withdrawal of that verdict reads no line of
+    OWED: the comment job's step that records the withdrawal takes the line out before the label step reads the
+    comments. A later review of head that posts sets the state of its own outcome, whose label comment loses the line,
+    and with it this ends."""
     labels = [c.get("body") or "" for c in comments if of_bot(c) and (c.get("body") or "").startswith(FIRST)]
-    if not labels:
-        return False
-    lines = labels[-1].split("\n")
-    marker = f"<!-- repo-pairs-import-paths {head}: "
-    return (lines[1:2] == [f"**Next step:** {STATES['rerun'][1]}"]
-            and any(line.startswith(marker) and KEPT.fullmatch(line) for line in lines))
+    return bool(labels) and rerun_line(head) in labels[-1].split("\n")
 
 
 def json_lines(path):

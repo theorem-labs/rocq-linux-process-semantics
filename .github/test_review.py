@@ -4683,7 +4683,8 @@ class PostLabelTest(Runner):
         self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** Sami runs the automated review of the "
                                         "head commit again, by hand, if no later run of the workflow reviews it.\n\n"
                                         "You do not need to do anything.\n"), body)
-        self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
+        # The label step passes the head, so the label comment names the state rerun and that head.
+        self.assertTrue(body.endswith(f"\n<!-- review-rerun {head} -->\n<!-- waits-on-theorem: Sami -->"), body)
         for case, now, held in (("a hold after this run started", head, ["2026-11-02T10:30:00Z"]),
                                 ("a head that moved", "b" * 40, [])):
             with self.subTest(case=case):
@@ -14289,6 +14290,33 @@ class LabelRuleTest(unittest.TestCase):
             with self.subTest(head=head), self.assertRaises(ValueError):
                 rules.label_comment("no-key", head=head)
 
+    def test_the_rerun_state_records_its_head_and_every_other_state_loses_it(self):
+        """Round 16 (OSSV-221's architect, 2026-11-22 10:21Z): the label comment of the state rerun holds the line
+        <!-- review-rerun <head> -->, which names the state and its head, so that a relabel keeps the state whatever its
+        text says (rules.py rerun_kept). It is no line of KEPT, as the conflict-state line is not: the label comment of
+        any other state loses it, and a later rerun of another head names that head alone. A record of a marker line of
+        KEPT (the line of an owed withdrawal) keeps it, and so does its removal. The state needs its head."""
+        line, owed = f"<!-- review-rerun {HEAD} -->", f"<!-- withdraw-owed {HEAD} blocking -->"
+        body = rules.label_comment("rerun", head=HEAD)
+        self.assertEqual(body, "<!-- review-label -->\n**Next step:** Sami runs the automated review of the head "
+                               "commit again, by hand, if no later run of the workflow reviews it.\n\nYou do not need "
+                               f"to do anything.\n\n{line}\n<!-- waits-on-theorem: Sami -->")
+        self.assertEqual(rules.rerun_line(HEAD), line)
+        self.assertFalse(rules.KEPT.fullmatch(line))
+        self.assertTrue(rules.marker_line(line))
+        marked = rules.with_marker(body, owed)
+        self.assertEqual(marked.split("\n")[-3:], [owed, line, "<!-- waits-on-theorem: Sami -->"])
+        self.assertEqual(rules.without_marker(marked, f"withdraw-owed {HEAD}"), body)
+        for state in ("import", "decide", "change", "working", "reviewed", "stopped"):
+            with self.subTest(state=state):
+                self.assertNotIn(line, rules.label_comment(state, marked, head=HEAD).split("\n"))
+        newer = rules.label_comment("rerun", marked, head=OTHER_HEAD).split("\n")
+        self.assertIn(f"<!-- review-rerun {OTHER_HEAD} -->", newer)
+        self.assertNotIn(line, newer)
+        for head in ("", HEAD[:12]):
+            with self.subTest(head=head), self.assertRaises(ValueError):
+                rules.label_comment("rerun", head=head)
+
     def test_the_labels_are_described_in_words_github_takes(self):
         """GitHub refuses a label description over 100 characters, which would leave the label with none."""
         self.assertEqual(set(rules.LABELS), {AUTHOR_LABEL, THEOREM_LABEL, WF["env"]["HELD_LABEL"]})
@@ -16884,10 +16912,13 @@ class ImportCheckTest(ReaderRunner):
         pass starts a relabel of HEAD. Its comment job runs its step "Record a withdrawal that the post job owes" and
         then its label step, which reads the comments again. When the relabel withdraws 901, that step takes the line
         out first, and the label step still keeps the state rerun: the newest review comment of HEAD passes, and the
-        label comment is in the state rerun for HEAD (rules.py rerun_kept). When GitHub refuses again, the label step
-        changes nothing, and rerun stays. A later review of HEAD that posts sets the state of its own outcome, and a
-        relabel after it gives that state again. A line whose why is screen, a newest review comment that gives a
-        blocking finding, and a label comment that is not in the state rerun for HEAD keep the facts of before."""
+        label comment holds the line <!-- review-rerun <head> --> of that state (rules.py rerun_kept), also with an
+        older text of the state, and for a writer's pull request, whose label comment has no line of the import's
+        paths (OSSV-221's architect, 2026-11-22 10:21Z). When GitHub refuses again, the label step changes nothing, and
+        rerun stays. A later review of HEAD that posts sets the state of its own outcome, whose label comment loses the
+        line, and a relabel after it gives that state again. A line whose why is screen, a newest review comment that
+        gives a blocking finding, the text of rerun with no such line, and a label comment that names another head keep
+        the facts of before."""
         listed, _others = self.recorded()
         screened = review_of(HEAD, at=ago(300))
         line = f"<!-- withdraw-owed {HEAD} blocking -->"
@@ -16943,6 +16974,7 @@ class ImportCheckTest(ReaderRunner):
                          comments=[screened, cleared])
         (after,) = got["comments"]
         self.assertIn(after.split("\n")[1], (step_of["import"], step_of["decide"]), after)
+        self.assertNotIn(rules.rerun_line(HEAD), after.split("\n"))
         later = review_of(HEAD, at=ago(0))
         labelled = dict(rerun, updated_at=ago(0), body=after)
         self.tearDown()
@@ -16957,9 +16989,17 @@ class ImportCheckTest(ReaderRunner):
         rerun_of_other = rules.label_comment("rerun", "", [rules.import_marker(OTHER_HEAD, self.LPS)], OTHER_HEAD,
                                              imports)
         screen_line = rules.with_marker(rules.label_comment("screen"), f"<!-- withdraw-owed {HEAD} screen -->")
+        lines = rerun["body"].split("\n")
+        older_text = "\n".join(lines[:1] + ["**Next step:** Sami runs the automated review of the head commit again, "
+                                            "by hand."] + lines[2:])
+        no_line = "\n".join(m for m in lines if m != rules.rerun_line(HEAD))
+        writers = rules.label_comment("rerun", "", [], HEAD)
         for case, comments, unfinished in (
                 ("the label comment is in the state rerun for HEAD", [screened, rerun], True),
-                ("the same, once the line went", [screened, cleared], True),
+                ("the same, once the withdraw-owed line went", [screened, cleared], True),
+                ("an older text of rerun, with the line of HEAD", [screened, dict(rerun, body=older_text)], True),
+                ("a writer's label comment in the state rerun", [screened, dict(rerun, body=writers)], True),
+                ("the text of rerun with no line of the state", [screened, dict(rerun, body=no_line)], False),
                 ("a line whose why is screen", [screened, dict(rerun, body=screen_line)], False),
                 ("a newest review comment that asks for a change", [review_of(HEAD, "blocking"), rerun], False),
                 ("a label comment in the state import, with no line", [screened, dict(rerun, body=imported)], False),
