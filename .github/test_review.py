@@ -10322,6 +10322,30 @@ class ScheduleTest(Scheduled):
                 self.assertIn(f"runs of rescreen or review were tries that settled nothing, with no new hold. The work "
                               "of the hold is not tried again.", out)
 
+    def test_held_approvals_whose_hold_job_wrote_no_hold_count_tries_when_the_post_job_could_not_sign_in(self):
+        """OSSV-221's architect, 2026-11-22 03:13Z, the approve path of
+        test_screen_held_rescreens_whose_hold_job_wrote_no_hold_count_tries_when_the_post_job_could_not_sign_in. GitHub
+        holds runs of HEAD of mallory's #7, and REVIEW_TRIES approval runs of HEAD since then each had a screen that
+        held HEAD, a post job that failed, and a hold job that failed before its hold comment. The screen judged the
+        item in each (the hold job holds a run whose post job failed at "Sign in as the OSS Verify App"), so each run is
+        a try, as for a post job that failed at its withdrawal: the pass stops the approval of HEAD (stop head-approve)
+        and starts no approval run again. Else it re-screens HEAD, which a screen held, each hour without bound."""
+        hold_failed = attempt_job("hold", "Label it and say that it was held")
+        withdraw = "Withdraw the import check runs of the head"
+        for case, post in (("withdrawal failed", post_job({MINT_A: "success", withdraw: "failure"})),
+                           ("sign-in failed", post_job({MINT_A: "failure"}))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", labels=(), comments=[])
+                self.ci(ended=2000)
+                self.held_runs(made=2000)
+                for i in range(self.TRIES):
+                    self.ran(10 + i, f"approve #7 at {HEAD} of mallory", made=70 + 90 * i,
+                             jobs=[attempt_job("gather"), self.screened(), post, hold_failed])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
+
     def test_the_runs_of_item_123_are_not_item_12s(self):
         """#<n> in a name ends at a space or at the end of the name: neither an unfinished run of #123 nor the answer
         runs of #123 since #12's hold hold #12 back or use up its tries."""
