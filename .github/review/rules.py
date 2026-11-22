@@ -46,12 +46,13 @@ of its runs, and the rescreen pass starts no approval of it. The state no-key (t
 head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head, but the environment
 post held no key of the OSS Verify App, so the post job approved none of its runs, and the rescreen pass starts no
 approval of it. In a state with no state label (working, reviewed or import), an item that has a label comment gets
-the text of its state, and an item that has none gets none. For an outside pull request (the fact kind=pr, and an
-outside author) in the state decide or person, the text also names the step of R12 for the import into the internal
-repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS, given only
-when it is set, and decision, the post job's decision (DECISIONS). With head=<commit>, the label comment of an outside
-pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose review
-gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
+the text of its state. An item that has none gets none, unless a marker=<line> is the line of an owed withdrawal
+(OWED): then it gets the label comment of its state, with that line. For an outside pull request (the fact kind=pr,
+and an outside author) in the state decide or person, the text also names the step of R12 for the import into the
+internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
+given only when it is set, and decision, the post job's decision (DECISIONS). With head=<commit>, the label comment of
+an outside pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose
+review gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
 outcome of an outside author's item), is in the state reviewed, whoever started the run: its review names the next
 step. GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
@@ -432,11 +433,13 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # ahead, before its first step that can fail or that withdraws: the post job through its output owed, which the
 # comment job or the hold job records, and the hold job for a screen that held the head in a review, a rescreen or an
 # approval of its run, unless the post job withdrew for that head. It goes into a label comment that the item has: no
-# record of it makes one (owe). An item with no label comment gets the line from the label step of that job, in the
-# label comment that the step writes, and when that step writes none, the line is not recorded. A relabel and a review
-# by hand of that head withdraw for why while the line stands, whatever the newest review says (review_verdict). Only a
-# run that finished the withdrawal of that head (it found no import check run of the head with conclusion success, or
-# withdrew each one) takes the line out (owe). Each head has a line of its own (marker_kind).
+# record of it makes one (owe). An item with no label comment gets the line from the label step of that job. Its label
+# call writes a label comment with the line in any state (apply). The comment job's label step also writes the line
+# when it stops for a hold made after the run started (mark). When the label step stops before its label call for any
+# other cause, the line is not recorded. A relabel and a review by hand of that head withdraw for why while the line
+# stands, whatever the newest review says (review_verdict). Only a run that finished the withdrawal of that head (it
+# found no import check run of the head with conclusion success, or withdrew each one) takes the line out (owe). Each
+# head has a line of its own (marker_kind).
 OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) -->")
 
 
@@ -684,7 +687,8 @@ def apply(number, state, markers=(), head="", imports=None, labels=None, labelle
     (label_comment, with imports). labels are the item's label comments of BOT, each {id, body}, when the caller read
     them already; else this reads them. When labelled is False (the label answer off of the author-kind table), the
     item gets no state label and loses each one that it has, but its label comment is the state's all the same, with
-    the marker of the state's label."""
+    the marker of the state's label. An item with no label comment gets one when state has a state label, or when a
+    line of OWED is among markers, so that a label step records that line in any state. Else it gets none."""
     repo = os.environ["REPO"]
     want = label_of(state) if labelled else None
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
@@ -702,7 +706,7 @@ def apply(number, state, markers=(), head="", imports=None, labels=None, labelle
         labels = read_labels(number)
     old = labels[-1] if labels else None
     shown = f"#{number}: {want or 'no state label'} ({state})"
-    if old is None and label_of(state) is None:
+    if old is None and label_of(state) is None and not any(OWED.fullmatch(m) for m in markers):
         print(f"{shown}, and no label comment to change.")
         return
     body = label_comment(state, old["body"] if old else "", markers, head, imports)

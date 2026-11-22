@@ -3556,9 +3556,10 @@ jobs:
       # refused to post. The label step after it keeps the line. For an author whose write access GitHub did not give,
       # the label comment stays as it is. A record of an owed withdrawal never makes a label comment: for an item with
       # none, rules.py writes nothing (status 3), and this step gives the line to the label step (its output line),
-      # which gives it to the label comment that it writes (marker=<line>). When the label step writes no label comment
-      # (it is skipped, stops before its label call, or leaves the labels of a relabel whose post job failed), the line
-      # of an item with no label comment is not recorded.
+      # which gives it to the label comment that it writes (marker=<line>). The label step writes the line also when it
+      # stops for a hold made after the run started (rules.py mark). Else, when the label step writes no label comment,
+      # the line of an item with no label comment is not recorded. That is so when the step is skipped, stops before
+      # its label call, or leaves the labels of a relabel whose post job failed.
       - name: Record a withdrawal that the post job owes
         id: owed
         if: env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')
@@ -3773,9 +3774,10 @@ jobs:
       # step "Record a withdrawal that the post job owes", the first after the checkout, still records the withdrawal
       # that such a post job owes, in a label comment that the item has. After a post job that failed, the rescreen
       # pass's retry of the App's writes takes the head again (held.sh, due_retry). When that step found no label
-      # comment (its output line), this step gives the line as marker=<line> to the label comment that it writes. When
-      # this step writes no label comment, as for such a relabel, the line of an item with no label comment is not
-      # recorded.
+      # comment (its output line), this step gives the line as marker=<line> to its label call, which writes a label
+      # comment with the line in any state. When a hold made after this run started stops this step, it still writes
+      # the line (rules.py mark). When this step writes no label comment otherwise, as for such a relabel, the line of
+      # an item with no label comment is not recorded.
       # For the post job's decision hand (a review by hand, or a relabel, whose newest review of the head passed it with
       # no screen, after a screen passed the head in the run of an earlier review), that job recorded no check run. An
       # import check run of the head with conclusion success that still stands after it (its output standing) counts as
@@ -3890,6 +3892,11 @@ jobs:
           read -r last pending unsettled own <<< "$held"
           if [[ ${TASK:-} != reply && $last != - && ! $last < $STARTED ]]; then
             echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
+            # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
+            # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
+            # with no label comment gets one of the state working. That is true here: a hold that writes no label
+            # comment of its own is one that the workflow tries again (limit, cap or transient).
+            [ -z "${OWED_LINE:-}" ] || python3 .github/review/rules.py mark "$NUMBER" "$OWED_LINE" || exit 1
             exit 0
           fi
           take_off() {
@@ -4129,10 +4136,11 @@ jobs:
   # nothing, nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
   # Nor a run whose sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of
   # its jobs. Such a run judged nothing of the item, so it gets no comment, no label and no try, and the rescreen pass
-  # takes the item again. The if below cannot see the steps of another job, so a screen job that failed at its sign-in
-  # starts this job, which reads this attempt's jobs first and stops. It needs the post job: before its label step, it
-  # records the withdrawal of import check runs that this run owes, as the comment job does, which does not run for a
-  # held screen. That record never makes a label comment: the label step writes the line for an item with none.
+  # takes the item again. The post job's "Sign in as the OSS Verify App" is not such a step here: the label step says
+  # why. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this job,
+  # which reads this attempt's jobs first and stops. It needs the post job: before its label step, it records the
+  # withdrawal of import check runs that this run owes, as the comment job does, which does not run for a held screen.
+  # That record never makes a label comment: the label step writes the line for an item with none.
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -4248,16 +4256,22 @@ jobs:
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
-          # starts with "Sign in", and no other step has: the screen job's two, the review job's five, and the post
+          # starts with "Sign in", and no other step has: the screen job's two, the review job's three, and the post
           # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
           # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
-          # comment, no label and no try, and the rescreen pass takes the item again. A run at the limit ran no job but
-          # the trust job. The failed steps tell a review stopped at SCREENED_HOURLY_CAP too (below). When the jobs
-          # cannot be read, nothing is held, so that a run whose sign-in failed is never held: this job fails instead.
+          # comment, no label and no try, and the rescreen pass takes the item again. Not so for the post job's "Sign in
+          # as the OSS Verify App", which the read below leaves out. In a run that this job holds, that step signs in
+          # only to withdraw the import check runs of the head that the screen held. So the screen judged the item, and
+          # this job writes the hold with the workflow's token, whatever that sign-in did. This job needs the post job,
+          # so the jobs that it reads always show that step. A run at the limit ran no job but the trust job. The failed
+          # steps tell a review stopped at SCREENED_HOURLY_CAP too (below). When the jobs cannot be read, nothing is
+          # held, so that a run whose sign-in failed is never held: this job fails instead.
           failed=""
           if [ "$ROUTE" != limit ]; then
+            # shellcheck disable=SC2016 # $job is jq's
             failed=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-              --jq '.jobs[] | .steps[]? | select(.conclusion == "failure") | .name') \
+              --jq '.jobs[] | .name as $job | .steps[]? | select(.conclusion == "failure")
+                | select($job != "post" or .name != "Sign in as the OSS Verify App") | .name') \
               || { echo "::error::the jobs of this run could not be read, so nothing is held: the rescreen workflow takes the item again."; exit 1; }
             signin=$(grep -m 1 '^Sign in' <<< "$failed" || true)
             if [ -n "$signin" ]; then
