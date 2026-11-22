@@ -54,11 +54,7 @@ given only when it is set, and decision, the post job's decision (DECISIONS). Wi
 an outside pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose
 review gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
 outcome of an outside author's item), is in the state reviewed, whoever started the run: its review names the next
-step. A review whose job failed after its verdict (the fact unfinished=true, with head=<commit>) posted no review: it
-is in the state rerun, waits-on-theorem, whatever its verdict, and its label comment records
-<!-- review-rerun <head> --> (rerun_line), no line of KEPT: the label comment of any other state loses it, as it loses
-the conflict-state line. A relabel reads it (rerun_kept). GH_TOKEN and REPO come from the job's environment, as for gh
-in the workflow.
+step. GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -206,11 +202,9 @@ relabel: label (above) for the head <head> of the pull request <number>, for the
 task=), with the facts that the workflow wrote of that head (relabel_facts) beside the facts and the marker lines of
 the job: the verdict and will-fix of the review comment that names <head>, an answer at <head> whose author said they
 will make the change, the fix reviews of <head> and the count of fix reviews since the author's last own push, or the
-hold comment that names <head> when it is newer than all of those. A review comment of <head> that passes, while the
-label comment is in the state rerun for <head> (rerun_kept), gives the fact unfinished too: the newest review of
-<head> gave a blocking finding or the verdict person and posted no review comment, so the relabel keeps the state
-rerun. When the workflow wrote nothing of <head> but the conflict-state line of its label comment, the item gets no
-state label and the line goes. When it wrote nothing of <head>, nothing changes.
+hold comment that names <head> when it is newer than all of those. When the workflow wrote nothing of <head> but the
+conflict-state line of its label comment, the item gets no state label and the line goes. When it wrote nothing of
+<head>, nothing changes.
 
 answers: the answers of the author-kind table (TABLE) for <task>, one of TASKS, as <answer>=<value> lines for
 $GITHUB_OUTPUT: label (set, off or unchanged), then approve, record, withdraw and retry (true or false). <outside> and
@@ -286,11 +280,6 @@ FACTS = {
     "import_paths": None,
     # The post job's decision on the import check run at the head, one of DECISIONS.
     "decision": "",
-    # The review job of a review or a rescreen failed after it gave its verdict, so the review did not post. The post
-    # job withdrew the import check runs of the head for a blocking finding or the verdict person, or owes that
-    # withdrawal. A relabel gives it while the label comment is in the state rerun for the head and the newest review
-    # comment of the head passes (relabel_facts).
-    "unfinished": False,
 }
 VERDICTS = ("", "pass", "blocking", "person")
 # The texts that the fresh reader can refuse, each with its state (STATES), and "" for none.
@@ -434,15 +423,6 @@ STATES = {
     # hold that the rescreen pass tries again, the step gives the state working. label_state never gives this state.
     "after-hold": (
         None, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
-    # A review or a rescreen whose review job failed after it gave its verdict (the fact unfinished): no review posted.
-    # The rescreen pass reviews the head again only when no review comment and no hold comment name it (held.sh
-    # due_unreviewed). On the route screen, the hold job's hold of the same run takes the place of this state. A relabel
-    # of the head keeps it while the newest review comment of the head passes (rerun_kept), until a later review of the
-    # head posts. So the text says that Sami runs the review again if no later run of the workflow reviews the head.
-    "rerun": (
-        THEOREM, "Sami runs the automated review of the head commit again, by hand, if no later run of the workflow "
-                 "reviews it.",
-        "You do not need to do anything."),
 }
 
 FIRST = "<!-- review-label -->"
@@ -482,7 +462,7 @@ def marker_line(line):
 def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=False, fix_stop=False,
                 conflict=False, draft_stored=False, reply_posted=False, refused="", screen_held=False, steering=False,
                 no_key=False, held=False, tries_used_up=False, left_closed=False, recorded=False, import_paths=None,
-                decision="", unfinished=False):
+                decision=""):
     """The state of an item after the event of a run, a key of STATES, from the facts of FACTS, and outsider, true for
     the item of an outside author (outside_author). The first rule that holds gives it."""
     if kind not in ("", "pr", "issue"):
@@ -506,9 +486,6 @@ def label_state(kind="", outsider=False, verdict="", fix_posted=False, will_fix=
         return "steering"
     if no_key:
         return "no-key"
-    # A review whose job failed after its verdict posted no review, so its verdict names no next step.
-    if unfinished:
-        return "rerun"
     if held:
         return "working"
     if reply_posted:
@@ -616,26 +593,18 @@ def no_key_line(head):
     return f"<!-- review-no-key {head} -->"
 
 
-def rerun_line(head):
-    """The marker line of the label comment while it gives head the state rerun: the newest review of head gave a
-    verdict and posted no review comment, as its job failed after the verdict. It names the state, so that a relabel of
-    head keeps that state (rerun_kept) whatever the text of the state says. No line of KEPT: the label comment of any
-    other state loses it."""
-    return f"<!-- review-rerun {head} -->"
-
-
 def label_comment(state, old="", markers=(), head="", imports=None):
     """The text of the label comment of an item in state, which takes the place of old (its label comment, or "" when
     it has none): FIRST, the next step, the text when the state has one, then each marker line of KEPT that old holds
     or markers gives (a marker of markers takes the place of old's line of its kind), with the steering line of head
-    in the state steering and its no-key line in the state no-key, the conflict-state line of head for a conflict, the
-    rerun line of head in the state rerun, and the marker of the state label. imports is (value, decision) of
-    import_steps for an outside pull request, and None for any other item. The state decide is an outside pull
-    request's alone, so there None reads as no variable and no decision."""
+    in the state steering and its no-key line in the state no-key, the conflict-state line of head for a conflict, and
+    the marker of the state label. imports is (value, decision) of import_steps for an outside pull request, and None
+    for any other item. The state decide is an outside pull request's alone, so there None reads as no variable and no
+    decision."""
     label, step, text = STATES[state]
     if state == "decide" or (state == "person" and imports is not None):
         step, text = import_steps(state, *(imports or (None, "")))
-    if state in ("conflict", "steering", "no-key", "rerun") and not HEAD.fullmatch(head):
+    if state in ("conflict", "steering", "no-key") and not HEAD.fullmatch(head):
         raise ValueError(f"the state {state} needs its head commit, not {head!r}")
     if state == "steering":
         markers = [*markers, steering_line(head)]
@@ -652,8 +621,6 @@ def label_comment(state, old="", markers=(), head="", imports=None):
     lines = list(kept.values())
     if state == "conflict":
         lines.append(conflict_state(head))
-    if state == "rerun":
-        lines.append(rerun_line(head))
     if label == AUTHOR:
         lines.append(f"<!-- {AUTHOR} -->")
     elif label == THEOREM:
@@ -2142,8 +2109,7 @@ def relabel_facts(comments, reviews, head, history):
     review or of an answer), fix_posted (a fix review of head) and fix_stop (a blocking verdict after 2 fix reviews
     since the author's last own push, the fix review of head not counted, as the review job decided it before it
     posted that fix). With neither, a label comment that holds the conflict-state line of head gives no fact: the
-    head goes back to the workflow, and the line goes. A review comment of head that passes, while the label comment
-    is in the state rerun for head (rerun_kept), gives the fact unfinished as well, so the relabel keeps that state."""
+    head goes back to the workflow, and the line goes."""
     verdict, will_fix, reviewed, answered = "", False, "", ""
     fact, held, conflicted = None, "", False
     for c in comments:
@@ -2173,28 +2139,10 @@ def relabel_facts(comments, reviews, head, history):
         own = heads.count(head)
         fix_stop = (verdict == "blocking" and not will_fix and len(heads) - own >= 2
                     and fixes(history(), found, head) - own >= 2)
-        facts = {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
-        if verdict == "pass" and rerun_kept(comments, head):
-            facts["unfinished"] = True
-        return facts
+        return {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
     if conflicted:
         return {}
     return None
-
-
-def rerun_kept(comments, head):
-    """Whether the label comment of BOT among comments (the last one, as label reads it) is in the state rerun for
-    head: it holds the marker line <!-- review-rerun <head> --> (rerun_line), which names that state and head, for an
-    outside author's pull request and a writer's alike. The rule reads that line alone, never the text of the state, so
-    a change of the text of rerun does not end it (OSSV-221's architect, 2026-11-22 10:21Z). The comment job gives that
-    state after a review job that failed after its verdict, blocking or person (the fact unfinished): that review
-    posted no review comment, so an older review comment of head that passes is not the newest review of head
-    (OSSV-221's architect, 2026-11-22 09:54Z). A relabel that finishes the withdrawal of that verdict reads no line of
-    OWED: the comment job's step that records the withdrawal takes the line out before the label step reads the
-    comments. A later review of head that posts sets the state of its own outcome, whose label comment loses the line,
-    and with it this ends."""
-    labels = [c.get("body") or "" for c in comments if of_bot(c) and (c.get("body") or "").startswith(FIRST)]
-    return bool(labels) and rerun_line(head) in labels[-1].split("\n")
 
 
 def json_lines(path):

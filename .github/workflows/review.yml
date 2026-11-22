@@ -2291,6 +2291,10 @@ jobs:
       # head whose review holds it. A review whose route was review (a writer's item, or a writer's run by hand with no
       # screen) holds none.
       # The run's summary gets the text that the reader read, the list, and the section on soundness with every line.
+      # For a review, every step after this one belongs to the fix. So when this step gave a blocking finding or the
+      # verdict person and the job then failed or was cancelled, this text is final: the comment job posts it as for a
+      # review that succeeded, with no fix, while the pull request is still at its head (OSSV-221's architect,
+      # 2026-11-22 10:46Z). After a pass, such a run posts nothing, and after a screen the hold job holds it.
       - name: The comment, as it is posted
         id: result
         if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -2618,9 +2622,9 @@ jobs:
 
       # A new token for the fresh reader of the fix, as "Sign in to Anthropic for the fresh reader" gets one: the step
       # that made the comment or the answer took that token and deleted its file. When this exchange fails, the job
-      # fails here, after the verdict. The run counts a try (held.sh try_rule), and after a screen the hold job holds
-      # the item. For a review that gave a blocking finding, the post job still withdraws the import check runs of the
-      # head (its if).
+      # fails here, and the run counts a try (held.sh try_rule). A review gave a blocking finding before this step: the
+      # comment job posts that review with no fix, and the post job withdraws the import check runs of the head for it
+      # (their ifs). After a screen, the hold job holds an answer that failed here, and no review.
       - name: Sign in to Anthropic for the fresh reader of the fix
         if: steps.fixable.outputs.fix == 'true'
         run: python3 .github/review/trim.py sign-in
@@ -2699,37 +2703,39 @@ jobs:
   # after it read them. For the review and the relabel of an outside author's pull request, it decides the import
   # check run of R12 on the head (.github/review/rules.py import-check) and records repo-pairs/import-approved, with
   # conclusion success, when the rule holds. When a later review of the head gives a blocking finding or the verdict
-  # person (also a review whose job failed after it gave that verdict), or a later screen holds the head, it updates
-  # that check run to the conclusion neutral (R12), whoever the author is. For an approval, it reads the files of the
-  # head too (.github/review/rules.py steering). It checks out main's .github/ for those, and runs nothing else from
-  # it. Its outputs: recorded, true when it recorded that check run at the head; decision, what it decided for that
-  # check run: record, or why it records none (.github/review/rules.py DECISIONS); standing, for the decision hand,
-  # true when an import check run of the head with conclusion success still stands after this job; caught, the head of
-  # a pull request that a catch-up closed and reopened, or only reopened, which the comment job records in the label
-  # comment; steering, the head of an approval that changes a file under .github/, whose runs it does not approve; and
-  # no_key, the head of an approval whose held runs it found and did not approve, as the environment post holds no
-  # key. The comment job records each of the last two in the label comment. owed and withdrawn tell the comment job, or
-  # the hold job for a held screen or for a review job that failed, which head's withdrawal of import check runs this
-  # job owes, and which one it finished, for the marker line <!-- withdraw-owed <head> <why> --> of the label comment.
+  # person (also a review whose job failed or was cancelled after it gave that verdict), or a later screen holds the
+  # head, it updates that check run to the conclusion neutral (R12), whoever the author is. For an approval, it reads
+  # the files of the head too (.github/review/rules.py steering). It checks out main's .github/ for those, and runs
+  # nothing else from it. Its outputs: recorded, true when it recorded that check run at the head; decision, what it
+  # decided for that check run: record, or why it records none (.github/review/rules.py DECISIONS); standing, for the
+  # decision hand, true when an import check run of the head with conclusion success still stands after this job;
+  # caught, the head of a pull request that a catch-up closed and reopened, or only reopened, which the comment job
+  # records in the label comment; steering, the head of an approval that changes a file under .github/, whose runs it
+  # does not approve; and no_key, the head of an approval whose held runs it found and did not approve, as the
+  # environment post holds no key. The comment job records each of the last two in the label comment. owed and
+  # withdrawn tell the comment job, or the hold job for a held screen, which head's withdrawal of import check runs
+  # this job owes, and which one it finished, for the marker line <!-- withdraw-owed <head> <why> --> of the label
+  # comment.
   post:
     needs: [trust, gather, screen, review]
     # The review or the rescreen of a pull request whose review succeeded, whoever its author is and whatever the route
     # (a review by hand runs no screen, and its review can withdraw the import check run of the head); a relabel; a
     # catch-up; an approval whose screen passed; and a review, a rescreen or an approval of a pull request whose screen
     # held its head, which only withdraws the import check run of that head. The hold job holds such a head, and holds
-    # no key of the App. Also the review or the rescreen of a pull request whose review job failed after it gave a
-    # blocking finding or the verdict person (at the fix, say): that verdict judged the head, so this job withdraws the
-    # import check runs of the head for it, as for a review that succeeded, and records, approves and decides nothing
-    # (OSSV-221's architect, 2026-11-22 06:23Z). GitHub fills in the outputs of a job that failed, so the verdict and
-    # the head are there. GitHub's implicit success() would skip this job when a job it needs was skipped: the gather,
-    # screen and review jobs of a relabel or a catch-up, and the review job of an approval or of a held screen.
+    # no key of the App. Also the review or the rescreen of a pull request whose review job failed or was cancelled
+    # after it gave a blocking finding or the verdict person (at the fix, say): that verdict judged the head, so this
+    # job withdraws the import check runs of the head for it, as for a review that succeeded, and records, approves and
+    # decides nothing (OSSV-221's architect, 2026-11-22 06:23Z and 10:46Z). GitHub fills in the outputs of a job that
+    # failed or was cancelled, so the verdict and the head are there. GitHub's implicit success() would skip this job
+    # when a job it needs was skipped: the gather, screen and review jobs of a relabel or a catch-up, and the review job
+    # of an approval or of a held screen.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && needs.gather.outputs.kind == 'pr'
                && (needs.review.result == 'success'
-                   || (needs.review.result == 'failure' && (needs.review.outputs.verdict == 'blocking'
-                                                           || needs.review.outputs.verdict == 'person'))))
+                   || ((needs.review.result == 'failure' || needs.review.result == 'cancelled')
+                       && (needs.review.outputs.verdict == 'blocking' || needs.review.outputs.verdict == 'person'))))
               || ((needs.trust.outputs.task == 'relabel' || needs.trust.outputs.task == 'catchup')
                   && needs.trust.result == 'success')
               || (needs.trust.outputs.task == 'approve' && needs.screen.result == 'success'
@@ -2766,16 +2772,15 @@ jobs:
       steering: ${{ steps.held.outputs.steering }}
       no_key: ${{ steps.no_key.outputs.head }}
       # The withdrawal of the import check runs of a head (R12), which the comment job, or the hold job for a held
-      # screen or for a review job that failed, records in the label comment (.github/review/rules.py owed). owed:
-      # "<head> <why>" of a withdrawal that this job found a reason for and did not finish: GitHub refused it, or the
-      # job failed before it. withdrawn: the head whose withdrawal this job finished: it found no import check run of
-      # the head with conclusion success, or withdrew each one that it found. GitHub fills in the outputs of a job at
-      # its end, also when it failed, from the outputs of the steps that ran. So each step that finds a reason writes
-      # owed before its next command that can fail or that withdraws: the step "Write the output owed for the
-      # withdrawal of the import check runs", for the verdict blocking or person of this run's review (also of a review
-      # job that failed after it gave that verdict) or for a screen of this run that held the head; the decision step,
-      # for a reason that it reads from the comments of the item; and the step that finds the check runs, before it
-      # reads them.
+      # screen, records in the label comment (.github/review/rules.py owed). owed: "<head> <why>" of a withdrawal that
+      # this job found a reason for and did not finish: GitHub refused it, or the job failed before it. withdrawn: the
+      # head whose withdrawal this job finished: it found no import check run of the head with conclusion success, or
+      # withdrew each one that it found. GitHub fills in the outputs of a job at its end, also when it failed, from the
+      # outputs of the steps that ran. So each step that finds a reason writes owed before its next command that can
+      # fail or that withdraws: the step "Write the output owed for the withdrawal of the import check runs", for the
+      # verdict blocking or person of this run's review (also of a review job that failed or was cancelled after it gave
+      # that verdict) or for a screen of this run that held the head; the decision step, for a reason that it reads
+      # from the comments of the item; and the step that finds the check runs, before it reads them.
       owed: >-
         ${{ steps.withdraw.outputs.clear == '' && steps.withdrawn.outputs.head == ''
         && (steps.withdraw.outputs.owed || steps.decide.outputs.owed || steps.own.outputs.owed) || '' }}
@@ -2806,9 +2811,9 @@ jobs:
           printf '%s\n' "$answers" >> "$GITHUB_OUTPUT"
       # The withdrawal that this run's review or screen gives, which the step "Find the import check runs that a later
       # review or screen withdraws" makes: the verdict blocking or person of this run's review, also of a review job
-      # that failed after it gave that verdict, or a screen of this run that held the head. The job knows it from its
-      # start, so this step writes the output owed, "<head> <why>", before any step that can fail: a later step that
-      # fails then leaves that output, and the comment job or the hold job records the line
+      # that failed or was cancelled after it gave that verdict, or a screen of this run that held the head. The job
+      # knows it from its start, so this step writes the output owed, "<head> <why>", before any step that can fail: a
+      # later step that fails then leaves that output, and the comment job or the hold job records the line
       # <!-- withdraw-owed <head> <why> -->. Its if is the if of that step, without the relabel.
       - name: Write the output owed for the withdrawal of the import check runs
         id: own
@@ -2817,8 +2822,8 @@ jobs:
           && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && (needs.review.result == 'success'
-                   || (needs.review.result == 'failure' && (needs.review.outputs.verdict == 'blocking'
-                                                           || needs.review.outputs.verdict == 'person'))
+                   || ((needs.review.result == 'failure' || needs.review.result == 'cancelled')
+                       && (needs.review.outputs.verdict == 'blocking' || needs.review.outputs.verdict == 'person'))
                    || (needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean')))
               || (needs.trust.outputs.task == 'approve' && needs.screen.result == 'success'
                   && needs.screen.outputs.verdict != 'clean'))
@@ -2831,10 +2836,11 @@ jobs:
           VERDICT: ${{ needs.review.outputs.verdict }}
         run: |
           set -euo pipefail
-          # The review's head and verdict, of a review job that succeeded or that failed after its verdict (the if);
-          # else the screen of this run held the trust job's head.
+          # The review's head and verdict, of a review job that succeeded, or that failed or was cancelled after its
+          # verdict (the if); else the screen of this run held the trust job's head.
           head=$REVIEW_HEAD why=$VERDICT gave=review
-          if [ "$TASK" = approve ] || { [ "$REVIEWED" != success ] && [ "$REVIEWED" != failure ]; }; then
+          if [ "$TASK" = approve ] \
+            || { [ "$REVIEWED" != success ] && [ "$REVIEWED" != failure ] && [ "$REVIEWED" != cancelled ]; }; then
             head=$TRUST_HEAD why=screen gave=trust
           fi
           case $why in
@@ -3081,14 +3087,14 @@ jobs:
       # holds the line <!-- withdraw-owed <head> <why> --> (the decision's earlier, from rules.py verdict), for that
       # reason when its own verdict gives none. The if of this step reads the screen's verdict: a review or a rescreen
       # whose review job did not succeed runs this step only when the screen held the head, or when the review job
-      # failed after it gave a blocking finding or the verdict person (the if of this job), and an approval only when
-      # the screen held the head. Once it has a reason, before it reads the check runs, the step writes the output
-      # owed, "<head> <why>": a read or a withdrawal that fails after it leaves that output, and the comment job or the
-      # hold job records the line. An earlier step of this job wrote it already when it found the reason (the step
-      # "Write the output owed for the withdrawal of the import check runs", or write_owed of the decision step). With
-      # no check run to withdraw, its output clear names the head: nothing is owed for it. The read asks for every check
-      # run of the head (filter=all): by default GitHub lists only the newest of each name, which can hide an older
-      # success under a newer one that was withdrawn.
+      # failed or was cancelled after it gave a blocking finding or the verdict person (the if of this job), and an
+      # approval only when the screen held the head. Once it has a reason, before it reads the check runs, the step
+      # writes the output owed, "<head> <why>": a read or a withdrawal that fails after it leaves that output, and the
+      # comment job or the hold job records the line. An earlier step of this job wrote it already when it found the
+      # reason (the step "Write the output owed for the withdrawal of the import check runs", or write_owed of the
+      # decision step). With no check run to withdraw, its output clear names the head: nothing is owed for it. The read
+      # asks for every check run of the head (filter=all): by default GitHub lists only the newest of each name, which
+      # can hide an older success under a newer one that was withdrawn.
       # The request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal):
       # the conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
       # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
@@ -3116,8 +3122,8 @@ jobs:
           && (github.event_name == 'workflow_run' || github.event_name == 'workflow_dispatch')
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
                && (needs.review.result == 'success'
-                   || (needs.review.result == 'failure' && (needs.review.outputs.verdict == 'blocking'
-                                                           || needs.review.outputs.verdict == 'person'))
+                   || ((needs.review.result == 'failure' || needs.review.result == 'cancelled')
+                       && (needs.review.outputs.verdict == 'blocking' || needs.review.outputs.verdict == 'person'))
                    || (needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean')))
               || needs.trust.outputs.task == 'relabel'
               || (needs.trust.outputs.task == 'approve' && needs.screen.result == 'success'
@@ -3149,7 +3155,8 @@ jobs:
           head=$REVIEW_HEAD why=$VERDICT gave=review
           if [ "$TASK" = relabel ]; then
             head=$TRUST_HEAD gave=trust
-          elif [ "$TASK" = approve ] || { [ "$REVIEWED" != success ] && [ "$REVIEWED" != failure ]; }; then
+          elif [ "$TASK" = approve ] \
+            || { [ "$REVIEWED" != success ] && [ "$REVIEWED" != failure ] && [ "$REVIEWED" != cancelled ]; }; then
             head=$TRUST_HEAD why=screen gave=trust
           fi
           [ "${HELD:-}" != true ] || why=screen
@@ -3516,28 +3523,32 @@ jobs:
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed. Whatever that result, it records in the label comment the
-  # withdrawal of import check runs that the post job owes, and takes that line out once a run finished it. For a review
-  # or a rescreen whose review job failed after its verdict (the post job withdraws for a blocking finding or the
-  # verdict person) and whose post job owes or finished that withdrawal, it records it, and its label step gives the
-  # item the state rerun (OSSV-221's architect, 2026-11-22 07:44Z, and the fresh reader of round 16): no review posted,
-  # so Sami runs the review again if no later run does. Each other step of the job that would run for a review skips a
-  # review job that failed, so it posts no review and no fix. That is so on each route, also on a review by hand with no
-  # screen, where no hold job runs.
+  # withdrawal of import check runs that the post job owes, and takes that line out once a run finished it. A review or
+  # a rescreen of a pull request whose review job failed or was cancelled after it gave a blocking finding or the
+  # verdict person (its outputs verdict and head are set) has a final review: each step of the review job after "The
+  # comment, as it is posted" belongs to the fix. This job posts that review as for a review that succeeded, while the
+  # pull request is still at the head of the review, and posts no fix. Its label step gives the state of a review whose
+  # fix posted nothing (OSSV-221's architect, 2026-11-22 10:46Z). That is so on each route, also on a review by hand
+  # with no screen. This job does not run after a review job that failed or was cancelled before its verdict, nor after
+  # a pass: the post job decides nothing for such a review, so its label comment could say that a screen passed a head
+  # that no screen passed. After a screen, the hold job holds such a run.
   comment:
     needs: [trust, gather, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job. A reply
     # and a stop have no gather, screen or review job: they need the trust job alone. A catch-up needs a post job that
     # reopened the pull request (its output caught), and an approval one that approved no run of a head that changes a
     # file under .github/ (its output steering) or no held run of a head for lack of the App's key (its output no_key).
-    # A review or a rescreen whose review job failed needs a post job whose output owed or withdrawn is set.
+    # A review or a rescreen of a pull request whose review job failed or was cancelled after a blocking finding or the
+    # verdict person needs the review job's outputs verdict and head.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
                 || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
                && needs.review.result == 'success')
               || ((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-                  && needs.review.result == 'failure'
-                  && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != ''))
+                  && (needs.review.result == 'failure' || needs.review.result == 'cancelled')
+                  && (needs.review.outputs.verdict == 'blocking' || needs.review.outputs.verdict == 'person')
+                  && needs.review.outputs.head != '')
               || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel'
                    || needs.trust.outputs.task == 'reply' || needs.trust.outputs.task == 'stop')
                   && needs.trust.result == 'success')
@@ -3585,10 +3596,10 @@ jobs:
       # refused to post. The label step after it keeps the line. For an author whose write access GitHub did not give,
       # the label comment stays as it is. A record of an owed withdrawal never makes a label comment: for an item with
       # none, rules.py writes nothing (status 3), and this step gives the line to the label step (its output line),
-      # which gives it to the label comment that it writes (marker=<line>), also after a review job that failed. The
-      # label step writes the line also when it stops for a hold made after the run started (rules.py mark). Else, when
-      # the label step writes no label comment, the line of an item with no label comment is not recorded. That is so
-      # when the step is skipped, stops before its label call, or leaves the labels of a relabel whose post job failed.
+      # which gives it to the label comment that it writes (marker=<line>). The label step writes the line also when it
+      # stops for a hold made after the run started (rules.py mark). Else, when the label step writes no label comment,
+      # the line of an item with no label comment is not recorded. That is so when the step is skipped, stops before its
+      # label call, or leaves the labels of a relabel whose post job failed.
       - name: Record a withdrawal that the post job owes
         id: owed
         if: env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')
@@ -3612,14 +3623,31 @@ jobs:
       # there is none. A review with no screen in its run (its marker lines hold no <!-- review-screened <head> -->)
       # never replaces a screened review comment of the same head that gives a blocking finding or the verdict person:
       # it posts a comment of its own. A relabel and a review by hand read that screened review (rules.py verdict), and
-      # withdraw the import check runs of the head for it, also after GitHub refused an earlier withdrawal.
+      # withdraw the import check runs of the head for it, also after GitHub refused an earlier withdrawal. The
+      # review of a review job that failed or was cancelled after its verdict posts here too, as that job gave it, but
+      # only while the pull request is at the head of that review: a newer run of the same item and task cancels the
+      # review job (its concurrency), and a new push replaces the review of the old head. When the head moved, this
+      # step posts nothing, and the label step writes nothing either.
       - name: Post the review, or replace the one posted before
         if: >-
           env.POST_REVIEW == 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-          && needs.review.outputs.refused != 'review' && needs.review.result != 'failure'
+          && needs.review.outputs.refused != 'review'
+        env:
+          # The review job's result, and the head that the review read.
+          REVIEWED: ${{ needs.review.result }}
+          HEAD: ${{ needs.review.outputs.head }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ && -n $BODY ]] || { echo "::error::no review to post"; exit 1; }
+          if [ "${REVIEWED:-}" = failure ] || [ "${REVIEWED:-}" = cancelled ]; then
+            [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] \
+              || { echo "::error::the review job gave no head commit: ${HEAD:-}"; exit 1; }
+            now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) || { echo "::error::no head of #$NUMBER"; exit 1; }
+            if [ "$now" != "$HEAD" ]; then
+              echo "#$NUMBER moved from $HEAD to $now, so this run posts no review of $HEAD."
+              exit 0
+            fi
+          fi
           last=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review -->")))
               | {id, body} | @json' | tail -n 1)
@@ -3698,11 +3726,11 @@ jobs:
       # head, one comment on the right side of the diff for each suggestion), once for each head: a review of
       # github-actions[bot] whose body starts with <!-- review-fix <head> --> is the fix posted already. A pull
       # request that moved on from the head is the next run's, and so is the fix of an answer that another run answered
-      # first (Post the answer). The output posted tells the label step that a fix review is there. This step does not
-      # run after a review job that failed.
+      # first (Post the answer). The output posted tells the label step that a fix review is there. Only a review job
+      # that succeeded gives a fix that posts: after a review job that failed or was cancelled, no fix posts.
       - name: Post the fix as suggested changes
         id: fixed
-        if: needs.review.outputs.fix != '' && steps.answer.outputs.other != 'true' && needs.review.result != 'failure'
+        if: needs.review.outputs.fix != '' && steps.answer.outputs.other != 'true' && needs.review.result == 'success'
         env:
           FIX: ${{ needs.review.outputs.fix }}
           HEAD: ${{ needs.review.outputs.head }}
@@ -3813,11 +3841,11 @@ jobs:
       # import check run of the head with conclusion success that still stands after it (its output standing) counts as
       # recorded: so the state is import while the variable is set, and decide, with Sami's steps, when none stands.
       # With the decision screened, the state follows this run's verdict, as for any review. After a review job that
-      # failed after its verdict, no review posted: the fact unfinished gives the state rerun, waits-on-theorem,
-      # whatever the verdict, and the line of an owed withdrawal goes into that label comment as for any run. Such a run
-      # settled no hold, so the label review-held stays as it is. On the route screen, the hold job of the same run
-      # writes a hold: when it ran first, it stops this step as any hold made after the run started does, and when it
-      # runs later, its label takes the place of this one. A head that moved writes nothing, as for any review.
+      # failed or was cancelled after a blocking finding or the verdict person, the review posted and no fix did: the
+      # facts are those of a review whose fix posted nothing (fix_posted false), so the state is change, person, or what
+      # the rule gives for those facts. That review settles the hold of the review as any posted review does, so the
+      # label review-held comes off as after any review: the rescreen pass reads a run whose comment job posted as one
+      # that settled the hold (held.sh held_work), and the hold job holds no such run.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
@@ -3830,8 +3858,6 @@ jobs:
           STARTED: ${{ needs.trust.outputs.started }}
           # The post job's result: success, failure, cancelled, or skipped when it did not run.
           POSTED: ${{ needs.post.result }}
-          # failure when the review job failed after its verdict (the if of this job): no review posted.
-          REVIEWED: ${{ needs.review.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           # The trust job's outputs as they are, which .github/review/rules.py reads (outside_author and the author-kind
           # table): outside true is an outside author, whose item gets its state label (R5); kind unknown changes no
@@ -3960,9 +3986,6 @@ jobs:
               echo "#$NUMBER: the answer changes no state, so the labels stay."
               exit 0
             fi
-          elif [ "${REVIEWED:-}" = failure ]; then
-            echo "#$NUMBER: the review job of this run failed, so no review posted and the label $HELD_LABEL stays as" \
-              "it is."
           elif [ "${TASK:-}" != relabel ]; then
             if [ "$pending" = true ]; then
               echo "#$NUMBER: a hold of other work is tried again, so the label $HELD_LABEL stays on."
@@ -3981,8 +4004,6 @@ jobs:
           fi
           facts=()
           [ -z "$paths" ] || facts=("import_paths=$paths")
-          # A review job that failed after its verdict: the state rerun (rules.py label_state).
-          [ "${REVIEWED:-}" != failure ] || facts+=("unfinished=true")
           # The trust job's outputs as they are: rules.py reads the kind of the author from them (outside_author and
           # the author-kind table). The head names the marker line of R12 in the label comment of an outside pull
           # request (rules.py import-marker). A pull request with the review's verdict and no outside state gets the
@@ -4006,7 +4027,7 @@ jobs:
       - name: Keep the review in the run's summary
         if: >-
           env.POST_REVIEW != 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-          && needs.review.outputs.refused != 'review' && needs.review.result != 'failure'
+          && needs.review.outputs.refused != 'review'
         run: printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
       # A pull request with a merge conflict starts no CI run, and so no review: its author resolves the conflict, and
       # the next push starts both. One comment for each head, which says so, and a label comment that holds
@@ -4185,16 +4206,18 @@ jobs:
   # comment go on, as they are the hold's. Each hold of a pull request also names the head that the run read, in the
   # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops. A cancelled screen holds
   # nothing, nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
-  # Nor a run that judged nothing of the item, by the one rule of what counts as a try (held.sh try_rule): in this
-  # attempt of the run, a step whose name starts with "Sign in" failed in its screen job, its review job's step "Sign in
-  # to Anthropic" failed (before any model), or its post job's "Sign in as the OSS Verify App to approve" failed. Such a
-  # run gets no comment, no label and no try, and the rescreen pass takes the item again. The post job's "Sign in as the
-  # OSS Verify App" and the review job's two sign-ins of the fresh reader are not such steps: the label step says why.
-  # The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this job, which
-  # reads this attempt's jobs first and stops. It needs the post job: before its label step, it records the withdrawal
-  # of import check runs that this run owes, as the comment job does, which does not run for a held screen, and runs
-  # for a review job that failed after its verdict too. That record never makes a label comment: the label step
-  # writes the line for an item with none.
+  # Nor a screened review or rescreen of a pull request whose review job failed or was cancelled after a blocking
+  # finding or the verdict person (its outputs verdict and head are set): its review is final, and the comment job
+  # posts it with no fix (OSSV-221's architect, 2026-11-22 10:46Z). Nor a run that judged nothing of the item, by the
+  # one rule of what counts as a try (held.sh try_rule): in this attempt of the run, a step whose name starts with "Sign
+  # in" failed in its screen job, its review job's step "Sign in to Anthropic" failed (before any model), or its post
+  # job's "Sign in as the OSS Verify App to approve" failed. Such a run gets no comment, no label and no try, and the
+  # rescreen pass takes the item again. The post job's "Sign in as the OSS Verify App" and the review job's two
+  # sign-ins of the fresh reader are not such steps: the label step says why. The if below cannot see the steps of
+  # another job, so a screen job that failed at its sign-in starts this job, which reads this attempt's jobs first and
+  # stops. It needs the post job: before its label step, it records the withdrawal of import check runs that this run
+  # owes, as the comment job does, which does not run for a held screen. That record never makes a label comment: the
+  # label step writes the line for an item with none.
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -4207,7 +4230,9 @@ jobs:
           && (needs.gather.result == 'failure' || needs.screen.result == 'failure'
               || (needs.screen.result == 'success' && needs.screen.outputs.verdict != 'clean')
               || (needs.screen.outputs.verdict == 'clean'
-                  && (needs.review.result == 'failure' || needs.review.result == 'cancelled')))))
+                  && (needs.review.result == 'failure' || needs.review.result == 'cancelled')
+                  && ((needs.review.outputs.verdict != 'blocking' && needs.review.outputs.verdict != 'person')
+                      || needs.review.outputs.head == '')))))
     # One at a time for each item, and none cancelled: GitHub keeps every pending one (queue: max). It is the item's
     # group label-<n>, as the comment job's: every write of the item's state label and label comment runs in it.
     concurrency:
@@ -4265,20 +4290,17 @@ jobs:
       # The withdrawal of the import check runs of a head that this run owes (R12), in the line
       # <!-- withdraw-owed <head> <why> --> of the label comment (.github/review/rules.py owed), as the comment job's
       # step "Record a withdrawal that the post job owes" records it: the post job's outputs owed and withdrawn,
-      # whatever that job's result. This job records them for a held screen, for which the comment job does not run, and
-      # for a review job that failed after it gave a blocking finding or the verdict person, for which the comment job
-      # records the owed line too (its step "Record a withdrawal that the post job owes"). In a review, a
-      # rescreen or an approval, a screen of this run that held the head of a pull request owes that withdrawal too:
-      # these are the tasks whose post job withdraws for a held screen (the author-kind table's withdraw), and an answer
-      # or a draft withdraws nothing. So for such a screen (the output held of the step before) this step writes the
-      # line <head> screen itself, unless the post job's output withdrawn names that head. In some runs the post job
-      # does not run, or does not finish its withdrawal. A later run that finds no import check run of the head with
-      # conclusion success takes the line out. The step runs before the label step, which can fail. A record of an owed
-      # withdrawal never makes a label comment: for an item with none, rules.py writes nothing (status 3), and this step
-      # gives the line to the label step (its output line), which gives it to the label comment that its label call
-      # writes (marker=<line>). When the label step writes no label comment (it stops before its label call: a run
-      # that judged nothing (held.sh try_rule), a newer run, a stale hold, an answer's hold that is tried again, or an
-      # error), the line of an item with no label comment is not recorded.
+      # whatever that job's result. In a review, a rescreen or an approval, a screen of this run that held the head of a
+      # pull request owes that withdrawal too: these are the tasks whose post job withdraws for a held screen (the
+      # author-kind table's withdraw), and an answer or a draft withdraws nothing. So for such a screen (the output held
+      # of the step before) this step writes the line <head> screen itself, unless the post job's output withdrawn names
+      # that head. In some runs the post job does not run, or does not finish its withdrawal. A later run that finds no
+      # import check run of the head with conclusion success takes the line out. The step runs before the label step,
+      # which can fail. A record of an owed withdrawal never makes a label comment: for an item with none, rules.py
+      # writes nothing (status 3), and this step gives the line to the label step (its output line), which gives it to
+      # the label comment that its label call writes (marker=<line>). When the label step writes no label comment (it
+      # stops before its label call: a run that judged nothing (held.sh try_rule), a newer run, a stale hold, an
+      # answer's hold that is tried again, or an error), the line of an item with no label comment is not recorded.
       - name: Record a withdrawal that this run owes
         id: owed
         if: >-
@@ -4325,16 +4347,17 @@ jobs:
           # the post job's "Sign in as the OSS Verify App to approve" failed. Then this job writes no comment and no
           # label, and counts no try, and the rescreen pass takes the item again. The review job's two sign-ins of the
           # fresh reader are not such steps: the model ran before them, and the second comes after the verdict
-          # (OSSV-221's architect, 2026-11-22 06:23Z). So this job holds a run that failed at either, as a review, an
-          # answer or a draft that did not finish, and counts a try. The post job's "Sign in as the OSS Verify App" is
-          # not such a step either. In a run that this job holds, that step signs in only to withdraw the import check
-          # runs of the head that the screen held, or of the head whose review gave a blocking finding or the verdict
-          # person before its job failed. So the run judged the item, and this job writes the hold with the workflow's
-          # token, whatever that sign-in did. This job needs the post job, so the jobs that it reads always show that
-          # step. tried also gives cap for a review stopped at the hourly cap (below), which counts no try. Only signin
-          # stops the hold: this run has not finished, so tried can give running here. A run at the limit ran no job
-          # but the trust job: this job reads no jobs for it, and its hold counts no try. When the jobs cannot be read,
-          # nothing is held, so that a run that judged nothing is never held: this job fails instead.
+          # (OSSV-221's architect, 2026-11-22 06:23Z). So this job holds a run that failed at the first, as a review, an
+          # answer or a draft that did not finish, and counts a try. It holds an answer that failed at the second too. A
+          # review that failed at the second gave a blocking finding: the if of this job takes no such run, and the
+          # comment job posts that review. The post job's "Sign in as the OSS Verify App" is not such a step either.
+          # In a run that this job holds, that step signs in only to withdraw the import check runs of the head that
+          # the screen held. So the screen judged the item, and this job writes the hold with the workflow's token,
+          # whatever that sign-in did. This job needs the post job, so the jobs that it reads always show that step.
+          # tried also gives cap for a review stopped at the hourly cap (below), which counts no try. Only signin stops
+          # the hold: this run has not finished, so tried can give running here. A run at the limit ran no job but the
+          # trust job: this job reads no jobs for it, and its hold counts no try. When the jobs cannot be read, nothing
+          # is held, so that a run that judged nothing is never held: this job fails instead.
           tried=""
           if [ "$ROUTE" != limit ]; then
             gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[] | @json' \
