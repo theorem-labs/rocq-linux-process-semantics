@@ -13859,6 +13859,21 @@ class TriggerTest(unittest.TestCase):
         # its actions: write is for a push to main and for a pull request of a branch of this repository alone
         self.assertNotIn("prune", ran["ci.yml"])
 
+    def test_the_review_tests_run_on_every_pull_request_whatever_files_it_changes(self):
+        """b4 (R7): the tests of the review workflow run on each pull request, so a pull request that changes only a
+        workflow file of the review (rescreen.yml, say) or only a file of .github/review/ runs them. Since main's #158
+        they have their own workflow, review-tests.yml, with no path selection: its pull_request trigger names no paths,
+        no paths-ignore and no branches, and neither test job has an if."""
+        on = REVIEW_TESTS["on"]
+        self.assertIn("pull_request", on)
+        self.assertEqual({k: v for k, v in (on["pull_request"] or {}).items()
+                          if k in ("paths", "paths-ignore", "branches", "branches-ignore")}, {})
+        for name in ("review-workflow-review", "review-workflow-screen"):
+            with self.subTest(job=name):
+                self.assertNotIn("if", REVIEW_TESTS["jobs"][name])
+        self.assertEqual({j["steps"][-1]["run"] for n, j in REVIEW_TESTS["jobs"].items() if n != "gate"},
+                         {"python3 .github/test_review.py", "python3 .github/test_screen.py"})
+
     def test_a_ci_run_of_another_file_or_event_or_that_did_not_run_gives_no_route(self):
         """The trust job takes a CI run only of ci.yml, of a pull request's event, that ran (its checks may have
         failed): a run of another file or event, or one that was cancelled, skipped, stale or held for a person's
