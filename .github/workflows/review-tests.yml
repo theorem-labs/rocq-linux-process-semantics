@@ -22,14 +22,16 @@ permissions:
   contents: read
 
 jobs:
-  # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed and
-  # who is screened first, which jobs run on each route, which comments the review reads, and what the posted comment
-  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). Each of the two test files
-  # runs in its own job, in parallel, so a failure of one does not hide the result of the other.
+  # The scripts of .github/workflows/review.yml, .github/workflows/rescreen.yml and .github/workflows/screen-start.yml,
+  # run against a stand-in gh (.github/test_review.py): who is reviewed and who is screened first, which jobs run on
+  # each route, which comments the review reads, and what the posted comment can notify or link; and its screen,
+  # against stand-in services (.github/test_screen.py). Each of the two test files runs in its own job, in parallel,
+  # so a failure of one does not hide the result of the other. test_review.py takes about 9 minutes on a runner, so its
+  # job has 20 (OSSV-221's architect, 2026-11-22 03:17Z, after a run that 10 minutes cancelled).
   review-workflow-review:
     name: 'Review workflow: test_review.py'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with:

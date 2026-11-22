@@ -192,6 +192,7 @@ APPS = WF["env"]["APPS"]
 VERIFY_APP_ID = int(WF["env"]["OSS_VERIFY_APP_ID"])
 VERIFY_APP_LOGIN = WF["env"]["OSS_VERIFY_APP_LOGIN"]
 CI = load(CI_WORKFLOW)
+REVIEW_TESTS = load(os.path.join(os.path.dirname(WORKFLOW), "review-tests.yml"))
 RESCREEN = load(RESCREEN_WORKFLOW)
 SCREEN_START = load(SCREEN_START_WORKFLOW)
 
@@ -13825,34 +13826,38 @@ class TriggerTest(unittest.TestCase):
                     self.assertNotIn("schedule", value.get("if", ""), job)
 
     def test_no_job_holds_a_right_on_pull_request(self):
-        """R4 is about outside code: each job of ci.yml whose if can be true on a fork's pull_request has only read
-        permissions and reads no secret, and review.yml and rescreen.yml do not run on pull_request. A job that holds
-        a write permission (the prune job's actions: write, which #156 gave the pull request of a branch of this
-        repository, a writer's or the export's) runs on pull_request only when the head is a branch of this
-        repository, and reads no secret and has no id-token there either (OSSV-221's architect, 2026-11-22 22:58Z)."""
+        """R4 is about outside code: each job of the pull_request workflows (ci.yml and review-tests.yml) whose if can
+        be true on a fork's pull_request has only read permissions and reads no secret, and review.yml and rescreen.yml
+        do not run on pull_request. A job that holds a write permission (the prune job's actions: write, which #156 gave
+        the pull request of a branch of this repository, a writer's or the export's) runs on pull_request only when the
+        head is a branch of this repository, and reads no secret and has no id-token there either (OSSV-221's
+        architect, 2026-11-22 22:58Z)."""
         self.assertFalse({"pull_request", "pull_request_target"} & (set(triggers(WF)) | set(triggers(RESCREEN))))
-        self.assertIn("pull_request", triggers(CI))
-        self.assertNotIn("secrets", json.dumps({k: v for k, v in CI.items() if k != "jobs"}))
-        top = CI.get("permissions")
         fork = {"github.event_name": "pull_request", "github.ref": "refs/pull/7/merge", "github.repository": REPO,
                 "github.event.pull_request.head.repo.full_name": "mallory/model"}
         own = dict(fork, **{"github.event.pull_request.head.repo.full_name": REPO})
-        ran = set()
-        for name, job in CI["jobs"].items():
-            cond = job.get("if", "")
-            permissions = job.get("permissions", top)
-            with self.subTest(job=name):
-                if not cond or can_be_true(cond, fork):
-                    ran.add(name)
-                    self.assertIsInstance(permissions, dict)
-                    self.assertTrue(all(v in ("read", "none") for v in permissions.values()), permissions)
-                    self.assertNotIn("secrets", json.dumps(job))
-                elif can_be_true(cond, own):
-                    self.assertNotIn("secrets", json.dumps(job))
-                    self.assertNotIn("id-token", json.dumps(permissions))
-        self.assertIn("build", ran)
+        ran = {}
+        for workflow, wf in (("ci.yml", CI), ("review-tests.yml", REVIEW_TESTS)):
+            self.assertIn("pull_request", triggers(wf), workflow)
+            self.assertNotIn("secrets", json.dumps({k: v for k, v in wf.items() if k != "jobs"}), workflow)
+            top = wf.get("permissions")
+            ran[workflow] = set()
+            for name, job in wf["jobs"].items():
+                cond = job.get("if", "")
+                permissions = job.get("permissions", top)
+                with self.subTest(workflow=workflow, job=name):
+                    if not cond or can_be_true(cond, fork):
+                        ran[workflow].add(name)
+                        self.assertIsInstance(permissions, dict)
+                        self.assertTrue(all(v in ("read", "none") for v in permissions.values()), permissions)
+                        self.assertNotIn("secrets", json.dumps(job))
+                    elif can_be_true(cond, own):
+                        self.assertNotIn("secrets", json.dumps(job))
+                        self.assertNotIn("id-token", json.dumps(permissions))
+        self.assertIn("build", ran["ci.yml"])
+        self.assertIn("review-workflow-review", ran["review-tests.yml"])
         # its actions: write is for a push to main and for a pull request of a branch of this repository alone
-        self.assertNotIn("prune", ran)
+        self.assertNotIn("prune", ran["ci.yml"])
 
     def test_a_ci_run_of_another_file_or_event_or_that_did_not_run_gives_no_route(self):
         """The trust job takes a CI run only of ci.yml, of a pull request's event, that ran (its checks may have
@@ -17626,9 +17631,8 @@ class ImportCheckTest(ReaderRunner):
                               f"automated screen held {HEAD}.", logs)
                 said = f"the label comment records why an earlier run withdraws the import check runs of {HEAD}"
                 self.assertIn(f"#7 at {HEAD}: the decision on the import check is "
-                              + (f"screened ({said})." if goes else "withdrawn (the label comment records a "
-                                                                    "withdrawal, and no review or hold comment says "
-                                                                    "why)."), logs)
+                              + (f"screened ({said})." if goes else "withdrawn (no review or hold comment gives the "
+                                                                    "cause that the label comment names)."), logs)
                 edited = self.owe(got, relabel, comments)
                 if goes:
                     (cleared,) = edited
@@ -17863,7 +17867,7 @@ class ImportCheckTest(ReaderRunner):
         unposted = [review_of(HEAD, at=ago(200), run=70), label]
         for case, comments, decision, reason in (
                 ("a screened pass of run 70, older than the line", unposted, "withdrawn",
-                 "the label comment records a withdrawal, and no review or hold comment says why"),
+                 "no review or hold comment gives the cause that the label comment names"),
                 ("a screened pass of run 110, later than the line", [review_of(HEAD, at=ago(200), run=110), label],
                  "screened", said),
                 ("a pass by hand after a screened blocking finding",
