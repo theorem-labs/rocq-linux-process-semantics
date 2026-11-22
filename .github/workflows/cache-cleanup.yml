@@ -9,18 +9,30 @@
 # recently used entries, and on 2026-11-22 they did: with about four pull
 # requests' entries (0.5-0.9 GB each) the repository reached the limit, and
 # GitHub evicted main's 9.2 and 9.3 dune caches within the hour. Deleting a
-# closed pull request's entries at once keeps the space for main and the open
-# pull requests. This is GitHub's documented clean-up (docs.github.com,
-# "Dependency caching", "Force deleting cache entries").
+# closed pull request's entries keeps the space for main and the open pull
+# requests. This is GitHub's documented clean-up (docs.github.com, "Managing
+# caches", "Force deleting cache entries"), which lists up to 100 entries.
+#
+# A CI run of the pull request can still be running when it closes, and save
+# after the clean-up. So this workflow joins that run's concurrency group,
+# `CI-refs/pull/<n>/merge` (ci.yml's `${{ github.workflow }}-${{ github.ref }}`
+# for a pull request), with cancel-in-progress: starting the clean-up cancels
+# the pull request's running CI run first. The group names the pull request's
+# own ref, so it can never cancel a run of main. If ci.yml's name or group
+# changes, this group must change with it.
 #
 # It checks out nothing and runs no code of the pull request. A fork's pull
-# request saves no cache (ci.yml), and its token could not delete one, so the
-# job runs for pull requests from this repository's branches only.
+# request saves no dune cache (ci.yml), and its token could not delete one, so
+# the job runs for pull requests from this repository's branches only.
 name: Cache clean-up
 
 on:
   pull_request:
     types: [closed]
+
+concurrency:
+  group: CI-refs/pull/${{ github.event.pull_request.number }}/merge
+  cancel-in-progress: true
 
 permissions: {}
 
@@ -33,7 +45,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Delete every cache on refs/pull/<n>/merge
+      - name: Delete the caches on refs/pull/<n>/merge (up to 100)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
