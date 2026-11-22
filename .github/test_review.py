@@ -10722,6 +10722,21 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "answer-post")]), out)
 
+    def test_an_answer_run_that_its_trust_job_stopped_settles_its_comment(self):
+        """OSSV-221's architect, 2026-11-22 14:00Z: a run whose trust job succeeded and stopped it settles its name; the
+        pass starts that name again only when a new head, comment or hold gives a new one. Comment 900 of mallory on
+        #7 waits for an answer, and the answer run of it ("answer #7 for 900 of mallory") was stopped by its trust job,
+        an hour ago or a minute ago: the pass starts no answer run of comment 900. Else it starts one at each of its
+        runs, with no bound."""
+        for made in (70, 6):
+            with self.subTest(made=made):
+                self.tearDown()
+                self.setUp()
+                self.item(comments=[self.REPLIED, said(900, 900)])
+                self.ran(10, "answer #7 for 900 of mallory", made=made, jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, []), out)
+
     def test_an_answer_whose_screen_ran_out_of_time_is_a_try_and_review_tries_of_them_stop_it(self):
         """Round 16, part 2, item 4 (OSSV-221's architect, 2026-11-22 06:21Z, residual (b)): the screen job of an answer
         run ran out of time, which GitHub gives as cancelled. No job after it runs: no review, no comment job, and no
