@@ -2339,7 +2339,8 @@ Definition tcp_soft_errnos : list Z :=
       [setsockopt_spec] declines the option table.
     An accepted connection has no packet out and no queued byte:
     [tcp_create_openreq_child] sets [snd_una], [snd_nxt] and [write_seq]
-    past the SYN its SYN-ACK acknowledged (tcp_minisocks.c:578-596), and
+    past the connection's own SYN, the one its SYN-ACK carried
+    ([treq->snt_isn] + 1, tcp_minisocks.c:578-596), and
     [inet_csk_init_xmit_timers] arms nothing
     (net/ipv4/inet_connection_sock.c:751-754).  Nor can the send that
     returns the error be the one that queued the bytes: a send that has
