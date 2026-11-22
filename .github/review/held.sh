@@ -4,8 +4,8 @@
 # - the trust job's step "Whether the author and the account that started the run have write access" of
 #   .github/workflows/review.yml. With these functions, the trust job of each run that the pass starts reads again why
 #   the pass started it;
-# - the hold job's step "Label it and say that it was held" of review.yml, which calls replaced_hold alone: the one rule
-#   of each writer of a hold comment.
+# - the hold job's step "Label it and say that it was held" of review.yml, which reads try_rule, the one rule of what
+#   counts as a try of a run, and calls replaced_hold, the one rule of each writer of a hold comment.
 # Before each of the first two steps, its job checks out this file alone, at the commit whose workflow file runs
 # (github.sha, a commit of main). The hold job checks out main's .github/. So a file of main runs, and never a file of a
 # pull request.
@@ -506,13 +506,44 @@ reach() {
     day=$(date -u -d "$day +1 day" +%Y-%m-%d)
   done
 }
-# facts <run>: what the jobs of <run> show, read once: "<signin> <screen> <post> <settled> <early> <reviewed>
-# <commented> <held> <posted> <answered> <counts>", - for none. signin: a step whose name starts with "Sign in"
-# failed in a job of the run, which so judged nothing. screen: the conclusion of its screen job. post: the conclusion
-# of its post job, signin for one that failed at such a step and failure for one that failed at another (a write of
-# the App, say). settled: its post job approved held runs or recorded the import check run. early: stopped when
-# its trust job stopped it (the job was skipped, or every job after it was), conflict when the comment job
-# alone ran after it (the task conflict). reviewed: signin when its review job failed at such a step.
+# try_rule: the start of a jq filter that defines tried, the one rule of whether a run counts as a try of its work (D19
+# and R10). facts reads it for each run that the functions below read, and the hold job reads it for its own run. Its
+# input is the jobs of one attempt of a run, an array as GitHub lists them. judges_nothing gives the name of each failed
+# step that signs in so that the run can judge the item. These steps are each step whose name starts with "Sign in" in
+# the screen job or in the review job, and the post job's "Sign in as the OSS Verify App to approve". tried gives the
+# first word of these that applies:
+# - signin when such a step failed: the run judged nothing of the item, and counts no try;
+# - limit when the trust job stopped the run at OUTSIDE_HOURLY_LIMIT: after the trust job, only the hold job ran, and
+#   each other job (at least one) was skipped. The run counts no try;
+# - cap when the review job's step "Hold at the hourly cap" failed: the run stopped at the hourly cap of the reviews,
+#   before the model ran, and counts no try. The limit and the cap bound the retries of such runs;
+# - running while a job of the run has not finished: the run counts no try yet;
+# - try for every other outcome. These include a failure of the post job's "Sign in as the OSS Verify App", the sign-in
+#   for the App's writes of the import check run and of a catch-up. They also include a job that failed or was
+#   cancelled, and an outcome that this rule does not name.
+# shellcheck disable=SC2016 # $job, $t and $others are jq's
+try_rule='def judges_nothing: .[] | (.name // "") as $job | .steps[]?
+    | select(.conclusion == "failure" and ((.name // "") | startswith("Sign in"))
+             and (($job | test("^(screen|review)( |$)"))
+                  or ($job == "post" and .name == "Sign in as the OSS Verify App to approve")))
+    | .name;
+  def tried: (map(select(.name == "trust")) | first) as $t
+    | map(select(.name != "trust" and .name != "rescreen" and .name != "hold")) as $others
+    | if any(judges_nothing; true) then "signin"
+      elif ($t.conclusion // "") == "success" and any(.[]; .name == "hold" and .conclusion != "skipped")
+           and ($others | length) > 0 and all($others[]; .conclusion == "skipped") then "limit"
+      elif any(.[] | select((.name // "") | test("^review( |$)")) | .steps[]?;
+               .name == "Hold at the hourly cap" and .conclusion == "failure") then "cap"
+      elif any(.[]; .status | IN("queued", "in_progress", "waiting", "requested", "pending")) then "running"
+      else "try" end; '
+# facts <run>: what the jobs of <run> show, read once: "<tried> <screen> <post> <settled> <early> <reviewed>
+# <commented> <held> <posted> <answered> <counts>", - for none. tried: whether the run counts a try of its work, as the
+# one rule of every reader gives it (try_rule): signin, limit, cap, running or try. screen: the conclusion of its screen
+# job. post: the conclusion of its post job, signin for one that failed at a step whose name starts with "Sign in" and
+# failure for one that failed at another (a write of the App, say). settled: its post job approved held runs or recorded
+# the import check run. early: stopped when its trust job stopped it (the job was skipped, or every job after it was),
+# conflict when the comment job alone ran after it (the task conflict). reviewed: signin when its review job failed at a
+# step whose name starts with "Sign in".
 # commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
 # draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job
 # left its answer to a later run (its step of that name ran): another run answered a comment of that answer
@@ -527,11 +558,11 @@ reach() {
 facts() {
   local file=$seen/jobs-$1
   jobs_of "$1" || return 1
-  jq -rs 'def signed_out:
+  jq -rs "$try_rule"'def signed_out:
       any(.steps[]?; ((.name // "") | startswith("Sign in")) and .conclusion == "failure");
     (map(select(.name == "trust")) | first) as $t | (map(select(.name == "post")) | first) as $p
     | map(select(.name != "trust" and .name != "rescreen")) as $rest
-    | [(if any(.[]; signed_out) then "signin" else "-" end),
+    | [tried,
        ((map(select(.name | test("^screen( |$)"))) | first | .conclusion) // "-"),
        (if $p == null then "-" elif $p.conclusion != "failure" then ($p.conclusion // "running")
         elif ($p | signed_out) then "signin" else "failure" end),
@@ -755,15 +786,19 @@ left_stopped() {
     "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
 }
 # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
-# whose post job succeeded, how many failed in the post job at a step that is not a sign-in (at most
-# REVIEW_TRIES): each counts a try of the head.
+# whose post job succeeded, how many had a post job that ran and did not succeed, and count a try (tried, of facts).
+# Such a post job failed at a write of the App or at a sign-in, or was cancelled, or ended in a way that this does not
+# name. A failed "Sign in as the OSS Verify App to approve" counts no try (R10), and a failed "Sign in as the OSS Verify
+# App" counts one. At most REVIEW_TRIES: each counts a try of the head.
 failures() {
-  local n=0 run f post
+  local n=0 run f tried post
   while read -r _ _ run; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read." >&2; return 1; }
-    read -r _ _ post _ <<< "$f"
+    read -r tried _ post _ <<< "$f"
     [ "$post" != success ] || break
-    [ "$post" != failure ] || n=$((n + 1))
+    if [ "$tried" = try ] && [ "$post" != - ] && [ "$post" != skipped ]; then
+      n=$((n + 1))
+    fi
     (( n < REVIEW_TRIES )) || break
   done < <(runs_of "$1" "$head" | sort -r)
   echo "$n"
@@ -795,14 +830,15 @@ due_held() {
 # approved held runs or recorded the import check run, and no comment job that posted (its review, its answer
 # or the label comment of its draft; not the comment on a merge conflict). Each other run of its task since
 # the hold, after the newest run that settled it, is a try that settled nothing (a review's hold is taken again
-# as a rescreen, and counts the rescreens and the reviews), but a run that ended at a failed step whose name
-# starts with "Sign in": that run judged nothing, counts no try, and the work is taken again (D19). A run that
-# settled the hold is no try: so a held run made after an approval gets REVIEW_TRIES tries of its own. After
-# REVIEW_TRIES tries (stopped), or while the newest run of its task is under an hour old, it is not started.
+# as a rescreen, and counts the rescreens and the reviews), but a run that counts no try (tried, of facts): a
+# sign-in that judges nothing failed in it (D19), or OUTSIDE_HOURLY_LIMIT or the hourly cap stopped it before any work.
+# Then the work is taken again. A run that settled the hold is no try: so a held run made after an approval gets
+# REVIEW_TRIES tries of its own. After REVIEW_TRIES tries (stopped), or while the newest run of its task is under an
+# hour old, it is not started.
 # retaken holds the task of each hold that this takes, which the other reasons leave to it.
 held_work() {
   local task=$h_task pattern since tries=0 newest="" created run latest="" f who from
-  local signin="" settled="" early="" commented="" ended="" settler="" how="" posted="" answered=""
+  local tried="" settled="" early="" commented="" ended="" settler="" how="" posted="" answered=""
   retaken+=" $task"
   [[ $h_at =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
     || { echo "::error::#$number: its hold has no time."; return 1; }
@@ -837,12 +873,12 @@ held_work() {
   # Each run of the task since the hold, oldest first: the facts of the newest stay. A run that settled the hold
   # ends the count of the runs before it (how: finished when its comment job posted, refused when the fresh reader
   # refused its review or its answer, so that the step that posts it was skipped, else started, as its post job
-  # approved held runs or recorded the import check run), and each later run but one that could not sign in counts a
-  # try.
+  # approved held runs or recorded the import check run), and each later run counts a try when the one rule says so
+  # (tried).
   while read -r created _ run; do
     [ -n "${run:-}" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r signin _ _ settled early _ commented _ posted answered _ <<< "$f"
+    read -r tried _ _ settled early _ commented _ posted answered _ <<< "$f"
     newest=$created latest=$run ended=""
     if [ "$settled" = settled ] || { [ "$commented" = success ] && [ "$early" = - ]; }; then
       ended=1 settler=$run tries=0 how=started
@@ -853,7 +889,7 @@ held_work() {
           answer) [ "$answered" != skipped ] || how=refused ;;
         esac
       fi
-    elif [ "$signin" != signin ]; then
+    elif [ "$tried" = try ]; then
       tries=$((tries + 1))
     fi
   done <<< "$since"
@@ -878,7 +914,7 @@ held_work() {
     if (( tries > 0 )); then
       echo "#$number: $tries runs of $task $from settled nothing; trying again."
     else
-      echo "#$number: each run of $task $from could not sign in, which counts no try; trying again."
+      echo "#$number: each run of $task $from counts no try (a failed sign-in, the limit or the cap); trying again."
     fi
   fi
   who=$(held_account "$h_origin" "$author") || { echo "::error::run $h_origin could not be read."; return 1; }
@@ -912,14 +948,14 @@ answer_stopped() {
 # over 15 minutes old, on an issue only after its first reply posted. The newest run that names the comment,
 # of its own event (issue_comment) or of workflow_dispatch, took it, but one that its trust job stopped or that left its
 # answer to a later run (another run answered a comment of it first), and but one that posted nothing of its
-# own: it ended at a failed sign-in, its comment job failed or was cancelled (a GitHub error on the post, say,
-# for which no hold job runs), or its hold job held it. Once for each comment, then
+# own: a sign-in that judges nothing failed in it (tried, of facts), its comment job failed or was cancelled (a GitHub
+# error on the post, say, for which no hold job runs), or its hold job held it. Once for each comment, then
 # once an hour while the newest run of that comment posted nothing so. After REVIEW_TRIES runs of the comment
 # whose comment job failed or was cancelled, the answer is not tried again (answer_stopped): each of them ran
 # the screen and the model. A hold of an answer that is tried again leaves the comments to that hold
 # (due_held), which counts its tries.
 due_answer() {
-  local at id runs created ended run f signin early commented held tries=0
+  local at id runs created ended run f tried early commented held tries=0
   if [ "$kind" = issue ]; then
     marks_of || return 1
     grep -qx replied <<< "$marks" || return 0
@@ -937,7 +973,7 @@ due_answer() {
   read -r created ended run <<< "$(tail -n 1 <<< "$runs")"
   if [ -n "${run:-}" ]; then
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r signin _ _ _ early _ commented held _ <<< "$f"
+    read -r tried _ _ _ early _ commented held _ <<< "$f"
     if [[ $commented == failure || $commented == cancelled ]]; then
       while read -r _ _ run; do
         f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
@@ -949,7 +985,7 @@ due_answer() {
         return 0
       fi
     fi
-    if (( tries > 0 )) || [[ $signin == signin || $held == held ]]; then
+    if (( tries > 0 )) || [[ $tried == signin || $held == held ]]; then
       if [[ ! $ended < $hour ]]; then
         echo "#$number: run $run of comment $id posted nothing (a failed sign-in, a failed comment job, or a" \
           "hold), less than an hour ago: tried again later."
@@ -987,13 +1023,15 @@ due_draft() {
 # head branch (held_of and held_at), while no approval run screened the head with a verdict since the newest
 # held run: its screen job passed and its post job did not fail (by the App's retry, one that failed leaves no
 # verdict), or a hold that is not tried again, the newest of its work, names the head. Once an hour after the
-# newest approval run of the head. A post job that failed at a step that is not a sign-in counts a try of the
-# head; after REVIEW_TRIES of them, the head is not tried again (head_stopped). A hold of an approval that is
-# tried again leaves it to that hold (due_held). Never for a head that the label comment records as one that
+# newest approval run of the head. When that run counts a try (tried, of facts), the approval runs of the head whose
+# post job did not succeed count the tries of the head (failures): a failed "Sign in as the OSS Verify App to approve"
+# counts none (R10), and a failed "Sign in as the OSS Verify App" or a failed write of the App counts one. After
+# REVIEW_TRIES of them, the head is not tried again (head_stopped). A hold of an approval that is tried again leaves it
+# to that hold (due_held). Never for a head that the label comment records as one that
 # changes a file under .github/ (head_marks, steered), or as one that the screen passed while the environment
 # post held no key of the OSS Verify App (no_key_of): the post job approved no run of such a head.
 due_approve() {
-  local list n last created ended run f screen post tries keyless
+  local list n last created ended run f tried screen post tries keyless
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
   list=$(held_at "$head" "${pr_repo[$number]:-0}" "${pr_ref[$number]:--}") \
     || { echo "::error::the runs of $head could not be read."; return 1; }
@@ -1025,12 +1063,12 @@ due_approve() {
     fi
     if [[ ! $created < $last ]]; then
       f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-      read -r _ screen post _ <<< "$f"
+      read -r tried screen post _ <<< "$f"
       if [ "$screen" = success ] && [ "$post" != failure ] && [ "$post" != signin ]; then
         echo "#$number: run $run screened $head with a verdict."
         return 0
       fi
-      if [ "$post" = failure ]; then
+      if [ "$tried" = try ]; then
         tries=$(failures approve) || return 1
         if (( tries >= REVIEW_TRIES )); then
           head_stopped approval "$tries"
@@ -1044,14 +1082,16 @@ due_approve() {
 # due_retry <tasks> <task> <work>: the App's retry. When the post job of the newest run of the head of #number
 # of a task of <tasks> failed, at a sign-in or at a write of the App, the head is due <task> again, once an
 # hour after that run ended. A CI run that its trust job stopped is not that newest run: it posted nothing,
-# and it can be the run of another pull request of the head (one into another branch). A post job that
-# failed at a step that is not a sign-in counts a try of the head; after REVIEW_TRIES of them, the automated
-# <work> of the head is not tried again (head_stopped <work>).
+# and it can be the run of another pull request of the head (one into another branch). When that newest run counts a
+# try (tried, of facts), the runs of the head whose post job did not succeed count the tries of the head (failures): a
+# failed "Sign in as the OSS Verify App to approve" counts none (R10), and a failed "Sign in as the OSS Verify App" or a
+# failed write of the App counts one. After REVIEW_TRIES of them, the automated <work> of the head is not tried again
+# (head_stopped <work>).
 due_retry() {
-  local created ended run event f post early tries
+  local created ended run event f tried post early tries
   while read -r created ended run event; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r _ _ post _ early _ <<< "$f"
+    read -r tried _ post _ early _ <<< "$f"
     [ "$event" = workflow_run ] && [ "$early" = stopped ] || break
   done < <(awk -v n="$number" -v re="^($1)\$" -v h="$head" '$7 == n && $8 ~ re && $9 == h {
     print $2, $3, $1, $6 }' "$seen/runs" | sort -r)
@@ -1061,7 +1101,7 @@ due_retry() {
     echo "#$number: the post job of run $run failed, less than an hour ago: tried again later."
     return 0
   fi
-  if [ "$post" = failure ]; then
+  if [ "$tried" = try ]; then
     tries=$(failures "$1") || return 1
     if (( tries >= REVIEW_TRIES )); then
       head_stopped "$3" "$tries"
@@ -1216,23 +1256,23 @@ rerun() {
 # due_old: the review of the head of an outside pull request whose review is in the form of before the move
 # off pull_request_target, and none of now, under the CI conditions of the catch-up: a review run of that
 # head, which reviews it from the API and closes and reopens nothing. Once for each head, and again an hour
-# after each run of it that posted nothing of its own: one that ended at a failed sign-in (the failed jobs of
-# that run when its screen passed and its review could not sign in, by rerun, else a new run), and one whose
-# comment job failed or was cancelled (a GitHub error on the post, say, for which no hold job runs). After
-# REVIEW_TRIES runs of the head whose comment job failed so, the head is not tried again (head_stopped). A
-# hold that is tried again leaves it to that hold.
+# after each run of it that posted nothing of its own: one in which a sign-in that judges nothing failed (tried, of
+# facts; the failed jobs of that run when its screen passed and its review could not sign in, by rerun, else a new
+# run), and one whose comment job failed or was cancelled (a GitHub error on the post, say, for which no hold job
+# runs). After REVIEW_TRIES runs of the head whose comment job failed so, the head is not tried again (head_stopped).
+# A hold that is tried again leaves it to that hold.
 due_old() {
-  local created ended run f signin commented last="" latest="" known="" tries=0
+  local created ended run f tried commented last="" latest="" known="" tries=0
   [ "$review" = old ] && [ -z "$retaken" ] || return 0
   ci_head || return 1
   ci_over || return 0
   while read -r created ended run; do
     [ -n "${run:-}" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r signin _ _ _ _ _ commented _ <<< "$f"
+    read -r tried _ _ _ _ _ commented _ <<< "$f"
     if [[ $commented == failure || $commented == cancelled ]]; then
       tries=$((tries + 1))
-    elif [ "$signin" != signin ]; then
+    elif [ "$tried" != signin ]; then
       echo "#$number: run $run took the review of $head."
       return 0
     fi
@@ -1259,14 +1299,14 @@ due_old() {
 # could not sign in (rerun), else a new run. Not when the post job of that newest run failed: the App's retry
 # takes it. A CI run that its trust job stopped reviewed nothing, and can be the run of another pull request
 # of the head (one into another branch): it is never that newest run, so it holds back no re-run and no
-# review. After REVIEW_TRIES workflow_dispatch review runs of the head that ended with no failed sign-in and gave
-# no conflict, the head is not tried again (head_stopped). The review of an outsider's pull request counts on its
+# review. After REVIEW_TRIES workflow_dispatch review runs of the head that count a try (tried, of facts) and gave no
+# conflict, the head is not tried again (head_stopped). The review of an outsider's pull request counts on its
 # author. The review of a writer's pull request counts on the account that started the newest CI run of the
 # head (pusher), when that account has no write access and is not one of the APPS: the run's name then ends
 # with " of <login>", and its trust job screens it first, on the limit of that account, as the trust job of
 # that CI run's own event does.
 due_unreviewed() {
-  local list created ended run task event f signin post early all=true newest="" last="" tries=0
+  local list created ended run task event f tried post early all=true newest="" last="" tries=0
   local latest="" known="" met="" who=""
   [ -z "$retaken" ] || return 0
   list=$(awk -v n="$number" -v h="$head" '$7 == n && $9 == h { print $2, $3, $1, $8, $6 }' "$seen/runs" \
@@ -1289,9 +1329,9 @@ due_unreviewed() {
   fi
   while read -r created ended run task event; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r signin _ post _ early _ <<< "$f"
+    read -r tried _ post _ early _ <<< "$f"
     [[ $early == stopped || $early == conflict || $task == relabel ]] || all=false
-    if [[ $task == review && $event == workflow_dispatch && $signin != signin && $early != conflict ]]; then
+    if [[ $task == review && $event == workflow_dispatch && $tried == try && $early != conflict ]]; then
       tries=$((tries + 1))
     fi
     met=$ended
@@ -1485,8 +1525,8 @@ consider() {
 # a catchup run of it whose post job failed or was cancelled (the closing run), as the trust job tells it
 # (left_closed). Its workflow_dispatch runs are read back to the day before the close. It is due a catchup run,
 # which only reopens it, once an hour after the newest catchup run of it ended. Each catchup run since the
-# closing run counts, whatever its outcome, but one that failed at a sign-in: after REVIEW_TRIES of them it is
-# not tried again (left_stopped), and nothing more of it is read (gave_up).
+# closing run counts, whatever its outcome, but one that counts no try (tried, of facts): after REVIEW_TRIES of them it
+# is not tried again (left_stopped), and nothing more of it is read (gave_up).
 consider_closed() {
   local head="" given closing="" made="" created ended run started f post count=0 newest=""
   if [ -n "${running[$number]:-}" ]; then
@@ -1519,7 +1559,7 @@ consider_closed() {
     newest=$ended
     [ "$run" != "$closing" ] || continue
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    [ "${f%% *}" = signin ] || count=$((count + 1))
+    [ "${f%% *}" != try ] || count=$((count + 1))
   done < <(runs_of catchup "" workflow_dispatch)
   head=$(gh api "repos/$REPO/pulls/$number" --jq .head.sha) \
     || { echo "::error::pull request #$number could not be read."; return 1; }

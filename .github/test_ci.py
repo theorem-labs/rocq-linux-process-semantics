@@ -130,21 +130,28 @@ def main():
     s, k, f, c = "success", "skipped", "failure", "cancelled"
     #: name -> (CI must pass?, the results it judges)
     aggregates = [
-        ("prose only: all skipped", True, (s, "false", "false", k, k, k)),
-        ("the lanes ran and passed", True, (s, "true", "false", s, s, k)),
-        ("the review tests ran and passed", True, (s, "false", "true", k, k, s)),
-        ("everything passed", True, (s, "true", "true", s, s, s)),
-        ("review routed, failed", False, (s, "false", "true", k, k, f)),
-        ("review routed, skipped", False, (s, "false", "true", k, k, k)),
-        ("review routed, cancelled", False, (s, "true", "true", s, s, c)),
-        ("review not routed, ran", False, (s, "false", "false", k, k, s)),
-        ("lanes routed, build failed", False, (s, "true", "false", f, s, k)),
-        ("lanes routed, opam skipped", False, (s, "true", "false", s, k, k)),
-        ("lanes not routed, ran", False, (s, "false", "false", s, s, k)),
-        ("route failed", False, (f, "", "", k, k, k)),
-        ("route passed with no answer", False, (s, "", "", k, k, k)),
+        ("prose only: all skipped", True, (s, "false", "false", k, k, k, k)),
+        ("the lanes ran and passed", True, (s, "true", "false", s, s, k, k)),
+        ("the review tests ran and passed", True, (s, "false", "true", k, k, s, s)),
+        ("everything passed", True, (s, "true", "true", s, s, s, s)),
+        ("review routed, test_review failed", False, (s, "false", "true", k, k, f, s)),
+        ("review routed, test_screen failed", False, (s, "false", "true", k, k, s, f)),
+        ("review routed, test_review skipped", False, (s, "false", "true", k, k, k, s)),
+        ("review routed, test_screen skipped", False, (s, "false", "true", k, k, s, k)),
+        ("review routed, both skipped", False, (s, "false", "true", k, k, k, k)),
+        ("review routed, test_review cancelled", False, (s, "true", "true", s, s, c, s)),
+        ("review routed, test_screen cancelled", False, (s, "true", "true", s, s, s, c)),
+        ("review not routed, both ran", False, (s, "false", "false", k, k, s, s)),
+        ("review not routed, test_review ran", False, (s, "false", "false", k, k, s, k)),
+        ("review not routed, test_screen ran", False, (s, "false", "false", k, k, k, s)),
+        ("lanes routed, build failed", False, (s, "true", "false", f, s, k, k)),
+        ("lanes routed, opam skipped", False, (s, "true", "false", s, k, k, k)),
+        ("lanes not routed, ran", False, (s, "false", "false", s, s, k, k)),
+        ("route failed", False, (f, "", "", k, k, k, k)),
+        ("route passed with no answer", False, (s, "", "", k, k, k, k)),
     ]
-    names = ("ROUTE", "BUILD_ROUTED", "REVIEW_ROUTED", "BUILD", "OPAM", "REVIEW_WORKFLOW")
+    names = ("ROUTE", "BUILD_ROUTED", "REVIEW_ROUTED", "BUILD", "OPAM", "REVIEW_WORKFLOW_REVIEW",
+             "REVIEW_WORKFLOW_SCREEN")
     for name, passes, results in aggregates:
         rc = subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", CI],
                             env=dict(os.environ, **dict(zip(names, results))),

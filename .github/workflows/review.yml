@@ -81,10 +81,11 @@
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
 #   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
-#   hold comment says that it is not tried again; a run that ended at a failed sign-in counts no try. The review, the
-#   answer, the draft and the approval of an item each have their own hold comment, so that a hold of one never takes
-#   the place of the hold of another. The rescreen pass (rescreen.yml) runs at each completed CI run, each push to
-#   main, each new or reopened issue, and by hand. It lists the open pull requests and issues labelled review-held,
+#   hold comment says that it is not tried again. A run counts no try when a sign-in that judges nothing failed in it,
+#   or when the limit or the cap stopped it before any work (.github/review/held.sh, try_rule). The review, the answer,
+#   the draft and the approval of an item each have their own hold comment, so that a hold of one never takes the place
+#   of the hold of another. The rescreen pass (rescreen.yml) runs at each completed CI run, each push to main, each new
+#   or reopened issue, and by hand. It lists the open pull requests and issues labelled review-held,
 #   and for each of those works whose newest hold comment is such a hold, not the screen's, and is over an hour old,
 #   it starts this workflow with the task that the marker of the hold names: the
 #   answer of the comment that it names (-f task=answer
@@ -255,9 +256,9 @@
 # token, the Claude token and git's own files, nor /proc. It can run nothing and write nothing. The screen job runs
 # only .github/screen.py from main, and the review job runs only .github/review/trim.py and .github/review/rules.py
 # from main, each after Claude. The post, comment and hold jobs check out main's .github/ alone, and run only
-# .github/review/rules.py from it. The hold job also sources .github/review/held.sh from it, for the one rule of each
-# writer of a hold comment (replaced_hold). The trust job checks out .github/review/held.sh alone, at the commit of main
-# whose workflow file runs, and sources that file alone.
+# .github/review/rules.py from it. The hold job also sources .github/review/held.sh from it, for the one rule of what
+# counts as a try of a run (try_rule) and the one rule of each writer of a hold comment (replaced_hold). The trust job
+# checks out .github/review/held.sh alone, at the commit of main whose workflow file runs, and sources that file alone.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -4143,13 +4144,14 @@ jobs:
   # comment go on, as they are the hold's. Each hold of a pull request also names the head that the run read, in the
   # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops. A cancelled screen holds
   # nothing, nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
-  # Nor a run whose sign-in failed: a step whose name starts with "Sign in" failed in this attempt of the run, in any of
-  # its jobs. Such a run judged nothing of the item, so it gets no comment, no label and no try, and the rescreen pass
-  # takes the item again. The post job's "Sign in as the OSS Verify App" is not such a step here: the label step says
-  # why. The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this job,
-  # which reads this attempt's jobs first and stops. It needs the post job: before its label step, it records the
-  # withdrawal of import check runs that this run owes, as the comment job does, which does not run for a held screen.
-  # That record never makes a label comment: the label step writes the line for an item with none.
+  # Nor a run that judged nothing of the item, by the one rule of what counts as a try (held.sh try_rule): in this
+  # attempt of the run, a step whose name starts with "Sign in" failed in its screen job or in its review job, or its
+  # post job's "Sign in as the OSS Verify App to approve" failed. Such a run gets no comment, no label and no try, and
+  # the rescreen pass takes the item again. The post job's "Sign in as the OSS Verify App" is not such a step: the
+  # label step says why. The if below cannot see the steps of another job, so a screen job that failed at its sign-in
+  # starts this job, which reads this attempt's jobs first and stops. It needs the post job: before its label step, it
+  # records the withdrawal of import check runs that this run owes, as the comment job does, which does not run for a
+  # held screen. That record never makes a label comment: the label step writes the line for an item with none.
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -4229,8 +4231,8 @@ jobs:
       # which can fail. A record of an owed withdrawal never makes a label comment: for an item with none, rules.py
       # writes nothing (status 3), and this step gives the line to the label step (its output line), which gives it to
       # the label comment that its label call writes (marker=<line>). When the label step writes no label comment (it
-      # stops before its label call: a failed sign-in, a newer run, a stale hold, an answer's hold that is tried again,
-      # or an error), the line of an item with no label comment is not recorded.
+      # stops before its label call: a run that judged nothing (held.sh try_rule), a newer run, a stale hold, an
+      # answer's hold that is tried again, or an error), the line of an item with no label comment is not recorded.
       - name: Record a withdrawal that this run owes
         id: owed
         if: >-
@@ -4264,26 +4266,32 @@ jobs:
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ $RUN_ID =~ ^[1-9][0-9]*$ && $RUN_ATTEMPT =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id or attempt"; exit 1; }
           [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
+          # .github/review/held.sh, from main's checkout of .github/, for two rules: try_rule, of what counts as a try
+          # of a run (next), and replaced_hold, of each writer of a hold comment (below).
+          seen=$(mktemp -d -p "$RUNNER_TEMP")
+          source "$GITHUB_WORKSPACE/.github/review/held.sh"
           # Every step of this file that exists to get a token, or to show that the run can get one, has a name that
           # starts with "Sign in", and no other step has: the screen job's two, the review job's three, and the post
           # job's two. A new such step must be named so too, or this job would hold its failure as one of the item.
-          # When such a step failed in this attempt of the run, in any of its jobs, nothing of the item was judged: no
-          # comment, no label and no try, and the rescreen pass takes the item again. Not so for the post job's "Sign in
-          # as the OSS Verify App", which the read below leaves out. In a run that this job holds, that step signs in
-          # only to withdraw the import check runs of the head that the screen held. So the screen judged the item, and
-          # this job writes the hold with the workflow's token, whatever that sign-in did. This job needs the post job,
-          # so the jobs that it reads always show that step. A run at the limit ran no job but the trust job. The failed
-          # steps tell a review stopped at SCREENED_HOURLY_CAP too (below). When the jobs cannot be read, nothing is
-          # held, so that a run whose sign-in failed is never held: this job fails instead.
-          failed=""
+          # This attempt of the run judged nothing of the item when tried (try_rule) gives signin: a step whose name
+          # starts with "Sign in" failed in the screen job or in the review job, or the post job's "Sign in as the OSS
+          # Verify App to approve" failed. Then this job writes no comment and no label, and counts no try, and the
+          # rescreen pass takes the item again. The post job's "Sign in as the OSS Verify App" is not such a step. In a
+          # run that this job holds, that step signs in only to withdraw the import check runs of the head that the
+          # screen held. So the screen judged the item, and this job writes the hold with the workflow's token, whatever
+          # that sign-in did. This job needs the post job, so the jobs that it reads always show that step. tried also
+          # gives cap for a review stopped at the hourly cap (below), which counts no try. Only signin stops the hold:
+          # this run has not finished, so tried can give running here. A run at the limit ran no job but the trust job:
+          # this job reads no jobs for it, and its hold counts no try. When the jobs cannot be read, nothing is held, so
+          # that a run that judged nothing is never held: this job fails instead.
+          tried=""
           if [ "$ROUTE" != limit ]; then
-            # shellcheck disable=SC2016 # $job is jq's
-            failed=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
-              --jq '.jobs[] | .name as $job | .steps[]? | select(.conclusion == "failure")
-                | select($job != "post" or .name != "Sign in as the OSS Verify App") | .name') \
+            gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --jq '.jobs[] | @json' \
+              > "$seen/attempt" \
               || { echo "::error::the jobs of this run could not be read, so nothing is held: the rescreen workflow takes the item again."; exit 1; }
-            signin=$(grep -m 1 '^Sign in' <<< "$failed" || true)
-            if [ -n "$signin" ]; then
+            judged=$(jq -rs "$try_rule"'"\(tried) \([judges_nothing] | first // "")"' "$seen/attempt")
+            read -r tried signin <<< "$judged"
+            if [ "$tried" = signin ]; then
               line="#$NUMBER is not held: the step \"$signin\" failed in this run. This run writes no hold comment and no label, and counts no try. The rescreen workflow takes the item again at its next run."
               echo "$line"
               printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
@@ -4459,9 +4467,9 @@ jobs:
               why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
-            # Stopped at SCREENED_HOURLY_CAP: its step of that name failed, in this attempt of this run (failed, read
-            # above).
-            if grep -qxF 'Hold at the hourly cap' <<< "$failed"; then
+            # Stopped at SCREENED_HOURLY_CAP: tried (read above) gives cap, as the review job's step "Hold at the hourly
+            # cap" failed in this attempt of this run. Such a run counts no try (try_rule).
+            if [ "$tried" = cap ]; then
               kind=cap
               why="$again$from The automated screen passed $what. The workflow runs at most $SCREENED_HOURLY_CAP automated reviews and answers each hour for such accounts, and it already ran $SCREENED_HOURLY_CAP. $again_other"
             else
@@ -4526,15 +4534,11 @@ jobs:
           # hold that is tried again (review for a marker with no task), else the work of its title, as the trust job's
           # works gives it. A hold of other work stays as it is. A hold of the screen (fact screen_held) replaces a hold
           # of the screen of the same head, or one that is not the screen's. Any other hold never replaces a hold of the
-          # screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws). The step
-          # sources held.sh from main's checkout of .github/ for that rule alone, after its last read of failed, which
-          # held.sh sets too.
+          # screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws).
           work=review
           case $TASK in answer|draft|approve) work=$TASK ;; esac
           screen=false
           [ "$fact" != screen_held ] || screen=true
-          seen=$(mktemp -d -p "$RUNNER_TEMP")
-          source "$GITHUB_WORKSPACE/.github/review/held.sh"
           id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head") \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           if [ -n "$id" ]; then

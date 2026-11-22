@@ -11836,30 +11836,35 @@ class LeftClosedTest(Scheduled):
                 self.reopened(self.dispatched("catchup"))
 
     def test_after_review_tries_reopens_that_did_not_reopen_it_it_waits_on_theorem_and_gets_no_more(self):
-        """Each catchup run since the closing run counts, whatever its outcome (a trust job that refused it, a post job
-        that failed or was cancelled), but one that failed at a sign-in. Under REVIEW_TRIES of them, a reopen is
-        started; at REVIEW_TRIES, the item gets the hold comment that the catch-up could not reopen it and
-        waits-on-theorem with the step "Sami reopens the pull request", and the run fails. Then the schedule reads no
-        run of it and writes nothing, and the trust job refuses a catchup of it."""
-        self.closing(ago(600))
-        self.ran(60, self.TITLE, made=605, ended=595, jobs=[self.FAILED])
-        self.ran(61, self.TITLE, made=400, ended=398, jobs=self.stopped_jobs())
-        self.ran(62, self.TITLE, made=300, ended=295, jobs=[self.UNSIGNED])
-        self.ran(63, self.TITLE, made=200, ended=195, jobs=[self.FAILED])
-        rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
-        self.ran(64, self.TITLE, made=100, ended=95, jobs=[self.CANCELLED])
-        rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "reopen")]), out)
-        body = self.assertStopped("reopen", "Automated close and reopen held.", "The workflow closed this pull request "
-                                  "so that GitHub starts its checks. It could not reopen the pull request after "
-                                  f"{self.TRIES} tries.",
-                                  step_line="Sami reopens the pull request.")
-        self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body})
-        rc, out, runs = self.started()
-        self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
-        self.assertNotIn(f"repos/{REPO}/pulls/7", self.calls())
-        self.dispatched("catchup", want=False)
+        """Each catchup run since the closing run counts, whatever its outcome: a trust job that refused it, or a post
+        job that failed, could not sign in as the OSS Verify App, or was cancelled. A catchup run has no sign-in that
+        judges nothing, so each such run counts a try (OSSV-221's architect, 2026-11-22 04:30Z: held.sh try_rule).
+        Under REVIEW_TRIES of them, a reopen is started; at REVIEW_TRIES, the item gets the hold comment that the
+        catch-up could not reopen it and waits-on-theorem with the step "Sami reopens the pull request", and the run
+        fails. Then the schedule reads no run of it and writes nothing, and the trust job refuses a catchup of it."""
+        for case, last in (("could not sign in", self.UNSIGNED), ("cancelled", self.CANCELLED)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.closing(ago(600))
+                self.ran(60, self.TITLE, made=605, ended=595, jobs=[self.FAILED])
+                self.ran(61, self.TITLE, made=400, ended=398, jobs=self.stopped_jobs())
+                self.ran(62, self.TITLE, made=300, ended=295, jobs=[self.FAILED])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)
+                self.ran(63, self.TITLE, made=100, ended=95, jobs=[last])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "reopen")]), out)
+                body = self.assertStopped("reopen", "Automated close and reopen held.", "The workflow closed this pull "
+                                          "request so that GitHub starts its checks. It could not reopen the pull "
+                                          f"request after {self.TRIES} tries.",
+                                          step_line="Sami reopens the pull request.")
+                self.comments(7, {"id": 5, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                                  "body": body})
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
+                self.assertNotIn(f"repos/{REPO}/pulls/7", self.calls())
+                self.dispatched("catchup", want=False)
 
     def test_a_pull_request_closed_outside_every_catchup_run_or_by_someone_else_is_never_reopened(self):
         """The OSS Verify App closed it before the catchup run started, or after it ended; its author closed it; or the
@@ -11880,13 +11885,14 @@ class LeftClosedTest(Scheduled):
 
     def test_a_catch_up_left_closed_9_days_ago_with_only_sign_in_failures_since_is_reopened(self):
         """The closing run is older than the 8 days of the workflow_dispatch runs that the schedule reads: it reads back
-        one day at a time, each day once, to the day before the close. The catchup runs since then could not sign in,
-        which counts no try: the next catchup is started an hour after the newest ended, its trust job takes it, and
-        its post job reopens the pull request."""
+        one day at a time, each day once, to the day before the close. The two catchup runs since then could not sign
+        in as the OSS Verify App. Each counts a try (held.sh try_rule), and two are under REVIEW_TRIES: the next
+        catchup is started an hour after the newest ended, its trust job takes it, and its post job reopens the pull
+        request."""
         day = 24 * 60
         self.closing(ago(9 * day))
         self.ran(60, self.TITLE, made=9 * day + 5, ended=9 * day - 5, jobs=[self.FAILED])
-        for i, made in enumerate((3 * day, day, 70)):
+        for i, made in enumerate((3 * day, 70)):
             self.ran(61 + i, self.TITLE, made=made, ended=made - 5, jobs=[self.UNSIGNED])
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "catchup", "", HEAD, "")]), out)

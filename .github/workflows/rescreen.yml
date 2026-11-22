@@ -203,8 +203,9 @@ jobs:
   # catch-up, a conflict, a relabel and a stop screen nothing, run no model and count toward no limit and no cap. The
   # trust job of each run reads again from the API why this pass started it, and stops when the reason no longer holds.
   # The work that a hold names is tried up to REVIEW_TRIES times since the hold: each run of its task since the hold
-  # counts, as one that ended with neither a new hold nor a post, but a run that ended at a failed sign-in, which
-  # judged nothing and counts no try (D19). Each try waits until the newest run of the task is over an hour old, as the
+  # counts, as one that ended with neither a new hold nor a post, but a run that counts no try by the one rule of
+  # .github/review/held.sh (try_rule): a failed sign-in that judges nothing (D19), or a stop at the limit or the cap
+  # before any work. Each try waits until the newest run of the task is over an hour old, as the
   # first waits on the hold. Then a run of the task stop gives the item waits-on-theorem, with the same step for Sami,
   # and replaces the hold comment of that work with one that says that the work is not tried again, and this pass
   # fails for that run. A run of the task that had a post job that approved held runs or recorded the import check

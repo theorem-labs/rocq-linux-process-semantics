@@ -264,10 +264,23 @@ jobs:
   # The scripts of .github/workflows/review.yml, .github/workflows/rescreen.yml and .github/workflows/screen-start.yml,
   # run against a stand-in gh (.github/test_review.py): who is reviewed and who is screened first, which jobs run on
   # each route, which comments the review reads, and what the posted comment can notify or link; and its screen,
-  # against stand-in services (.github/test_screen.py). It runs when the route's `review` answer is true: a change to
-  # the review workflow's own files, or to this file.
-  review-workflow:
-    name: Review workflow
+  # against stand-in services (.github/test_screen.py). Each of the two test files runs in its own job, and the two jobs
+  # run in parallel. Both run when the route's `review` answer is true: a change to the review workflow's own files, or
+  # to this file.
+  review-workflow-review:
+    name: 'Review workflow: test_review.py'
+    needs: route
+    if: needs.route.outputs.review == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+      - run: python3 .github/test_review.py
+
+  review-workflow-screen:
+    name: 'Review workflow: test_screen.py'
     needs: route
     if: needs.route.outputs.review == 'true'
     runs-on: ubuntu-24.04
@@ -276,7 +289,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with:
           persist-credentials: false
-      - run: python3 .github/test_review.py
       - run: python3 .github/test_screen.py
 
   opam:
@@ -400,7 +412,7 @@ jobs:
   # route skipped counts as passed). All three Rocq lanes stay blocking.
   ci:
     name: CI
-    needs: [route, build, opam, review-workflow]
+    needs: [route, build, opam, review-workflow-review, review-workflow-screen]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -411,9 +423,11 @@ jobs:
           REVIEW_ROUTED: ${{ needs.route.outputs.review }}
           BUILD: ${{ needs.build.result }}
           OPAM: ${{ needs.opam.result }}
-          REVIEW_WORKFLOW: ${{ needs.review-workflow.result }}
+          REVIEW_WORKFLOW_REVIEW: ${{ needs.review-workflow-review.result }}
+          REVIEW_WORKFLOW_SCREEN: ${{ needs.review-workflow-screen.result }}
         run: |
-          echo "route=$ROUTE build-routed=$BUILD_ROUTED review-routed=$REVIEW_ROUTED build=$BUILD opam=$OPAM review-workflow=$REVIEW_WORKFLOW"
+          echo "route=$ROUTE build-routed=$BUILD_ROUTED review-routed=$REVIEW_ROUTED build=$BUILD opam=$OPAM" \
+            "review-workflow-review=$REVIEW_WORKFLOW_REVIEW review-workflow-screen=$REVIEW_WORKFLOW_SCREEN"
           [ "$ROUTE" = success ] || { echo "route did not succeed"; exit 1; }
           if [ "$BUILD_ROUTED" = true ]; then
             [ "$BUILD" = success ] && [ "$OPAM" = success ] || { echo "a lane did not pass"; exit 1; }
@@ -423,9 +437,11 @@ jobs:
             echo "the route decided nothing for the lanes"; exit 1
           fi
           if [ "$REVIEW_ROUTED" = true ]; then
-            [ "$REVIEW_WORKFLOW" = success ] || { echo "the review workflow's tests did not pass"; exit 1; }
+            [ "$REVIEW_WORKFLOW_REVIEW" = success ] && [ "$REVIEW_WORKFLOW_SCREEN" = success ] \
+              || { echo "the review workflow's tests did not pass"; exit 1; }
           elif [ "$REVIEW_ROUTED" = false ]; then
-            [ "$REVIEW_WORKFLOW" = skipped ] || { echo "unexpected review workflow result"; exit 1; }
+            [ "$REVIEW_WORKFLOW_REVIEW" = skipped ] && [ "$REVIEW_WORKFLOW_SCREEN" = skipped ] \
+              || { echo "unexpected review workflow result"; exit 1; }
           else
             echo "the route decided nothing for the review workflow"; exit 1
           fi
