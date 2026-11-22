@@ -13825,25 +13825,33 @@ class TriggerTest(unittest.TestCase):
                     self.assertNotIn("schedule", value.get("if", ""), job)
 
     def test_no_job_holds_a_right_on_pull_request(self):
-        """Each job of ci.yml whose if can be true on pull_request has only read permissions, and no job of these
-        workflows reads a secret or has id-token: write on pull_request: review.yml and rescreen.yml do not run on it."""
+        """R4 is about outside code: each job of ci.yml whose if can be true on a fork's pull_request has only read
+        permissions and reads no secret, and review.yml and rescreen.yml do not run on pull_request. A job that holds
+        a write permission (the prune job's actions: write, which #156 gave the pull request of a branch of this
+        repository, a writer's or the export's) runs on pull_request only when the head is a branch of this
+        repository, and reads no secret and has no id-token there either (OSSV-221's architect, 2026-11-22 22:58Z)."""
         self.assertFalse({"pull_request", "pull_request_target"} & (set(triggers(WF)) | set(triggers(RESCREEN))))
         self.assertIn("pull_request", triggers(CI))
         self.assertNotIn("secrets", json.dumps({k: v for k, v in CI.items() if k != "jobs"}))
         top = CI.get("permissions")
+        fork = {"github.event_name": "pull_request", "github.ref": "refs/pull/7/merge", "github.repository": REPO,
+                "github.event.pull_request.head.repo.full_name": "mallory/model"}
+        own = dict(fork, **{"github.event.pull_request.head.repo.full_name": REPO})
         ran = set()
         for name, job in CI["jobs"].items():
             cond = job.get("if", "")
-            if cond and not can_be_true(cond, {"github.event_name": "pull_request", "github.ref": "refs/pull/7/merge"}):
-                continue
-            ran.add(name)
+            permissions = job.get("permissions", top)
             with self.subTest(job=name):
-                permissions = job.get("permissions", top)
-                self.assertIsInstance(permissions, dict)
-                self.assertTrue(all(v in ("read", "none") for v in permissions.values()), permissions)
-                self.assertNotIn("secrets", json.dumps(job))
+                if not cond or can_be_true(cond, fork):
+                    ran.add(name)
+                    self.assertIsInstance(permissions, dict)
+                    self.assertTrue(all(v in ("read", "none") for v in permissions.values()), permissions)
+                    self.assertNotIn("secrets", json.dumps(job))
+                elif can_be_true(cond, own):
+                    self.assertNotIn("secrets", json.dumps(job))
+                    self.assertNotIn("id-token", json.dumps(permissions))
         self.assertIn("build", ran)
-        # its actions: write is for a push to main alone
+        # its actions: write is for a push to main and for a pull request of a branch of this repository alone
         self.assertNotIn("prune", ran)
 
     def test_a_ci_run_of_another_file_or_event_or_that_did_not_run_gives_no_route(self):
