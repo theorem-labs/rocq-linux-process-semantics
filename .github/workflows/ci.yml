@@ -150,9 +150,11 @@ jobs:
       # request's entries can hold whatever its own code wrote, and they serve
       # only that pull request, whose author already controls its workflow;
       # main's run reads main's scope alone. Fork pull requests and
-      # workflow_dispatch runs do not save. The prune job keeps one entry per
-      # lane on each ref that saves. When the `dev` image moves, its entries
-      # miss, and the cache is emptied if a plugin or a package changed.
+      # workflow_dispatch runs do not save. After each run's saves, the prune
+      # job deletes the older entries of each lane on that ref, best effort (a
+      # cancelled run can leave one until the next prune or GitHub's eviction).
+      # When the `dev` image moves, its entries miss, and the cache is emptied
+      # if a plugin or a package changed.
       - name: The dune cache key
         id: dune-key
         run: |
@@ -377,16 +379,16 @@ jobs:
           path: ~/.cache/dune
           key: ${{ steps.dune-key.outputs.key }}
 
-  # Each ref keeps one dune cache per lane and one for the opam job: after the
-  # saves, this job deletes the older caches of each on this run's ref (main,
-  # or the pull request's merge ref) (.github/cache-prune.sh says how). It
-  # alone holds `actions: write`, and it runs no code of a pull request: on a
-  # pull request it checks out main and reads the tree of the tested commit
-  # through the API. The lanes and the opam job, which build that code, keep
-  # the workflow's read-only token. It runs for pull requests from this
-  # repository's own branches only; a fork's token cannot delete. Each new key
-  # ends with the tree of the tested commit, so the job finds each family by
-  # that suffix.
+  # After the saves, this job deletes the older dune caches of each lane and of
+  # the opam job on this run's ref (main, or the pull request's merge ref), so
+  # each ref keeps about one per family (.github/cache-prune.sh says how). It
+  # alone holds `actions: write`, and it runs no checked-out file of a pull
+  # request: on a pull request it checks out main, runs main's script, and
+  # reads the tree of the tested commit through the API. The lanes and the
+  # opam job, which build that code, keep the workflow's read-only token. It
+  # runs for pull requests from this repository's own branches only; a fork's
+  # token cannot delete. Each new key ends with the tree of the tested commit,
+  # so the job finds each family by that suffix.
   prune:
     name: Prune the dune caches
     needs: [route, build, opam]
