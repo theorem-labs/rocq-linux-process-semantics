@@ -7803,7 +7803,8 @@ class AnswerFixTest(ReaderRunner):
                 rc, out, outputs = self.post_answer(got["body"], comments=[comment])
                 self.assertEqual((rc, outputs.get("other"), len(writes(self.api))), (0, other, posts), out)
                 ctx = dict(self.CTX, **{"env.POST_REVIEW": "true", "needs.trust.outputs.task": "answer",
-                                        "needs.review.outputs.fix": "{}", "steps.answer.outputs.other": other})
+                                        "needs.review.result": "success", "needs.review.outputs.fix": "{}",
+                                        "steps.answer.outputs.other": other})
                 self.assertEqual({name: bool(evaluate(step("comment", name)["if"], ctx))
                                   for name in (leave, self.POST_FIX, self.LABEL)},
                                  {leave: other == "true", self.POST_FIX: other != "true", self.LABEL: other != "true"})
