@@ -10521,6 +10521,36 @@ class ScheduleTest(Scheduled):
                            f"The workflow tried {self.TRIES} times to start the checks of the head commit {HEAD[:12]}, "
                            "and no try finished. The workflow does not try it again.")
 
+    def test_a_run_of_the_pass_that_its_trust_job_stopped_settles_its_name(self):
+        """OSSV-221's architect, 2026-11-22 14:00Z and 14:14Z: the pass's own workflow_dispatch run of a name, which its
+        trust job stopped as it decided that the name has no task, settles that name: the pass starts no run of it again
+        until a new head, comment or hold gives a new one. Not a run stopped as a duplicate of an earlier run of it
+        (test_an_approval_run_that_its_trust_job_stopped_counts_no_try), nor the event's own run (answer). For an
+        approval of HEAD, a draft of #7 and a rescreen of the limit hold of #7, the pass's run of that name was stopped
+        by its trust job 70 minutes ago: the next pass starts no run of that name. A held run of HEAD made after that
+        stop gives a new approval. Else the pass starts the same name each hour with no bound."""
+        approve = f"approve #7 at {HEAD} of mallory"
+        for case, want in (("approve", []), ("approve, a newer held run", [("7", "approve", "mallory", HEAD, "")]),
+                           ("draft", []), ("rescreen", [])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                if case.startswith("approve"):
+                    self.item(kind="pr")
+                    self.held_runs(made=30 if "newer" in case else 600)
+                    self.ran(10, approve, made=70, jobs=self.stopped_jobs())
+                elif case == "draft":
+                    self.item()
+                    self.ran(10, "draft #7 of mallory", made=70, jobs=self.stopped_jobs())
+                else:
+                    self.origin(50, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+                    self.item(kind="pr", labels=("review-held",),
+                              comments=[dict(limit_hold(50, at=ago(2000), tries=0, head=HEAD), id=5)])
+                    self.ci(ended=2100)
+                    self.ran(10, f"rescreen #7 at {HEAD} of mallory", made=70, jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+
     def test_an_approval_whose_post_job_ran_out_of_time_after_a_passed_screen_is_tried_up_to_review_tries(self):
         """Round 16, part 2, item 2 (OSSV-221's architect, 2026-11-22 06:21Z, residual (a)): an approve run of HEAD
         whose screen passed and whose post job ran out of time at the approval, which GitHub gives as cancelled,
