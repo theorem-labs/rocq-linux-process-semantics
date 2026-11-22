@@ -6,52 +6,37 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Each push to main gets its own group, so its run is never cancelled or
-# replaced: the next push is routed against this one, so a lost run would leave
-# this commit unchecked. A pull request's newer head cancels its older one.
+# One group per branch: a newer push to main, or a pull request's newer head,
+# cancels the run of the older one. Every job runs whole on every event, and
+# no job reads the previous tip of main any more (a route once did), so the
+# newer run checks all the older one would have. A cancelled run on main loses
+# only its cache save; the newer run saves.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  # Decides from this event's own diff which jobs run: against the base for a
-  # pull request, against the previous tip of main for a push (so every
-  # commit of a multi-commit push counts).
-  #
-  #   build    (the Rocq lanes and `opam install`) is false only when every
-  #            changed path is *.md, LICENSE or one of the review workflow's
-  #            own files below. Every other .github/ file stays an input:
-  #            the lanes run .github/check_assumptions.py.
-  #   review   (the review workflow's tests) is true when one of the review
-  #            workflow's own files changed: .github/workflows/review.yml,
-  #            .github/test_review.py, .github/test_screen.py,
-  #            .github/screen.py, .github/review.md. The tests read the
-  #            workflow and import the screen.
-  #
-  # It fails safe: no usable base, an empty diff or a change to this file
-  # runs every job. .github/test_ci.py runs this script and the `ci` job's on
-  # each case it lists first, so a wrong answer on a listed case fails `CI`.
-  route:
-    name: Route
+  # Every job runs on every event: this repository has no merge queue, so a
+  # pull request's run is the whole check of its change. A change that touches
+  # no Rocq source keeps the lanes short through dune's cache, not by skipping
+  # them. The tests of the review workflow have their own workflow,
+  # .github/workflows/review-tests.yml.
+  checks:
+    name: Conflict markers and the gates' tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    outputs:
-      build: ${{ steps.route.outputs.build }}
-      review: ${{ steps.route.outputs.review }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           persist-credentials: false
       # A merge conflict left in a file no compiler reads has no other gate.
       # README.md carried three markers through six landings, one red head,
       # one repair and two fully green CI runs; SCOPE.md carried two on a
-      # branch at the same time. Both are outside the Rocq lanes, and the
-      # route below skips those lanes entirely for a *.md-only change, so
-      # this runs here, before the routing decision, on every event.
+      # branch at the same time. Both are outside the Rocq lanes, which read
+      # no Markdown, so this job searches every tracked file.
       - name: No conflict markers
         run: |
           set -euo pipefail
@@ -65,55 +50,11 @@ jobs:
             exit 1
           fi
           echo "no conflict markers (searched every tracked file)"
-      # Here because this job always runs and no route can skip it.
-      - name: The route decides what it is meant to decide
+      - name: The gates decide what they are meant to decide
         run: python3 .github/test_ci.py
-      - id: route
-        env:
-          EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          everything() {
-            echo "$1; running everything."
-            { echo build=true; echo review=true; } >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-          case "$EVENT" in
-            pull_request) base="$PR_BASE"; range="$base...HEAD" ;;
-            push) base="$PUSH_BEFORE"; range="$base..HEAD" ;;
-            *) base="" ;;
-          esac
-          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ] \
-             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            everything "No usable base ($EVENT)"
-          fi
-          git diff --name-only --no-renames "$range" > "$RUNNER_TEMP/changed"
-          echo "Changed files:"; cat "$RUNNER_TEMP/changed"
-          # An empty diff said nothing, which is what a wrong base looks like.
-          [ -s "$RUNNER_TEMP/changed" ] || everything "The diff against $base is empty"
-          grep -qx '\.github/workflows/ci\.yml' "$RUNNER_TEMP/changed" \
-            && everything "This workflow changed"
-          review_files='^\.github/(workflows/review\.yml|test_review\.py|test_screen\.py|screen\.py|review\.md)$'
-          # grep answers 0 when it selects a line, 1 when it selects none, 2 or more on an error.
-          answer() {
-            rc=0; grep "$@" "$RUNNER_TEMP/changed" || rc=$?
-            case "$rc" in
-              0) echo true ;;
-              1) echo false ;;
-              *) echo "grep failed ($rc)" >&2; return 1 ;;
-            esac
-          }
-          build=$(answer -Eqv "(\.md$|^LICENSE$|$review_files)")
-          review=$(answer -Eq "$review_files")
-          echo "build=$build review=$review"
-          { echo "build=$build"; echo "review=$review"; } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build and check (Rocq ${{ matrix.rocq }})
-    needs: route
-    if: needs.route.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
@@ -137,11 +78,24 @@ jobs:
       # byte the same. They do not include the OCaml plugins rocq loads, so
       # .github/dune-cache-toolchain.sh empties the cache when the toolchain
       # changed. The key decides only which entries are on disk. It never
-      # decides which entry a rule uses, so it can fall back to a prefix. Only
-      # a push to main saves. A cache that a pull request saves serves that
-      # pull request alone, and it pushes main's caches out of the repository's
-      # 10 GB. When the `dev` image moves, its entries miss, and the cache is
-      # emptied if a plugin or a package changed.
+      # decides which entry a rule uses, so it can fall back to a prefix.
+      #
+      # A push to main, and a pull request from a branch of this repository,
+      # save when their exact key missed. GitHub scopes a cache to the ref that
+      # saved it: main's entries serve every run, a pull request's serve only
+      # that pull request's later runs (its restore looks in its own scope
+      # first, then main's). So the second push of a pull request rebuilds
+      # only what changed since its first, not its whole difference from main
+      # again: with only main saving, each of #153's 16 runs rebuilt 45-56
+      # minutes per lane, because main got one push that week. A pull
+      # request's entries can hold whatever its own code wrote, and they serve
+      # only that pull request, whose author already controls its workflow;
+      # main's run reads main's scope alone. Fork pull requests and
+      # workflow_dispatch runs do not save. After each run's saves, the prune
+      # job deletes the older entries of each lane on that ref, best effort (a
+      # cancelled run can leave one until the next prune or GitHub's eviction).
+      # When the `dev` image moves, its entries miss, and the cache is emptied
+      # if a plugin or a package changed.
       - name: The dune cache key
         id: dune-key
         run: |
@@ -252,33 +206,17 @@ jobs:
       # the same tree (a re-run, or a push that brings a tree back) does that,
       # and it builds cold. The next push of another tree saves again.
       - name: Save the dune cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dune-restore.outputs.cache-hit != 'true'
+        if: >-
+          ${{ steps.dune-restore.outputs.cache-hit != 'true'
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         uses: actions/cache/save@v4
         with:
           path: .dune-cache
           key: ${{ steps.dune-key.outputs.key }}
 
-  # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed and
-  # who is screened first, which jobs run on each route, which comments the review reads, and what the posted comment
-  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). It runs when the route's
-  # `review` answer is true: a change to the review workflow's own files, or to this file.
-  review-workflow:
-    name: Review workflow
-    needs: route
-    if: needs.route.outputs.review == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
-        with:
-          persist-credentials: false
-      - run: python3 .github/test_review.py
-      - run: python3 .github/test_screen.py
-
   opam:
     name: opam install
-    needs: route
-    if: needs.route.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 300
     # The same kind of dune cache as the build lanes (see the comment at their
@@ -354,22 +292,32 @@ jobs:
           du -sh ~/.cache/dune
 
       - name: Save the dune cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dune-restore.outputs.cache-hit != 'true'
+        if: >-
+          ${{ steps.dune-restore.outputs.cache-hit != 'true'
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/dune
           key: ${{ steps.dune-key.outputs.key }}
 
-  # Main keeps one dune cache per lane and one for the opam job: after the
-  # saves, this job deletes the older caches of each (.github/cache-prune.sh
-  # says how). It alone holds `actions: write`, and it runs no code of a pull
-  # request: the lanes and the opam job, which build that code, keep the
-  # workflow's read-only token. Each new key ends with the tree of this commit,
+  # After the saves, this job deletes the older dune caches of each lane and of
+  # the opam job on this run's ref (main, or the pull request's merge ref), so
+  # each ref keeps about one per family (.github/cache-prune.sh says how). It
+  # alone holds `actions: write`, and it runs no checked-out file of a pull
+  # request: on a pull request it checks out main, runs main's script, and
+  # reads the tree of the tested commit through the API. The lanes and the
+  # opam job, which build that code, keep the workflow's read-only token. It
+  # runs for pull requests from this repository's own branches only; a fork's
+  # token cannot delete. Each new key ends with the tree of the tested commit,
   # so the job finds each family by that suffix.
   prune:
     name: Prune the dune caches
-    needs: [route, build, opam]
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.route.outputs.build == 'true' }}
+    needs: [build, opam]
+    if: >-
+      ${{ !cancelled()
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+          || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -378,12 +326,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned: this job holds a write token)
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.repository.default_branch || github.sha }}
           persist-credentials: false
       - name: Delete the older caches of each lane
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
+          tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha) \
+            || { echo "::warning::could not read the tree of $GITHUB_SHA"; exit 0; }
           keys=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=dune-&ref=$GITHUB_REF&per_page=100" \
                    --jq ".actions_caches[].key | select(endswith(\"-$tree\"))") \
             || { echo "::warning::could not list the dune caches"; exit 0; }
@@ -391,37 +341,18 @@ jobs:
             bash .github/cache-prune.sh "${new%"$tree"}" "$new"
           done
 
-  # The one check to require: it always runs, and passes only when the route
-  # succeeded with a decision and every job it started passed (a job the
-  # route skipped counts as passed). All three Rocq lanes stay blocking.
+  # The one check to require: it always runs, and passes only when every job it
+  # needs succeeded. All three Rocq lanes stay blocking.
   ci:
     name: CI
-    needs: [route, build, opam, review-workflow]
+    needs: [checks, build, opam]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - env:
-          ROUTE: ${{ needs.route.result }}
-          BUILD_ROUTED: ${{ needs.route.outputs.build }}
-          REVIEW_ROUTED: ${{ needs.route.outputs.review }}
-          BUILD: ${{ needs.build.result }}
-          OPAM: ${{ needs.opam.result }}
-          REVIEW_WORKFLOW: ${{ needs.review-workflow.result }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "route=$ROUTE build-routed=$BUILD_ROUTED review-routed=$REVIEW_ROUTED build=$BUILD opam=$OPAM review-workflow=$REVIEW_WORKFLOW"
-          [ "$ROUTE" = success ] || { echo "route did not succeed"; exit 1; }
-          if [ "$BUILD_ROUTED" = true ]; then
-            [ "$BUILD" = success ] && [ "$OPAM" = success ] || { echo "a lane did not pass"; exit 1; }
-          elif [ "$BUILD_ROUTED" = false ]; then
-            [ "$BUILD" = skipped ] && [ "$OPAM" = skipped ] || { echo "unexpected lane result"; exit 1; }
-          else
-            echo "the route decided nothing for the lanes"; exit 1
-          fi
-          if [ "$REVIEW_ROUTED" = true ]; then
-            [ "$REVIEW_WORKFLOW" = success ] || { echo "the review workflow's tests did not pass"; exit 1; }
-          elif [ "$REVIEW_ROUTED" = false ]; then
-            [ "$REVIEW_WORKFLOW" = skipped ] || { echo "unexpected review workflow result"; exit 1; }
-          else
-            echo "the route decided nothing for the review workflow"; exit 1
-          fi
+          echo "$NEEDS" | jq -c 'map_values(.result)'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' > /dev/null \
+            || { echo "a job did not pass"; exit 1; }

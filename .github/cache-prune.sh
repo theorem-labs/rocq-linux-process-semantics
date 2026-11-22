@@ -4,12 +4,14 @@
 #
 #   .github/cache-prune.sh PREFIX NEW
 #
-# A workflow calls it on a push to main, after its save. A save that failed
-# logs only a warning, so the script deletes nothing when NEW is not there. Two
-# pushes to main can run at once and restore the same cache, so the script
-# deletes every older entry, not only the one this run restored. Then main
-# keeps one cache per prefix. Needs GH_TOKEN with `actions: write`. A failure
-# here never fails the job: the worst case is an old cache that GitHub evicts.
+# The prune job of ci.yml calls it after its saves: on a push to main, and on
+# a pull request from a branch of this repository, whose caches GitHub keeps
+# on the ref refs/pull/<n>/merge. A save that failed logs only a warning, so
+# the script deletes nothing when NEW is not there. Two runs on one ref can
+# restore the same cache, so the script deletes every older entry, not only
+# the one this run restored. Then each ref keeps one cache per prefix. Needs
+# GH_TOKEN with `actions: write`. A failure here never fails the job: the
+# worst case is an old cache that GitHub evicts.
 set -uo pipefail
 
 prefix=$1
