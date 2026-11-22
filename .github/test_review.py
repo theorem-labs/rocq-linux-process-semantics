@@ -16460,6 +16460,68 @@ class ImportCheckTest(ReaderRunner):
                     edited = self.owe(got, relabel, [screened, label]) or []
                     label = dict(label, body=edited[-1]) if edited else label
 
+    def test_a_relabel_records_nothing_after_a_withdrawal_whose_hold_comment_did_not_post(self):
+        """OSSV-221's architect, 2026-11-22 13:38Z, for the hold job: the screened CI run of mallory's #7 recorded check
+        run 901 on HEAD, and its screened pass (30) is #7's review comment. A rescreen of HEAD then has a screen that
+        holds it: its post job withdraws 901 (withdrawn names HEAD), and the hold job's step "Record a withdrawal that
+        this run owes" runs first. GitHub then refuses the post of the hold comment, so no hold of HEAD is on #7. A
+        later relabel of HEAD, as the rescreen pass starts one when REPO_PAIRS_IMPORT_PATHS changed (held.sh
+        due_variable), reads the screened pass as HEAD's newest screen result: it must record no check run on HEAD,
+        whose newest screen held it. The line <!-- withdraw-owed <head> screen --> stays until the hold posts."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(1))
+        got = self.judge(["README.md"], value=self.LPS, trust=rescreen, screen="held", event="workflow_dispatch",
+                         comments=[screened, old], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]), ("success", "", HEAD),
+                         self.logs)
+        # The hold job, as GitHub runs it: its step "Record a withdrawal that this run owes", then its label step, whose
+        # post of the hold comment GitHub refuses.
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(rescreen, named=HEAD).items()}
+        ctx.update({"github.run_id": "100", "github.run_attempt": "1", "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    "needs.review.result": "skipped", "needs.screen.result": "success",
+                    "needs.screen.outputs.verdict": "held", "needs.post.result": got["result"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        self.checkout()
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "pull_request": {}})
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/actions/runs/100/attempts/1/jobs", {"jobs": [
+            attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory")]})
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", {"workflow_runs": []})
+        self.serve_prs()
+        open(os.path.join(self.dir, "summary"), "w").close()
+        label, outcomes = old, {}
+        for name in ("Whether the screen of this run held the item in a review, a rescreen or an approval",
+                     "Record a withdrawal that this run owes", "Label it and say that it was held"):
+            s = step("hold", name)
+            self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
+            self.forget()
+            self.serve(f"repos/{REPO}/issues/7/comments", [screened, label])
+            if name == "Label it and say that it was held":
+                self.refuse_field(f"repos/{REPO}/issues/7/comments", "POST")
+            env = filled({**WF["env"], **JOBS["hold"]["env"], **s.get("env", {})}, ctx)
+            rc, out, outs = self.run_script(s["run"], GITHUB_STEP_SUMMARY=os.path.join(self.dir, "summary"),
+                                            **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+            self.logs.append(out)
+            outcomes[name] = rc
+            ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
+            edited = [b for _m, e, b in label_comments(self.api) if e.endswith("/40")]
+            label = dict(label, updated_at=ago(30), body=edited[-1]) if edited else label
+        self.assertNotEqual(outcomes["Label it and say that it was held"], 0, self.logs)
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_issues_7_comments.refuse"))
+        # No hold of HEAD is on #7. Two relabels in a row, as the rescreen pass starts one an hour after another while
+        # the variable changes: each one's comment job runs its step OWE, which takes the line out after a withdrawal.
+        for value in (self.LPS + "\nCHANGES.md", self.LPS + "\nNEWS.md"):
+            relabel = dict(self.RELABEL, started=ago(-1))
+            got = self.judge(["README.md"], value=value, trust=relabel, event="workflow_dispatch",
+                             comments=[screened, label], listed=[dict(listed, conclusion="neutral")])
+            self.assertNotRecorded(got)
+            self.assertNotEqual(got["post"].get("decision"), "record", self.logs)
+            edited = self.owe(got, relabel, [screened, label]) or []
+            label = dict(label, body=edited[-1]) if edited else label
+
     def test_an_owed_record_of_the_comment_job_makes_no_label_comment_and_the_label_step_writes_the_line(self):
         """The fresh reader of round 14, finding 1: a record of an owed withdrawal never makes a label comment. The
         screened CI run of mallory's #7 recorded check run 901 on HEAD, and #7 has no label comment. alice reviews HEAD
