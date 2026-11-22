@@ -11779,10 +11779,10 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
                 if why:
-                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}. Its label comment records that "
-                                  f"an earlier run did not finish the withdrawal of the import check runs of {HEAD}. "
-                                  f"So of the App's writes of {HEAD}, the rescreen pass tries again only the "
-                                  "withdrawal of the import check runs.", out)
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}. Its label comment records a "
+                                  f"withdrawal of the import check runs of {HEAD} that an earlier run owes. So of the "
+                                  f"App's writes of {HEAD}, the rescreen pass tries again only the withdrawal of the "
+                                  "import check runs.", out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
                                   "tried again.", out)
@@ -16262,7 +16262,7 @@ class ImportCheckTest(ReaderRunner):
         """The comment job's step OWE after the post job that judge ran gave got, with the trust job's outputs trust and
         #7's comments: the label comments that it posted or edited, or None when its if does not hold. Its if and its
         env read the post job's outputs whatever that job's result, as GitHub fills in the outputs of a job that failed
-        too (judge's got["post"])."""
+        too (judge's got["post"]). Its log joins self.logs."""
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"needs.trust.result": "success", "needs.post.result": got["result"],
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
@@ -16274,6 +16274,7 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
         rc, out, _ = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+        self.logs.append(out)
         self.assertEqual(rc, 0, out)
         return [body for _method, _endpoint, body in label_comments(self.api)]
 
@@ -16837,21 +16838,29 @@ class ImportCheckTest(ReaderRunner):
 
     def test_a_screen_hold_whose_post_job_did_not_withdraw_gets_the_line_from_the_hold_job(self):
         """Round 14, item 2 (OSSV-221's architect, 2026-11-21 14:43Z): the hold job writes the line
-        <!-- withdraw-owed <head> screen --> for a screen of its run that held the head, unless the post job's output
-        withdrawn names that head. The screen of a review or an approval of mallory's #7 holds HEAD, and its post job
-        gave no output: it failed before the step that owes, or the environment post holds no key. The hold job writes
-        the line. A post job that withdrew for HEAD takes the line out instead. An answer withdraws nothing (the
-        author-kind table), and a hold at the limit is no hold of the screen: no line for either."""
+        <!-- withdraw-owed <head> screen --> for a screen of its run that held the head. The screen of a review or an
+        approval of mallory's #7 holds HEAD, and its post job gave no output: it failed before the step that owes, or
+        the environment post holds no key. The hold job writes the line. A post job that withdrew for HEAD leaves the
+        line too, until the hold comment of HEAD stands (OSSV-221's architect, 2026-11-22 14:21Z): the step after the
+        label step takes it out then, and keeps it while no hold comment of the screen names HEAD (GitHub refused to
+        post it, say). An answer withdraws nothing (the author-kind table), and a hold at the limit is no hold of the
+        screen: no line for either."""
         self.checkout()
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} screen -->")
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
         s = step("hold", "Record a withdrawal that this run owes")
+        after = step("hold", "Take out the line of a withdrawal that the posted hold records")
         for case, task, route, screen, withdrawn, label, want in (
                 ("no output of the post job", "review", "screen", ("success", "held"), "", old["body"], [marked]),
                 ("an approval", "approve", "screen", ("success", "held"), "", old["body"], [marked]),
-                ("the post job withdrew for HEAD", "review", "screen", ("success", "held"), HEAD, marked,
-                 [old["body"]]),
+                ("the post job withdrew for HEAD", "review", "screen", ("success", "held"), HEAD, marked, []),
+                ("the post job withdrew for HEAD, with no line yet", "review", "screen", ("success", "held"), HEAD,
+                 old["body"], [marked]),
                 ("an answer", "answer", "screen", ("success", "held"), "", old["body"], None),
                 ("a hold at the limit", "review", "limit", ("skipped", ""), "", old["body"], None)):
             with self.subTest(case=case):
@@ -16867,10 +16876,22 @@ class ImportCheckTest(ReaderRunner):
                 self.forget()
                 self.serve(f"repos/{REPO}/issues/7/comments", [dict(old, body=label)])
                 env = filled({**WF["env"], **JOBS["hold"]["env"], **s["env"]}, ctx)
-                rc, out, _ = self.run_script(s["run"],
-                                             **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                rc, out, outs = self.run_script(s["run"],
+                                                **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
                 self.assertEqual(rc, 0, out)
                 self.assertEqual([body for _method, _endpoint, body in label_comments(self.api)], want)
+                ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()})
+                self.assertEqual(bool(evaluate(after["if"], {**started, **ctx})), withdrawn == HEAD, outs)
+                if withdrawn != HEAD:
+                    continue
+                for posted, left in (([], []), ([hold], [old["body"]])):
+                    self.forget()
+                    self.serve(f"repos/{REPO}/issues/7/comments", [*posted, dict(old, body=marked)])
+                    env = filled({**WF["env"], **JOBS["hold"]["env"], **after["env"]}, ctx)
+                    rc, out, _ = self.run_script(after["run"],
+                                                 **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                    self.assertEqual((rc, [body for _method, _endpoint, body in label_comments(self.api)]), (0, left),
+                                     out)
 
     def test_a_blocking_review_whose_job_fails_at_the_fix_readers_sign_in_owes_the_withdrawal_of_its_head(self):
         """Owed audit of round 16 (W of the author-kind table, round 14's write ahead): the CI run of mallory's #7
@@ -16881,7 +16902,8 @@ class ImportCheckTest(ReaderRunner):
         review of the head gives a blocking finding. So a job of the run that runs withdraws 901, or records the line
         <!-- withdraw-owed <head> blocking -->, as the hold job does for a screen hold whose post job did not
         withdraw. Else 901 stands with no line, no hold and no try, and the rescreen pass never takes the head again,
-        as it has a review comment."""
+        as it has a review comment. When the post job withdraws 901, the comment job's owed step records the line all
+        the same, as the review of that verdict has not posted yet (OSSV-221's architect, 2026-11-22 14:21Z)."""
         listed, _others = self.recorded()
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
@@ -16932,14 +16954,15 @@ class ImportCheckTest(ReaderRunner):
                                                      **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
                         self.assertEqual(rc, 0, out)
                         bodies += [body for _method, _endpoint, body in label_comments(self.api)]
-                self.assertIn((withdrawn, bodies), [([f"repos/{REPO}/check-runs/901"], []), ([], [marked])])
+                self.assertIn((withdrawn, bodies), [([f"repos/{REPO}/check-runs/901"], [marked]), ([], [marked])])
 
     def comment_job(self, ctx, comments, labels=()):
         """The comment job's steps in the contexts ctx, each step whose if holds, in order, as run_job runs them, after
         the stand-in gh forgot its calls, with #7's comments and labels. Before each step, the stand-in serves #7's
-        comments as GitHub then gives them: a label comment that a step edited holds its new body, and one that it
-        posted joins them (id 41). The outcome of each step that ran, by its name, and each label comment that the
-        steps wrote, as (method, endpoint, body), in order. ctx gets the outputs of each step."""
+        comments as GitHub then gives them: a comment that a step edited (a label comment, or the review comment) holds
+        its new body, and one that it posted joins them (id 41 for a label comment, 42 for another). The outcome of each
+        step that ran, by its name, and each label comment that the steps wrote, as (method, endpoint, body), in order.
+        ctx gets the outputs of each step."""
         comments, ran, wrote = [dict(c) for c in comments], {}, []
         self.forget()
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
@@ -16955,20 +16978,27 @@ class ImportCheckTest(ReaderRunner):
                 ran[name] = "success"
                 continue
             self.serve(f"repos/{REPO}/issues/7/comments", comments)
-            seen = len(label_comments(self.api))
+            seen = len(writes(self.api))
             env = filled({**WF["env"], **JOBS["comment"].get("env", {}), **s.get("env", {})}, ctx)
             rc, out, got = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
             self.logs.append(out)
             ran[name] = "success" if rc == 0 else "failure"
             if "id" in s:
                 ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
-            for method, endpoint, body in label_comments(self.api)[seen:]:
-                wrote.append((method, endpoint, body))
+            for call in writes(self.api)[seen:]:
+                body = next((a[len("body="):] for a in call if a.startswith("body=")), None)
+                method, endpoint = (call[1], call[2]) if call[0] == "--method" else ("POST", "")
+                if body is None or not (endpoint == f"repos/{REPO}/issues/7/comments"
+                                        or endpoint.startswith(f"repos/{REPO}/issues/comments/")):
+                    continue
+                label = body.startswith("<!-- review-label -->")
+                if label:
+                    wrote.append((method, endpoint, body))
                 if method == "PATCH":
                     comments = [dict(c, body=body) if endpoint.endswith(f"/{c['id']}") else c for c in comments]
                 else:
-                    comments.append({"id": 41, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
-                                     "body": body})
+                    comments.append({"id": 41 if label else 42, "user": {"login": BOT}, "created_at": ago(0),
+                                     "updated_at": ago(0), "body": body})
             if rc:
                 break
         return ran, wrote
@@ -16981,16 +17011,19 @@ class ImportCheckTest(ReaderRunner):
         these steps comes after "The comment, as it is posted", so the review is final, and GitHub fills in the outputs
         of such a job. The review is a screened CI re-run, a rescreen, or alice's review by hand with no screen. The
         post job withdraws 901 for the verdict, and records, approves and decides nothing. When GitHub refuses the
-        withdrawal, its output owed names HEAD. When the withdrawal finishes, its output withdrawn names HEAD, and an
-        older line of HEAD goes. The hold job does not run. The comment job posts the review in the place of 30, as for
-        a review that succeeded, and posts no fix. Its step "Record a withdrawal that the post job owes" writes the line
-        <!-- withdraw-owed <head> <why> --> when the withdrawal is owed. Its label step takes review-held off and gives
-        the state of a review whose fix posted nothing: change, whose text says that the automated fix posted no
-        suggested change, or person. A later relabel of HEAD, by hand or for a new value of REPO_PAIRS_IMPORT_PATHS
-        (held.sh due_variable), reads that review: it records no check run, withdraws 901 when it still stands, and
-        keeps the state. When a newer push moved #7 before the comment job ran (the run of that push cancelled the
-        review job), the post job still withdraws 901 and the owed step still records or takes out the line of HEAD,
-        but no review of HEAD posts, the step that posts it logs why, and the label step writes nothing."""
+        withdrawal, its output owed names HEAD. When the withdrawal finishes, its output withdrawn names HEAD. The hold
+        job does not run. The comment job posts the review in the place of 30, as for a review that succeeded, and posts
+        no fix. Its step "Record a withdrawal that the post job owes" writes the line
+        <!-- withdraw-owed <head> <why> --> in both cases (OSSV-221's architect, 2026-11-22 14:21Z): after a finished
+        withdrawal, the line stays until the review of that verdict stands, and the step "Take out the line of a
+        withdrawal that the posted review records", after the post of the review, takes it out then. Its label step
+        takes review-held off and gives the state of a review whose fix posted nothing: change, whose text says that the
+        automated fix posted no suggested change, or person. A later relabel of HEAD, by hand or for a new value of
+        REPO_PAIRS_IMPORT_PATHS (held.sh due_variable), reads that review: it records no check run, withdraws 901 when
+        it still stands, and keeps the state. When a newer push moved #7 before the comment job ran (the run of that
+        push cancelled the review job), the post job still withdraws 901 and the owed step still records the line of
+        HEAD, but no review of HEAD posts, the step that posts it logs why, the line stays, and the label step writes
+        nothing."""
         listed, _others = self.recorded()
         passed = review_of(HEAD, at=ago(300))
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
@@ -17024,7 +17057,8 @@ class ImportCheckTest(ReaderRunner):
                                   refused=refused, moved=now != HEAD):
                     self.tearDown()
                     self.setUp()
-                    # Once the withdrawal finished, the label comment holds an older line of HEAD, which goes.
+                    # Once the withdrawal finished, the label comment holds an older line of HEAD. It stays until the
+                    # review of this run stands, and goes then.
                     prior = old["body"] if refused else rules.with_marker(old["body"], line)
                     comments = [passed, dict(old, body=prior)]
                     ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(trust, started=ago(1), named=HEAD).items()}
@@ -17066,18 +17100,24 @@ class ImportCheckTest(ReaderRunner):
                     self.assertFalse(evaluate(JOBS["hold"]["if"], ctx))
                     self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
                     ran, wrote = self.comment_job(dict(ctx), comments, labels=("review-held",))
+                    taken = "Take out the line of a withdrawal that the posted review records"
                     self.assertEqual(ran, {"Run actions/checkout": "success",
                                            "Record a withdrawal that the post job owes": "success",
                                            "Post the review, or replace the one posted before": "success",
+                                           **({} if refused else {taken: "success"}),
                                            self.LABEL: "success"}, self.logs)
                     marked = rules.with_marker(old["body"], line) if refused else old["body"]
                     if now != HEAD:
                         # A newer push moved #7: no review of HEAD posts, and the label step writes nothing. The owed
-                        # step still records the line of HEAD, or takes it out.
+                        # step still records the line of HEAD, and the line stays.
                         self.assertIn(f"#7 moved from {HEAD} to {now}, so this run posts no review of {HEAD}.",
                                       "\n".join(self.logs))
                         self.assertEqual([c for c in writes(self.api) if f"repos/{REPO}/issues/comments/30" in c], [])
-                        self.assertEqual(wrote, [("PATCH", f"repos/{REPO}/issues/comments/40", marked)], self.logs)
+                        self.assertEqual(wrote, [("PATCH", f"repos/{REPO}/issues/comments/40", marked)] if refused
+                                         else [], self.logs)
+                        if not refused:
+                            self.assertIn(f"#7: its label comment keeps {line}, because the newest review comment of "
+                                          f"{HEAD} gives the verdict pass, not {verdict}.", "\n".join(self.logs))
                         self.assertEqual(state_labels(self.api), [])
                         self.assertNotIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"],
                                          writes(self.api))
@@ -17125,7 +17165,9 @@ class ImportCheckTest(ReaderRunner):
         its read fails too. A relabel of HEAD then reads a pass with no screen and the line: the state unscreened, with
         the reason blocking. Its decision is screen, so the label comment says that no screen passed the head
         (UNSCREENED), not that the screen and the review passed it, and no log says that a screen passed the head. It
-        withdraws for the line: it finds no check run of HEAD that stands, and so the line goes."""
+        withdraws for the line and finds no check run of HEAD that stands. The line stays all the same: alice's pass
+        replaced her blocking review, so no comment gives the reason blocking now (OSSV-221's architect, 2026-11-22
+        14:21Z)."""
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("decide", "", [rules.import_marker(HEAD, self.LPS)],
                                            imports=(self.LPS, "screen"))}
@@ -17164,7 +17206,9 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotIn("a screen passed the head in an earlier run", "\n".join(self.logs))
         self.assertIn(f"#7: an automated review of {HEAD} asked for a change, but {HEAD} has no import check run to "
                       "withdraw.", "\n".join(self.logs))
-        self.assertEqual(self.owe(got, relabel, [passed, marked]), [old["body"]])
+        self.assertEqual(self.owe(got, relabel, [passed, marked]), [])
+        self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking -->, because the newest review "
+                      f"comment of {HEAD} gives the verdict pass, not blocking.", self.logs[-1])
 
     def test_a_post_job_that_fails_before_its_withdrawal_owes_the_withdrawal_of_its_own_verdict(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z), and the post job's output owed (review.yml): "<head>
@@ -17189,17 +17233,24 @@ class ImportCheckTest(ReaderRunner):
                          [rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking -->")])
 
     def test_after_a_screened_pass_a_relabel_withdraws_for_the_line_once_and_the_next_relabel_records(self):
-        """Round 13, part B, F3 (OSSV-221's architect, 2026-11-21 06:38Z, who kept the rule that fails closed): the
-        line <!-- withdraw-owed <head> screen --> of a hold of the screen, whose withdrawal GitHub refused, stands. The
+        """Round 13, part B, F3 (OSSV-221's architect, 2026-11-21 06:38Z, who kept the rule that fails closed), and the
+        architect's rule of 2026-11-22 14:21Z (the line goes only once the comment of its reason stands): the line
+        <!-- withdraw-owed <head> screen --> of a hold of the screen, whose withdrawal GitHub refused, stands. The
         CI run of mallory's #7 then screens HEAD, its review passes it, and its post job records check run 901: a run
         whose own review passes has no reason to withdraw, so the line stays, and the label comment keeps it. Relabel 1
         reads the screened pass and the line: it withdraws 901 for the line's reason, with a title and a summary that do
-        not say later (the hold came before 901), records nothing, and takes the line out. Relabel 2 reads the screened
-        pass as the newest review and no line: it records the check run again."""
+        not say later (the hold came before 901), and records nothing. The hold comment of HEAD gives the line's reason,
+        so relabel 1 takes the line out, and relabel 2 reads the screened pass as the newest review and no line: it
+        records the check run again. With no hold comment of HEAD on #7 (GitHub refused to post it, say), relabel 1
+        keeps the line, and relabel 2 withdraws for it and records nothing."""
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("screen")}
         line = f"<!-- withdraw-owed {HEAD} screen -->"
         marked = dict(old, updated_at=ago(60), body=rules.with_marker(old["body"], line))
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": OLD, "updated_at": OLD,
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
         got = self.judge(["README.md"], value=self.LPS, comments=[marked])
         self.assertRecorded(got, self.LPS)
         (_token, body), = got["checks"]
@@ -17209,29 +17260,40 @@ class ImportCheckTest(ReaderRunner):
         label = dict(old, updated_at=ago(30), body=label)
         screened = review_of(HEAD, at=ago(20))
         relabel = dict(self.RELABEL, started=ago(-1))
-        self.assertEqual(rules.review_verdict([screened, label], HEAD), ("pass", "screened", "screen"))
-        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
-                         comments=[screened, label], listed=[listed])
-        self.assertEqual((got["result"], got["post"]["decision"], got["post"]["withdrawn"], got["checks"]),
-                         ("success", "screened", HEAD, []), self.logs)
-        (_token, endpoint, request), = got["withdrawn"]
-        self.assertEqual((endpoint, request["output"]["title"], request["output"]["summary"]),
-                         (f"repos/{REPO}/check-runs/901",
-                          f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated screen "
-                          "held this head commit",
-                          "An automated screen held this head commit. So this check is no longer an approval for the "
-                          "import."))
-        logs = "\n".join(self.logs)
-        self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
-                      f"automated screen held {HEAD}.", logs)
-        self.assertIn(f"#7 at {HEAD}: the decision on the import check is screened (the label comment records a "
-                      "withdrawal that an earlier run did not finish).", logs)
-        (cleared,) = self.owe(got, relabel, [screened, label])
-        self.assertNotIn(line, cleared.split("\n"))
-        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
-                         comments=[screened, dict(label, body=cleared)])
-        self.assertEqual((got["result"], got["post"]["decision"], len(got["checks"])), ("success", "record", 1),
-                         self.logs)
+        for case, held in (("the hold comment of HEAD", [hold]), ("no hold comment", [])):
+            with self.subTest(case=case):
+                comments = [*held, screened, label]
+                self.assertEqual(rules.review_verdict(comments, HEAD), ("pass", "screened", "screen"))
+                start = len(self.logs)
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=comments, listed=[listed])
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["withdrawn"], got["checks"]),
+                                 ("success", "screened", HEAD, []), self.logs)
+                (_token, endpoint, request), = got["withdrawn"]
+                self.assertEqual((endpoint, request["output"]["title"], request["output"]["summary"]),
+                                 (f"repos/{REPO}/check-runs/901",
+                                  f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated "
+                                  "screen held this head commit",
+                                  "An automated screen held this head commit. So this check is no longer an approval "
+                                  "for the import."))
+                logs = "\n".join(self.logs[start:])
+                self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
+                              f"automated screen held {HEAD}.", logs)
+                self.assertIn(f"#7 at {HEAD}: the decision on the import check is screened (the label comment records "
+                              "a withdrawal that an earlier run owes).", logs)
+                edited = self.owe(got, relabel, comments)
+                if held:
+                    (cleared,) = edited
+                    self.assertNotIn(line, cleared.split("\n"))
+                else:
+                    self.assertEqual(edited, [])
+                    self.assertIn(f"#7: its label comment keeps {line}, because no hold comment of the screen names "
+                                  f"{HEAD}.", self.logs[-1])
+                    cleared = label["body"]
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=[*held, screened, dict(label, body=cleared)])
+                self.assertEqual((got["result"], got["post"]["decision"], len(got["checks"])),
+                                 ("success", "record" if held else "screened", 1 if held else 0), self.logs)
 
     def test_a_second_pass_by_hand_over_a_pass_by_hand_keeps_the_state_import_while_the_check_run_stands(self):
         """Round 12, item 3 (the author-kind table, section 8, items 17 and 18): the CI run of mallory's #7 screened
@@ -17895,7 +17957,11 @@ class KindTableTest(Scheduled, ReaderRunner):
 
     def assertCell(self, route, case, kind, w, got):
         """What the run of the cell did is what the cell gives (want), and for a cell that withdraws, its post job's
-        error after a read that GitHub refuses says what comes next."""
+        error after a read that GitHub refuses says what comes next. A run that withdraws for its own review, or for a
+        screen of its run that held the head, first records the line <!-- withdraw-owed <head> <why> --> in the label
+        comment, as the comment of that reason has not posted yet (OSSV-221's architect, 2026-11-22 14:21Z): the step
+        after that comment takes the line out again once the comment stands. A relabel withdraws for comments that are
+        there already, and the label comment of an author whose write access GitHub did not give stays as it is."""
         log = got["log"]
         self.assertEqual(state_labels(self.api), self.moves(kind, w["state"]), log)
         body = None
@@ -17903,8 +17969,13 @@ class KindTableTest(Scheduled, ReaderRunner):
             body = rules.with_marker(self.LABELLED["body"], f"<!-- review-catchup {HEAD} -->")
         elif w["state"] not in (None, self.UNCHANGED):
             body = self.body(route, case, kind, w)
+        ahead = []
+        if "W" in w["app"] and route != "relabel" and kind != "unknown":
+            why = "screen" if case == "held" else "blocking" if case == "blocking" else "person"
+            ahead = [("PATCH", f"repos/{REPO}/issues/comments/40",
+                      rules.with_marker(self.LABELLED["body"], f"<!-- withdraw-owed {HEAD} {why} -->"))]
         self.assertEqual(label_comments(self.api),
-                         [] if body is None else [("PATCH", f"repos/{REPO}/issues/comments/40", body)], log)
+                         ahead + ([] if body is None else [("PATCH", f"repos/{REPO}/issues/comments/40", body)]), log)
         if w["state"] == self.UNCHANGED:
             self.assertIn(self.NOTICE, log)
         if w["decision"]:
