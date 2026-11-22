@@ -1,0 +1,49 @@
+# Deletes a pull request's Actions caches when the pull request closes.
+#
+# ci.yml saves a dune cache per lane (and one for the opam job) on a pull
+# request from a branch of this repository, scoped by GitHub to
+# refs/pull/<n>/merge, so that the pull request's later pushes rebuild only
+# what changed since its last push. Those entries serve nothing once the pull
+# request closes: GitHub scopes them to that ref alone. They still count
+# against the repository's 10 GB of Actions cache until GitHub evicts the least
+# recently used entries, and on 2026-11-22 they did: with about four pull
+# requests' entries (0.5-0.9 GB each) the repository reached the limit, and
+# GitHub evicted main's 9.2 and 9.3 dune caches within the hour. Deleting a
+# closed pull request's entries at once keeps the space for main and the open
+# pull requests. This is GitHub's documented clean-up (docs.github.com,
+# "Dependency caching", "Force deleting cache entries").
+#
+# It checks out nothing and runs no code of the pull request. A fork's pull
+# request saves no cache (ci.yml), and its token could not delete one, so the
+# job runs for pull requests from this repository's branches only.
+name: Cache clean-up
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Delete the closed pull request's caches
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete every cache on refs/pull/<n>/merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -uo pipefail
+          ids=$(gh cache list -R "$REPO" --ref "$REF" --limit 100 --json id --jq '.[].id') \
+            || { echo "::warning::could not list the caches of $REF"; exit 0; }
+          [ -n "$ids" ] || { echo "no caches on $REF"; exit 0; }
+          for id in $ids; do
+            gh cache delete -R "$REPO" "$id" && echo "deleted cache $id" \
+              || echo "::warning::could not delete cache $id"
+          done
