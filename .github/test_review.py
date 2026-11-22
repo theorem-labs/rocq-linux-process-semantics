@@ -16875,6 +16875,101 @@ class ImportCheckTest(ReaderRunner):
                                       if not any(a.startswith("body=<!-- review-label -->") for a in c)
                                       and c[:3] != ["--method", "POST", f"repos/{REPO}/issues/7/labels"]], [])
 
+    def test_a_relabel_after_a_review_job_that_failed_after_its_verdict_keeps_the_state_rerun(self):
+        """The last fresh reader of round 16 ("older problem"; OSSV-221's architect, 2026-11-22 09:54Z, choice (a)): a
+        relabel must not turn a review that asked for a change, and posted no review comment, into a pass. The
+        screened CI run of mallory's #7 passed HEAD and recorded check run 901. alice reviews HEAD by hand, the review
+        gives a blocking finding, its job fails at "Fix", and GitHub refuses the withdrawal of 901: the comment job
+        gives #7 the state rerun, with the line <!-- withdraw-owed <head> blocking -->. An hour later the rescreen
+        pass starts a relabel of HEAD. Its comment job runs its step "Record a withdrawal that the post job owes" and
+        then its label step, which reads the comments again. When the relabel withdraws 901, that step takes the line
+        out first, and the label step still keeps the state rerun: the newest review comment of HEAD passes, and the
+        label comment is in the state rerun for HEAD (rules.py rerun_kept). When GitHub refuses again, the label step
+        changes nothing, and rerun stays. A later review of HEAD that posts sets the state of its own outcome, and a
+        relabel after it gives that state again. A line whose why is screen, a newest review comment that gives a
+        blocking finding, and a label comment that is not in the state rerun for HEAD keep the facts of before."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(300))
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        imports, marker = (self.LPS, ""), rules.import_marker(HEAD, self.LPS)
+        imported = rules.label_comment("import", "", [marker])
+        rerun = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(90),
+                 "body": rules.label_comment("rerun", rules.with_marker(imported, line), [marker], HEAD, imports)}
+        relabel = dict(self.RELABEL, started=ago(-1), named=HEAD)
+        step_of = {state: f"**Next step:** {rules.STATES[state][1]}" for state in ("rerun", "import", "decide")}
+
+        def relabeled(comments, refused, listed_runs, labels=(THEOREM_LABEL,)):
+            """The relabel's post job (judge), then its comment job in order (comment_job): what each step wrote."""
+            if refused:
+                self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+            got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                             comments=comments, listed=listed_runs)
+            ctx = {f"needs.trust.outputs.{k}": v for k, v in relabel.items()}
+            ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                        "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                        "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS, "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                        "needs.trust.result": "success", "needs.gather.result": "skipped",
+                        "needs.screen.result": "skipped", "needs.review.result": "skipped",
+                        "needs.post.result": got["result"],
+                        **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+            self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+            ran, wrote = self.comment_job(ctx, comments, labels=labels)
+            self.assertNotIn("failure", ran.values(), self.logs)
+            self.assertIn(PostLabelTest.STEP, ran, self.logs)
+            return got, wrote
+
+        for refused in (False, True):
+            with self.subTest(refused=refused):
+                self.tearDown()
+                self.setUp()
+                got, wrote = relabeled([screened, rerun], refused, [listed])
+                self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]),
+                                 ("failure", f"{HEAD} blocking", "") if refused else ("success", "", HEAD), self.logs)
+                # Withdrawn: the owed step takes the line out, and the relabel keeps rerun, so it writes nothing more.
+                # Refused: the owed step writes the line again (it moves after the other kept lines), and the label step
+                # of a relabel whose post job failed changes nothing.
+                self.assertEqual([(m, e) for m, e, _b in wrote], [("PATCH", f"repos/{REPO}/issues/comments/40")],
+                                 self.logs)
+                final = wrote[-1][2]
+                self.assertEqual(final.split("\n")[1], step_of["rerun"], final)
+                self.assertEqual(line in final.split("\n"), refused, final)
+                self.assertEqual(state_labels(self.api), [])
+        # A later review of HEAD posts a screened pass (a re-run of CI): the label step gives the state of its outcome.
+        # A relabel after it gives that state again, not rerun.
+        self.tearDown()
+        self.setUp()
+        cleared = dict(rerun, body=rules.without_marker(rerun["body"], f"withdraw-owed {HEAD}"))
+        got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.REVIEWED, started=ago(1)),
+                         comments=[screened, cleared])
+        (after,) = got["comments"]
+        self.assertIn(after.split("\n")[1], (step_of["import"], step_of["decide"]), after)
+        later = review_of(HEAD, at=ago(0))
+        labelled = dict(rerun, updated_at=ago(0), body=after)
+        self.tearDown()
+        self.setUp()
+        got, wrote = relabeled([later, labelled], False, [], labels=())
+        self.assertEqual(got["result"], "success", self.logs)
+        final = wrote[-1][2] if wrote else after
+        self.assertIn(final.split("\n")[1], (step_of["import"], step_of["decide"]), final)
+        # The rule, and each neighbour that keeps the facts of before: the facts of the relabel (relabel_facts).
+        def facts(*comments):
+            return rules.relabel_facts(list(comments), lambda: [], HEAD, lambda: [])
+        rerun_of_other = rules.label_comment("rerun", "", [rules.import_marker(OTHER_HEAD, self.LPS)], OTHER_HEAD,
+                                             imports)
+        screen_line = rules.with_marker(rules.label_comment("screen"), f"<!-- withdraw-owed {HEAD} screen -->")
+        for case, comments, unfinished in (
+                ("the label comment is in the state rerun for HEAD", [screened, rerun], True),
+                ("the same, once the line went", [screened, cleared], True),
+                ("a line whose why is screen", [screened, dict(rerun, body=screen_line)], False),
+                ("a newest review comment that asks for a change", [review_of(HEAD, "blocking"), rerun], False),
+                ("a label comment in the state import, with no line", [screened, dict(rerun, body=imported)], False),
+                ("a label comment in the state rerun for another head", [screened, dict(rerun, body=rerun_of_other)],
+                 False)):
+            with self.subTest(case=case):
+                found = facts(*comments)
+                self.assertEqual(found.get("unfinished", False), unfinished, found)
+                self.assertEqual(rules.label_state(outsider=True, kind="pr", **found) == "rerun", unfinished, found)
+
     def test_the_line_of_a_refused_withdrawal_gives_a_reason_and_never_the_text_that_a_screen_passed_the_head(self):
         """Round 13, part B, F2 (OSSV-221's architect, 2026-11-21 06:38Z): the line <!-- withdraw-owed <head> <why> -->
         gives only the reason to withdraw, never a state. No screen ever passed HEAD of mallory's #7. alice reviews HEAD
