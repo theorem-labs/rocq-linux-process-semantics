@@ -139,16 +139,20 @@ jobs:
       # changed. The key decides only which entries are on disk. It never
       # decides which entry a rule uses, so it can fall back to a prefix.
       #
-      # Every run whose exact key missed saves. GitHub scopes a cache to the
-      # ref that saved it: main's entries serve every run, a pull request's
-      # serve only that pull request's later runs (its restore looks in its own
-      # scope first, then main's). So the second push of a pull request
-      # rebuilds only what changed since its first, not its whole difference
-      # from main again: with only main saving, each of #153's 16 runs rebuilt
-      # 45-56 minutes per lane, because main got one push that week. The prune
-      # job keeps one entry per lane on each ref. When the `dev` image moves,
-      # its entries miss, and the cache is emptied if a plugin or a package
-      # changed.
+      # A push to main, and a pull request from a branch of this repository,
+      # save when their exact key missed. GitHub scopes a cache to the ref that
+      # saved it: main's entries serve every run, a pull request's serve only
+      # that pull request's later runs (its restore looks in its own scope
+      # first, then main's). So the second push of a pull request rebuilds
+      # only what changed since its first, not its whole difference from main
+      # again: with only main saving, each of #153's 16 runs rebuilt 45-56
+      # minutes per lane, because main got one push that week. A pull
+      # request's entries can hold whatever its own code wrote, and they serve
+      # only that pull request, whose author already controls its workflow;
+      # main's run reads main's scope alone. Fork pull requests and
+      # workflow_dispatch runs do not save. The prune job keeps one entry per
+      # lane on each ref that saves. When the `dev` image moves, its entries
+      # miss, and the cache is emptied if a plugin or a package changed.
       - name: The dune cache key
         id: dune-key
         run: |
@@ -259,7 +263,10 @@ jobs:
       # the same tree (a re-run, or a push that brings a tree back) does that,
       # and it builds cold. The next push of another tree saves again.
       - name: Save the dune cache
-        if: steps.dune-restore.outputs.cache-hit != 'true'
+        if: >-
+          ${{ steps.dune-restore.outputs.cache-hit != 'true'
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         uses: actions/cache/save@v4
         with:
           path: .dune-cache
@@ -361,7 +368,10 @@ jobs:
           du -sh ~/.cache/dune
 
       - name: Save the dune cache
-        if: steps.dune-restore.outputs.cache-hit != 'true'
+        if: >-
+          ${{ steps.dune-restore.outputs.cache-hit != 'true'
+          && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/dune
