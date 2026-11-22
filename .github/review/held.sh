@@ -11,9 +11,9 @@
 # pull request.
 # Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
 # define the function trusted before it, and restart after it, which rerun calls. The functions and jq filters of the
-# file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment of the step, and RUN_ID, which the
-# trust step alone sets. The source line sets values, defines functions, and makes $seen/due and $seen/stops empty. It
-# reads nothing from GitHub.
+# file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment of the step, GITHUB_REPOSITORY_ID,
+# which GitHub sets in each step, and RUN_ID, which the trust step alone sets. The source line sets values, defines
+# functions, and makes $seen/due and $seen/stops empty. It reads nothing from GitHub.
 # In the comments below, "this step" is the step that sources the file, and "this workflow" is review.yml.
 
 # titled: the names of the runs that the rescreen pass starts and that name an account (run-name):
@@ -359,6 +359,15 @@ first=$(date -u -d '-7 days' +%Y-%m-%d)
 kept_days=1
 kept=$(date -u -d "-$(( kept_days * 24 - 1 )) hours" +%Y-%m-%dT%H:%M:%SZ)
 failed=0
+# exported <repository> <branch>: true for an export pull request: its head repository, whose id is <repository>, is
+# this repository (GITHUB_REPOSITORY_ID), and its head branch <branch> starts with release/. The export opens such pull
+# requests into main. Neither this workflow nor the rescreen pass acts on one (OSSV-221's architect, 2026-11-22
+# 17:18Z): the trust job gives it no task on any event and for any task (review.yml, export_stop), and the rescreen
+# pass starts no run of it (consider and consider_closed). A fork's branch with such a name does not make an export
+# pull request: the head repository decides.
+exported() {
+  [[ -n ${GITHUB_REPOSITORY_ID:-} && $1 == "$GITHUB_REPOSITORY_ID" && $2 == release/* ]]
+}
 declare -A pr_of=() pr_head=() pr_base=() pr_draft=() pr_repo=() pr_ref=()
 # read_pulls: the open pull requests, each with its head, its base, whether it is a draft, the id of its head
 # repository (0 when that repository is gone) and its head branch, into pr_head, pr_base, pr_draft, pr_repo
@@ -1515,10 +1524,11 @@ due_variable() {
   owe "${at:-$opened}" relabel "" "$head" - \
     "the value of REPO_PAIRS_IMPORT_PATHS recorded for $head is not the value now"
 }
-# consider [<merge>]: the runs that #number is due, by each reason above (due_*), in order. A writer's pull
-# request gets only the work that its holds name and the review of a head that a run left with no review. A
-# read that fails for it leaves it for the next run, and this run fails at its end. Once a reason took the
-# head (taken), no later one takes it in this run. hold is the newest hold of each work of the item (holds).
+# consider [<merge>]: the runs that #number is due, by each reason above (due_*), in order. An export pull request
+# (exported) is due none. A writer's pull request gets only the work that its holds name and the review of a head that
+# a run left with no review. A read that fails for it leaves it for the next run, and this run fails at its end. Once
+# a reason took the head (taken), no later one takes it in this run. hold is the newest hold of each work of the item
+# (holds).
 # <merge> is the mergeable_state of the pull request #number that a run of the pass with a number read
 # (rescreen.yml). With it, consider gives only the work that such a run does, for an outside pull request
 # alone: the conflict of its head when <merge> is dirty (due_conflict), else the approval of the runs of its
@@ -1537,6 +1547,11 @@ consider() {
     head=${pr_head[$number]:-}
     if [ -z "$head" ]; then
       echo "#$number: not in the list of open pull requests: left for the next run."
+      return 0
+    fi
+    if exported "${pr_repo[$number]:-0}" "${pr_ref[$number]:--}"; then
+      echo "#$number: an export pull request, from the branch ${pr_ref[$number]} of this repository, of which the" \
+        "trust job takes no run."
       return 0
     fi
     if [ "${pr_draft[$number]}" != false ]; then
@@ -1638,9 +1653,16 @@ consider() {
 # (left_closed). Its workflow_dispatch runs are read back to the day before the close. It is due a catchup run,
 # which only reopens it, once an hour after the newest catchup run of it ended. Each catchup run since the
 # closing run counts, whatever its outcome, but one that counts no try (tried, of facts): after REVIEW_TRIES of them it
-# is not tried again (left_stopped), and nothing more of it is read (gave_up).
+# is not tried again (left_stopped), and nothing more of it is read (gave_up). An export pull request (exported) is due
+# nothing: the pass's list of the closed pull requests gives its head repository and head branch (repository and
+# branch). The trust job sets neither: its item stops an export pull request before the check of a stop calls this.
 consider_closed() {
   local head="" given closing="" made="" created ended run started f post count=0 newest=""
+  if exported "${repository:-0}" "${branch:--}"; then
+    echo "#$number: an export pull request, from the branch $branch of this repository, of which the trust job takes" \
+      "no run."
+    return 0
+  fi
   if [ -n "${running[$number]:-}" ]; then
     echo "#$number: a run of it has not finished."
     return 0

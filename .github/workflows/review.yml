@@ -52,6 +52,12 @@
 # scripts that count runs read those names, and #<n> in a run's name ends at a space or at the end of the name, so that
 # #12 is never #123.
 #
+# Export pull requests. The export opens pull requests into main from branches of this repository whose names start
+# with release/. Such a pull request is no item of this workflow (OSSV-221's architect, 2026-11-22 17:18Z). The trust
+# job gives it no task on any event and for any task, and the rescreen pass starts no run of it (held.sh, exported).
+# So it gets no review, screen, label, comment, close, reopen, approval of held runs, import check run or withdrawal
+# of one. A fork's branch with such a name does not make an export pull request: the head repository decides.
+#
 # Who is screened. Write access is what GitHub's collaborator permission API answers: admin or write (maintain counts
 # as write). Membership of the organisation alone is not write access. The Apps in APPS count as having it.
 #
@@ -438,7 +444,8 @@ jobs:
   # The task and the route of a run (the top of this file). Nothing runs in a fork of this repository, nor for a run by
   # hand on a ref other than main. A workflow_run is taken only for a CI run of a pull request's event that was not
   # cancelled, skipped or held (GitHub holds a first-time contributor's run, whose approval is the task approve); an
-  # issue_comment only for a comment of the item's author that no App wrote.
+  # issue_comment only for a comment of the item's author that no App wrote. An export pull request gets no task on any
+  # event and for any task (the step's export_stop).
   trust:
     if: >-
       github.repository_id == 1425819621 && github.ref == 'refs/heads/main'
@@ -808,6 +815,13 @@ jobs:
             echo "::notice::No ${task:-run} of $what: $1"
             exit 0
           }
+          # export_stop <repository> <branch>: no task (stop) for an export pull request, whose head repository and head
+          # branch are those (held.sh exported). Neither this workflow nor the rescreen pass acts on one.
+          export_stop() {
+            exported "$1" "$2" || return 0
+            local why="it is an export pull request, from the branch $2 of this repository."
+            stop "$why This workflow does not act on it."
+          }
           # screened <author> <account>: the route of an item of <author> for an action of <account>: no screen when
           # both have write access; else the screen first, for the account without write access whose action it is
           # (<account>, or else <author>); or held at the limit with no screen, when <account> has no write access and
@@ -833,7 +847,8 @@ jobs:
           # item: what the API says of #NUMBER now: state, AUTHOR, kind (pr or issue), is_draft, and labelled (with
           # HELD_LABEL); for a pull request also merged, base, pr_head (its head commit), mergeable (its
           # mergeable_state: dirty for a merge conflict, unknown while GitHub has not computed it), head_repo (the id
-          # of its head repository, 0 when that repository is gone) and head_ref (its head branch).
+          # of its head repository, 0 when that repository is gone) and head_ref (its head branch). An export pull
+          # request, open or closed, gets no task (export_stop), whatever the event or the task.
           item() {
             local data
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -847,6 +862,7 @@ jobs:
                 (.mergeable_state // "unknown"), ((.head.repo.id // 0) | tostring), .head.ref // "-"] | join(" ")') \
                 || fail "pull request #$NUMBER could not be read."
               read -r merged base pr_head mergeable head_repo head_ref <<< "$data"
+              export_stop "$head_repo" "$head_ref"
             fi
           }
           # held_runs: how many runs of the head pr_head from the head repository head_repo and its branch head_ref
@@ -1023,7 +1039,9 @@ jobs:
             # pusher has write access: anyone can open a pull request whose head is another account's fork branch, and
             # that account's pushes to its own branch then never use its own hour. Else it is the pusher's, as for each
             # other event: a writer's push has no limit, and an outsider's push to a writer's pull request counts on
-            # the pusher.
+            # the pusher. A CI run of an export pull request starts no review (export_stop). When the CI run names the
+            # pull request, item stops the run. When it names none, the head repository and the head branch of the CI
+            # run stop it.
             workflow_run)
               task=review
               [[ $HEAD =~ ^[0-9a-f]{40}$ && $HEAD_REPOSITORY =~ ^[1-9][0-9]*$ && -n $HEAD_BRANCH ]] \
@@ -1056,6 +1074,7 @@ jobs:
                 (( n == 1 )) || stop "$why of them. The rescreen pass reviews each one into main in a run of its own."
                 read -r NUMBER onto is_draft AUTHOR <<< "$found"
                 [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || fail "not a number: $NUMBER."
+                export_stop "$HEAD_REPOSITORY" "$HEAD_BRANCH"
                 [ "$onto" = main ] || stop "it is into $onto, not main."
               fi
               [ "$is_draft" = false ] || stop "it is a draft."

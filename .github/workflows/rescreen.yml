@@ -195,8 +195,10 @@ jobs:
   # did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami starts again, by
   # hand, the work that the hold comment names" (.github/review/rules.py), and this pass fails for that run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
-  # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the time
-  # between two runs of this pass, and a second run would use the hour's screens twice. It reads review.yml's runs of
+  # than main. Never for an export pull request, open or closed: its head branch is a branch of this repository whose
+  # name starts with release/ (held.sh exported). And nothing for an item while a run of it has not finished: its
+  # screen and review can outlast the time between two runs of this pass, and a second run would use the hour's
+  # screens twice. It reads review.yml's runs of
   # the last 8 days by their names: the workflow_dispatch runs one day at a time, as the App's retry can start 24 a day
   # for each item, and the runs of workflow_run, issue_comment and issues once each. GitHub gives at most 1,000 runs for
   # a list with created, and its total_count then says that more match: such a list is read again a day at a time, a
@@ -448,10 +450,11 @@ jobs:
               fi
               consider || failed=1
             done <<< "$items"
-            # The closed pull requests that are not merged, each with its author and its newest close, when and by
-            # whom, - for none, in one GraphQL query: a catch-up left closed among them is due its reopen
-            # (consider_closed). GraphQL names an App <name>, and login gives it as <name>[bot], as the REST API names
-            # it. A list that cannot be read leaves them for the next run.
+            # The closed pull requests that are not merged, each with its author, its newest close, when and by whom, -
+            # for none, and its head repository (0 when it is gone) and head branch, in one GraphQL query: a catch-up
+            # left closed among them is due its reopen (consider_closed), but an export pull request is not. GraphQL
+            # names an App <name>, and login gives it as <name>[bot], as the REST API names it. A list that cannot be
+            # read leaves them for the next run.
             # shellcheck disable=SC2016 # $owner, $name and $endCursor are GraphQL's
             closed=$(gh api graphql --paginate -f owner="${REPO%%/*}" -f name="${REPO#*/}" -f query='
               query($owner: String!, $name: String!, $endCursor: String) {
@@ -459,6 +462,8 @@ jobs:
                   pullRequests(states: CLOSED, first: 100, after: $endCursor) {
                     nodes {
                       number
+                      headRefName
+                      headRepository { databaseId }
                       author { __typename login }
                       timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
                         nodes { ... on ClosedEvent { createdAt actor { __typename login } } }
@@ -470,9 +475,10 @@ jobs:
               }' --jq 'def login: if .__typename == "Bot" then .login + "[bot]" else .login end;
                 .data.repository.pullRequests.nodes[] | (.timelineItems.nodes[0] // {}) as $close
                 | "\(.number) \(.author // {} | login // "-") \($close.createdAt // "-")"
-                  + " \($close.actor // {} | login // "-")"') \
+                  + " \($close.actor // {} | login // "-") \(.headRepository.databaseId // 0)"
+                  + " \(.headRefName // "-")"') \
               || { echo "::error::the closed pull requests could not be read."; closed="" failed=1; }
-            while read -r number author at by; do
+            while read -r number author at by repository branch; do
               [[ ${number:-} =~ ^[1-9][0-9]*$ && ${author:--} != - ]] || continue
               consider_closed || failed=1
             done <<< "$closed"

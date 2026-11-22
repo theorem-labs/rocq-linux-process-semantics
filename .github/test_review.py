@@ -11,7 +11,8 @@ for a reason not its own is taken again as the task of its hold, and which other
 answer that waits, a draft, an approval of held runs, the App's writes again, the failed jobs of a screened review
 that could not sign in, and the stop of work at its bound of tries: rescreen.yml's step, and the trust job's check of
 its run), and the state label and the label comment that each of those gives (.github/review/rules.py, whose rule is
-also tested on its own). The review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which
+also tested on its own). An export pull request gets no task from the trust job and no run from the rescreen pass.
+The review job's two sign-ins to Anthropic and its fresh reader (.github/review/trim.py), which
 trims the review and adds back each listed item that the trim left out, run against a stand-in on 127.0.0.1, and so
 does the soundness rule of an outside pull request's proof (.github/review/rules.py soundness), on a pull request that
 the gather job's step reads from git. The draft of the reply to an outside issue becomes a file of the runner's
@@ -8867,14 +8868,17 @@ def screen_hold(at=OLD, user=BOT):
 
 def closed_pulls(*pulls):
     """The closed pull requests that are not merged, as the rescreen job's GraphQL query gives them: (number, author,
-    the time of its newest close, the account that closed it). GraphQL names an App <name>, with no [bot]."""
+    the time of its newest close, the account that closed it[, the id of its head repository, its head branch]), with
+    no head repository and no head branch when they are not given. GraphQL names an App <name>, with no [bot]."""
     def actor(login):
         if login.endswith("[bot]"):
             return {"__typename": "Bot", "login": login[:-len("[bot]")]}
         return {"__typename": "User", "login": login}
     return {"data": {"repository": {"pullRequests": {
         "nodes": [{"number": n, "author": actor(author),
-                   "timelineItems": {"nodes": [{"createdAt": at, "actor": actor(by)}]}} for n, author, at, by in pulls],
+                   "timelineItems": {"nodes": [{"createdAt": at, "actor": actor(by)}]},
+                   **({"headRepository": {"databaseId": head[0]}, "headRefName": head[1]} if head else {})}
+                  for n, author, at, by, *head in pulls],
         "pageInfo": {"hasNextPage": False, "endCursor": None}}}}}
 
 
@@ -10055,21 +10059,21 @@ class Scheduled(Held):
                 "html_url": f"https://github.com/{REPO}/issues/{number}#issuecomment-{c['id']}"})
 
     def item(self, number=7, kind="issue", author="mallory", labels=(), comments=(), review_comments=(), head=HEAD,
-             opened=24 * 60, merge="clean", repository=FORK_ID, draft=False, base="main"):
+             opened=24 * 60, merge="clean", repository=FORK_ID, draft=False, base="main", branch=BRANCH):
         """An open item of author, opened that many minutes ago, with its labels and its comments, as GitHub lists it;
-        for a pull request at head from the head repository repository (None: gone), into base, with no review, with
-        its review comments, no check run of head, and the mergeable_state merge (unknown: GitHub gives mergeable
-        null)."""
+        for a pull request at head on the head branch branch of the head repository repository (None: gone), into
+        base, with no review, with its review comments, no check run of head, and the mergeable_state merge (unknown:
+        GitHub gives mergeable null)."""
         self.listed.append({"number": number, "state": "open", "user": {"login": author}, "created_at": ago(opened),
                             "labels": [{"name": n} for n in labels], **({"pull_request": {}} if kind == "pr" else {})})
         if kind == "pr":
-            self.open_prs.append((number, author, head, repository, draft, base))
+            self.open_prs.append((number, author, head, repository, draft, base, branch))
             self.serve(f"repos/{REPO}/pulls/{number}/reviews", [])
             self.serve(f"repos/{REPO}/pulls/{number}/comments", list(review_comments))
             self.pulls[number] = {"number": number, "state": "open", "user": {"login": author}, "merged": False,
                                   "draft": draft, "base": {"ref": base}, "created_at": ago(opened),
                                   "labels": [{"name": n} for n in labels],
-                                  "head": {"sha": head, "ref": BRANCH,
+                                  "head": {"sha": head, "ref": branch,
                                            "repo": None if repository is None else {"id": repository}}}
             self.merge(number, merge)
             self.serve(f"repos/{REPO}/commits/{head}/check-runs", {"check_runs": []})
@@ -10096,12 +10100,13 @@ class Scheduled(Held):
         elif os.path.exists(then_path):
             os.remove(then_path)
 
-    def ci(self, ended=None, head=HEAD, status="completed", run=70, actor=None):
-        """A CI run of head of the event pull_request, ended that many minutes ago, or with status, which the account
-        actor started (GitHub names none when actor is None)."""
+    def ci(self, ended=None, head=HEAD, status="completed", run=70, actor=None, repository=FORK_ID, branch=BRANCH):
+        """A CI run of head of the event pull_request from the head repository repository and its branch branch,
+        ended that many minutes ago, or with status, which the account actor started (GitHub names none when actor is
+        None)."""
         self.of_heads.append({"id": run, "status": status, "event": "pull_request", "head_sha": head,
-                              "path": ".github/workflows/ci.yml", "head_branch": BRANCH,
-                              "head_repository": {"id": FORK_ID}, "created_at": ago((ended or 0) + 40),
+                              "path": ".github/workflows/ci.yml", "head_branch": branch,
+                              "head_repository": {"id": repository}, "created_at": ago((ended or 0) + 40),
                               "updated_at": ago(ended or 0), **({"actor": {"login": actor}} if actor else {})})
         self.publish()
 
@@ -13502,6 +13507,225 @@ class VariableScheduleTest(Scheduled):
                            {"check_runs": [self.check(HEAD, self.LPS, ago(100), number=number)]})
                 rc, out, runs = self.started(variable=value)
                 self.assertEqual((rc, runs), (0, want), out)
+
+
+# The head branch of an export pull request: a branch of REPO whose name starts with release/ (held.sh exported).
+EXPORT_BRANCH = "release/2026-11-22"
+
+
+class ExportTest(Scheduled):
+    """Round 17, part 3 (OSSV-221's architect, 2026-11-22 17:18Z): an export pull request, whose head repository is
+    this repository and whose head branch starts with release/ (held.sh exported), is no item of the workflow on every
+    path. The trust job gives it no task on any event and for any task, with one notice that says why. So no job after
+    the trust job runs, and nothing is written. The rescreen pass starts no run of it for any reason, open or closed,
+    and starts the same work of an ordinary pull request beside it. Each case has a control on changed code (both):
+    held.sh with exported false for every pull request, as if the skip were taken out. On that code, the same case
+    gets its task or its run. A fork's branch release/x and the branch feature/x of this repository stay ordinary pull
+    requests."""
+
+    WHY = (f"it is an export pull request, from the branch {EXPORT_BRANCH} of this repository. This workflow does not "
+           "act on it.")
+    LISTED = (f"#8: an export pull request, from the branch {EXPORT_BRANCH} of this repository, of which the trust job "
+              "takes no run.")
+
+    def both(self, run):
+        """run() on the code as it is, then on the changed code of the control: the trust step and the pass's step
+        source .github/review/held.sh from GITHUB_WORKSPACE, which then holds a copy of that file whose exported is
+        false for every pull request, as if the skip were taken out. Both results."""
+        root = os.path.join(self.dir, "unskipped")
+        path = os.path.join(root, ".github", "review", "held.sh")
+        if not os.path.exists(path):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(held_sh() + "\nexported() { return 1; }\n")
+        before = run()
+        workspace = self.env["GITHUB_WORKSPACE"]
+        self.env["GITHUB_WORKSPACE"] = root
+        try:
+            return before, run()
+        finally:
+            self.env["GITHUB_WORKSPACE"] = workspace
+
+    def test_the_trust_job_gives_an_export_pull_request_no_task_on_any_event_or_task(self):
+        """Mallory's export pull request #7: a CI run of it (one that names it, and one that names no pull request),
+        her comment on it, and a run by hand of each task that names a pull request, by alice and by the rescreen pass.
+        Each gets no task and the notice "No <task> of #7: <why>" once. No job after the trust job runs, and the trust
+        job writes nothing: no label, no comment, no check run, no close and no reopen. On the changed code of the
+        control, each of them by alice or by an event gets its task. A draft, a reply and a stop get no task there
+        either, and no notice of an export pull request."""
+        ci = {"event": "workflow_run", "actor": "mallory", "number": "", "head": HEAD,
+              "head_repository": str(REPO_ID), "head_branch": EXPORT_BRANCH}
+        cases = [("a CI run that names it", {}, dict(ci, pulls=[named_pr(7)]), "review", "review"),
+                 ("a CI run that names no pull request", {}, dict(ci, pulls=[]), "review", "review"),
+                 ("a comment of its author", {}, {"event": "issue_comment", "actor": "mallory", "comment": "900"},
+                  "answer", "answer")]
+        for task, item, inputs, want in (
+                ("review", {}, {}, "review"), ("answer", {}, {"comment": "900"}, "answer"),
+                ("rescreen", {}, {"account": "mallory"}, "rescreen"), ("approve", {}, {}, "approve"),
+                ("catchup", {}, {}, "catchup"), ("conflict", {"merge": "dirty"}, {}, "conflict"),
+                ("relabel", {}, {}, "relabel"), ("draft", {}, {}, ""), ("reply", {}, {"reply": "Thanks."}, ""),
+                ("stop", {}, {"comment": "hold-review", "head": HEAD}, "")):
+            for actor in {"reply": ("alice",), "stop": (BOT,)}.get(task, ("alice", BOT)):
+                cases.append((f"the task {task} of {actor}", item,
+                              dict(inputs, event="workflow_dispatch", actor=actor, task=task), task,
+                              want if actor == "alice" or task == "stop" else None))
+
+        def run(inputs):
+            self.forget()
+            return (*self.run_trust(**inputs), writes(self.api))
+        for case, item, inputs, task, want in cases:
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.origin(50, "mallory")
+                self.item(kind="pr", repository=REPO_ID, branch=EXPORT_BRANCH, labels=("review-held",),
+                          comments=[said(900, 400), limit_hold(50, at=ago(65))], **item)
+                if want is None:
+                    (rc, out, got, wrote), control = run(inputs), None
+                else:
+                    (rc, out, got, wrote), control = self.both(lambda: run(inputs))
+                self.assertEqual((rc, got.get("task"), got.get("route")), (0, None, None), out)
+                self.assertEqual(out.count(f"::notice::No {task} of #7: {self.WHY}"), 1, out)
+                self.assertEqual(wrote, [])
+                self.assertEqual(ran_jobs(run_graph(got, github={"github.event_name": inputs["event"]})), {"trust"})
+                if control is not None:
+                    _rc, out, got, _wrote = control
+                    self.assertNotIn(self.WHY, out)
+                    self.assertEqual(got.get("task", ""), want, out)
+                    self.assertEqual(bool(got.get("route")), bool(want), out)
+
+    def test_the_rescreen_pass_starts_no_run_of_an_export_pull_request_for_any_reason(self):
+        """Mallory's ordinary pull request #7 at HEAD, from BRANCH of her fork, and her export pull request #8 at
+        OTHER_HEAD, from EXPORT_BRANCH of this repository, are each due the same work: the approval of the runs of its
+        head that GitHub holds, the rescreen of a hold of its review, the stop of that hold after REVIEW_TRIES runs that
+        settled nothing, the answer to her comment that waits, the comment on a merge conflict, the catch-up of a head
+        that no run met, the relabel that withdraws an import check run that a run owes, and the reopen of a catch-up
+        left closed. The pass starts the run of #7 alone, and says once why #8 gets none. On the changed code of the
+        control, it starts the same run of #8 too. A run of the pass with the number of #8 starts nothing either, and
+        one with the number of #7 starts its conflict run."""
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        closed = []
+
+        def pull(n, head, repository, branch, **facts):
+            self.item(n, kind="pr", head=head, repository=repository, branch=branch, **facts)
+
+        def approve(n, head, repository, branch):
+            pull(n, head, repository, branch)
+            self.of_heads += [{"id": 60 + 2 * n + i, "status": "action_required", "event": "pull_request",
+                               "head_sha": head, "path": ".github/workflows/ci.yml", "head_branch": branch,
+                               "head_repository": {"id": repository}, "created_at": ago(300)} for i in (0, 1)]
+            self.publish()
+            return str(n), "approve", "mallory", head, ""
+
+        def rescreen(n, head, repository, branch):
+            self.origin(40 + n, "mallory")
+            pull(n, head, repository, branch, labels=("review-held",), comments=[limit_hold(40 + n, at=ago(65))])
+            return str(n), "rescreen", "mallory", head, ""
+
+        def stop(n, head, repository, branch):
+            self.origin(40 + n, "mallory")
+            pull(n, head, repository, branch, labels=("review-held",),
+                 comments=[limit_hold(40 + n, at=ago(400), tries=0)])
+            for i in range(self.TRIES):
+                self.ran(100 * n + i, f"rescreen #{n} at {head} of mallory", made=70 + 90 * i)
+            return str(n), "stop", "", head, "hold-review"
+
+        def answer(n, head, repository, branch):
+            pull(n, head, repository, branch, comments=[said(900 + n, 400)])
+            return str(n), "answer", "mallory", "", str(900 + n)
+
+        def conflict(n, head, repository, branch):
+            pull(n, head, repository, branch, merge="dirty")
+            return str(n), "conflict", "", head, ""
+
+        def catchup(n, head, repository, branch):
+            pull(n, head, repository, branch)
+            self.ci(ended=90, head=head, run=70 + n, repository=repository, branch=branch)
+            return str(n), "catchup", "", head, ""
+
+        def owed(n, head, repository, branch):
+            last_try = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
+                        "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated review did not "
+                                f"finish after {self.TRIES} tries. The workflow does not try it again. This pull "
+                                "request comes from an account without write access to this repository. The automated "
+                                f"screen passed this pull request.\n\n<!-- review-held-head {head} -->"}
+            label = rules.label_comment("import", "", [rules.import_marker(head, None)])
+            marked = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                      "body": rules.with_marker(label, f"<!-- withdraw-owed {head} blocking 80 -->")}
+            pull(n, head, repository, branch, labels=("review-held",),
+                 comments=[review_of(head, at=ago(250), screened=False), last_try, marked])
+            self.ran(10 + n, f"review {head} by mallory", made=101, ended=61, event="workflow_run", jobs=[
+                attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), refused])
+            return str(n), "relabel", "", head, ""
+
+        def reopen(n, head, repository, branch):
+            pull(n, head, repository, branch)
+            self.listed.pop()
+            self.open_prs.pop()
+            self.merge(n, "clean", state="closed")
+            closed.append((n, "mallory", ago(65), VERIFY_APP_LOGIN, repository, branch))
+            self.serve("graphql", closed_pulls(*closed))
+            self.ran(60 + n, f"catchup #{n} at {head}", made=70, ended=64, jobs=[LeftClosedTest.FAILED])
+            return str(n), "catchup", "", head, ""
+        for case, setup, status in (("held runs of its head", approve, 0), ("a hold of its review", rescreen, 0),
+                                    ("the stop of that hold", stop, 1), ("a comment that waits", answer, 0),
+                                    ("a merge conflict", conflict, 0), ("a head that no run met", catchup, 0),
+                                    ("a withdrawal that a run owes", owed, 0), ("a catch-up left closed", reopen, 0)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                closed.clear()
+                ordinary = setup(7, HEAD, FORK_ID, BRANCH)
+                export = setup(8, OTHER_HEAD, REPO_ID, EXPORT_BRANCH)
+                (rc, out, runs), (rc2, out2, runs2) = self.both(self.started)
+                self.assertEqual((rc, runs), (status, [ordinary]), out)
+                self.assertEqual(out.count(self.LISTED), 1, out)
+                self.assertEqual((rc2, sorted(runs2)), (status, sorted([ordinary, export])), out2)
+                self.assertNotIn(self.LISTED, out2)
+        with self.subTest(case="a run of the pass with a number"):
+            self.tearDown()
+            self.setUp()
+            conflict(7, HEAD, FORK_ID, BRANCH)
+            conflict(8, OTHER_HEAD, REPO_ID, EXPORT_BRANCH)
+            (rc, out, runs), (rc2, out2, runs2) = self.both(lambda: self.started(number=8))
+            self.assertEqual((rc, runs), (0, []), out)
+            self.assertEqual(out.count(self.LISTED), 1, out)
+            self.assertEqual((rc2, runs2), (0, [("8", "conflict", "", OTHER_HEAD, "")]), out2)
+            rc, out, runs = self.started(number=7)
+            self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+
+    def test_a_forks_release_branch_and_another_branch_of_this_repository_stay_ordinary_pull_requests(self):
+        """The head repository and the head branch decide together. A fork's branch release/x, and the branch
+        feature/x of this repository, make no export pull request. Mallory's #7 from such a branch gets its task from a
+        CI run of it, from her comment and from a review by hand, as before, with no notice of an export pull request.
+        The rescreen pass starts the conflict run of each such pull request."""
+        for case, repository, branch, pulls in (("a fork's branch release/x", FORK_ID, "release/x", []),
+                                                ("the branch feature/x of this repository", REPO_ID, "feature/x",
+                                                 [named_pr(7)])):
+            for inputs, want in (({"event": "workflow_run", "actor": "mallory", "number": "", "head": HEAD,
+                                   "head_repository": str(repository), "head_branch": branch, "pulls": pulls},
+                                  ("review", "screen")),
+                                 ({"event": "issue_comment", "actor": "mallory", "comment": "900"},
+                                  ("answer", "screen")),
+                                 ({"event": "workflow_dispatch", "actor": "alice", "task": "review"},
+                                  ("review", "review"))):
+                with self.subTest(case=case, event=inputs["event"]):
+                    self.tearDown()
+                    self.setUp()
+                    self.item(kind="pr", repository=repository, branch=branch, comments=[said(900, 400)])
+                    rc, out, got = self.run_trust(**inputs)
+                    self.assertEqual((rc, got.get("task"), got.get("route")), (0, *want), out)
+                    self.assertNotIn("export pull request", out)
+        with self.subTest(case="the rescreen pass"):
+            self.tearDown()
+            self.setUp()
+            self.item(7, kind="pr", repository=FORK_ID, branch="release/x", merge="dirty")
+            self.item(8, kind="pr", head=OTHER_HEAD, repository=REPO_ID, branch="feature/x", merge="dirty")
+            rc, out, runs = self.started()
+            self.assertEqual((rc, sorted(runs)), (0, [("7", "conflict", "", HEAD, ""),
+                                                      ("8", "conflict", "", OTHER_HEAD, "")]), out)
+            self.assertNotIn("export pull request", out)
 
 
 # --- what starts each workflow --------------------------------------------------------------------------------------
