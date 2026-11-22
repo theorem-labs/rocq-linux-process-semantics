@@ -670,11 +670,86 @@ Definition ETIMEDOUT       : Z := 110%Z.
 (** It names the canonical outcome of the connection attempt
     [Net.Socket.connect_spec] declines, so that [Checks.Cases.Net.Socket]
     can pin that the declined arm answers [Unmodeled] to a real errno
-    rather than to a bare 111; and it is one of the soft errors a send
-    behind the peer's FIN can answer ([Net.Socket.tcp_soft_errnos]). *)
+    rather than to a bare 111; and it is one of the soft errors the
+    retransmit timer's end can answer ([tcp_soft_errnos]). *)
 Definition ECONNREFUSED    : Z := 111%Z.
 Definition EHOSTDOWN       : Z := 112%Z.
 Definition EHOSTUNREACH    : Z := 113%Z.
+
+(** THE SOFT ERRORS OF AN AF_INET TCP CONNECTION: every value
+    [sk_err_soft] can hold once the handshake is done, which
+    [tcp_write_err] stores in place of ETIMEDOUT when the retransmit
+    timer gives up (net/ipv4/tcp_timer.c:76-80).  So the timer's end
+    answers ETIMEDOUT or one of these, consumed once: a read of a
+    connection whose script ends [NTimedOut] ([NetStream];
+    [Fs.ReadWrite.read_spec], [Fs.ReadWrite.readv_imported]), and a send
+    on it or behind the peer's FIN ([Net.Socket.end_more_errnos]).  The
+    list lives here, beside the values it names, because both of those
+    files read it and [Sys.Net.Socket] imports [Sys.Fs.ReadWrite].
+
+    The model's TCP sockets are AF_INET ones ([Net.Socket.socket_spec]),
+    so the writers are these, Linux v6.18.46 throughout:
+    - [tcp_v4_err], for an ICMP error a router or the peer's host sends
+      (net/ipv4/tcp_ipv4.c:568-614), stores it there when the socket has
+      no IP_RECVERR or the user holds the socket (:650-656), and no
+      answered call sets IP_RECVERR ([Net.Socket.setsockopt_spec]
+      declines the option table): EPROTO for a parameter problem
+      (:576-577); the [icmp_err_convert] entry of a destination-unreachable
+      code (:579-601, net/ipv4/icmp.c:122-187), which is ENETUNREACH,
+      EHOSTUNREACH, ENOPROTOOPT, ECONNREFUSED, EOPNOTSUPP, EHOSTDOWN or
+      ENONET; and EHOSTUNREACH for a time exceeded (:609-610).
+      Fragmentation needed goes to [tcp_v4_mtu_reduced] instead
+      (:583-598), which stores EMSGSIZE (:388-389).
+    - [inet_sk_rebuild_header] (net/ipv4/af_inet.c:1305-1337), which a
+      retransmission calls (net/ipv4/tcp_output.c:3501), stores the error
+      of a route lookup that fails once the cached route is stale
+      (:1323-1333): EINVAL or ENETUNREACH
+      ([ip_route_output_key_hash_rcu], net/ipv4/route.c:2752, :2756,
+      :2809; [__mkroute_output], :2603, :2609, :2619), ENOBUFS
+      (:2685), or the FIB's EINVAL, EHOSTUNREACH, EACCES or ENETUNREACH
+      (:2841-2872; [fib_lookup], include/net/ip_fib.h:316-334, without
+      CONFIG_IP_MULTIPLE_TABLES, which neither arch/riscv/configs/defconfig
+      nor testing/vm/kernel.fragment sets; [fib_props],
+      net/ipv4/fib_semantics.c:113-134).  The xfrm step after it
+      ([ip_route_output_flow], route.c:2964-2969) hands the route back:
+      [xfrm_lookup_route] refuses only under a policy or a default of
+      block (net/xfrm/xfrm_policy.c:3300-3309), and the configuration of
+      record builds nothing that installs either (CONFIG_XFRM_USER is
+      [=m] in arch/riscv/configs/defconfig:54, which the build turns off,
+      CONFIG_NET_KEY is not set, and a socket's own policy needs one of
+      them, net/xfrm/xfrm_state.c:3005-3012).
+      Not ENODEV, which the lookup answers only for an output interface
+      that names no device (net/ipv4/route.c:2801-2805): the rebuild's
+      flow takes that interface from [sk_bound_dev_if]
+      ([inet_sk_init_flowi4], include/net/route.h:134-158), and a
+      modeled connection has none.  [sock_bindtoindex_locked]
+      (net/core/sock.c:657) sets it for SO_BINDTODEVICE and
+      SO_BINDTOIFINDEX, which [Net.Socket.setsockopt_spec] declines with
+      the rest of the option table.  An accepted connection takes
+      [ir_iif] (net/ipv4/inet_connection_sock.c:1246), which its request
+      took from [inet_request_bound_dev_if] (net/ipv4/tcp_input.c:7485,
+      net/ipv4/syncookies.c:276): the listener's own binding, none as
+      well, because the arm that would take an l3mdev master's index
+      instead (include/net/inet_sock.h:119-130) is built only with
+      CONFIG_NET_L3_MASTER_DEV.  The configuration of record leaves that
+      unset: neither arch/riscv/configs/defconfig nor
+      testing/vm/kernel.fragment sets it, and the one symbol that selects
+      it, IPVLAN_L3S (drivers/net/Kconfig:196-200), needs IPVLAN, which is
+      [=m] in arch/riscv/configs/defconfig:130 and so turned off as
+      CONFIG_XFRM_USER is, and NETFILTER, which the fragment unsets.  VRF,
+      the one l3mdev master (drivers/net/vrf.c:1709), needs
+      CONFIG_IP_MULTIPLE_TABLES as well (drivers/net/Kconfig:476-479).
+    The other writers are [tcp_v4_err]'s handshake arm (tcp_ipv4.c:630),
+    which a connection [accept] hands over has left, and IPv6's four,
+    which an AF_INET socket never reaches: [tcp_v6_err]'s
+    (net/ipv6/tcp_ipv6.c:498, :515), [inet6_sk_rebuild_header]'s
+    (net/ipv6/af_inet6.c:851) and [inet6_csk_xmit]'s
+    (net/ipv6/inet6_connection_sock.c:108); [tcp_v6_err]'s values
+    (net/ipv6/icmp.c:1111-1175) are in the list all the same.  A superset
+    where it is wide, so that no error Linux stores is refused. *)
+Definition tcp_soft_errnos : list Z :=
+  [EPROTO; ENETUNREACH; EHOSTUNREACH; ENOPROTOOPT; ECONNREFUSED; EOPNOTSUPP;
+   EHOSTDOWN; ENONET; EMSGSIZE; EINVAL; EACCES; ENOBUFS].
 
 (* =========================================================================
    Syscall inputs and effects
@@ -2400,7 +2475,9 @@ Proof. apply stream_const_infinite. Qed.
                        -ECONNRESET and every later read delivers 0;
     - [NTimedOut]    — it stopped acknowledging until the retransmit
                        timer gave up (net/ipv4/tcp_timer.c [tcp_write_err]).
-                       ONE read answers -ETIMEDOUT, then 0.
+                       ONE read answers -ETIMEDOUT, or the soft error the
+                       timer stored in its place ([tcp_soft_errnos]),
+                       then 0.
 
     COINDUCTIVE, so a peer that never stops sending is expressible —
     the same reason [InputStream] is coinductive.
@@ -2414,12 +2491,18 @@ Proof. apply stream_const_infinite. Qed.
     for [Run.valid_input] to carry.
 
     WHY EXACTLY {RST, TIMEDOUT} AND NOTHING ELSE.  Those are the only
-    two errnos a peer can force on the read side of an established
+    two error ends a peer can force on the read side of an established
     AF_INET/SOCK_STREAM socket with default options and no cooperation
     from the local program.  -EAGAIN needs O_NONBLOCK, -EINTR needs a
-    signal, -EHOSTUNREACH/-ENETUNREACH need IP_RECVERR, and none of the
-    three is in the modeled surface — so admitting them would model
-    something the model cannot reach.
+    signal, -EHOSTUNREACH/-ENETUNREACH as an answer of their own need
+    IP_RECVERR, and none of the three is in the modeled surface — so
+    admitting them would model something the model cannot reach.
+    Without IP_RECVERR such an ICMP error waits in [sk_err_soft]
+    (net/ipv4/tcp_ipv4.c:650-656, Linux v6.18.46).  getsockopt's
+    SO_ERROR also returns and clears it (net/core/sock.c:1795-1798), but
+    [Net.Socket.getsockopt_spec] declines that option, so in the modeled
+    surface it comes out only as the error the timer's end stores,
+    which is why the read of an [NTimedOut] end admits it.
 
     WHY ONE ERROR AND THEN END-OF-STREAM, rather than a sticky error.
     include/net/sock.h [sock_error] reads the pending error with an
@@ -2716,10 +2799,11 @@ Definition nq_rest (q : NetQueue) : NetQueue :=
                        end are still delivered, and the terminal says how
                        the connection ended — [NRst] a RST on an
                        established connection (ECONNRESET, :4700-4701),
-                       [NTimedOut] the timer (ETIMEDOUT), [NFin] a RST
-                       after the peer's FIN (EPIPE, :4695-4697) or the
-                       timer after it (ETIMEDOUT or the soft error,
-                       net/ipv4/tcp_timer.c:76-80; see
+                       [NFin] a RST after the peer's FIN (EPIPE,
+                       :4695-4697) or the timer after it, and [NTimedOut]
+                       the timer: ETIMEDOUT or the soft error stored in
+                       its place, net/ipv4/tcp_timer.c:76-80
+                       ([tcp_soft_errnos]; behind a FIN, see
                        [Net.Socket.end_more_errnos]).
                        [pending] says that error is still in [sk_err]:
                        include/net/sock.h [sock_error] consumes it with an

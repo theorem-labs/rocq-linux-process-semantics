@@ -20,17 +20,30 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Uaccess.
 
+(** THE PEER'S STORED ERROR, CONSUMED, on the read side: the claimed
+    return is one of [es] — ECONNRESET alone for a RST, ETIMEDOUT or one
+    of [State.tcp_soft_errnos] for the retransmit timer's end — and the
+    accepted model is the one whose connection has moved to [after].
+    [check_socket_pending_error] and [check_readv_imported]'s timed-out
+    arms share it. *)
+Definition check_pending_errno (es : list Z) (fd : word) (after : SockState)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  if errno_ret_in es (eff_ret eff)
+  then check_ret_only eff (eff_ret eff)
+         (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m) []
+  else CheckReject.
+
 (** [ReadWrite.socket_pending_error] as an acceptor: the read that
     reports the peer's RST or timeout also consumes it, so the accepted
-    model is the one whose connection has moved to [SkReset].  No byte
+    model is the one whose connection has moved to [SkReset], and the
+    error is [e] or one of [more] ([check_pending_errno]).  No byte
     moves, so the range verdict is all that is left in front of it. *)
 
-Definition check_socket_pending_error (e : Z) (fd : word) (after : SockState)
-    (buf count : word) (i : SyscallInput) (eff : SyscallEffect)
-    (m : Model) : check_result :=
+Definition check_socket_pending_error (e : Z) (more : list Z) (fd : word)
+    (after : SockState) (buf count : word) (i : SyscallInput)
+    (eff : SyscallEffect) (m : Model) : check_result :=
   check_access_ok_zero buf count eff m
-    (check_ret_only eff (errno_ret e)
-       (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m) []).
+    (check_pending_errno (e :: more) fd after eff m).
 
 (** [ReadWrite.read_urandom] as an acceptor, branch for branch: the
     zero count, the first-byte verdict, the stream's length test, the
@@ -601,6 +614,143 @@ Proof. intros r i m H. unfold ret_only, pure in H. discriminate H. Qed.
 Lemma unmodeled_no_ok {A} : forall i m (x : A) m' evs,
   ~ (@unmodeled A) i m (Ok x m' evs).
 Proof. intros i m x m' evs H. unfold unmodeled in H. discriminate H. Qed.
+
+(** THE PEER'S STORED ERROR, read back on both sides: the spec's
+    consumption ([set_fds], then an errno of [es]) and
+    [check_pending_errno] accept the same outcomes, and neither declines.
+    The socket arms of [read] and [readv] below apply these by name. *)
+
+Lemma pending_errno_ok_inv : forall es fds i m eff m' evs,
+  (set_fds fds ;; e' <- errno_from es ;; err_ret e') i m (Ok eff m' evs) ->
+  exists e, In e es /\ eff = mkEffect (errno_ret e) [] []
+            /\ m' = with_fds fds m /\ evs = [].
+Proof.
+  intros es fds i m eff m' evs H.
+  unfold bind in H. cbv beta iota in H.
+  destruct H as (u & m1 & evs1 & evs2 & Hm & Hk & ->).
+  unfold set_fds, modify in Hm. inversion Hm; subst; try clear Hm.
+  destruct Hk as (e & m2 & evs3 & evs4 & Hch & Hr & ->).
+  unfold errno_from, choose in Hch. destruct Hch as (e0 & HIn & Hq).
+  inversion Hq; subst; try clear Hq.
+  unfold err_ret, ret_only, pure in Hr. inversion Hr; subst; try clear Hr.
+  eexists. split; [eassumption|]. split; [reflexivity|]. split; reflexivity.
+Qed.
+
+Lemma pending_errno_no_unmodeled : forall es fds i m,
+  ~ (set_fds fds ;; e' <- errno_from es ;; err_ret e') i m Unmodeled.
+Proof.
+  intros es fds i m H.
+  unfold bind in H. cbv beta iota in H.
+  destruct H as [H|(u & m1 & evs1 & Hm & [H|(e & m2 & evs2 & Hch & H)])].
+  - unfold set_fds, modify in H. discriminate H.
+  - unfold errno_from, choose in H. destruct H as (e & _ & H). discriminate H.
+  - unfold err_ret, ret_only, pure in H. discriminate H.
+Qed.
+
+Lemma check_pending_errno_ok : forall es fd after eff m m' evs,
+  check_pending_errno es fd after eff m = CheckOk m' evs ->
+  exists e, In e es /\ eff = mkEffect (errno_ret e) [] []
+            /\ m' = with_fds (fd_insert (m_fds m) fd (FdSocket after)) m
+            /\ evs = [].
+Proof.
+  intros es fd after eff m m' evs H. unfold check_pending_errno in H.
+  destruct (errno_ret_in es (eff_ret eff)) eqn:He; cbv beta iota in H;
+    [|discriminate].
+  apply errno_ret_in_true in He. destruct He as (e & HIn & Hr).
+  rewrite Hr in H.
+  apply check_ret_only_ok_iff in H. destruct H as (Heff & Hm & Hevs).
+  exists e. split; [exact HIn|]. split; [exact Heff|]. split; assumption.
+Qed.
+
+Lemma check_pending_errno_no_unmodeled : forall es fd after eff m,
+  check_pending_errno es fd after eff m <> CheckUnmodeled.
+Proof.
+  intros es fd after eff m. unfold check_pending_errno.
+  destruct (errno_ret_in es (eff_ret eff)); cbv beta iota;
+    [apply check_ret_only_no_unmodeled|discriminate].
+Qed.
+
+Lemma check_pending_errno_intro : forall es fd after e m,
+  In e es ->
+  check_pending_errno es fd after (mkEffect (errno_ret e) [] []) m
+  = CheckOk (with_fds (fd_insert (m_fds m) fd (FdSocket after)) m) [].
+Proof.
+  intros es fd after e m HIn. unfold check_pending_errno.
+  replace (eff_ret (mkEffect (errno_ret e) [] [])) with (errno_ret e)
+    by reflexivity.
+  rewrite (errno_ret_in_intro _ _ HIn). cbv beta iota.
+  apply check_ret_only_ok_iff. split; [reflexivity|]. split; reflexivity.
+Qed.
+
+Lemma check_pending_errno_sound_ok : forall es fd after eff m m' evs i,
+  check_pending_errno es fd after eff m = CheckOk m' evs ->
+  (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
+   e' <- errno_from es ;; err_ret e') i m (Ok eff m' evs).
+Proof.
+  intros es fd after eff m m' evs i H.
+  apply check_pending_errno_ok in H. destruct H as (e & HIn & -> & -> & ->).
+  eapply bind_ok0; [apply modify_ok|]. cbv beta.
+  eapply bind_ok0; [apply (choose_ok _ e); exact HIn|]. apply pure_ok.
+Qed.
+
+Lemma check_pending_errno_complete_ok : forall es fd after i m eff m' evs,
+  (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
+   e' <- errno_from es ;; err_ret e') i m (Ok eff m' evs) ->
+  check_pending_errno es fd after eff m = CheckOk m' evs.
+Proof.
+  intros es fd after i m eff m' evs H.
+  apply pending_errno_ok_inv in H. destruct H as (e & HIn & -> & -> & ->).
+  apply check_pending_errno_intro. exact HIn.
+Qed.
+
+(** [check_socket_pending_error] against [ReadWrite.socket_pending_error]:
+    the range verdict, then the stored error above. *)
+
+Lemma check_socket_pending_error_sound_ok :
+  forall e more fd after buf count i eff m m' evs,
+  check_socket_pending_error e more fd after buf count i eff m = CheckOk m' evs ->
+  socket_pending_error e more fd after buf count i m i m (Ok eff m' evs).
+Proof.
+  intros e more fd after buf count i eff m m' evs H.
+  unfold check_socket_pending_error in H. unfold socket_pending_error.
+  ok_zero_cases H buf count.
+  - apply check_pending_errno_sound_ok. exact H.
+  - apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
+Qed.
+
+Lemma check_socket_pending_error_no_unmodeled :
+  forall e more fd after buf count i eff m,
+  check_socket_pending_error e more fd after buf count i eff m <> CheckUnmodeled.
+Proof.
+  intros e more fd after buf count i eff m.
+  unfold check_socket_pending_error, check_access_ok_zero.
+  destruct (access_okb buf (bv_unsigned count)); cbv beta iota;
+    [apply check_pending_errno_no_unmodeled | apply check_ret_only_no_unmodeled].
+Qed.
+
+Lemma check_socket_pending_error_complete_ok :
+  forall e more fd after buf count i eff m m' evs,
+  socket_pending_error e more fd after buf count i m i m (Ok eff m' evs) ->
+  check_socket_pending_error e more fd after buf count i eff m = CheckOk m' evs.
+Proof.
+  intros e more fd after buf count i eff m m' evs H.
+  unfold socket_pending_error, access_ok_zero in H.
+  unfold check_socket_pending_error, check_access_ok_zero.
+  destruct (access_okb buf (bv_unsigned count)); cbv beta iota in H |- *.
+  - exact (check_pending_errno_complete_ok _ _ _ _ _ _ _ _ H).
+  - unfold err_ret in H. apply ret_only_ok_inv in H. destruct H as (-> & -> & ->).
+    apply check_ret_only_ok_iff. split; [reflexivity|]. split; reflexivity.
+Qed.
+
+Lemma socket_pending_error_not_unmodeled : forall e more fd after buf count i m,
+  ~ socket_pending_error e more fd after buf count i m i m Unmodeled.
+Proof.
+  intros e more fd after buf count i m H.
+  unfold socket_pending_error, access_ok_zero in H.
+  destruct (access_okb buf (bv_unsigned count)); cbv beta iota in H.
+  - exact (pending_errno_no_unmodeled _ _ _ _ H).
+  - unfold err_ret in H. exact (ret_only_no_unmodeled _ _ _ H).
+Qed.
 
 Lemma sigpipe_write_ok_inv : forall i m eff m' evs,
   sigpipe_write i m (Ok eff m' evs) ->
@@ -1928,9 +2078,10 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
               check_access_ok_zero buf count eff m
                 (check_ret_only eff (Z_to_bv 64 0) m [])
           | NRst =>
-              check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false sent) buf count i eff m
+              check_socket_pending_error ECONNRESET [] fd (SkReset peer ch NRst false false sent) buf count i eff m
           | NTimedOut =>
-              check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false sent) buf count i eff m
+              check_socket_pending_error ETIMEDOUT tcp_soft_errnos fd
+                (SkReset peer ch NTimedOut false false sent) buf count i eff m
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count))
               then check_ret_only eff (errno_ret EFAULT) m []
@@ -1977,12 +2128,13 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
                 (check_ret_only eff (Z_to_bv 64 0) m [])
           | NRst =>
               if pending
-              then check_socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound sent) buf count i eff m
+              then check_socket_pending_error ECONNRESET [] fd (SkReset peer ch NRst false bound sent) buf count i eff m
               else check_access_ok_zero buf count eff m
                      (check_ret_only eff (Z_to_bv 64 0) m [])
           | NTimedOut =>
               if pending
-              then check_socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound sent) buf count i eff m
+              then check_socket_pending_error ETIMEDOUT tcp_soft_errnos fd
+                     (SkReset peer ch NTimedOut false bound sent) buf count i eff m
               else check_access_ok_zero buf count eff m
                      (check_ret_only eff (Z_to_bv 64 0) m [])
           | NCons _ _ =>
@@ -2673,23 +2825,16 @@ Proof.
         | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
           apply pure_ok ].
       * (* the peer's RST: reported once, and the report consumes it *)
-        unfold check_socket_pending_error in H. unfold socket_pending_error.
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-        ok_zero_cases H buf count;
-          [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-            eapply bind_ok0; [apply modify_ok|]; apply pure_ok
-          | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-            apply pure_ok ].
-      * (* the retransmit timer gave up: the same shape, -ETIMEDOUT *)
-        unfold check_socket_pending_error in H. unfold socket_pending_error.
+        cbv beta iota zeta in H.
+        apply check_socket_pending_error_sound_ok. exact H.
+      * (* the retransmit timer gave up: the same shape, -ETIMEDOUT or
+           the soft error stored in its place *)
         eapply bind_ok0; [apply input_ok|]. cbv beta.
         eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-        ok_zero_cases H buf count;
-          [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-            eapply bind_ok0; [apply modify_ok|]; apply pure_ok
-          | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-            apply pure_ok ].
+        cbv beta iota zeta in H.
+        apply check_socket_pending_error_sound_ok. exact H.
       * (* queued bytes: a nonempty prefix lands in a writable prefix *)
         destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
         { (* [vfs_read]'s [access_ok] refuses the named range: -EFAULT *)
@@ -2744,15 +2889,10 @@ Proof.
                   apply pure_ok
                 | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
                   apply pure_ok ]).
-      1-2: (unfold check_socket_pending_error in H; unfold socket_pending_error;
-            eapply bind_ok0; [apply input_ok|]; cbv beta;
+      1-2: (eapply bind_ok0; [apply input_ok|]; cbv beta;
             eapply bind_ok0; [apply get_model_ok|]; cbv beta iota; srw Hfd;
             cbv beta iota;
-            ok_zero_cases H buf count;
-              [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-                eapply bind_ok0; [apply modify_ok|]; apply pure_ok
-              | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-                apply pure_ok ]).
+            apply check_socket_pending_error_sound_ok; exact H).
       (* queued bytes: the [SkConnected] delivery, the reset state kept *)
       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
       { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -3024,19 +3164,11 @@ Proof.
         [ now apply check_ret_only_no_unmodeled in H
         | now apply check_ret_only_no_unmodeled in H ].
       * (* RST *)
-        unfold check_socket_pending_error in H. unfold socket_pending_error.
-        eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-        eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-      ok_zero_cases H buf count;
-        [ now apply check_ret_only_no_unmodeled in H
-        | now apply check_ret_only_no_unmodeled in H ].
+        cbv beta iota zeta in H.
+        now apply check_socket_pending_error_no_unmodeled in H.
       * (* timed out *)
-        unfold check_socket_pending_error in H. unfold socket_pending_error.
-        eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
-        eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota. srw Hfd.
-      ok_zero_cases H buf count;
-        [ now apply check_ret_only_no_unmodeled in H
-        | now apply check_ret_only_no_unmodeled in H ].
+        cbv beta iota zeta in H.
+        now apply check_socket_pending_error_no_unmodeled in H.
       * (* queued bytes: -EFAULT, a delivery, or the partial decline *)
         destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
         { now apply check_ret_only_no_unmodeled in H. }
@@ -3065,13 +3197,7 @@ Proof.
               ok_zero_cases H buf count;
                 [ now apply check_ret_only_no_unmodeled in H
                 | now apply check_ret_only_no_unmodeled in H ]).
-      1-2: (unfold check_socket_pending_error in H; unfold socket_pending_error;
-            eapply bind_unmodeled2; [apply input_ok|]; cbv beta;
-            eapply bind_unmodeled2; [apply get_model_ok|]; cbv beta iota; srw Hfd;
-            cbv beta iota;
-            ok_zero_cases H buf count;
-              [ now apply check_ret_only_no_unmodeled in H
-              | now apply check_ret_only_no_unmodeled in H ]).
+      1-2: (now apply check_socket_pending_error_no_unmodeled in H).
       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
       { now apply check_ret_only_no_unmodeled in H. }
       destruct (read_bytes_map (in_wmem i) buf (Z_to_bv 64 1)) as [w1|] eqn:Hw1.
@@ -3238,11 +3364,15 @@ Proof.
       destruct rx as [| | |b0 rx0]; cbv beta iota zeta in *.
       * (* FIN *) ok_zero_complete buf count.
       * (* RST, consumed by the read that reports it *)
-        unfold check_socket_pending_error. unfold socket_pending_error in *.
-        ok_zero_complete buf count.
-      * (* timed out *)
-        unfold check_socket_pending_error. unfold socket_pending_error in *.
-        ok_zero_complete buf count.
+        match goal with
+        | Hs : socket_pending_error _ _ _ _ _ _ _ _ _ _ _ |- _ =>
+            exact (check_socket_pending_error_complete_ok _ _ _ _ _ _ _ _ _ _ _ Hs)
+        end.
+      * (* timed out: ETIMEDOUT or the soft error, consumed the same way *)
+        match goal with
+        | Hs : socket_pending_error _ _ _ _ _ _ _ _ _ _ _ |- _ =>
+            exact (check_socket_pending_error_complete_ok _ _ _ _ _ _ _ _ _ _ _ Hs)
+        end.
       * (* queued bytes *)
         inv_ok.
         destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
@@ -3268,8 +3398,10 @@ Proof.
       destruct rx as [| | |b0 rx0]; [ | destruct pending | destruct pending | ];
         cbv beta iota zeta in *.
       1,3,5: ok_zero_complete buf count.
-      1-2: (unfold check_socket_pending_error; unfold socket_pending_error in *;
-            ok_zero_complete buf count).
+      1-2: (match goal with
+            | Hs : socket_pending_error _ _ _ _ _ _ _ _ _ _ _ |- _ =>
+                exact (check_socket_pending_error_complete_ok _ _ _ _ _ _ _ _ _ _ _ Hs)
+            end).
       inv_ok.
       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
         inv_ok.
@@ -6962,9 +7094,8 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
                 (with_fds (fd_insert (m_fds m) fd
                              (FdSocket (SkReset peer ch NRst false false sent))) m) []
           | NTimedOut =>
-              check_ret_only eff (errno_ret ETIMEDOUT)
-                (with_fds (fd_insert (m_fds m) fd
-                             (FdSocket (SkReset peer ch NTimedOut false false sent))) m) []
+              check_pending_errno (ETIMEDOUT :: tcp_soft_errnos) fd
+                (SkReset peer ch NTimedOut false false sent) eff m
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
               | None => check_ret_only eff (errno_ret EFAULT) m []
@@ -7014,9 +7145,8 @@ Definition check_readv_imported (i : SyscallInput) (fd : word)
               else check_ret_only eff (Z_to_bv 64 0) m []
           | NTimedOut =>
               if pending
-              then check_ret_only eff (errno_ret ETIMEDOUT)
-                     (with_fds (fd_insert (m_fds m) fd
-                                  (FdSocket (SkReset peer ch NTimedOut false bound sent))) m) []
+              then check_pending_errno (ETIMEDOUT :: tcp_soft_errnos) fd
+                     (SkReset peer ch NTimedOut false bound sent) eff m
               else check_ret_only eff (Z_to_bv 64 0) m []
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -7338,8 +7468,8 @@ Proof.
       * apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok.
       * apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
         eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
-      * apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-        eapply bind_ok0; [apply modify_ok|]. apply pure_ok.
+      * cbv beta iota in H |- *.
+        apply check_pending_errno_sound_ok. exact H.
       * destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
           as [one|] eqn:Hone.
         2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
@@ -7380,8 +7510,9 @@ Proof.
         cbv beta iota in H |- *.
       1,3,5: (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
               apply pure_ok).
-      1-2: (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-            eapply bind_ok0; [apply modify_ok|]; apply pure_ok).
+      1: (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+          eapply bind_ok0; [apply modify_ok|]; apply pure_ok).
+      1: (apply check_pending_errno_sound_ok; exact H).
       destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
         as [one|] eqn:Hone.
       2:{ apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->). apply pure_ok. }
@@ -7524,7 +7655,7 @@ Proof.
     + destruct rx as [| | |b0 rx0].
       * now apply check_ret_only_no_unmodeled in H.
       * now apply check_ret_only_no_unmodeled in H.
-      * now apply check_ret_only_no_unmodeled in H.
+      * cbv beta iota in H. now apply check_pending_errno_no_unmodeled in H.
       * destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
           as [one|] eqn:Hone.
         2:{ now apply check_ret_only_no_unmodeled in H. }
@@ -7545,7 +7676,8 @@ Proof.
         -- discriminate.
     + destruct rx as [| | |b0 rx0]; [ | destruct pending | destruct pending | ];
         cbv beta iota in H.
-      1-5: now apply check_ret_only_no_unmodeled in H.
+      1-5: first [ now apply check_ret_only_no_unmodeled in H
+                 | now apply check_pending_errno_no_unmodeled in H ].
       destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
         as [one|] eqn:Hone.
       2:{ now apply check_ret_only_no_unmodeled in H. }
@@ -7574,8 +7706,8 @@ Lemma check_readv_imported_complete_ok : forall i fd e iovs eff m m' evs,
 Proof.
   intros i fd e iovs eff m m' evs H.
   unfold readv_imported in H. unfold check_readv_imported. cbv zeta in *.
-  unfold readv_buf_gap, err_ret, ret_only, set_stdin, set_fds, modify, bind,
-    pure, choose, emit, unmodeled in H.
+  unfold readv_buf_gap, err_ret, ret_only, errno_from, set_stdin, set_fds, modify,
+    bind, pure, choose, emit, unmodeled in H.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz; hall Hz; inv_ok.
   { inv_ok. cbn; rewrite bv_eqb_refl. reflexivity. }
   destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].
@@ -7665,7 +7797,9 @@ Proof.
     + destruct rx as [| | |b0 rx0]; cbv beta iota zeta in *.
       * inv_ok. cbn; rewrite bv_eqb_refl. reflexivity.
       * inv_ok. cbn; rewrite bv_eqb_refl. reflexivity.
-      * inv_ok. cbn; rewrite bv_eqb_refl. reflexivity.
+      * inv_ok.
+        match goal with HIn : In _ (ETIMEDOUT :: _) |- _ =>
+          exact (check_pending_errno_intro _ _ _ _ _ HIn) end.
       * inv_ok.
         destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
           as [one|] eqn:Hone; hall Hone; inv_ok.
@@ -7692,7 +7826,9 @@ Proof.
         now rewrite app_nil_r.
     + destruct rx as [| | |b0 rx0]; [ | destruct pending | destruct pending | ];
         cbv beta iota zeta in *.
-      1-5: (inv_ok; cbn; rewrite bv_eqb_refl; reflexivity).
+      4: (inv_ok; match goal with HIn : In _ (ETIMEDOUT :: _) |- _ =>
+            exact (check_pending_errno_intro _ _ _ _ _ HIn) end).
+      1-4: (inv_ok; cbn; rewrite bv_eqb_refl; reflexivity).
       inv_ok.
       destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs) [Z_to_bv 8 0])
         as [one|] eqn:Hone; hall Hone; inv_ok.
@@ -7727,8 +7863,8 @@ Lemma check_readv_imported_complete_unmodeled : forall i fd e iovs m eff,
 Proof.
   intros i fd e iovs m eff H.
   unfold readv_imported in H. unfold check_readv_imported. cbv zeta in *.
-  unfold readv_buf_gap, err_ret, ret_only, set_stdin, set_fds, modify, bind,
-    pure, choose, emit, unmodeled in H.
+  unfold readv_buf_gap, err_ret, ret_only, errno_from, set_stdin, set_fds, modify,
+    bind, pure, choose, emit, unmodeled in H.
   destruct (Z.eqb (iovs_total (cap_iovecs iovs)) 0) eqn:Hz; hall Hz; inv_ok;
     try discriminate.
   destruct e as [ch|p off|p off| |sk|pid| | |sid side st| |].

@@ -344,18 +344,25 @@ Definition rw_pos_einvalb (off : word) (count : Z) : bool :=
     consumed [NFin] does, and is a separate constructor only because the
     two are different TCP states for a sender.  See [State.SockState].
 
+    THE ERROR IS [e] OR ONE OF [more], as on the send side
+    ([Net.Socket.send_on_socket]): a RST stores ECONNRESET alone, and
+    the retransmit timer stores ETIMEDOUT or the soft error the
+    connection held ([State.tcp_soft_errnos]; [tcp_write_err],
+    net/ipv4/tcp_timer.c:76-80, Linux v6.18.46), which [tcp_recvmsg_locked]
+    hands back through [sock_error] all the same.
+
     No byte moves, so the destination is never touched and the only
     thing left to decide about it is the range verdict [vfs_read] made
     before dispatching — hence [access_ok_zero].  Note that on the
     -EFAULT branch of that verdict the state is NOT advanced: the
     protocol is never reached, so the error stays pending, exactly as on
     Linux. *)
-Definition socket_pending_error (e : Z) (fd : word) (after : SockState)
-    (buf count : word) (i : SyscallInput) (m : Model)
+Definition socket_pending_error (e : Z) (more : list Z) (fd : word)
+    (after : SockState) (buf count : word) (i : SyscallInput) (m : Model)
     : Sys SyscallEffect :=
   access_ok_zero buf count
     (set_fds (fd_insert (m_fds m) fd (FdSocket after)) ;;
-     err_ret e).
+     e' <- errno_from (e :: more) ;; err_ret e').
 
 (** THE PAGE-MULTIPLE STOP of the random device's two copy loops.
     [get_random_bytes_user] (drivers/char/random.c:434-482, Linux
@@ -849,8 +856,13 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
                  sk_err, so END-OF-STREAM DOMINATES A LATER ERROR: once
                  EOF has been observed a subsequent RST cannot turn this
                  back into an error *)
-          | NRst => socket_pending_error ECONNRESET fd (SkReset peer ch NRst false false sent) buf count i m
-          | NTimedOut => socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false false sent) buf count i m
+          | NRst => socket_pending_error ECONNRESET [] fd (SkReset peer ch NRst false false sent) buf count i m
+          | NTimedOut =>
+              socket_pending_error ETIMEDOUT tcp_soft_errnos fd
+                (SkReset peer ch NTimedOut false false sent) buf count i m
+              (* the timer's end: ETIMEDOUT, or the soft error
+                 [tcp_write_err] stored in its place
+                 ([State.tcp_soft_errnos]) *)
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
                 (* [vfs_read]'s [access_ok] on the count the call NAMED,
@@ -925,18 +937,20 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
              exactly as on [SkConnected].  At the end: a FIN reads 0
              (SOCK_DONE is tested before sk_err, net/ipv4/tcp.c:2741,
              :2744); a RST or timeout whose error is still [pending] reads
-             that error once and consumes it; one already consumed reads
+             that error (for a timeout ETIMEDOUT or the soft error, as on
+             [SkConnected]) once and consumes it; one already consumed reads
              0, because tcp_done set RCV_SHUTDOWN (:2749), not the
              -ENOTCONN of the TCP_CLOSE arm below it (:2752-2756) *)
           match rx with
           | NFin => access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NRst =>
               if pending
-              then socket_pending_error ECONNRESET fd (SkReset peer ch NRst false bound sent) buf count i m
+              then socket_pending_error ECONNRESET [] fd (SkReset peer ch NRst false bound sent) buf count i m
               else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NTimedOut =>
               if pending
-              then socket_pending_error ETIMEDOUT fd (SkReset peer ch NTimedOut false bound sent) buf count i m
+              then socket_pending_error ETIMEDOUT tcp_soft_errnos fd
+                     (SkReset peer ch NTimedOut false bound sent) buf count i m
               else access_ok_zero buf count (ret_only (Z_to_bv 64 0))
           | NCons _ _ =>
               if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
@@ -3644,7 +3658,9 @@ Definition readv_imported (fd : word) (r : ReadableFd)
               err_ret ECONNRESET                (* delivered once, then end-of-stream *)
           | NTimedOut =>
               set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false false sent))) ;;
-              err_ret ETIMEDOUT
+              e' <- errno_from (ETIMEDOUT :: tcp_soft_errnos) ;; err_ret e'
+                (* ETIMEDOUT or the soft error stored in its place, as
+                   [read_spec]'s [socket_pending_error] answers it *)
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
               | None => err_ret EFAULT        (* first delivered byte unwritable *)
@@ -3695,7 +3711,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
           | NTimedOut =>
               if pending
               then (set_fds (fd_insert (m_fds m) fd (FdSocket (SkReset peer ch NTimedOut false bound sent))) ;;
-                    err_ret ETIMEDOUT)
+                    e' <- errno_from (ETIMEDOUT :: tcp_soft_errnos) ;; err_ret e')
               else ret_only (Z_to_bv 64 0)
           | NCons _ _ =>
               match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with

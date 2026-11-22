@@ -763,15 +763,18 @@ Proof.
         cbv beta iota zeta; srw Hfd.
         unfold socket_pending_error, access_ok_zero, access_ok_zero_witness.
         destruct (access_okb buf (bv_unsigned count)).
-        { eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+        { eapply bind_step; [apply modify_ok|]. cbv beta.
+          eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
         apply pure_ok.
-      * (* a pending timeout: the same shape *)
+      * (* a pending timeout: the same shape, the witness answering the
+           list's head, -ETIMEDOUT *)
         eapply bind_step; [apply input_ok|]. cbv beta.
         eapply bind_step; [apply get_model_ok|].
         cbv beta iota zeta; srw Hfd.
         unfold socket_pending_error, access_ok_zero, access_ok_zero_witness.
         destruct (access_okb buf (bv_unsigned count)).
-        { eapply bind_step; [apply modify_ok|]. apply pure_ok. }
+        { eapply bind_step; [apply modify_ok|]. cbv beta.
+          eapply bind_step; [apply errno_head_witness|]. apply pure_ok. }
         apply pure_ok.
       * (* a queued byte: the one-byte delivery *)
         destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
@@ -821,7 +824,9 @@ Proof.
             cbv beta iota zeta; srw Hfd; cbv beta iota zeta;
             unfold socket_pending_error, access_ok_zero, access_ok_zero_witness;
             destruct (access_okb buf (bv_unsigned count));
-              [ eapply bind_step; [apply modify_ok|]; apply pure_ok | apply pure_ok ]).
+              [ eapply bind_step; [apply modify_ok|]; cbv beta;
+                eapply bind_step; [apply errno_head_witness|]; apply pure_ok
+              | apply pure_ok ]).
       destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
       { eapply bind_step; [apply input_ok|]. cbv beta.
         eapply bind_step; [apply get_model_ok|].
@@ -2751,12 +2756,14 @@ Proof.
         srw Hfd; srw Hr; srw Himp; srw Htotal.
         eapply bind_step; [|apply pure_ok].
         eapply bind_step; [apply modify_ok|]. apply pure_ok.
-      * (* a pending timeout: the same shape *)
+      * (* a pending timeout: the same shape, the witness answering the
+           list's head, -ETIMEDOUT *)
         eapply bind_step; [apply input_ok|]. cbv beta.
         eapply bind_step; [apply get_model_ok|]. cbv beta iota zeta.
         srw Hfd; srw Hr; srw Himp; srw Htotal.
         eapply bind_step; [|apply pure_ok].
-        eapply bind_step; [apply modify_ok|]. apply pure_ok.
+        eapply bind_step; [apply modify_ok|]. cbv beta.
+        eapply bind_step; [apply errno_head_witness|]. apply pure_ok.
       * (* a queued byte: the one-byte scatter *)
         destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs0) [Z_to_bv 8 0])
           as [zero_writes|] eqn:Hzero.
@@ -2798,7 +2805,10 @@ Proof.
             eapply bind_step; [apply get_model_ok|]; cbv beta iota zeta;
             srw Hfd; srw Hr; srw Himp; srw Htotal; cbv beta iota zeta;
             eapply bind_step; [|apply pure_ok];
-            eapply bind_step; [apply modify_ok|]; apply pure_ok).
+            eapply bind_step; [apply modify_ok|];
+            first [ apply pure_ok
+                  | cbv beta; eapply bind_step; [apply errno_head_witness|];
+                    apply pure_ok ]).
       destruct (scatter_iovecs (in_wmem i) (cap_iovecs iovs0) [Z_to_bv 8 0])
         as [zero_writes|] eqn:Hzero.
       2:{ eapply bind_step; [apply input_ok|]. cbv beta.

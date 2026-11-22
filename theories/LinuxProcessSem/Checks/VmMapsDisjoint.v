@@ -1873,7 +1873,7 @@ Lemma check_read_frame : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count eff m m' evs H.
-  unfold check_read, check_read_urandom, check_socket_pending_error,
+  unfold check_read, check_read_urandom, check_socket_pending_error, check_pending_errno,
     check_access_ok_zero, check_eventfd_read in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
@@ -2005,7 +2005,7 @@ Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd r iovs0 eff m m' evs H.
-  unfold check_readv_imported in H.
+  unfold check_readv_imported, check_pending_errno in H.
   vm_frame3 H.
 Qed.
 

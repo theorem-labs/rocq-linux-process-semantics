@@ -2933,7 +2933,7 @@ Proof. split; check_eq. Qed.
     a first send moves two bytes and marks the connection [sent], the
     read finds the FIN, and the second send admits -ETIMEDOUT, and a soft
     error such as the -EHOSTUNREACH a router's host unreachable leaves
-    ([Net.Socket.tcp_soft_errnos]), each consumed into [SkReset] with
+    ([State.tcp_soft_errnos]), each consumed into [SkReset] with
     [sent] kept.  A bind that autobinds behind the FIN shows the end
     processed, not by what, so the send after it answers the same errors
     once.  -ECONNRESET, which no end behind a FIN stores, stays refused.
@@ -2999,15 +2999,61 @@ Example send_before_the_end_is_processed_goes_out :
     = CheckOk (sent_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
 Proof. split; check_eq. Qed.
 
-(** THE TIMER'S END, the same two answers: the stored ETIMEDOUT
-    (net/ipv4/tcp_timer.c [tcp_write_err]) once the connection is
-    TCP_CLOSE, consumed into [SkReset]; a RST's errno is refused. *)
+(** THE TIMER'S END: the stored ETIMEDOUT (net/ipv4/tcp_timer.c
+    [tcp_write_err]) once the connection is TCP_CLOSE, consumed into
+    [SkReset]; a RST's errno is refused.  The soft error the timer may
+    store in its place is [send_behind_a_timeout_finds_the_soft_error]. *)
 Example send_behind_a_timeout_finds_etimedout :
   sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
     = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ECONNRESET)
     = CheckReject.
 Proof. split; check_eq. Qed.
+
+(** THE TIMER'S END MAY CARRY THE SOFT ERROR.  [tcp_write_err]
+    (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46) stores [sk_err_soft] in
+    place of ETIMEDOUT when the connection holds one, and an established
+    connection can: [tcp_v4_err] keeps there the EHOSTUNREACH of a
+    router's host unreachable when the socket has no IP_RECVERR
+    (net/ipv4/tcp_ipv4.c:579-601, :650-656; [State.tcp_soft_errnos]).  So
+    a send on a connection whose script ends [NTimedOut] answers
+    -EHOSTUNREACH once and retires it, whatever [sent] says (it is false
+    here), and so does a send on a reset connection whose timeout is
+    still pending.  THE CONTROLS: a RST stores ECONNRESET whatever
+    [sk_err_soft] holds (net/ipv4/tcp_input.c:4691-4703), so
+    -EHOSTUNREACH on an [NRst] end is refused, connected or pending; and
+    -ECONNRESET on the timed-out end stays refused
+    ([send_behind_a_timeout_finds_etimedout]).  (313362fd refused the
+    -EHOSTUNREACH here.) *)
+Example send_behind_a_timeout_finds_the_soft_error :
+  sendto_answering (connected_socket_model NTimedOut) (errno_ret EHOSTUNREACH)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut true false false)))
+       (errno_ret EHOSTUNREACH)
+    = CheckOk (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut false false false))) []
+  /\ sendto_answering (connected_socket_model NRst) (errno_ret EHOSTUNREACH)
+    = CheckReject
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NRst true false false)))
+       (errno_ret EHOSTUNREACH)
+    = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** NO TIMER'S END CARRIES -ENODEV.  The route lookup answers it only for
+    an output interface that names no device (net/ipv4/route.c:2801-2805,
+    Linux v6.18.46), and no modeled connection has an interface bound, so
+    [sk_err_soft] never holds it ([State.tcp_soft_errnos] says why).  So
+    a send answering -ENODEV is refused on a timed-out connection,
+    connected or with its error pending, and behind a FIN once the
+    connection has sent.  (8de3d051 admitted all three.) *)
+Example send_behind_a_timeout_never_finds_enodev :
+  sendto_answering (connected_socket_model NTimedOut) (errno_ret ENODEV)
+    = CheckReject
+  /\ sendto_answering (retired_socket_model (FdSocket (SkReset demo_peer 3 NTimedOut true false false)))
+       (errno_ret ENODEV)
+    = CheckReject
+  /\ sendto_answering (sent_socket_model NFin) (errno_ret ENODEV)
+    = CheckReject.
+Proof. split_conj; check_eq. Qed.
 
 (** A RESET THE PROGRAM CONSUMED BY READING, THEN A BIND: the port went
     with the reset, so the bind autobinds (0 here; -EADDRINUSE when the
@@ -3088,8 +3134,8 @@ Proof. split_conj; check_eq. Qed.
 (** A PENDING ERROR IS ONE OF THE SEND'S TWO ANSWERS, TAKEN ONCE.
     [Net.Socket.send_state] maps a connection whose script ends in a
     reset to [SendGoes 3 ECONNRESET []], and one whose script ends in a
-    retransmission timeout to [SendGoes 3 ETIMEDOUT []], each with
-    [SkReset demo_peer 3 rx false false false] as the state the error
+    retransmission timeout to [SendGoes 3 ETIMEDOUT tcp_soft_errnos], each
+    with [SkReset demo_peer 3 rx false false false] as the state the error
     answer leaves and the connection marked [sent] as the state the
     delivery leaves: the program cannot see whether Linux has processed
     the end.
@@ -3101,16 +3147,17 @@ Proof. split_conj; check_eq. Qed.
     by [sock_error] (include/net/sock.h:2496) with an [xchg], so the send
     retires the descriptor exactly as a read does.  On a timeout
     [tcp_write_err] (net/ipv4/tcp_timer.c:76-80) stores ETIMEDOUT when no
-    soft error is pending.  So on the timed-out connection the send
-    answers -ETIMEDOUT with an empty ledger and fd 4 retired to [SkReset]
-    with no error pending; the reset's -ECONNRESET and the dead socket's
-    -EPIPE are refused.  Linux v6.18.46. *)
+    soft error is pending, and the soft error when one is.  So on the
+    timed-out connection the send answers -ETIMEDOUT with an empty ledger
+    and fd 4 retired to [SkReset] with no error pending; the reset's
+    -ECONNRESET and the dead socket's -EPIPE are refused.  Linux
+    v6.18.46. *)
 Example send_on_a_pending_error_answers_it_and_retires :
   send_state (SkConnected demo_peer 3 NRst false)
     = SendGoes 3 ECONNRESET [] (SkReset demo_peer 3 NRst false false false)
         (SkConnected demo_peer 3 NRst true)
   /\ send_state (SkConnected demo_peer 3 NTimedOut false)
-     = SendGoes 3 ETIMEDOUT [] (SkReset demo_peer 3 NTimedOut false false false)
+     = SendGoes 3 ETIMEDOUT tcp_soft_errnos (SkReset demo_peer 3 NTimedOut false false false)
          (SkConnected demo_peer 3 NTimedOut true)
   /\ sendto_answering (connected_socket_model NTimedOut) (errno_ret ETIMEDOUT)
      = CheckOk (retired_socket_model

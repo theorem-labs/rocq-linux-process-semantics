@@ -2254,9 +2254,10 @@ Inductive SendState :=
     and a peer that stops acknowledging after its FIN ends the
     connection by the timer once the connection has sent, so an [NFin]
     end may then carry the timer's error instead ([end_more_errnos]).  An
-    [NTimedOut] end answers
-    ETIMEDOUT here, as its read does ([State.NetStream]).  Linux
-    v6.18.46; the same text in v6.16 and v6.17. *)
+    [NTimedOut] end answers ETIMEDOUT here, and the soft error the timer
+    may have stored in its place is among [end_more_errnos], as on its
+    read ([State.NetStream], [State.tcp_soft_errnos]).  Linux v6.18.46;
+    the same text in v6.16 and v6.17. *)
 Definition end_errno (t : NetStream) : Z :=
   match t with
   | NRst => ECONNRESET
@@ -2264,60 +2265,15 @@ Definition end_errno (t : NetStream) : Z :=
   | _ => EPIPE
   end.
 
-(** THE SOFT ERRORS OF AN AF_INET TCP CONNECTION: every value
-    [sk_err_soft] can hold once the handshake is done, which
-    [tcp_write_err] stores in place of ETIMEDOUT when the retransmit
-    timer gives up (net/ipv4/tcp_timer.c:78).  The model's TCP sockets
-    are AF_INET ones ([socket_spec]), so the writers are these, Linux
-    v6.18.46 throughout:
-    - [tcp_v4_err], for an ICMP error a router or the peer's host sends
-      (net/ipv4/tcp_ipv4.c:568-614), stores it there when the socket has
-      no IP_RECVERR or the user holds the socket (:650-656): EPROTO for a
-      parameter problem (:576-577); the [icmp_err_convert] entry of a
-      destination-unreachable code (:579-601, net/ipv4/icmp.c:122-187),
-      which is ENETUNREACH, EHOSTUNREACH, ENOPROTOOPT, ECONNREFUSED,
-      EOPNOTSUPP, EHOSTDOWN or ENONET; and EHOSTUNREACH for a time
-      exceeded (:609-610).  Fragmentation needed goes to
-      [tcp_v4_mtu_reduced] instead (:583-598), which stores EMSGSIZE
-      (:388-389).
-    - [inet_sk_rebuild_header] (net/ipv4/af_inet.c:1305-1337), which a
-      retransmission calls (net/ipv4/tcp_output.c:3501), stores the error
-      of a route lookup that fails once the cached route is stale
-      (:1323-1333): EINVAL, ENETUNREACH or ENODEV
-      ([ip_route_output_key_hash_rcu], net/ipv4/route.c:2752, :2756,
-      :2803, :2809; [__mkroute_output], :2603, :2609, :2619), ENOBUFS
-      (:2685), or the FIB's EINVAL, EHOSTUNREACH, EACCES or ENETUNREACH
-      (:2841-2872; [fib_lookup], include/net/ip_fib.h:316-334, without
-      CONFIG_IP_MULTIPLE_TABLES, which neither arch/riscv/configs/defconfig
-      nor testing/vm/kernel.fragment sets; [fib_props],
-      net/ipv4/fib_semantics.c:113-134).  The xfrm step after it
-      ([ip_route_output_flow], route.c:2964-2969) hands the route back:
-      [xfrm_lookup_route] refuses only under a policy or a default of
-      block (net/xfrm/xfrm_policy.c:3300-3309), and the configuration of
-      record builds nothing that installs either (CONFIG_XFRM_USER is
-      [=m] in arch/riscv/configs/defconfig:54, which the build turns off,
-      CONFIG_NET_KEY is not set, and a socket's own policy needs one of
-      them, net/xfrm/xfrm_state.c:3005-3012).
-    The other writers are [tcp_v4_err]'s handshake arm (tcp_ipv4.c:630),
-    which a connection [accept] hands over has left, and IPv6's four,
-    which an AF_INET socket never reaches: [tcp_v6_err]'s
-    (net/ipv6/tcp_ipv6.c:498, :515), [inet6_sk_rebuild_header]'s
-    (net/ipv6/af_inet6.c:851) and [inet6_csk_xmit]'s
-    (net/ipv6/inet6_connection_sock.c:108); [tcp_v6_err]'s values
-    (net/ipv6/icmp.c:1111-1175) are in the list all the same.  A superset
-    where it is wide, so that no error Linux stores is refused. *)
-Definition tcp_soft_errnos : list Z :=
-  [EPROTO; ENETUNREACH; EHOSTUNREACH; ENOPROTOOPT; ECONNREFUSED; EOPNOTSUPP;
-   EHOSTDOWN; ENONET; EMSGSIZE; EINVAL; ENODEV; EACCES; ENOBUFS].
-
 (** THE OTHER ERRORS A PROCESSED END MAY HAVE STORED, beside
-    [end_errno]'s, by whether the connection has [sent]
-    ([State.SockState]).  Behind the peer's FIN the connection is
-    CLOSE_WAIT, and it still sends; a peer that then stops acknowledging
-    ends it by the retransmit timer, whose [tcp_write_err] stores the
-    soft error or ETIMEDOUT (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46)
-    and runs [tcp_done] (net/ipv4/tcp_input.c:4663-4674), as the RST
-    does.  A send then answers that error through
+    [end_errno]'s: behind the peer's FIN by whether the connection has
+    [sent] ([State.SockState]), and at a timeout the script ends with
+    whatever it says (the last paragraph).  Behind the peer's FIN the
+    connection is CLOSE_WAIT, and it still sends; a peer that then stops
+    acknowledging ends it by the retransmit timer, whose [tcp_write_err]
+    stores the soft error or ETIMEDOUT (net/ipv4/tcp_timer.c:76-80, Linux
+    v6.18.46) and runs [tcp_done] (net/ipv4/tcp_input.c:4663-4674), as
+    the RST does.  A send then answers that error through
     [sk_stream_wait_connect] (net/core/stream.c:67-69), and
     [sk_stream_error] keeps it (:190-197).
 
@@ -2349,13 +2305,23 @@ Definition tcp_soft_errnos : list Z :=
     zero-length or faulting send queues nothing.  So an [NFin] end
     carries ETIMEDOUT and [tcp_soft_errnos] beside [end_errno]'s EPIPE
     when [sent] holds, and EPIPE alone before.  The flag is wider than
-    Linux once set, since the peer may have acknowledged every byte; a
-    RST or a timeout the script itself ends with carries its own error
-    alone here. *)
+    Linux once set, since the peer may have acknowledged every byte.
+
+    A RST THE SCRIPT ITSELF ENDS WITH carries its own error alone:
+    [tcp_reset] picks it by the state and never reads [sk_err_soft]
+    (net/ipv4/tcp_input.c:4691-4703).  A TIMEOUT THE SCRIPT ENDS WITH is
+    the timer's own end, so it carries what [tcp_write_err] stores:
+    [end_errno]'s ETIMEDOUT, or the soft error an established connection
+    may hold by then ([State.tcp_soft_errnos]; [tcp_v4_err] stores one
+    without IP_RECVERR, net/ipv4/tcp_ipv4.c:650-656), whatever [sent]
+    says: the script says the timer fired, and a timer that fired had
+    bytes queued or out, though not always out: [tcp_probe_timer]
+    returns while a packet is out and gives up on queued bytes with none
+    out (net/ipv4/tcp_timer.c:397-400, :421-434). *)
 Definition end_more_errnos (sent : bool) (t : NetStream) : list Z :=
   match t with
   | NRst => []
-  | NTimedOut => []
+  | NTimedOut => tcp_soft_errnos
   | _ => if sent then ETIMEDOUT :: tcp_soft_errnos else []
   end.
 

@@ -471,7 +471,7 @@ Lemma check_readv_imported_kf : forall i fd r iovs0 eff m m' evs,
   check_readv_imported i fd r iovs0 eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd r iovs0 eff m m' evs H Hoff Hk.
-  unfold check_readv_imported in H. cbv beta iota zeta in H.
+  unfold check_readv_imported, check_pending_errno in H. cbv beta iota zeta in H.
   repeat (kf_step H
           || exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
           || kf_stream H Hoff Hk
@@ -624,8 +624,8 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero,
-    check_eventfd_read in H.
+  unfold check_read, check_read_urandom, check_socket_pending_error, check_pending_errno,
+    check_access_ok_zero, check_eventfd_read in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.

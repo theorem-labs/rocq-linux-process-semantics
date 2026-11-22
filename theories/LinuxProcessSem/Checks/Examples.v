@@ -1426,11 +1426,11 @@ Proof. vm_compute. reflexivity. Qed.
     The [CheckReject] is the same reason in its other form, a kernel
     behaving inadmissibly: 0 for the two-byte request.
     [Net.Socket.send_bytes] admits a delivered prefix of one byte or
-    more, and [Net.Socket.send_on_socket] beside it only the end's own
-    errno, so 0 is refused; and no kernel answers 0 here, because from
-    ESTABLISHED [tcp_sendmsg_locked] either copies a byte and returns the
-    count, or fails before the first byte and returns the negative errno
-    of [sk_stream_error] (net/ipv4/tcp.c:1387-1405). *)
+    more, and [Net.Socket.send_on_socket] beside it only the errors the
+    end can have stored, so 0 is refused; and no kernel answers 0 here,
+    because from ESTABLISHED [tcp_sendmsg_locked] either copies a byte
+    and returns the count, or fails before the first byte and returns the
+    negative errno of [sk_stream_error] (net/ipv4/tcp.c:1387-1405). *)
 Example send_over_an_unprocessed_reset_or_timeout_goes_out :
   sendto_answering_with (connected_socket_model NRst) 2 [(4096, 2%nat)]
     = CheckOk (sent_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]

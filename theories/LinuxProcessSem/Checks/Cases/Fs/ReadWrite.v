@@ -270,9 +270,8 @@ Proof.
   { intros v mk evs' H. apply check_ret_only_ok_iff in H.
     destruct H as (-> & _ & _). discriminate Hws. }
   (* generic in the RETURN VALUE, because the socket arms reach this
-     shape with -ENOTCONN and with the one-shot -ECONNRESET/-ETIMEDOUT
-     ([check_socket_pending_error]) where the channel and file arms
-     reach it with 0.  Nothing in the proof depended on the 0. *)
+     shape with -ENOTCONN where the channel and file arms reach it with
+     0.  Nothing in the proof depended on the 0. *)
   assert (Hnodel : forall v mk mk2 k,
              check_access_ok_zero buf count eff mk
                (check_ret_only eff v mk2 k) = CheckOk m' evs ->
@@ -280,6 +279,17 @@ Proof.
   { intros v mk mk2 k Hz. unfold check_access_ok_zero in Hz.
     destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
       exact (Hro _ _ _ Hz). }
+  (* the one-shot -ECONNRESET, or -ETIMEDOUT or a soft error
+     ([check_socket_pending_error]): an errno, so no write either *)
+  assert (Hpend : forall e more fd' after,
+             check_socket_pending_error e more fd' after buf count i eff m
+             = CheckOk m' evs -> False).
+  { intros e more fd' after Hz.
+    unfold check_socket_pending_error, check_access_ok_zero in Hz.
+    destruct (access_okb buf (bv_unsigned count)); cbv iota in Hz;
+      [ apply check_pending_errno_ok in Hz; destruct Hz as (e' & _ & -> & _);
+        discriminate Hws
+      | exact (Hro _ _ _ Hz) ]. }
   (* Every [State.FdEntry] constructor, not only the files: [FdSocket] delivers
      too, and so does a pipe READ end, a stream-pair end and an O_RDWR file,
      so each gets a bullet rather than a one-line dismissal.  The two
@@ -420,10 +430,10 @@ Proof.
       try (now destruct (Hnodel _ _ _ _ Hspec)).
     (* a connection, and a reset one whose queue is still read: the same
        delivery arm on each, so one script closes both *)
-    all: unfold check_socket_pending_error in Hspec.
     all: destruct rx as [| | |b0 s0];
       [ | try destruct pending | try destruct pending | ]; cbv iota in Hspec;
-      try (now destruct (Hnodel _ _ _ _ Hspec)).
+      try (now destruct (Hnodel _ _ _ _ Hspec));
+      try (now destruct (Hpend _ _ _ _ Hspec)).
     all: (
     (* [vfs_read]'s [access_ok] on the named count: -EFAULT delivers nothing *)
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
@@ -4407,7 +4417,9 @@ Definition rdpin_kinds_model : Model :=
     THEN READS 0.  [tcp_reset] (net/ipv4/tcp_input.c:4678-4703) stores
     ECONNRESET in [sk_err] through [tcp_done_with_error]
     (net/ipv4/tcp_input.c:4663-4674); [tcp_write_err]
-    (net/ipv4/tcp_timer.c:76-80) stores ETIMEDOUT the same way.  With the
+    (net/ipv4/tcp_timer.c:76-80) stores ETIMEDOUT, or the soft error the
+    connection held ([read_timed_out_socket_may_report_the_soft_error]),
+    the same way.  With the
     queue empty, the read takes the error with [sock_error]
     (net/ipv4/tcp.c:2744-2747), which clears it
     (include/net/sock.h:2496), so the record moves to not pending.  Once
@@ -4463,6 +4475,88 @@ Example readv_reset_socket_reports_its_pending_error_once :
   /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
        (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect 0 [] []))
        (rdpin_reset_model NTimedOut true)
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** THE TIMER'S END MAY CARRY THE SOFT ERROR.  [tcp_write_err]
+    (net/ipv4/tcp_timer.c:76-80, Linux v6.18.46) stores [sk_err_soft] in
+    place of ETIMEDOUT when the connection holds one, and an established
+    connection can: [tcp_v4_err] keeps there the EHOSTUNREACH of a
+    router's host unreachable when the socket has no IP_RECVERR
+    (net/ipv4/tcp_ipv4.c:579-601, :650-656; [State.tcp_soft_errnos]).
+    [tcp_recvmsg_locked] hands it back through [sock_error]
+    (net/ipv4/tcp.c:2744-2747) as it does ETIMEDOUT.  So a read of a
+    connection whose script ends [NTimedOut] answers -EHOSTUNREACH once
+    and retires it, on a connection still [SkConnected] (fd 3) and on a
+    reset one whose error is pending (fd 25).  THE CONTROLS: a RST
+    stores ECONNRESET whatever [sk_err_soft] holds
+    (net/ipv4/tcp_input.c:4691-4703), so -EHOSTUNREACH on an [NRst] end
+    is refused on both, and -ECONNRESET on the timed-out end stays
+    refused.  (313362fd refused the two -EHOSTUNREACH answers.) *)
+Example read_timed_out_socket_may_report_the_soft_error :
+  check_syscall (mkInput 63 [3; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EHOSTUNREACH) [] []) (rw_sock_model NTimedOut)
+  = CheckOk (with_fds (fd_insert (m_fds (rw_sock_model NTimedOut)) 3
+                         (FdSocket (SkReset rw_sock_peer 3 NTimedOut false false false)))
+               (rw_sock_model NTimedOut)) []
+  /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EHOSTUNREACH) [] []) (rdpin_reset_model NTimedOut true)
+     = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NTimedOut true)) 25
+                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false false)))
+                  (rdpin_reset_model NTimedOut true)) []
+  /\ check_syscall (mkInput 63 [3; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EHOSTUNREACH) [] []) (rw_sock_model NRst)
+     = CheckReject
+  /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EHOSTUNREACH) [] []) (rdpin_reset_model NRst true)
+     = CheckReject
+  /\ check_syscall (mkInput 63 [3; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ECONNRESET) [] []) (rw_sock_model NTimedOut)
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** The same through [readv]: the soft error once on both connections,
+    the record moved, the array's two descriptors in the ledger; on an
+    [NRst] end it is refused. *)
+Example readv_timed_out_socket_may_report_the_soft_error :
+  let mem := mem_iov_pair 4096 2 4098 3 in
+  check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+    (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret EHOSTUNREACH) [] []))
+    (rw_sock_model NTimedOut)
+  = CheckOk (with_fds (fd_insert (m_fds (rw_sock_model NTimedOut)) 3
+                         (FdSocket (SkReset rw_sock_peer 3 NTimedOut false false false)))
+               (rw_sock_model NTimedOut)) []
+  /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+       (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret EHOSTUNREACH) [] []))
+       (rdpin_reset_model NTimedOut true)
+     = CheckOk (with_fds (fd_insert (m_fds (rdpin_reset_model NTimedOut true)) 25
+                            (FdSocket (SkReset rw_sock_peer 7 NTimedOut false false false)))
+                  (rdpin_reset_model NTimedOut true)) []
+  /\ check_syscall (mkInput 65 [25; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+       (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret EHOSTUNREACH) [] []))
+       (rdpin_reset_model NRst true)
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** NO TIMER'S END CARRIES -ENODEV.  The route lookup answers it only for
+    an output interface that names no device (net/ipv4/route.c:2801-2805,
+    Linux v6.18.46), and no modeled connection has an interface bound, so
+    [sk_err_soft] never holds it ([State.tcp_soft_errnos] says why).  So
+    a read answering -ENODEV is refused on a timed-out connection still
+    [SkConnected] (fd 3) and on a reset one whose timeout is pending
+    (fd 25), and so is a [readv] on fd 3.  (8de3d051 admitted all
+    three.) *)
+Example read_timed_out_socket_never_reports_enodev :
+  let mem := mem_iov_pair 4096 2 4098 3 in
+  check_syscall (mkInput 63 [3; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENODEV) [] []) (rw_sock_model NTimedOut)
+  = CheckReject
+  /\ check_syscall (mkInput 63 [25; 4096; 16; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENODEV) [] []) (rdpin_reset_model NTimedOut true)
+     = CheckReject
+  /\ check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+       (with_copyins (import_iovecs_accesses mem 8192 2) (mkEffect (errno_ret ENODEV) [] []))
+       (rw_sock_model NTimedOut)
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
