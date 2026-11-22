@@ -61,7 +61,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The images pin an older dune; pin one that the build supports.
+          # The images carry dune 3.21.1; the build needs the dune named here
+          # (see THE DUNE OF THE BUILD below).
           - rocq: '9.2'
             dune: '3.23.1'
           - rocq: '9.3'
@@ -139,23 +140,81 @@ jobs:
           # `copy`: opam builds the dependencies outside the workspace. A hard
           # link across two mounts fails (EXDEV), and then dune stores nothing
           # (src/dune_cache/shared.ml, which logs it at info level only).
+          #
+          # THE DUNE OF THE BUILD. This repository and rocq-read-file 0.0.3
+          # need dune 3.23 or later (`(lang dune 3.23)`, `(using rocq 0.13)`),
+          # and the images carry 3.21.1. Upgrading the switch's dune made opam
+          # rebuild every package that depends on it, rocq-runtime, rocq-core,
+          # coqide-server, rocq-stdlib and bignums: 4 to 6.5 minutes of every
+          # run. So the switch keeps the image's dune, and the pinned dune is
+          # built beside it: from the source tarball that the opam repository
+          # names and checksums (`opam source`), by the recipe of dune's own
+          # opam file. It is built before the dune cache variables are set, so
+          # its own rules do not enter this repository's dune cache.
+          #
+          # opam runs each package's build with the switch's bin first on PATH,
+          # and so does `opam exec`. So `wrap-build-commands` puts the pinned
+          # dune first for opam's builds of the dependencies, and the script
+          # calls it by its path, $DUNE. `--ignore-constraints-on=dune` lets
+          # opam install the dependencies beside the image's dune. Without the
+          # pin of dune-configurator the solver takes its newest version, whose
+          # `(lang dune 3.25)` the pinned dune cannot build; the pin keeps the
+          # version of the pinned dune, the one opam chose before. opam builds
+          # with every core, where the action's default was 2 of 4.
+          #
+          # `--ignore-constraints-on=dune` drops every dependency's bounds on
+          # dune, not only the one above, so a later release could need a dune
+          # newer than the pin, or older, and still be chosen. So opam's solver
+          # checks the installed dependencies against the pinned dune, with
+          # every constraint on: it simulates the old step, the pin of dune at
+          # its version in this switch (`--dry-run` keeps the image's pin), and
+          # the job fails unless that plan changes dune and otherwise only
+          # recompiles what depends on it. A plan that removes, installs or
+          # changes any other package, or no plan at all, means an installed
+          # dependency's bounds exclude the pinned dune. With dune-configurator
+          # 3.25.0 installed beside dune 3.23.1, the plan downgrades it. A plan
+          # without dune in it would check nothing, so it fails too: then the
+          # image carries the pinned dune, and the dune beside it can go.
           install: |
+            startGroup "Build dune ${{ matrix.dune }} beside the switch"
+              opam update -y
+              opam source "dune.${{ matrix.dune }}" --dir /tmp/dune
+              (cd /tmp/dune && ocaml boot/bootstrap.ml -j "$(nproc)" \
+                && ./_boot/dune.exe build dune.install --release --profile dune-bootstrap -j "$(nproc)")
+              export DUNE=/tmp/dune/_build/install/default/bin/dune
+              "$DUNE" --version
+              opam option wrap-build-commands="[\"env\" \"PATH=${DUNE%/*}:$PATH\"]"
+            endGroup
             startGroup "Check the dune cache against the image's toolchain"
               export DUNE_CACHE=enabled DUNE_CACHE_STORAGE_MODE=copy
               export DUNE_CACHE_ROOT="$PWD/.dune-cache"
               bash .github/dune-cache-toolchain.sh "$DUNE_CACHE_ROOT" before
             endGroup
             startGroup "Install dependencies"
-              opam update -y
-              opam pin add -k version -y dune "${{ matrix.dune }}"
-              opam install -y -j 2 --deps-only .
+              opam pin add -n -k version -y dune-configurator "${{ matrix.dune }}"
+              opam install -y -j "$(nproc)" --deps-only --ignore-constraints-on=dune .
+            endGroup
+            startGroup "Check the dependencies against dune ${{ matrix.dune }}"
+              plan=$(opam pin add -k version --dry-run --show-actions -y dune "${{ matrix.dune }}" 2>&1) || {
+                echo "$plan"
+                echo "::error::opam finds no plan that installs dune ${{ matrix.dune }} beside these dependencies"
+                exit 1; }
+              echo "$plan"
+              # awk exits 0 only for a valid plan, so its own failure (a
+              # syntax error, or no awk at all) fails the job too.
+              if ! awk '$1 == "-" && $3 == "dune" && ($2 == "upgrade" || $2 == "downgrade") { dune = 1; next }
+                        $1 == "-" && $2 != "recompile" { print "not dune or a recompile: " $0; bad = 1 }
+                        END { if (!dune) print "the plan does not change dune"; exit (bad || !dune) }' <<< "$plan"; then
+                echo "::error::opam's plan for dune ${{ matrix.dune }} is not a change of dune and recompiles only"
+                exit 1
+              fi
             endGroup
             startGroup "Check the dune cache against the toolchain"
               bash .github/dune-cache-toolchain.sh "$DUNE_CACHE_ROOT" after
             endGroup
           script: |
             startGroup "Tool versions"
-              opam exec -- dune --version
+              opam exec -- "$DUNE" --version
               opam exec -- rocq --version
             endGroup
             startGroup "Stack limit for deep proof terms"
@@ -179,7 +238,7 @@ jobs:
                 echo "stack limit is $soft/$hard, refusing"; exit 2; }
             endGroup
             startGroup "Build everything (dune build)"
-              opam exec -- dune build --display short
+              opam exec -- "$DUNE" build --display short
             endGroup
             startGroup "Check the generated Checker.v files"
               python3 tools/gen_checker.py --check
@@ -192,7 +251,7 @@ jobs:
               python3 tools/test_elf_snapshot.py
             endGroup
             startGroup "Trim the dune cache"
-              opam exec -- dune cache trim --size=2500MB
+              opam exec -- "$DUNE" cache trim --size=2500MB
               # dune writes some entries readable by their owner only, and the
               # owner is this container's user. The save step runs as the
               # runner's user.
@@ -264,8 +323,13 @@ jobs:
       - name: Check the dune cache against the compiler
         run: bash .github/dune-cache-toolchain.sh ~/.cache/dune before
 
+      # Rocq is built from source on setup-ocaml's OCaml 5.3, which no lane
+      # covers, so this job keeps its install, with every core. No cache keeps
+      # the result: the repository's 10 GB of Actions cache holds the dune
+      # caches, and an installed switch saved there (723 MB for a lane) was
+      # evicted before the next run an hour later.
       - name: Install the dependencies
-        run: opam install --yes --deps-only .
+        run: opam install --yes -j "$(nproc)" --deps-only .
 
       - name: Check the dune cache against the toolchain
         run: bash .github/dune-cache-toolchain.sh ~/.cache/dune after
