@@ -4,7 +4,7 @@ labels").
 
     python3 .github/review/rules.py label <number> task=<task> outside=<outside> outsider=<outsider> author=<kind>
         [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
-    python3 .github/review/rules.py mark <number> <line>
+    python3 .github/review/rules.py mark <number> <line> [state=<state>]
     python3 .github/review/rules.py owed <number> owed=<head and why> withdrawn=<head> task=<task> outside=<outside>
         outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
@@ -58,9 +58,12 @@ step. GH_TOKEN and REPO come from the job's environment, as for gh in the workfl
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
-state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working.
-The comment job of a catch-up records the line <!-- review-catchup <head> --> with it. The rescreen pass reads that
-line, so that each head gets one catch-up.
+state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working,
+or of state=<state>, which must be a state with no state label. The comment job of a catch-up records the line
+<!-- review-catchup <head> --> with it. The rescreen pass reads that line, so that each head gets one catch-up. The
+comment job's label step records the line of an owed withdrawal (OWED) with it, with state=after-hold, when a hold
+made after its run started stops that step. That hold comment says what happens next. When mark posts a new label
+comment, its log says so.
 
 owed: records in the label comment of <number> the withdrawal of the import check runs of a head that a run owes
 (owe), and changes nothing else: the comment job calls it, and the hold job for a held screen, before the steps that
@@ -413,6 +416,11 @@ STATES = {
     "reviewed": (
         None, "The automated review of the head commit names the next step and who takes it.",
         "After a push, the automated review runs again."),
+    # The label comment that the comment job's label step posts (mark) for the line of a withdrawal that its run owes
+    # (OWED), on an item with no label comment, when a hold made after its run started stops that step. That hold can
+    # be one that the workflow tries again or one that it does not, so the text names only the hold comment.
+    # label_state never gives this state.
+    "after-hold": (None, "The newest hold comment of the workflow on this item says what happens next.", ""),
 }
 
 FIRST = "<!-- review-label -->"
@@ -751,18 +759,26 @@ def with_marker(body, line):
     return text + gap + "\n".join(kept + [line] + rest)
 
 
-def mark(number, line, make=True):
+def mark(number, line, make=True, state="working"):
     """Records line, a marker line of KEPT, in the label comment of the item number (with_marker), and writes nothing
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
-    of the state working, which has no state label, with line, when make is True. When make is False (owe: a line of
-    OWED), such an item gets nothing, and the result is False. Else the result is True."""
+    of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
+    no state label, as mark writes no state label: a ValueError for any other. The comment job's label step gives
+    after-hold. When make is False (owe: a line of OWED), such an item gets nothing, and the result is False. Else the
+    result is True."""
     marker_kind(line)
+    if state not in STATES or label_of(state) is not None:
+        raise ValueError(f"mark makes a label comment only in a state with no state label, not {state!r}")
     labels = read_labels(number)
     old = labels[-1] if labels else None
     if old is None and not make:
         return False
-    body = label_comment("working", "", [line]) if old is None else with_marker(old["body"], line)
-    if old is not None and body == old["body"]:
+    if old is None:
+        write_label(number, None, label_comment(state, "", [line]))
+        print(f"#{number}: it had no label comment, so this step posted one, with {line}.")
+        return True
+    body = with_marker(old["body"], line)
+    if body == old["body"]:
         print(f"#{number}: its label comment holds {line} already.")
         return True
     write_label(number, old, body)
@@ -2154,8 +2170,13 @@ def main(argv):
             for name, value in answers(*argv[1:]).items():
                 print(f"{name}={str(value).lower() if isinstance(value, bool) else value}")
             return 0
-        if len(argv) == 3 and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
-            mark(argv[1], argv[2])
+        if len(argv) in (3, 4) and argv[0] == "mark" and NUMBER.fullmatch(argv[1]):
+            state = "working"
+            if len(argv) == 4:
+                name, eq, state = argv[3].partition("=")
+                if (name, eq) != ("state", "="):
+                    raise ValueError(f"not state=<state>: {argv[3]!r}")
+            mark(argv[1], argv[2], state=state)
             return 0
         if len(argv) == 5 and argv[0] == "proofs" and HEAD.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
             count = int(argv[4]) if re.fullmatch(r"0|[1-9][0-9]*", argv[4]) else None

@@ -13760,7 +13760,10 @@ class LabelRuleTest(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(rules.label_state(**facts), state)
                 self.assertEqual(rules.label_of(state), label)
-        self.assertEqual({row[2] for row in self.TABLE}, set(rules.STATES))
+        # after-hold is the state of a label comment that mark alone posts (the comment job's label step, for the line
+        # of an owed withdrawal): label_state never gives it.
+        self.assertNotIn("after-hold", {row[2] for row in self.TABLE})
+        self.assertEqual({row[2] for row in self.TABLE} | {"after-hold"}, set(rules.STATES))
 
     def test_each_label_comment_names_the_next_step_and_who_takes_it(self):
         """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's (a person's at
@@ -13788,7 +13791,8 @@ class LabelRuleTest(unittest.TestCase):
                     self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-author -->"), body)
                 else:
-                    steps = ("**Next step:** The automated ", "**Next step:** The workflow ")
+                    steps = ("**Next step:** The automated ", "**Next step:** The workflow ",
+                             "**Next step:** The newest hold comment of the workflow ")
                     self.assertTrue(step_line.startswith(steps), step_line)
                     self.assertNotIn("<!-- waits-on-", body)
                     self.assertNotIn("Sami", body)
@@ -14063,7 +14067,9 @@ class LabelTest(Runner):
         and changes nothing else: no state label, and the comment that label gives for the same state with the line
         among its markers, so the text and the other lines stay, and the line takes the place of an older one of its
         kind. Every later label comment keeps the line. An item with no label comment gets one of the state working,
-        which has no state label. A label comment that holds the line already gets no write."""
+        which has no state label, or of the state that the call gives (state=after-hold, as the comment job's label step
+        gives it), and the log says that the step posted it. A label comment that holds the line already gets no
+        write."""
         line, older = f"<!-- review-catchup {HEAD} -->", f"<!-- review-catchup {OTHER_HEAD} -->"
         for state, markers in (("change", [rules.import_marker(OTHER_HEAD, None)]), ("conflict", []), ("working", []),
                                ("replied", ["<!-- issue-reply-posted 41 -->", older])):
@@ -14084,6 +14090,14 @@ class LabelTest(Runner):
         self.assertEqual(state_labels(self.api), [])
         self.assertEqual(label_comments(self.api), [("POST", f"repos/{REPO}/issues/7/comments",
                                                      rules.label_comment("working", markers=[line]))])
+        self.assertIn(f"#7: it had no label comment, so this step posted one, with {line}.\n", out)
+        # The comment job's label step, when a hold made after its run started stops it, gives the state after-hold.
+        rc, out = self.rule("mark", "7", line, "state=after-hold")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(state_labels(self.api), [])
+        self.assertEqual(label_comments(self.api), [("POST", f"repos/{REPO}/issues/7/comments",
+                                                     rules.label_comment("after-hold", markers=[line]))])
+        self.assertIn(f"#7: it had no label comment, so this step posted one, with {line}.\n", out)
 
     def test_a_marker_line_is_the_comment_marks_around_one_line_of_text(self):
         """with_marker reads the last part of a label comment as its marker lines only when each line of it is <!--
@@ -14107,7 +14121,10 @@ class LabelTest(Runner):
         for args in (("label", "7", "conflict=true"), ("label", "7", "colour=red"), ("label", "x"),
                      ("label", "7", "marker=<!-- waits-on-author -->"), ("make-label", "bug"),
                      ("mark", "7", "<!-- waits-on-author -->"), ("mark", "x", f"<!-- review-catchup {HEAD} -->"),
-                     ("mark", "7")):
+                     ("mark", "7"), ("mark", "7", f"<!-- review-catchup {HEAD} -->", "state=screen"),
+                     ("mark", "7", f"<!-- review-catchup {HEAD} -->", "state=elsewhere"),
+                     ("mark", "7", f"<!-- review-catchup {HEAD} -->", "after-hold"),
+                     ("mark", "7", f"<!-- review-catchup {HEAD} -->", "kind=after-hold")):
             with self.subTest(args=args):
                 rc, out = self.rule(*args)
                 self.assertEqual((rc, writes(self.api)), (2, []), out)
@@ -15953,6 +15970,62 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(f"after this run started at {trust['started']}: the labels stay.", logs[self.LABEL])
         self.assertIn(f"repos/{REPO}/pulls/7", self.calls())
         self.assertEqual([line in body.split("\n") for body in outcomes[self.LABEL]], [True], logs[self.LABEL])
+
+    def test_the_owed_line_after_a_later_hold_that_is_not_tried_again_names_the_hold_comment(self):
+        """Round 15, F1 of the fresh reader: the case of
+        test_the_owed_line_survives_the_label_steps_exit_for_a_hold_made_after_the_run_started, with a later hold of #7
+        at HEAD that the workflow does not try again: a hold of the screen, or a stop after the last try. Such a hold
+        writes no label comment when GitHub did not say whether the author of its run has write access, or when its
+        label call failed after its hold comment posted. #7 has no label comment, so the label step posts one with the
+        line, in the state after-hold: its next step names the newest hold comment, and it never says that the workflow
+        tries again. The log says that the step posted it."""
+        listed, _others = self.recorded()
+        line = f"<!-- withdraw-owed {HEAD} blocking -->"
+        trust = dict(self.BY_HAND, started=ago(1), named=HEAD)
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch", listed=[listed])
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)
+        base = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        base.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                     "github.repository": REPO, "needs.trust.result": "success", "needs.gather.result": "success",
+                     "needs.gather.outputs.kind": "pr", "needs.review.result": "success",
+                     "needs.review.outputs.head": HEAD, "needs.review.outputs.verdict": "blocking",
+                     "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                     "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                     "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        tries = WF["env"]["REVIEW_TRIES"]
+        for case, text in (
+                ("a hold of the screen", "The automated screen held this pull request, so the automated review did not "
+                                         "run. You do not need to do anything."),
+                ("a stop after the last try", f"The workflow tried the automated review again {tries} times after it "
+                                              "held this pull request, and none of these tries finished. The workflow "
+                                              "does not try it again. You do not need to do anything.")):
+            with self.subTest(case=case):
+                held = {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
+                        "body": f"<!-- review-held -->\n**Automated review held.**\n\n{text}\n\n"
+                                f"<!-- review-held-head {HEAD} -->"}
+                ctx, outcomes, logs = dict(base), {}, {}
+                for name in (self.OWE, self.LABEL):
+                    s = step("comment", name)
+                    self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
+                    self.forget()
+                    self.serve(f"repos/{REPO}/issues/7/comments", [held])
+                    self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+                    env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+                    rc, logs[name], outs = self.run_script(
+                        s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
+                    self.assertEqual(rc, 0, logs[name])
+                    ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
+                    outcomes[name] = label_comments(self.api)
+                self.assertEqual((outcomes[self.OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[self.OWE])
+                self.assertIn(f"after this run started at {trust['started']}: the labels stay.", logs[self.LABEL])
+                self.assertEqual(outcomes[self.LABEL], [("POST", f"repos/{REPO}/issues/7/comments",
+                                                         rules.label_comment("after-hold", markers=[line]))],
+                                 logs[self.LABEL])
+                self.assertNotIn("tries again", outcomes[self.LABEL][0][2])
+                self.assertEqual(state_labels(self.api), [])
+                self.assertIn(f"#7: it had no label comment, so this step posted one, with {line}.\n", logs[self.LABEL])
 
     def test_the_line_of_a_refused_withdrawal_goes_only_after_a_run_that_finished_the_withdrawal(self):
         """Round 13, item 2: the comment job writes the line <!-- withdraw-owed <head> <why> --> for a relabel whose

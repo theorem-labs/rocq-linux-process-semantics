@@ -3894,9 +3894,11 @@ jobs:
             echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
             # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
-            # with no label comment gets one of the state working. That is true here: a hold that writes no label
-            # comment of its own is one that the workflow tries again (limit, cap or transient).
-            [ -z "${OWED_LINE:-}" ] || python3 .github/review/rules.py mark "$NUMBER" "$OWED_LINE" || exit 1
+            # with no label comment gets one of the state after-hold, which has no state label. The hold made after this
+            # run started can be one that the workflow tries again or one that it does not (a hold of the screen, or a
+            # stop). So the text of after-hold says only that the newest hold comment says what happens next.
+            [ -z "${OWED_LINE:-}" ] \
+              || python3 .github/review/rules.py mark "$NUMBER" "$OWED_LINE" state=after-hold || exit 1
             exit 0
           fi
           take_off() {
