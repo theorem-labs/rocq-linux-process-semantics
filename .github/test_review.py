@@ -10906,6 +10906,22 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (1, [("7", "stop", "", "", "hold-draft")]), out)
 
+    def test_a_draft_run_that_its_trust_job_stopped_is_not_a_try_that_the_stop_of_the_draft_names(self):
+        """b7 (round 16): the stop hold-draft posts "The workflow tried the automated reply <n> times, and none of these
+        tries finished." A draft run of #7 that its trust job stopped tried nothing, as failures (an approval) and
+        due_answer read such a run. With REVIEW_TRIES - 1 draft runs whose comment job failed at the label comment
+        that stores the draft, and one draft run that its trust job stopped, the workflow tried the reply
+        REVIEW_TRIES - 1 times: the pass starts a draft run of #7, and no stop that says REVIEW_TRIES tries."""
+        jobs = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                attempt_job("comment", "Take the label review-held off and set the state label")]
+        self.item()
+        self.ran(9, "draft #7 of mallory", made=70 + 90 * self.TRIES, jobs=self.stopped_jobs())
+        for i in range(self.TRIES - 1):
+            self.ran(10 + i, "draft #7 of mallory", made=70 + 90 * i, jobs=jobs)
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "draft", "mallory", "", "")]), out)
+        self.assertNotIn("hold-draft", out)
+
     def test_the_stop_of_a_draft_that_stored_nothing_waits_on_sami_and_says_no_hold(self):
         """Round 16, part 2, item 3 (OSSV-221's architect, 2026-11-22 06:21Z): the stop hold-draft of an outside issue
         whose REVIEW_TRIES draft runs counted a try and stored no draft, with no hold (their comment job failed at the
