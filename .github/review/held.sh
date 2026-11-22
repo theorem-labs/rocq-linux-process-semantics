@@ -1468,7 +1468,8 @@ due_unreviewed() {
   fi
   if [ -n "$latest" ] && settles "$latest" "${known%% *}" review; then
     echo "#$number: the trust job of review run $latest of $head found no work for it and stopped it. That settles" \
-      "the review of $head until a newer run of $head. A CI run that its trust job stopped does not count."
+      "the review of $head until a newer run of $head. A newer CI run of $head that did no work after its trust job" \
+      "does not end the settle."
     return 0
   fi
   if [ "$outsider" = true ] && { [ "$last" = signin ] || [ "$last" = failure ] || [ "$last" = cancelled ]; }; then

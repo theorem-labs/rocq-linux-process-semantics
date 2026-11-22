@@ -13258,8 +13258,8 @@ class HeadScheduleTest(Scheduled):
         was running settles nothing, nor does the CI run alone, the event's own run. A conflict run of the head newer
         than run 20 ends the settle."""
         settled = (f"#7: the trust job of review run 20 of {HEAD} found no work for it and stopped it. That settles "
-                   f"the review of {HEAD} until a newer run of {HEAD}. A CI run that its trust job stopped does not "
-                   "count.")
+                   f"the review of {HEAD} until a newer run of {HEAD}. A newer CI run of {HEAD} that did no work after "
+                   "its trust job does not end the settle.")
         for author, account in (("mallory", "mallory"), ("alice", "")):
             title = f"review #7 at {HEAD}" + (f" of {account}" if account else "")
             want = [("7", "review", account, HEAD, "")]
@@ -17618,8 +17618,9 @@ class ImportCheckTest(ReaderRunner):
                               f"automated screen held {HEAD}.", logs)
                 said = f"the label comment records why an earlier run withdraws the import check runs of {HEAD}"
                 self.assertIn(f"#7 at {HEAD}: the decision on the import check is "
-                              + (f"screened ({said})." if goes else f"withdrawn ({said}, and no review or hold "
-                                                                    "comment says why)."), logs)
+                              + (f"screened ({said})." if goes else "withdrawn (the label comment records a "
+                                                                    "withdrawal, and no review or hold comment says "
+                                                                    "why)."), logs)
                 edited = self.owe(got, relabel, comments)
                 if goes:
                     (cleared,) = edited
@@ -17854,7 +17855,7 @@ class ImportCheckTest(ReaderRunner):
         unposted = [review_of(HEAD, at=ago(200), run=70), label]
         for case, comments, decision, reason in (
                 ("a screened pass of run 70, older than the line", unposted, "withdrawn",
-                 f"{said}, and no review or hold comment says why"),
+                 "the label comment records a withdrawal, and no review or hold comment says why"),
                 ("a screened pass of run 110, later than the line", [review_of(HEAD, at=ago(200), run=110), label],
                  "screened", said),
                 ("a pass by hand after a screened blocking finding",

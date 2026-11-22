@@ -3029,7 +3029,8 @@ jobs:
             [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
               said="the label comment records why an earlier run withdraws the import check runs of $HEAD"
-              [ "$posted" != unposted ] || decided withdrawn "$said, and no review or hold comment says why"
+              [ "$posted" != unposted ] \
+                || decided withdrawn "the label comment records a withdrawal, and no review or hold comment says why"
               decided screened "$said"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then

@@ -335,12 +335,13 @@ UNSCREENED = ("The automated review passed this pull request. No automated scree
 SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit. After "
                      "that, no automated screen passed it in a run that also reviewed it. So the check "
                      "`repo-pairs/import-approved` does not approve this head commit for the import.")
-# The decision withdrawn: a run withdrew the check run of the head, this relabel or an earlier run, for the reason of a
-# line of OWED, and no comment gives that reason. So the text says so in the place of PASSED and of the steps of the
-# import. The next step is a review of the head by hand (REVIEW_AGAIN), whose comment gives a verdict of the head.
-NO_REASON = ("The automated review passed this pull request in an earlier run. A later run of the workflow withdrew "
-             "the check `repo-pairs/import-approved` of its head commit, and no comment on this pull request gives "
-             "the reason. So that check does not approve this head commit for the import.")
+# The decision withdrawn: a run found a reason to withdraw the check run of the head, this relabel or an earlier run (a
+# line of OWED), and no comment gives that reason; the head can also have had no such check run. So the text says so
+# in the place of PASSED and of the steps of the import. The next step is a review of the head by hand (REVIEW_AGAIN),
+# whose comment gives a verdict of the head.
+NO_REASON = ("The automated review passed this pull request in an earlier run. A later run of the workflow found a "
+             "reason to withdraw the check `repo-pairs/import-approved` from its head commit, and no comment on this "
+             "pull request gives that reason. So no such check approves this head commit for the import.")
 REVIEW_AGAIN = "Sami starts the automated review of the head commit again, by hand."
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
