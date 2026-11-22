@@ -10206,6 +10206,23 @@ class Scheduled(Held):
         self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
         return run_job(self, "comment", ctx, {})
 
+    def controlled(self, run, changed):
+        """run() on the code as it is, then on the changed code of a control: the trust step and the pass's step source
+        .github/review/held.sh from GITHUB_WORKSPACE, which then holds a copy of that file with the shell text changed
+        at its end, which defines a function again (as if a rule were taken out). Both results."""
+        root = tempfile.mkdtemp(prefix="changed-", dir=self.dir)
+        path = os.path.join(root, ".github", "review", "held.sh")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"{held_sh()}\n{changed}\n")
+        before = run()
+        workspace = self.env["GITHUB_WORKSPACE"]
+        self.env["GITHUB_WORKSPACE"] = root
+        try:
+            return before, run()
+        finally:
+            self.env["GITHUB_WORKSPACE"] = workspace
+
 
 class ScheduleTest(Scheduled):
     """b1 and b8 (D16): the runs that the rescreen job starts beside today's rescreens, from what its own step reads of
@@ -11829,9 +11846,10 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, want), out)
                 if why:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}. Its label comment records a "
-                                  f"withdrawal of the import check runs of {HEAD} that an earlier run owes. So of the "
+                                  f"reason of an earlier run to withdraw the import check runs of {HEAD}. So of the "
                                   f"App's writes of {HEAD}, the rescreen pass tries again only the withdrawal of the "
-                                  "import check runs.", out)
+                                  "import check runs. It does so only after a run whose post job failed or was "
+                                  "cancelled.", out)
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
                                   "tried again.", out)
@@ -13230,6 +13248,42 @@ class HeadScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, writes(self.api)), (0, [], []), out)
 
+    def test_a_review_run_of_the_pass_that_its_trust_job_stopped_settles_the_head(self):
+        """Round 17, part 4, item R (OSSV-221's architect, 2026-11-22 14:14Z and 19:42Z): a review run of the pass that
+        its trust job stopped as it found no task settles its head, as settles does for the pass's run of every other
+        task: the pass starts no review of the head again until a newer run of it. The trust job stopped the CI run of
+        HEAD of #7 (mallory's, then alice's), so the pass started review run 20 of HEAD, and the trust job of run 20
+        stopped it too. The next pass starts nothing, and its log says why. On the changed code of the control, with no
+        settle, the pass starts the same review again at each of its runs. A run made while an earlier run of its name
+        was running settles nothing, nor does the CI run alone, the event's own run. A conflict run of the head newer
+        than run 20 ends the settle."""
+        settled = (f"#7: the trust job of review run 20 of {HEAD} found no work for it and stopped it. That settles "
+                   f"the review of {HEAD} until a newer run of {HEAD}. A CI run that its trust job stopped does not "
+                   "count.")
+        for author, account in (("mallory", "mallory"), ("alice", "")):
+            title = f"review #7 at {HEAD}" + (f" of {account}" if account else "")
+            want = [("7", "review", account, HEAD, "")]
+            for case, runs, started in (
+                    ("the pass's review run", [(20, title, 30, 25, self.stopped_jobs())], []),
+                    ("a run made while an earlier run of its name ran",
+                     [(15, title, 40, 20, self.stopped_jobs()), (20, title, 30, 25, self.stopped_jobs())], want),
+                    ("the CI run alone", [], want),
+                    ("a newer conflict run", [(20, title, 30, 25, self.stopped_jobs()),
+                                              (30, f"conflict #7 at {HEAD}", 20, 15, self.conflict_jobs())], want)):
+                with self.subTest(author=author, case=case):
+                    self.tearDown()
+                    self.setUp()
+                    self.item(kind="pr", author=author)
+                    self.ci(ended=50)
+                    self.ran(10, f"review {HEAD} by {author}", made=45, ended=44, event="workflow_run",
+                             jobs=self.stopped_jobs())
+                    for run, name, made, ended, jobs in runs:
+                        self.ran(run, name, made=made, ended=ended, jobs=jobs)
+                    (rc, out, got), (rc2, out2, got2) = self.controlled(self.started, "settles() { return 1; }")
+                    self.assertEqual((rc, got), (0, started), out)
+                    self.assertEqual(out.count(settled), 0 if started else 1, out)
+                    self.assertEqual((rc2, got2), (0, want), out2)
+
     def test_a_merge_conflict_read_by_the_schedule_gets_one_conflict_run_waits_on_author_and_the_line(self):
         """(g): a head with a merge conflict, whose CI run's review could not sign in two hours ago: one conflict run,
         and no review run. Its trust job takes it, the comment job alone runs after it, and gives waits-on-author, the
@@ -13529,22 +13583,9 @@ class ExportTest(Scheduled):
               "takes no run.")
 
     def both(self, run):
-        """run() on the code as it is, then on the changed code of the control: the trust step and the pass's step
-        source .github/review/held.sh from GITHUB_WORKSPACE, which then holds a copy of that file whose exported is
+        """run() on the code as it is, then on the changed code of the control (controlled): held.sh whose exported is
         false for every pull request, as if the skip were taken out. Both results."""
-        root = os.path.join(self.dir, "unskipped")
-        path = os.path.join(root, ".github", "review", "held.sh")
-        if not os.path.exists(path):
-            os.makedirs(os.path.dirname(path))
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(held_sh() + "\nexported() { return 1; }\n")
-        before = run()
-        workspace = self.env["GITHUB_WORKSPACE"]
-        self.env["GITHUB_WORKSPACE"] = root
-        try:
-            return before, run()
-        finally:
-            self.env["GITHUB_WORKSPACE"] = workspace
+        return self.controlled(run, "exported() { return 1; }")
 
     def test_the_trust_job_gives_an_export_pull_request_no_task_on_any_event_or_task(self):
         """Mallory's export pull request #7: a CI run of it (one that names it, and one that names no pull request),
@@ -17535,7 +17576,8 @@ class ImportCheckTest(ReaderRunner):
         the newest review and no line: it records the check run again. With no hold comment of HEAD on #7 (GitHub
         refused to post it, say), the screened pass of run 95 takes the line out all the same. A screened pass of run
         85, earlier than the line, takes it out of no label comment: relabel 1 keeps the line, and relabel 2 withdraws
-        for it and records nothing."""
+        for it and records nothing. The decision of relabel 1 is screened when a comment gives the line's reason, and
+        withdrawn when none does (round 17, part 4, M1), and so is the decision of relabel 2 while the line stays."""
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("screen")}
         line = f"<!-- withdraw-owed {HEAD} screen 90 -->"
@@ -17563,7 +17605,7 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=comments, listed=[listed])
                 self.assertEqual((got["result"], got["post"]["decision"], got["post"]["withdrawn"], got["checks"]),
-                                 ("success", "screened", HEAD, []), self.logs)
+                                 ("success", "screened" if goes else "withdrawn", HEAD, []), self.logs)
                 (_token, endpoint, request), = got["withdrawn"]
                 self.assertEqual((endpoint, request["output"]["title"], request["output"]["summary"]),
                                  (f"repos/{REPO}/check-runs/901",
@@ -17574,8 +17616,10 @@ class ImportCheckTest(ReaderRunner):
                 logs = "\n".join(self.logs[start:])
                 self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
                               f"automated screen held {HEAD}.", logs)
-                self.assertIn(f"#7 at {HEAD}: the decision on the import check is screened (the label comment records "
-                              "a withdrawal that an earlier run owes).", logs)
+                said = f"the label comment records why an earlier run withdraws the import check runs of {HEAD}"
+                self.assertIn(f"#7 at {HEAD}: the decision on the import check is "
+                              + (f"screened ({said})." if goes else f"withdrawn ({said}, and no review or hold "
+                                                                    "comment says why)."), logs)
                 edited = self.owe(got, relabel, comments)
                 if goes:
                     (cleared,) = edited
@@ -17589,7 +17633,7 @@ class ImportCheckTest(ReaderRunner):
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[*held, screened, dict(label, body=cleared)])
                 self.assertEqual((got["result"], got["post"]["decision"], len(got["checks"])),
-                                 ("success", "record" if goes else "screened", 1 if goes else 0), self.logs)
+                                 ("success", "record" if goes else "withdrawn", 1 if goes else 0), self.logs)
 
     def test_a_review_of_the_head_from_a_later_run_than_the_line_decides_once_the_line_goes(self):
         """OSSV-221's architect, 2026-11-22 16:06Z and 16:08Z, (C): the line <!-- withdraw-owed <head> <why> <run> -->
@@ -17785,6 +17829,67 @@ class ImportCheckTest(ReaderRunner):
                          comments=[hold, screened, old], listed=[dict(listed, conclusion="neutral")])
         self.assertEqual((got["result"], got["post"]["decision"], len(got["checks"])), ("success", "record", 1),
                          self.logs)
+
+    def test_a_relabel_after_a_withdrawal_whose_reason_did_not_post_says_so_in_place_of_the_pass(self):
+        """Round 17, part 4, M1 (OSSV-221's architect, 2026-11-22 19:42Z): the screened CI run 70 of mallory's #7 passed
+        HEAD and recorded check run 901. Run 100 then gave HEAD a blocking finding: its post job withdrew 901, its
+        comment job recorded <!-- withdraw-owed <head> blocking 100 -->, and GitHub refused the post of its review. So
+        the screened pass of run 70 is still the newest review comment of HEAD, and no comment gives the reason of the
+        line. A relabel of HEAD gets the decision withdrawn. Its label comment says that a later run withdrew the check
+        and that no comment gives the reason, and names Sami's review of the head by hand as the next step. That text
+        takes the place of the text that the screen and the review passed the pull request, and of the steps of the
+        import. The state label stays waits-on-theorem. A relabel whose decision is screened for another reason keeps
+        that text and those steps: a screened pass of run 110, later than the line, gives the reason, or a pass by hand
+        follows a screened blocking finding (the state earlier). On the changed code of the control, whose decide step
+        gives screened in the place of withdrawn, the first relabel's label comment says that the screen and the review
+        passed the pull request."""
+        listed, _others = self.recorded()
+        neutral = dict(listed, conclusion="neutral")
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        label = dict(old, updated_at=ago(60),
+                     body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 100 -->"))
+        relabel = dict(self.RELABEL, started=ago(-1))
+        said = f"the label comment records why an earlier run withdraws the import check runs of {HEAD}"
+        unposted = [review_of(HEAD, at=ago(200), run=70), label]
+        for case, comments, decision, reason in (
+                ("a screened pass of run 70, older than the line", unposted, "withdrawn",
+                 f"{said}, and no review or hold comment says why"),
+                ("a screened pass of run 110, later than the line", [review_of(HEAD, at=ago(200), run=110), label],
+                 "screened", said),
+                ("a pass by hand after a screened blocking finding",
+                 [review_of(HEAD, "blocking", at=ago(90)), review_of(HEAD, at=ago(30), id_=31, screened=False), old],
+                 "screened", f"the newest review of {HEAD} gives the verdict pass, and a screen passed the head in an "
+                             "earlier run")):
+            with self.subTest(case=case):
+                start = len(self.logs)
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=comments, listed=[neutral])
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["withdrawn"], got["writes"]),
+                                 ("success", decision, HEAD, []), self.logs)
+                self.assertIn(f"#7 at {HEAD}: the decision on the import check is {decision} ({reason}).",
+                              "\n".join(self.logs[start:]))
+                if decision == "withdrawn":
+                    body = self.assertWaits(got, rules.REVIEW_AGAIN,
+                                            f"{rules.NO_REASON} You do not need to do anything.", value=self.LPS)
+                    for absent in (rules.PASSED, rules.IMPORT_STEPS, self.SOME):
+                        self.assertNotIn(absent, body)
+                else:
+                    body = self.assertWaits(got, self.SOME, rules.PASSED, rules.IMPORT_STEPS, value=self.LPS)
+                    self.assertNotIn(rules.NO_REASON, body)
+        # The control: the decide step, changed to give screened in the place of withdrawn, for the first case.
+        decide = step("post", self.DECIDE)
+        run = decide["run"]
+        self.assertEqual(run.count("decided withdrawn "), 1)
+        decide["run"] = run.replace("decided withdrawn ", "decided screened ")
+        try:
+            got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                             comments=unposted, listed=[neutral])
+        finally:
+            decide["run"] = run
+        self.assertEqual(got["post"]["decision"], "screened", self.logs)
+        body = self.assertWaits(got, self.SOME, rules.PASSED, rules.IMPORT_STEPS, value=self.LPS)
+        self.assertNotIn(rules.NO_REASON, body)
 
     def test_a_line_whose_writer_gives_no_reason_of_its_own_names_the_run_of_the_comment_that_gives_it(self):
         """OSSV-221's architect, 2026-11-22 17:27Z: a writer of the line whose own comment does not give its reason, as

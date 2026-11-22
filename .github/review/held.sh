@@ -619,11 +619,12 @@ facts() {
         else "count" end)] | join(" ")' "$file"
 }
 # settles <run> <tried> <task>: whether <run>, whose tried (facts) is <tried>, settles its name: a run of the pass
-# (workflow_dispatch) of <task> (approve, draft, answer or rescreen) that its trust job stopped (tried stopped) as it
-# decided that the name of <run> has no task. The pass then starts no run of that name again until a new head, comment
-# or hold gives a new name (OSSV-221's architect, 2026-11-22 14:00Z and 14:14Z). Not a run of an event, nor a
-# duplicate: a run older than <run>, of its event and name, that had not finished when <run> was made, so that the
-# trust job of <run> can have stopped it for that run, as it stops a second approval run of a head.
+# (workflow_dispatch) of <task> (approve, draft, answer, rescreen or review) that its trust job stopped (tried stopped)
+# as it decided that the name of <run> has no task. The pass then starts no run of that name again until a new head,
+# comment or hold gives a new name (OSSV-221's architect, 2026-11-22 14:00Z and 14:14Z). For a review, due_unreviewed
+# asks this of the newest run of the head alone, so a newer run of the head ends the settle. Not a run of an event,
+# nor a duplicate: a run older than <run>, of its event and name, that had not finished when <run> was made, so that
+# the trust job of <run> can have stopped it for that run, as it stops a second approval run of a head.
 settles() {
   [ "$2" = stopped ] || return 1
   awk -v r="$1" -v t="$3" 'NR == FNR {
@@ -971,8 +972,8 @@ held_work() {
     if (( tries > 0 )); then
       echo "#$number: $tries runs of $task $from settled nothing; trying again."
     else
-      echo "#$number: each run of $task $from counts no try (a failed sign-in, the limit, the cap or a stop of its" \
-        "trust job); trying again."
+      echo "#$number: no run of $task $from counts a try. Each one had a failed sign-in, the limit, the cap or a stop" \
+        "of its trust job. The rescreen pass tries again."
     fi
   fi
   who=$(held_account "$h_origin" "$author") || { echo "::error::run $h_origin could not be read."; return 1; }
@@ -1215,8 +1216,8 @@ due_retry() {
   [ "$post" != cancelled ] || how="was cancelled"
   if [[ ! ${last:-$ended} < $hour ]]; then
     if [ -n "$latest" ] && [ "$latest" != "$run" ]; then
-      echo "#$number: the post job of run $run $how, and run $latest of $head ended less than an hour ago with no" \
-        "work after its trust job: tried again later."
+      echo "#$number: the post job of run $run $how. Run $latest of $head did no work after its trust job, and it" \
+        "ended less than an hour ago. The rescreen pass tries again later."
     else
       echo "#$number: the post job of run $run $how, less than an hour ago: tried again later."
     fi
@@ -1422,10 +1423,13 @@ due_old() {
 # is due as any other. A CI run that its trust job stopped reviewed nothing, and can be the run of another pull request
 # of the head (one into another branch): it is never that newest run, so it holds back no re-run and no review. After
 # REVIEW_TRIES workflow_dispatch review runs of the head that count a try (tried, of facts) and gave no conflict, the
-# head is not tried again (head_stopped). The review of an outsider's pull request counts on its author. The review of a
-# writer's pull request counts on the account that started the newest CI run of the head (pusher), when that account has
-# no write access and is not one of the APPS: the run's name then ends with " of <login>", and its trust job screens it
-# first, on the limit of that account, as the trust job of that CI run's own event does.
+# head is not tried again (head_stopped). When the newest run of the head, but a CI run that its trust job stopped, is a
+# review run of the pass that its trust job stopped as it found no task (settles), that run settles the review of the
+# head: the pass starts no review of the head until a newer run of it (OSSV-221's architect, 2026-11-22 14:14Z and
+# 19:42Z). The review of an outsider's pull request counts on its author. The review of a writer's pull request counts
+# on the account that started the newest CI run of the head (pusher), when that account has no write access and is not
+# one of the APPS: the run's name then ends with " of <login>", and its trust job screens it first, on the limit of
+# that account, as the trust job of that CI run's own event does.
 due_unreviewed() {
   local list created ended run task event f tried post early all=true newest="" last="" tries=0
   local latest="" known="" met="" who=""
@@ -1460,6 +1464,11 @@ due_unreviewed() {
   done <<< "$list"
   if (( tries >= REVIEW_TRIES )); then
     head_stopped review "$tries"
+    return 0
+  fi
+  if [ -n "$latest" ] && settles "$latest" "${known%% *}" review; then
+    echo "#$number: the trust job of review run $latest of $head found no work for it and stopped it. That settles" \
+      "the review of $head until a newer run of $head. A CI run that its trust job stopped does not count."
     return 0
   fi
   if [ "$outsider" = true ] && { [ "$last" = signin ] || [ "$last" = failure ] || [ "$last" = cancelled ]; }; then
@@ -1626,11 +1635,11 @@ consider() {
         said="#$number: a hold that is not tried again names $head, and $because."
         # The reason of the line <!-- withdraw-owed <head> <why> <run> -->, whatever the newest review says.
         if [ "${from:-}" = owed ]; then
-          said="#$number: a hold that is not tried again names $head. Its label comment records a withdrawal of the"
-          said+=" import check runs of $head that an earlier run owes."
+          said="#$number: a hold that is not tried again names $head. Its label comment records a reason of an earlier"
+          said+=" run to withdraw the import check runs of $head."
         fi
         echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of the import" \
-          "check runs."
+          "check runs. It does so only after a run whose post job failed or was cancelled."
         due_retry 'review|rescreen|relabel|approve' relabel import
         return
       fi

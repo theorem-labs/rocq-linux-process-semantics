@@ -168,12 +168,15 @@ jobs:
   #             a run of the one that the notice of its trust job names, and of each when no notice names one. A CI run
   #             that its trust job stopped is never the newest run of a head: it reviewed nothing, and it can be another
   #             pull request's. After REVIEW_TRIES such reviews that counted a try (held.sh try_rule) and gave no
-  #             conflict, the head is not tried again. When the newest run of the head is a review whose screen passed
-  #             and whose review job failed at a sign-in, its failed jobs run again (POST
-  #             actions/runs/<id>/rerun-failed-jobs) in the place of a new run, at most once an hour: the screen's
-  #             verdict stands and is paid once, and the hourly caps count that run once. A new run instead when the run
-  #             was made 23 hours ago or more (its review job reads the artifact of its gather job, which GitHub keeps a
-  #             day), after 50 re-runs of it (its run_attempt past 50), or when GitHub refuses the re-run.
+  #             conflict, the head is not tried again. When the newest run of the head is a review run of this pass
+  #             whose trust job found no work and stopped it, made while no earlier run of its name was running, that
+  #             run settles the head: no review of it until a newer run of it (held.sh settles). When the newest run of
+  #             the head is a review whose screen passed and whose review job failed at a sign-in, its failed jobs run
+  #             again (POST actions/runs/<id>/rerun-failed-jobs) in the place of a new run, at most once an hour: the
+  #             screen's verdict stands and is paid once, and the hourly caps count that run once. A new run instead
+  #             when the run was made 23 hours ago or more (its review job reads the artifact of its gather job, which
+  #             GitHub keeps a day), after 50 re-runs of it (its run_attempt past 50), or when GitHub refuses the
+  #             re-run.
   #   relabel   an outside pull request whose value of REPO_PAIRS_IMPORT_PATHS recorded for its head (the newer of the
   #             label comment's line <!-- repo-pairs-import-paths <head>: <value> --> and the output text of the
   #             head's check run repo-pairs/import-approved) is not the value now, or whose head has a review and no

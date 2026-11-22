@@ -177,8 +177,8 @@ check run and each label comment of an outside pull request hold (import_marker)
 JSON string, or null when it is not given. The JSON writes each character outside ASCII, <, > and & as a \\u escape,
 so that the line holds no line break and no --> before its end.
 
-verdict: "<verdict> <state> <why> <from>" on standard output for <head> of the pull request <number> (review_verdict),
-from the comments of github-actions[bot]: <verdict> is the verdict of the marker
+verdict: "<verdict> <state> <why> <from> <posted>" on standard output for <head> of the pull request <number>
+(review_verdict), from the comments of github-actions[bot]: <verdict> is the verdict of the marker
 <!-- review-verdict <head> <verdict>[ will-fix] --> of the newest review comment that names <head>, or - when none
 does. A review comment of <head> is screened when it holds <!-- review-screened <head> --> as the next marker line, so
 that the screen passed <head> in the run of that review. <state> is held when a hold comment of the screen that names
@@ -189,8 +189,10 @@ the reason for which a relabel or a review by hand withdraws each import check r
 held; else the <why> of the line <!-- withdraw-owed <head> <why> <run> --> of a label comment (OWED), whatever the
 newest review says; else blocking or person, of the newest review comment newer than the newest screened one that
 gives one, or of the newest screened review comment when it does not pass; else -. <from> is owed when <why> is the
-line's, and - else. The line gives only the reason, never the state. A relabel records the import check run only for
-screened with the verdict pass and no <why>: with a <why> (OWED), its decision is screened. For earlier with the
+line's, and - else. <posted> is, for <from> owed, posted when a comment of github-actions[bot] gives a reason for the
+line to go, as for an outside author (reason_posted), and unposted when none does; - else. The line gives only the
+reason, never the state. A relabel records the import check run only for screened with the verdict pass and no <why>:
+with a <why> (OWED), its decision is withdrawn when <posted> is unposted, and screened else. For earlier with the
 verdict pass, its decision is hand with no <why>, and screened with one. A review by hand with no screen records none.
 Its post job's decision is hand for screened or earlier with no <why>, and screened with a <why>: the review of this
 run has not posted yet. It is held for held, and screen for unscreened. For the decision hand, the label step counts an
@@ -306,13 +308,16 @@ REFUSALS = ("", "review", "answer", "fix")
 # than it gives a blocking finding or the verdict person, or a label comment holds the line of OWED of the head), and
 # this run withdraws each check run of the head that still stands. So the state follows the verdict of this run, and a
 # pass gets PASSED. Else it is hand, and so is a relabel's in the state earlier with the verdict pass and no such
-# reason. A relabel's decision is screened also in the state screened with the verdict pass and a line of OWED: such a
-# relabel withdraws, and records no check run. The line of OWED gives only the reason, never the state: with no
-# screened review comment of the head, the decision is screen. For the decision hand, the label step counts an import
-# check run of the head that still stands, for the value of the variable now, as recorded (the post job's standing),
-# so its state is import or decide as that check run gives. Empty when the job gave none.
+# reason. A relabel withdraws, and records no check run, also in the state screened with the verdict pass and a line of
+# OWED. Its decision is then withdrawn when no comment of BOT gives a reason for that line to go (reason_posted): the
+# comment of its reason did not post, and the newest review comment is a screened pass of an earlier run. The label
+# step gets a decision only from a post job that succeeded, so the withdrawal is done by then, and the text says so in
+# the place of PASSED (NO_REASON). Else its decision is screened. The line of OWED gives only the reason, never the
+# state: with no screened review comment of the head, the decision is screen. For the decision hand, the label step
+# counts an import check run of the head that still stands, for the value of the variable now, as recorded (the post
+# job's standing), so its state is import or decide as that check run gives. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
-             "writer", "held", "hand", "screened")
+             "writer", "held", "hand", "screened", "withdrawn")
 
 # The texts of R12 for an outside pull request that the screen and the review passed (import_steps). With no variable
 # REPO_PAIRS_IMPORT_PATHS, the workflow cannot tell whether the import does not run yet, a move is under way or the
@@ -330,6 +335,13 @@ UNSCREENED = ("The automated review passed this pull request. No automated scree
 SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit. After "
                      "that, no automated screen passed it in a run that also reviewed it. So the check "
                      "`repo-pairs/import-approved` does not approve this head commit for the import.")
+# The decision withdrawn: a run withdrew the check run of the head, this relabel or an earlier run, for the reason of a
+# line of OWED, and no comment gives that reason. So the text says so in the place of PASSED and of the steps of the
+# import. The next step is a review of the head by hand (REVIEW_AGAIN), whose comment gives a verdict of the head.
+NO_REASON = ("The automated review passed this pull request in an earlier run. A later run of the workflow withdrew "
+             "the check `repo-pairs/import-approved` of its head commit, and no comment on this pull request gives "
+             "the reason. So that check does not approve this head commit for the import.")
+REVIEW_AGAIN = "Sami starts the automated review of the head commit again, by hand."
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -566,7 +578,9 @@ def import_steps(state, value, decision):
     (SCREEN_HELD_AFTER), in the place of PASSED. The decisions hand and screened (a review by hand with no screen, or
     a relabel, after a review whose run screened the head) give PASSED, and do not say which step: they compared no
     path. The decision hand gives the state decide only when no import check run of the head stands (the post job's
-    standing): one that stands gives the state import while the variable is set."""
+    standing): one that stands gives the state import while the variable is set. In the state decide, the decision
+    withdrawn gives NO_REASON in the place of PASSED and REVIEW_AGAIN in the place of the steps of the import, whatever
+    the variable."""
     if state not in ("decide", "person"):
         raise ValueError(f"no step of the import for the state {state!r}")
     if decision not in DECISIONS:
@@ -575,6 +589,8 @@ def import_steps(state, value, decision):
     steps = IMPORT_STEPS if live else MERGE_STEPS
     unread = f"{UNREAD} " if decision == "unread" else ""
     passed = {"screen": UNSCREENED, "held": SCREEN_HELD_AFTER}.get(decision, PASSED)
+    if state == "decide" and decision == "withdrawn":
+        return REVIEW_AGAIN, f"{NO_REASON} You do not need to do anything."
     if state == "decide":
         if live and decision in ("person", "markdown"):
             return APPROVE, (f"{passed} The import copies each path that this pull request changes. You do not need "
@@ -1038,9 +1054,10 @@ def owe(number, run, owed="", withdrawn="", own=False):
         line = f"<!-- withdraw-owed {head} {why} {owed_run(comments, head, why, m.group(3))} -->"
     if line and not mark(number, line, make=False, labels=labels):
         if withdrawn:
+            comment = (f"the hold comment of the screen that held {head}" if why == "screen"
+                       else f"the review comment that gives {head} the verdict {why}")
             print(f"#{number}: it has no label comment, and this command writes none. A later step of this job posts "
-                  f"the comment that gives the reason {why} for {head}. If that step fails, the workflow does not "
-                  f"record {line}.")
+                  f"{comment}. If that step fails or posts no such comment, the workflow does not record {line}.")
             return ""
         print(f"#{number}: it has no label comment, and this command writes none. If a later command of this job "
               f"writes a label comment, that comment gets {line}. If no later command writes one, the workflow does "
@@ -2377,8 +2394,11 @@ def main(argv):
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
             verdict, state, why = review_verdict(comments, argv[2])
-            owed = state != "held" and owed_line(comments, argv[2])[0] != ""
-            print(f"{verdict or '-'} {state} {why or '-'} {'owed' if owed else '-'}")
+            line_why, line_run = owed_line(comments, argv[2])
+            owed = state != "held" and line_why != ""
+            posted = ("posted" if reason_posted(comments, argv[2], line_why, line_run, True) else "unposted") \
+                if owed else "-"
+            print(f"{verdict or '-'} {state} {why or '-'} {'owed' if owed else '-'} {posted}")
             return 0
         if len(argv) in (6, 7) and argv[0] == "withdrawal" and argv[6:] in ([], ["owed"]):
             number, head, why, path, directory = argv[1:6]
