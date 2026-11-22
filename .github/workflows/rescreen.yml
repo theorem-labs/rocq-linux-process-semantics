@@ -180,11 +180,11 @@ jobs:
   #             day before its close, however long ago.
   # A post job of an approval, a review, a relabel or a catch-up that failed or was cancelled counts a try of the head,
   # but one that failed at "Sign in as the OSS Verify App to approve" (held.sh try_rule). Of an approval, a run whose
-  # post job did not run counts a try too when the rule counts one (its screen job ran out of time, say). After
-  # REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that names the head and says that its
-  # automated work did not finish and is not tried again, and waits-on-theorem with the label comment's step "Sami
-  # starts again, by hand, the work that the hold comment names" (.github/review/rules.py), and this pass fails for that
-  # run.
+  # post job did not run counts a try too when the rule counts one (its screen job ran out of time, say), but not a run
+  # that its trust job stopped. After REVIEW_TRIES of them, a run of the task stop gives the item a hold comment that
+  # names the head and says that its automated work did not finish and is not tried again, and waits-on-theorem with the
+  # label comment's step "Sami starts again, by hand, the work that the hold comment names" (.github/review/rules.py),
+  # and this pass fails for that run.
   # Never for a draft pull request, a closed item (but a catch-up left closed), or a pull request into another branch
   # than main, and nothing for an item while a run of it has not finished: its screen and review can outlast the time
   # between two runs of this pass, and a second run would use the hour's screens twice. It reads review.yml's runs of

@@ -3517,25 +3517,27 @@ jobs:
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed. Whatever that result, it records in the label comment the
   # withdrawal of import check runs that the post job owes, and takes that line out once a run finished it. For a review
-  # or a rescreen whose review job failed (after its verdict: the post job withdraws for a blocking finding or the
-  # verdict person) and whose post job owes a withdrawal, it runs that record alone (OSSV-221's architect, 2026-11-22
-  # 07:44Z): each other step of the job that would run for a review skips a review job that failed, so it posts no
-  # review, no fix and no label. That is so on each route, also on a review by hand with no screen, where no hold job
-  # runs.
+  # or a rescreen whose review job failed after its verdict (the post job withdraws for a blocking finding or the
+  # verdict person) and whose post job owes or finished that withdrawal, it records it, and its label step gives the
+  # item the state rerun (OSSV-221's architect, 2026-11-22 07:44Z, and the fresh reader of round 16): no review posted,
+  # so Sami runs the review again if no later run does. Each other step of the job that would run for a review skips a
+  # review job that failed, so it posts no review and no fix. That is so on each route, also on a review by hand with no
+  # screen, where no hold job runs.
   comment:
     needs: [trust, gather, review, post]
     # GitHub's implicit success() skips a job with a skipped ancestor, and a writer's run skips the screen job. A reply
     # and a stop have no gather, screen or review job: they need the trust job alone. A catch-up needs a post job that
     # reopened the pull request (its output caught), and an approval one that approved no run of a head that changes a
     # file under .github/ (its output steering) or no held run of a head for lack of the App's key (its output no_key).
-    # A review or a rescreen whose review job failed needs a post job whose output owed is set.
+    # A review or a rescreen whose review job failed needs a post job whose output owed or withdrawn is set.
     if: >-
       ${{ !cancelled() && github.ref == 'refs/heads/main'
           && (((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
                 || needs.trust.outputs.task == 'answer' || needs.trust.outputs.task == 'draft')
                && needs.review.result == 'success')
               || ((needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen')
-                  && needs.review.result == 'failure' && needs.post.outputs.owed != '')
+                  && needs.review.result == 'failure'
+                  && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != ''))
               || ((needs.trust.outputs.task == 'conflict' || needs.trust.outputs.task == 'relabel'
                    || needs.trust.outputs.task == 'reply' || needs.trust.outputs.task == 'stop')
                   && needs.trust.result == 'success')
@@ -3583,14 +3585,10 @@ jobs:
       # refused to post. The label step after it keeps the line. For an author whose write access GitHub did not give,
       # the label comment stays as it is. A record of an owed withdrawal never makes a label comment: for an item with
       # none, rules.py writes nothing (status 3), and this step gives the line to the label step (its output line),
-      # which gives it to the label comment that it writes (marker=<line>). The label step writes the line also when it
-      # stops for a hold made after the run started (rules.py mark). When the review job failed, this step runs alone
-      # (the if of this job), so no label step follows it: for an item with no label comment, it writes the line itself
-      # (rules.py mark), in a new label comment with no state label. Its state is working when the rescreen pass tries
-      # this run again: the author-kind table's retry holds, and the name of this run gives the head of the line, as
-      # held.sh due_retry takes it. Else it is rerun, which names Sami's next step. In any other run, when the label
-      # step writes no label comment, the line of an item with no label comment is not recorded. That is so when the
-      # step is skipped, stops before its label call, or leaves the labels of a relabel whose post job failed.
+      # which gives it to the label comment that it writes (marker=<line>), also after a review job that failed. The
+      # label step writes the line also when it stops for a hold made after the run started (rules.py mark). Else, when
+      # the label step writes no label comment, the line of an item with no label comment is not recorded. That is so
+      # when the step is skipped, stops before its label call, or leaves the labels of a relabel whose post job failed.
       - name: Record a withdrawal that the post job owes
         id: owed
         if: env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')
@@ -3602,27 +3600,14 @@ jobs:
           OUTSIDE: ${{ needs.trust.outputs.outside }}
           OUTSIDER: ${{ needs.trust.outputs.outsider }}
           AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
-          # failure when this step runs alone in this job (the if of this job), and no label step follows it.
-          REVIEWED: ${{ needs.review.result }}
-          # The head that the name of this run gives (the trust job's named), or empty.
-          NAMED: ${{ needs.trust.outputs.named }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           rc=0
           python3 .github/review/rules.py owed "$NUMBER" owed="${OWED:-}" withdrawn="${WITHDRAWN:-}" task="$TASK" \
             outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
-          (( rc == 3 )) || exit "$rc"
-          line="<!-- withdraw-owed $OWED -->"
-          if [ "${REVIEWED:-}" != failure ]; then
-            echo "line=$line" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          answers=$(python3 .github/review/rules.py answers "$TASK" "${OUTSIDE:-}" "${OUTSIDER:-}") \
-            || { echo "::error::the author-kind table gives no answers for the task $TASK."; exit 1; }
-          state=rerun
-          if grep -qx 'retry=true' <<< "$answers" && [ "${NAMED:-}" = "${OWED%% *}" ]; then state=working; fi
-          python3 .github/review/rules.py mark "$NUMBER" "$line" "state=$state"
+          (( rc != 3 )) || { echo "line=<!-- withdraw-owed $OWED -->" >> "$GITHUB_OUTPUT"; exit 0; }
+          exit "$rc"
       # The review comment: it replaces the newest review comment of the workflow on the item, or posts a new one when
       # there is none. A review with no screen in its run (its marker lines hold no <!-- review-screened <head> -->)
       # never replaces a screened review comment of the same head that gives a blocking finding or the verdict person:
@@ -3828,12 +3813,16 @@ jobs:
       # import check run of the head with conclusion success that still stands after it (its output standing) counts as
       # recorded: so the state is import while the variable is set, and decide, with Sami's steps, when none stands.
       # With the decision screened, the state follows this run's verdict, as for any review. After a review job that
-      # failed, this step does not run: the job runs the step "Record a withdrawal that the post job owes" alone.
+      # failed after its verdict, no review posted: the fact unfinished gives the state rerun, waits-on-theorem,
+      # whatever the verdict, and the line of an owed withdrawal goes into that label comment as for any run. Such a run
+      # settled no hold, so the label review-held stays as it is. On the route screen, the hold job of the same run
+      # writes a hold: when it ran first, it stops this step as any hold made after the run started does, and when it
+      # runs later, its label takes the place of this one. A head that moved writes nothing, as for any review.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
           && needs.trust.outputs.task != 'catchup' && needs.trust.outputs.task != 'approve'
-          && steps.answer.outputs.other != 'true' && needs.review.result != 'failure'
+          && steps.answer.outputs.other != 'true'
         env:
           TASK: ${{ needs.trust.outputs.task }}
           # The head that the review read, or the head of a relabel, which the trust job read.
@@ -3841,6 +3830,8 @@ jobs:
           STARTED: ${{ needs.trust.outputs.started }}
           # The post job's result: success, failure, cancelled, or skipped when it did not run.
           POSTED: ${{ needs.post.result }}
+          # failure when the review job failed after its verdict (the if of this job): no review posted.
+          REVIEWED: ${{ needs.review.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
           # The trust job's outputs as they are, which .github/review/rules.py reads (outside_author and the author-kind
           # table): outside true is an outside author, whose item gets its state label (R5); kind unknown changes no
@@ -3969,6 +3960,9 @@ jobs:
               echo "#$NUMBER: the answer changes no state, so the labels stay."
               exit 0
             fi
+          elif [ "${REVIEWED:-}" = failure ]; then
+            echo "#$NUMBER: the review job of this run failed, so no review posted and the label $HELD_LABEL stays as" \
+              "it is."
           elif [ "${TASK:-}" != relabel ]; then
             if [ "$pending" = true ]; then
               echo "#$NUMBER: a hold of other work is tried again, so the label $HELD_LABEL stays on."
@@ -3987,6 +3981,8 @@ jobs:
           fi
           facts=()
           [ -z "$paths" ] || facts=("import_paths=$paths")
+          # A review job that failed after its verdict: the state rerun (rules.py label_state).
+          [ "${REVIEWED:-}" != failure ] || facts+=("unfinished=true")
           # The trust job's outputs as they are: rules.py reads the kind of the author from them (outside_author and
           # the author-kind table). The head names the marker line of R12 in the label comment of an outside pull
           # request (rules.py import-marker). A pull request with the review's verdict and no outside state gets the
@@ -4197,8 +4193,8 @@ jobs:
   # The if below cannot see the steps of another job, so a screen job that failed at its sign-in starts this job, which
   # reads this attempt's jobs first and stops. It needs the post job: before its label step, it records the withdrawal
   # of import check runs that this run owes, as the comment job does, which does not run for a held screen, and runs
-  # that record alone for a review job that failed. That record never makes a label comment: the label step writes the
-  # line for an item with none.
+  # for a review job that failed after its verdict too. That record never makes a label comment: the label step
+  # writes the line for an item with none.
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -4271,7 +4267,7 @@ jobs:
       # step "Record a withdrawal that the post job owes" records it: the post job's outputs owed and withdrawn,
       # whatever that job's result. This job records them for a held screen, for which the comment job does not run, and
       # for a review job that failed after it gave a blocking finding or the verdict person, for which the comment job
-      # records the owed line too (its step "Record a withdrawal that the post job owes" alone). In a review, a
+      # records the owed line too (its step "Record a withdrawal that the post job owes"). In a review, a
       # rescreen or an approval, a screen of this run that held the head of a pull request owes that withdrawal too:
       # these are the tasks whose post job withdraws for a held screen (the author-kind table's withdraw), and an answer
       # or a draft withdraws nothing. So for such a screen (the output held of the step before) this step writes the

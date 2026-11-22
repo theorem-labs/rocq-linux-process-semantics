@@ -796,15 +796,18 @@ left_stopped() {
 # Such a post job failed at a write of the App or at a sign-in, or was cancelled, or ended in a way that this does not
 # name. A failed "Sign in as the OSS Verify App to approve" counts no try (R10), and a failed "Sign in as the OSS Verify
 # App" counts one. For the approval (<tasks> approve), each run that counts a try counts, also a run whose post job did
-# not run: its screen job ran out of time, say, or its screen job and its hold job failed. At most REVIEW_TRIES: each
-# counts a try of the head.
+# not run: its screen job ran out of time, say, or its screen job and its hold job failed. A run that its trust job
+# stopped (early, of facts) counts for no task: it tried nothing. A run of the pass with a number and a run with none
+# can each start an approval run of one head, and the trust job stops the later one. At most REVIEW_TRIES: each counts
+# a try of the head.
 failures() {
-  local n=0 run f tried post
+  local n=0 run f tried post early
   while read -r _ _ run; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read." >&2; return 1; }
-    read -r tried _ post _ <<< "$f"
+    read -r tried _ post _ early _ <<< "$f"
     [ "$post" != success ] || break
-    if [ "$tried" = try ] && { [ "$1" = approve ] || { [ "$post" != - ] && [ "$post" != skipped ]; }; }; then
+    if [ "$tried" = try ] && [ "$early" != stopped ] \
+      && { [ "$1" = approve ] || { [ "$post" != - ] && [ "$post" != skipped ]; }; }; then
       n=$((n + 1))
     fi
     (( n < REVIEW_TRIES )) || break
@@ -1058,12 +1061,12 @@ due_draft() {
 # job leaves no verdict), or a hold that is not tried again, the newest of its work, names the head. Once an hour after
 # the newest approval run of the head. When that run counts a try (tried, of facts), the approval runs of the head that
 # count a try count the tries of the head (failures): a failed "Sign in as the OSS Verify App to approve" counts none
-# (R10), and a failed "Sign in as the OSS Verify App", a failed write of the App, a cancelled post job, or a post job
-# that did not run (the screen job ran out of time, say) counts one. After REVIEW_TRIES of them, the head is not tried
-# again (head_stopped): waits-on-theorem, with Sami's next step. A hold of an approval that is tried again leaves it
-# to that hold (due_held). Never for a head that the label comment records as one that
-# changes a file under .github/ (head_marks, steered), or as one that the screen passed while the environment
-# post held no key of the OSS Verify App (no_key_of): the post job approved no run of such a head.
+# (R10), nor does a run that its trust job stopped, and a failed "Sign in as the OSS Verify App", a failed write of the
+# App, a cancelled post job, or a post job that did not run (the screen job ran out of time, say) counts one. After
+# REVIEW_TRIES of them, the head is not tried again (head_stopped): waits-on-theorem, with Sami's next step. A hold of
+# an approval that is tried again leaves it to that hold (due_held). Never for a head that the label comment records
+# as one that changes a file under .github/ (head_marks, steered), or as one that the screen passed while the
+# environment post held no key of the OSS Verify App (no_key_of): the post job approved no run of such a head.
 due_approve() {
   local list n last created ended run f tried screen post tries keyless
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
