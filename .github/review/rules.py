@@ -5,8 +5,8 @@ labels").
     python3 .github/review/rules.py label <number> task=<task> outside=<outside> outsider=<outsider> author=<kind>
         [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line> [state=<state>]
-    python3 .github/review/rules.py owed <number> owed=<head, why and run> withdrawn=<head> task=<task>
-        outside=<outside> outsider=<outsider> author=<kind>
+    python3 .github/review/rules.py owed <number> owed=<head, why and run> withdrawn=<head> own=<true or false>
+        task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
@@ -71,18 +71,22 @@ can fail, and again after the step that posts the comment of its reason. owed=<h
 output owed, <head> <why>, of a withdrawal that it found a reason for and did not finish; or <head> screen from the hold
 job, for a screen that held the head in a review, a rescreen or an approval of its run; then <run>, the id of the run
 that writes the line) gives the line <!-- withdraw-owed <head> <why> <run> --> of KEPT (OWED), as mark does, but it
-never makes a label comment. When the item has no label comment, this writes nothing, a line says so, and the status
-is 3: the step then gives the line to the label step of its job, which gives it as marker=<line> to the call that
-writes the label comment. withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as it found
-no import check run of the head with conclusion success or withdrew each one) takes the line of that head out, but
-only while a comment of github-actions[bot] gives a reason for it (reason_posted). That comment is the hold comment or
-the review comment of the line's run that gives the reason of the line, or a review comment of the head from a later
-run. Unless the trust job's outside is false, that later review comment must be screened. Else the line stays, and a
-line says so. Both, for one head, are a withdrawal that the job finished before a later step of the job posts the
-comment of its reason: the review of the comment job, or the hold comment of the hold job. They give the line as owed
-alone does, but for an item with no label comment the status is 0, and no label step gets the line. The run's task and
-the trust job's outputs outside, outsider and kind are given as for label: when the author-kind table's answer label
-is unchanged, this writes nothing, and a notice says why.
+never makes a label comment. own=true says that a comment of this run gives <why>: the hold job's line of its own
+screen, or the comment job's line of the verdict of its own review. Else (own=false, or empty with no owed=) the line
+names the run of the comment that gives <why> (owed_run): the run of a line of that head and reason that stands, or
+else of the newest such hold or review comment, and <run> only when none names a run. When the item has no label
+comment, this writes nothing, a line says so, and the status is 3: it writes line=<line> to the step's outputs
+(GITHUB_OUTPUT), and the step gives that line to the label step of its job, which gives it as marker=<line> to the
+call that writes the label comment. withdrawn=<head> (its output withdrawn: it finished the withdrawal of the head, as
+it found no import check run of the head with conclusion success or withdrew each one) takes the line of that head
+out, but only while a comment of github-actions[bot] gives a reason for it (reason_posted). That comment is the hold
+comment or the review comment of the line's run that gives the reason of the line, or a review comment of the head
+from a later run. Unless the trust job's outside is false, that later review comment must be screened. Else the line
+stays, and a line says so. Both, for one head, are a withdrawal that the job finished before a later step of the job
+posts the comment of its reason: the review of the comment job, or the hold comment of the hold job. They give the line
+as owed alone does, but for an item with no label comment the status is 0, and no label step gets the line. The run's
+task and the trust job's outputs outside, outsider and kind are given as for label: when the author-kind table's answer
+label is unchanged, this writes nothing, and a notice says why.
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -447,20 +451,24 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
                   r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|screen) [1-9][0-9]* -->")
 # The marker line of a withdrawal of the import check runs of a head (R12) that a run found a reason for and did not
 # finish (GitHub refused it, or the job failed or stopped before it), or whose reason no comment of the item gives yet.
-# The head, why (WITHDRAWN), and the id of the run that wrote the line (OSSV-221's architect, 2026-11-22 16:06Z). Each
-# job writes it ahead, before its first step that can fail or that withdraws: the post job through its output owed,
-# which the comment job or the hold job of its run records; the hold job for a screen that held the head in a review, a
-# rescreen or an approval of its run; and the comment job for a blocking finding or the verdict person of its run's
-# review, when the post job finished the withdrawal before that review posted. It goes into a label comment that the
-# item has: no record of it makes one (owe). An item with no label comment gets the line from the label step of that
-# job, but not when the job finished the withdrawal and posts the comment of the reason itself. Its label call writes a
-# label comment with the line in any state (apply). The comment job's label step also writes the line when it stops for
-# a hold made after the run started (mark). When the label step stops before its label call for any other cause, the
-# line is not recorded. A relabel and a review by hand of that head withdraw for why while the line stands, whatever
-# the newest review says (review_verdict). The line goes only after a run finished the withdrawal of that head (it
-# found no import check run of the head with conclusion success, or withdrew each one), and only while a comment of BOT
-# gives a reason for it (reason_posted): the comment of the line's run that gives why, or a later review of the head.
-# Until then, each relabel withdraws and records nothing (owe). Each head has a line of its own (marker_kind).
+# The head, why (WITHDRAWN), and a run (OSSV-221's architect, 2026-11-22 16:06Z and 17:27Z): the run whose own comment
+# gives why. The hold job's line of its own screen, and the comment job's line of its own review's verdict, name their
+# own run. Any other writer, as a relabel whose withdrawal GitHub refused, keeps the run of the line of that head and
+# why that stands, or names the run of the comment that gives why, and its own run only when no comment names one
+# (owed_run). Each job writes it ahead, before its first step that can fail or that withdraws: the post job through its
+# output owed, which the comment job or the hold job of its run records; the hold job for a screen that held the head in
+# a review, a rescreen or an approval of its run; and the comment job for a blocking finding or the verdict person of
+# its run's review, when the post job finished the withdrawal before that review posted. It goes into a label comment
+# that the item has: no record of it makes one (owe). An item with no label comment gets the line from the label step
+# of that job, but not when the job finished the withdrawal and posts the comment of the reason itself. Its label call
+# writes a label comment with the line in any state (apply). The comment job's label step also writes the line when it
+# stops for a hold made after the run started (mark). When the label step stops before its label call for any other
+# cause, the line is not recorded. A relabel and a review by hand of that head withdraw for why while the line stands,
+# whatever the newest review says (review_verdict). The line goes only after a run finished the withdrawal of that
+# head (it found no import check run of the head with conclusion success, or withdrew each one), and only while a
+# comment of BOT gives a reason for it (reason_posted): the comment of the line's run that gives why, or a later review
+# of the head. Until then, each relabel withdraws and records nothing (owe). Each head has a line of its own
+# (marker_kind).
 OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) ([1-9][0-9]*) -->")
 
 
@@ -772,17 +780,19 @@ def with_marker(body, line):
     return text + gap + "\n".join(kept + [line] + rest)
 
 
-def mark(number, line, make=True, state="working"):
+def mark(number, line, make=True, state="working", labels=None):
     """Records line, a marker line of KEPT, in the label comment of the item number (with_marker), and writes nothing
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
     of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
     no state label, as mark writes no state label: a ValueError for any other. The comment job's label step gives
     working or after-hold, by the hold that stopped it. When make is False (owe: a line of OWED), such an item gets
-    nothing, and the result is False. Else the result is True."""
+    nothing, and the result is False. Else the result is True. labels are the item's label comments of BOT, each {id,
+    body}, when the caller read them already; else this reads them."""
     marker_kind(line)
     if state not in STATES or label_of(state) is not None:
         raise ValueError(f"mark makes a label comment only in a state with no state label, not {state!r}")
-    labels = read_labels(number)
+    if labels is None:
+        labels = read_labels(number)
     old = labels[-1] if labels else None
     if old is None and not make:
         return False
@@ -969,24 +979,27 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
     apply(number, state, markers, head, imports, labels, labelled=label == "set")
 
 
-def owe(number, run, owed="", withdrawn=""):
+def owe(number, run, owed="", withdrawn="", own=False):
     """Records in the label comment of the item number the withdrawal of the import check runs of a head that a run
     owes (OWED). owed, "<head> <why> <run>", is the post job's output owed, "<head> <why>" of a withdrawal that it found
     a reason for and did not finish (or "<head> screen" from the hold job, for a screen that held the head in a review,
     a rescreen or an approval of its run), and <run>, the id of the run that writes the line. It gives the line
-    <!-- withdraw-owed <head> <why> <run> --> (mark), in a label comment that the item has: it never makes one. When
-    the item has none, it writes nothing, says so, and the result is False: the step gives the line to the label step
-    of its job. withdrawn alone, a head whose withdrawal the job finished, takes the line of that head out (unmark),
-    but only while a comment of BOT gives a reason for it (reason_posted; OSSV-221's architect, 2026-11-22 16:06Z): the
-    comment of the line's run that gives its why, or a review comment of the head from a later run, which must be
-    screened when the rule holds back for the author of run (holds_back). Else the line stays, and each later relabel
-    withdraws for it and records nothing. owed and withdrawn of one head are a withdrawal that the job finished before
-    a later step of the job posts the comment of its reason (the review of the comment job, or the hold comment of the
-    hold job): the line goes in as for owed alone, so that it stands when that step fails. An item with no label
-    comment then gets nothing, and the result is True, so that no label step gets the line: that comment gives the
-    reason once it posts. owed and withdrawn of two heads are a ValueError. The state label and the text of the label
-    comment stay as they are. As for set_state, the label answer of the author-kind table for run unchanged writes
-    nothing, and gives a notice. Else the result is True."""
+    <!-- withdraw-owed <head> <why> <run> --> (mark), in a label comment that the item has: it never makes one. own is
+    True when a comment of that run gives why: the hold comment of its screen, or its own review with that verdict.
+    Else the line names the run of the comment that gives why (owed_run; OSSV-221's architect, 2026-11-22 17:27Z), so
+    that a refused withdrawal of a relabel never takes the place of that run. When the item has no label comment, it
+    writes nothing, says so, and the result is the line: the step gives it to the label step of its job. withdrawn
+    alone, a head whose withdrawal the job finished, takes the line of that head out (unmark), but only while a comment
+    of BOT gives a reason for it (reason_posted; OSSV-221's architect, 2026-11-22 16:06Z): the comment of the line's run
+    that gives its why, or a review comment of the head from a later run, which must be screened when the rule holds
+    back for the author of run (holds_back). Else the line stays, and each later relabel withdraws for it and records
+    nothing. owed and withdrawn of one head are a withdrawal that the job finished before a later step of the job posts
+    the comment of its reason (the review of the comment job, or the hold comment of the hold job): the line goes in as
+    for owed alone, so that it stands when that step fails. An item with no label comment then gets nothing, and the
+    result is "", so that no label step gets the line: that comment gives the reason once it posts. owed and withdrawn
+    of two heads are a ValueError. The state label and the text of the label comment stay as they are. As for
+    set_state, the label answer of the author-kind table for run unchanged writes nothing, and gives a notice. Else the
+    result is ""."""
     line = f"<!-- withdraw-owed {owed} -->" if owed else ""
     m = OWED.fullmatch(line) if owed else None
     if owed and not m:
@@ -999,11 +1012,15 @@ def owe(number, run, owed="", withdrawn=""):
     if answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged":
         print(f"::notice::#{number}: GitHub did not say whether its author has write access, so the workflow changes "
               "neither its state label nor its label comment.")
-        return True
-    if withdrawn and not owed:
+        return ""
+    comments = labels = None
+    if (withdrawn and not owed) or (owed and not own):
         comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
                               f".[] | select(.user.login == {json.dumps(BOT)})"
                               " | {id, user: {login: .user.login}, body, updated_at} | @json")
+        labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
+                  if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
+    if withdrawn and not owed:
         why, wrote = owed_line(comments, withdrawn)
         screened = holds_back(run["outside"], run["author"])
         if why and not reason_posted(comments, withdrawn, why, wrote, screened):
@@ -1014,22 +1031,22 @@ def owe(number, run, owed="", withdrawn=""):
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}"
             print(f"#{number}: its label comment keeps {kept}. {said}, and no {'screened ' if screened else ''}review "
                   f"comment of {withdrawn} is from a later run.")
-            return True
-        labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
-                  if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
+            return ""
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}", labels)
-        return True
-    if line and not mark(number, line, make=False):
+        return ""
+    if owed and not own:
+        line = f"<!-- withdraw-owed {head} {why} {owed_run(comments, head, why, m.group(3))} -->"
+    if line and not mark(number, line, make=False, labels=labels):
         if withdrawn:
             print(f"#{number}: it has no label comment, and this command writes none. A later step of this job posts "
                   f"the comment that gives the reason {why} for {head}. If that step fails, the workflow does not "
                   f"record {line}.")
-            return True
+            return ""
         print(f"#{number}: it has no label comment, and this command writes none. If a later command of this job "
               f"writes a label comment, that comment gets {line}. If no later command writes one, the workflow does "
               f"not record {line}.")
-        return False
-    return True
+        return line
+    return ""
 
 
 def parse(args, run=()):
@@ -1504,6 +1521,32 @@ def owed_line(comments, head):
                 if m and m.group(1) == head:
                     owed = (m.group(2), m.group(3))
     return owed
+
+
+def owed_run(comments, head, why, run):
+    """The run that the line of OWED of head and why names when its writer is not the run whose own comment gives why:
+    a relabel whose withdrawal GitHub refused, or any run whose own review gives no such verdict (OSSV-221's architect,
+    2026-11-22 17:27Z). comments are the item's comments as the API lists them. The run of the line of head and why
+    that stands (owed_line), so that the line keeps naming the run of its reason. Else, the run of the comment of BOT
+    that gives why: for screen, the newest hold comment of the screen that names head (by updated_at); for blocking or
+    person, the newest review comment of head with that verdict. Else run, the writer's own run, also when that comment
+    names no run: then no comment of an earlier run can take the line out (reason_posted), and it fails closed."""
+    standing, wrote = owed_line(comments, head)
+    if standing == why:
+        return wrote
+    found, at = None, ""
+    for c in comments:
+        if not of_bot(c):
+            continue
+        body = c.get("body") or ""
+        m = REVIEWED.match(body)
+        if why in WITHDRAWING and m and m.group(1) == head and m.group(2) == why:
+            found = REVIEW_RUN.match(body, m.end())
+        elif why == "screen" and body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
+            h = HELD_HEAD.search(body)
+            if h and h.group(1) == head and (c.get("updated_at") or "") >= at:
+                found, at = HELD_RUN.search(body), c.get("updated_at") or ""
+    return found.group(1) if found else run
 
 
 def reason_posted(comments, head, why, run, screened):
@@ -2240,11 +2283,20 @@ def main(argv):
             set_state(argv[1], run, facts, markers, head)
             return 0
         if len(argv) >= 2 and argv[0] == "owed" and NUMBER.fullmatch(argv[1]):
-            facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn"))
+            facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn", "own"))
             if facts or markers or head:
-                raise ValueError("owed takes the run, owed= and withdrawn= alone")
-            owed, withdrawn = given.pop("owed"), given.pop("withdrawn")
-            return 0 if owe(argv[1], given, owed, withdrawn) else 3
+                raise ValueError("owed takes the run, owed=, withdrawn= and own= alone")
+            owed, withdrawn, own = given.pop("owed"), given.pop("withdrawn"), given.pop("own")
+            if own not in ("", "true", "false"):
+                raise ValueError(f"own is true, false or empty, not {own!r}")
+            line = owe(argv[1], given, owed, withdrawn, own == "true")
+            if not line:
+                return 0
+            output = os.environ.get("GITHUB_OUTPUT")
+            if output:
+                with open(output, "a", encoding="utf-8") as f:
+                    f.write(f"line={line}\n")
+            return 3
         if len(argv) == 3 and argv[0] == "hold-head" and NUMBER.fullmatch(argv[1]):
             return 0 if held_head(argv[1], argv[2]) else 3
         if len(argv) in (4, 5) and argv[0] == "answers":
