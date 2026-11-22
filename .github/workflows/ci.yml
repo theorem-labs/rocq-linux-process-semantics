@@ -137,11 +137,18 @@ jobs:
       # byte the same. They do not include the OCaml plugins rocq loads, so
       # .github/dune-cache-toolchain.sh empties the cache when the toolchain
       # changed. The key decides only which entries are on disk. It never
-      # decides which entry a rule uses, so it can fall back to a prefix. Only
-      # a push to main saves. A cache that a pull request saves serves that
-      # pull request alone, and it pushes main's caches out of the repository's
-      # 10 GB. When the `dev` image moves, its entries miss, and the cache is
-      # emptied if a plugin or a package changed.
+      # decides which entry a rule uses, so it can fall back to a prefix.
+      #
+      # Every run whose exact key missed saves. GitHub scopes a cache to the
+      # ref that saved it: main's entries serve every run, a pull request's
+      # serve only that pull request's later runs (its restore looks in its own
+      # scope first, then main's). So the second push of a pull request
+      # rebuilds only what changed since its first, not its whole difference
+      # from main again: with only main saving, each of #153's 16 runs rebuilt
+      # 45-56 minutes per lane, because main got one push that week. The prune
+      # job keeps one entry per lane on each ref. When the `dev` image moves,
+      # its entries miss, and the cache is emptied if a plugin or a package
+      # changed.
       - name: The dune cache key
         id: dune-key
         run: |
@@ -252,7 +259,7 @@ jobs:
       # the same tree (a re-run, or a push that brings a tree back) does that,
       # and it builds cold. The next push of another tree saves again.
       - name: Save the dune cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dune-restore.outputs.cache-hit != 'true'
+        if: steps.dune-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: .dune-cache
@@ -354,22 +361,29 @@ jobs:
           du -sh ~/.cache/dune
 
       - name: Save the dune cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.dune-restore.outputs.cache-hit != 'true'
+        if: steps.dune-restore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/dune
           key: ${{ steps.dune-key.outputs.key }}
 
-  # Main keeps one dune cache per lane and one for the opam job: after the
-  # saves, this job deletes the older caches of each (.github/cache-prune.sh
-  # says how). It alone holds `actions: write`, and it runs no code of a pull
-  # request: the lanes and the opam job, which build that code, keep the
-  # workflow's read-only token. Each new key ends with the tree of this commit,
-  # so the job finds each family by that suffix.
+  # Each ref keeps one dune cache per lane and one for the opam job: after the
+  # saves, this job deletes the older caches of each on this run's ref (main,
+  # or the pull request's merge ref) (.github/cache-prune.sh says how). It
+  # alone holds `actions: write`, and it runs no code of a pull request: on a
+  # pull request it checks out main and reads the tree of the tested commit
+  # through the API. The lanes and the opam job, which build that code, keep
+  # the workflow's read-only token. It runs for pull requests from this
+  # repository's own branches only; a fork's token cannot delete. Each new key
+  # ends with the tree of the tested commit, so the job finds each family by
+  # that suffix.
   prune:
     name: Prune the dune caches
     needs: [route, build, opam]
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.route.outputs.build == 'true' }}
+    if: >-
+      ${{ !cancelled() && needs.route.outputs.build == 'true'
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+          || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -378,12 +392,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned: this job holds a write token)
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.repository.default_branch || github.sha }}
           persist-credentials: false
       - name: Delete the older caches of each lane
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tree=$(git rev-parse 'HEAD^{tree}')
+          tree=$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha) \
+            || { echo "::warning::could not read the tree of $GITHUB_SHA"; exit 0; }
           keys=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=dune-&ref=$GITHUB_REF&per_page=100" \
                    --jq ".actions_caches[].key | select(endswith(\"-$tree\"))") \
             || { echo "::warning::could not list the dune caches"; exit 0; }
