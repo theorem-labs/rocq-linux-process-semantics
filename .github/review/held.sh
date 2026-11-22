@@ -236,12 +236,13 @@ no_key_of() {
 # screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
 # held. Else the reason of a withdrawal of the import check runs of <head> that a run owes (it found a reason for it
 # and did not finish it, or no comment gives that reason yet), while a label comment holds its marker line
-# <!-- withdraw-owed <head> <why> -->: "<why> owed", whatever the newest review says. Only a run that finished the
-# withdrawal of <head> takes that line out, and only once a comment of github-actions[bot] gives its reason (rules.py
-# owed). Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any,
-# when none is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a
-# relabel of <head> withdraws nothing. It records an import check run only when the newest review comment of <head>
-# holds the marker <!-- review-screened <head> --> and passes, with no such line (rules.py verdict, screened).
+# <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
+# the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
+# the comment of run <run> that gives <why>, or a later review of <head> (rules.py owed). Else blocking or person, of
+# the newest review comment of <head> newer than the newest screened one (of any, when none is screened) that gives
+# one, or of the newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws
+# nothing. It records an import check run only when the newest review comment of <head> holds the marker
+# <!-- review-screened <head> --> and passes, with no such line (rules.py verdict, screened).
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
@@ -260,7 +261,8 @@ relabel_withdraws() {
           and contains("The automated screen held "))
         | .at] | max // "") as $held
     | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
-        | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) -->$") | .w] | last) as $owed
+        | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) [1-9][0-9]* -->$") | .w] | last)
+        as $owed
     | if $held != "" and $held > $screened then "screen"
       elif $owed != null then "\($owed) owed"
       elif $newer != null then $newer
@@ -551,26 +553,27 @@ try_rule='def judges_nothing: .[] | (.name // "") as $job | .steps[]?
       elif any(.[]; .status | IN("queued", "in_progress", "waiting", "requested", "pending")) then "running"
       else "try" end; '
 # facts <run>: what the jobs of <run> show, read once: "<tried> <screen> <post> <settled> <early> <reviewed>
-# <commented> <held> <posted> <answered> <counts>", - for none. tried: whether the run counts a try of its work, as the
-# one rule of every reader gives it (try_rule): signin, limit, cap, stopped, running or try. screen: the conclusion of
-# its screen job. post: the conclusion of its post job, signin for one that failed at a step whose name starts with
-# "Sign in" and failure for one that failed at another (a write of the App, say). settled: its post job approved held
-# runs or recorded the import check run. early: stopped when no job ran after its trust job (the trust job was skipped,
-# or every job after it was, whatever the trust job's result), conflict when the comment job alone ran after it (the
-# task conflict). early tells the readers that ask whether a run did any work after its trust job (due_retry,
-# due_conflict, due_unreviewed). No reader counts a try or settles a name by it: tried does that, and a run whose trust
-# job failed counts a try. reviewed: signin when its review job failed at a step whose name starts with "Sign in".
-# commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
-# draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job
-# left its answer to a later run (its step of that name ran): another run answered a comment of that answer
-# first, so it posted nothing of its own. held: held when its hold job ran, so the run itself posted nothing.
-# posted and answered: the conclusions of the comment job's steps "Post the review, or replace the one posted before"
-# and "Post the answer". A review or an answer that the fresh reader refused skips its step, and its comment job still
-# succeeds. counts, the last field, which the rescreen pass reads (pace): count when the run counts toward the limit
-# of the account that its name ends with, as the trust job's earlier counts it (not a run that its trust job refused,
-# nor one whose screen could not sign in; a run whose screen passed and whose review then could not sign in counts,
-# once: its screen ran, and its failed jobs run again with no new screen), else skip. The job rescreen, which
-# review.yml had before this pass moved to rescreen.yml and which each of its runs skipped, is none of the run's jobs.
+# <commented> <held> <posted> <answered> <trust> <counts>", - for none. tried: whether the run counts a try of its
+# work, as the one rule of every reader gives it (try_rule): signin, limit, cap, stopped, running or try. screen: the
+# conclusion of its screen job. post: the conclusion of its post job, signin for one that failed at a step whose name
+# starts with "Sign in" and failure for one that failed at another (a write of the App, say). settled: its post job
+# approved held runs or recorded the import check run. early: stopped when no job ran after its trust job (the trust
+# job was skipped, or every job after it was, whatever the trust job's result), conflict when the comment job alone ran
+# after it (the task conflict). early tells the readers that ask whether a run did any work after its trust job
+# (due_retry, due_conflict, due_unreviewed). No reader counts a try or settles a name by it: tried does that, and a run
+# whose trust job failed counts a try. reviewed: signin when its review job failed at a step whose name starts with
+# "Sign in". commented: the conclusion of its comment job, which posts the review, the answer or the label comment of a
+# draft (success when it did, failure or cancelled when it posted nothing or not all), or left when that job left its
+# answer to a later run (its step of that name ran): another run answered a comment of that answer first, so it posted
+# nothing of its own. held: held when its hold job ran, so the run itself posted nothing. posted and answered: the
+# conclusions of the comment job's steps "Post the review, or replace the one posted before" and "Post the answer". A
+# review or an answer that the fresh reader refused skips its step, and its comment job still succeeds. trust: the
+# conclusion of its trust job, which failures reads. counts, the last field, which the rescreen pass reads (pace): count
+# when the run counts toward the limit of the account that its name ends with, as the trust job's earlier counts it
+# (not a run that its trust job refused, nor one whose screen could not sign in; a run whose screen passed and whose
+# review then could not sign in counts, once: its screen ran, and its failed jobs run again with no new screen), else
+# skip. The job rescreen, which review.yml had before this pass moved to rescreen.yml and which each of its runs
+# skipped, is none of the run's jobs.
 facts() {
   local file=$seen/jobs-$1
   jobs_of "$1" || return 1
@@ -599,6 +602,7 @@ facts() {
        ((map(select(.name == "comment")) | first) as $c
         | ("Post the review, or replace the one posted before", "Post the answer") as $n
         | ([$c.steps[]? | select(.name == $n) | .conclusion] | first) // "-"),
+       ($t.conclusion // "-"),
        (if $t == null then "count" elif $t.conclusion == "skipped" then "skip"
         elif $t.status == "completed" and ($rest | length) > 0 and ($rest | all(.conclusion == "skipped"))
         then "skip"
@@ -816,21 +820,24 @@ left_stopped() {
     "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
 }
 # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
-# whose post job succeeded, how many had a post job that ran and did not succeed, and count a try (tried, of facts).
-# Such a post job failed at a write of the App or at a sign-in, or was cancelled, or ended in a way that this does not
-# name. A failed "Sign in as the OSS Verify App to approve" counts no try (R10), and a failed "Sign in as the OSS Verify
-# App" counts one. For the approval (<tasks> approve), each run that counts a try counts, also a run whose post job did
-# not run: its screen job ran out of time, say, its screen job and its hold job failed, or its trust job failed. A run
+# whose post job succeeded, how many count a try (tried, of facts) and had a post job that ran and did not succeed, or
+# a trust job that failed. Such a post job failed at a write of the App or at a sign-in, or was cancelled, or ended in a
+# way that this does not name. A failed "Sign in as the OSS Verify App to approve" counts no try (R10), and a failed
+# "Sign in as the OSS Verify App" counts one. A run whose trust job failed (its conclusion failure) counts for every
+# task, so that the App's retry stops also when the trust jobs of its relabels keep failing (OSSV-221's architect,
+# 2026-11-22 16:06Z). For the approval (<tasks> approve), each run that counts a try counts, also a run whose post job
+# did not run for another cause: its screen job ran out of time, say, or its screen job and its hold job failed. A run
 # that its trust job stopped (tried stopped) counts for no task: it tried nothing. A run of the pass with a number and
 # a run with none can each start an approval run of one head, and the trust job stops the later one. At most
 # REVIEW_TRIES: each counts a try of the head.
 failures() {
-  local n=0 run f tried post
+  local n=0 run f tried post trust
   while read -r _ _ run; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read." >&2; return 1; }
-    read -r tried _ post _ <<< "$f"
+    read -r tried _ post _ _ _ _ _ _ _ trust _ <<< "$f"
     [ "$post" != success ] || break
-    if [ "$tried" = try ] && { [ "$1" = approve ] || { [ "$post" != - ] && [ "$post" != skipped ]; }; }; then
+    if [ "$tried" = try ] && { [ "$1" = approve ] || [ "$trust" = failure ] \
+      || { [ "$post" != - ] && [ "$post" != skipped ]; }; }; then
       n=$((n + 1))
     fi
     (( n < REVIEW_TRIES )) || break
@@ -1180,8 +1187,9 @@ due_approve() {
 # the end of that newest run when it is a CI run and no run of the pass came after it. When that newest run counts a try
 # (tried, of facts), the runs of the head whose post job did not succeed count the tries of the head (failures): a
 # failed "Sign in as the OSS Verify App to approve" counts none (R10), and a failed "Sign in as the OSS Verify App", a
-# failed write of the App or a cancelled post job counts one. After REVIEW_TRIES of them, the automated <work> of the
-# head is not tried again (head_stopped <work>).
+# failed write of the App or a cancelled post job counts one. So does a run whose trust job failed, but not one that
+# its trust job stopped. After REVIEW_TRIES of them, the automated <work> of the head is not tried again
+# (head_stopped <work>).
 due_retry() {
   local created ended run event f tried post early tries how=failed last="" latest=""
   # The runs of the head, newest first, to the newest one that did work after its trust job. last: when the newest run
@@ -1582,13 +1590,13 @@ consider() {
   [ -z "$taken" ] || return 0
   # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
   # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
-  # head after each review that screened it, a label comment holds the line <!-- withdraw-owed <head> <why> --> of a
-  # withdrawal that a run owes, the newest screened review of the head does not pass, or a review newer than it
+  # head after each review that screened it, a label comment holds the line <!-- withdraw-owed <head> <why> <run> -->
+  # of a withdrawal that a run owes, the newest screened review of the head does not pass, or a review newer than it
   # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's retry
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
-  # ended. After REVIEW_TRIES such tries, head_stopped import stops it, and the hold of that stop, which names the head,
-  # ends the retry. While a relabel of the head can record an import check run, no App write of the head is tried
-  # again.
+  # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
+  # and the hold of that stop, which names the head, ends the retry. While a relabel of the head can record an import
+  # check run, no App write of the head is tried again.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
@@ -1601,7 +1609,7 @@ consider() {
       esac
       if [ -n "$because" ]; then
         said="#$number: a hold that is not tried again names $head, and $because."
-        # The reason of the line <!-- withdraw-owed <head> <why> -->, whatever the newest review says.
+        # The reason of the line <!-- withdraw-owed <head> <why> <run> -->, whatever the newest review says.
         if [ "${from:-}" = owed ]; then
           said="#$number: a hold that is not tried again names $head. Its label comment records a withdrawal of the"
           said+=" import check runs of $head that an earlier run owes."
