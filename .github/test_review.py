@@ -11605,6 +11605,33 @@ class ScheduleTest(Scheduled):
                            f"commit {HEAD[:12]} for the import into the internal repository did not finish after "
                            f"{self.TRIES} tries. The workflow does not try it again.")
 
+    def test_a_refused_withdrawal_stops_after_relabels_whose_trust_jobs_ran_out_of_time(self):
+        """R10 (OSSV-221's architect, 2026-11-22 04:30Z: a job that failed or was cancelled counts a try) and the
+        architect's ruling of 2026-11-23 01:37Z (2): an hourly restart of a relabel whose trust job keeps failing breaks
+        the bound. A trust job that runs past its timeout-minutes ends cancelled (GitHub's conclusion for a job that
+        exceeded its limit, as CI run 44975680922 of this repository showed), and every job after it is skipped. The
+        review of mallory's #7 recorded the check run on HEAD; a later review run of HEAD, whose screen held it, failed
+        at the PATCH that withdraws it. The two relabels that the pass then started, each over an hour apart, ended at a
+        trust job that ran out of time: with that review run, REVIEW_TRIES tries. The head gets the stop head-import, as
+        for trust jobs that failed. At 8407477d failures() and due_retry count a trust job only when it failed, so the
+        pass starts a relabel of #7 again every hour with no bound."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(450), "updated_at": ago(450),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
+                            MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
+        timed_out = [dict(attempt_job("trust"), conclusion="cancelled"), *self.stopped_jobs()]
+        self.assertEqual(self.TRIES, 3)
+        self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(500)), hold])
+        self.ran(10, f"review {HEAD} by mallory", made=400, ended=390, event="workflow_run", jobs=[
+            attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
+        for i in (1, 2):
+            self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 100 * i)
+            self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": timed_out})
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-import")]), out)
+
     def test_a_withdrawal_after_a_held_screen_whose_post_job_ran_out_of_time_gets_one_relabel_after_an_hour(self):
         """R10 (OSSV-221's architect, 2026-11-22 04:30Z: a job that failed or was cancelled counts a try) and ruling 2
         of 2026-11-20 07:33Z. The review of mallory's #7 recorded the check run on HEAD. A later review run of HEAD,
