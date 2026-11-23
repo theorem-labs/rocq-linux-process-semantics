@@ -9321,7 +9321,7 @@ class RescreenJobTest(Held):
         self.env["GITHUB_REF"] = "refs/heads/MAIN"
         rc, out, runs = self.started()
         self.assertEqual((rc, runs, self.calls()), (1, [], []), out)
-        self.assertIn("::error::This run is not on refs/heads/main, so the rescreen pass starts no run.", out)
+        self.assertIn("::error::This run is not on refs/heads/main, so it starts no run of review.yml.", out)
         self.env["GITHUB_REF"] = "refs/heads/main"
         self.assertEqual(self.started()[2], [("7", "rescreen", "mallory")])
 
@@ -9738,14 +9738,16 @@ class RescreenJobTest(Held):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, []), out)
 
-    def test_one_run_of_the_pass_at_a_time_and_none_cancelled(self):
-        """b13: the runs of rescreen.yml with no number (each event but screen-start.yml's start, and a run by hand
-        with no number) queue in one concurrency group of the whole workflow, rescreen, so that two such runs cannot
-        start the same item, and none is cancelled (queue: max keeps up to 100 that wait). Each of them is in a group
-        of its own at its job, its run id. A run with a number is in a group of its own at the workflow, its run id,
-        and in the group of its pull request at its job (RescreenEventsTest). It has one job."""
+    def test_one_run_of_the_pass_at_a_time_and_at_most_one_that_waits(self):
+        """b13 (OSSV-221's architect, 2026-11-23 18:42Z): the runs of rescreen.yml with no number (each event but
+        screen-start.yml's start, a run by hand with no number, and the start that a run with a number makes at its
+        end) are in one concurrency group of the whole workflow, rescreen, so that two such runs cannot start the same
+        item. The group keeps GitHub's default, with no queue key and no cancel-in-progress: one runs, and at most one
+        waits, as a newer run takes the place of the one that waits (RescreenEventsTest). Each of them is in a group of
+        its own at its job, its run id. A run with a number is in a group of its own at the workflow, its run id, and
+        in the group of its pull request at its job (RescreenEventsTest). It has one job."""
         self.assertEqual({k: v for k, v in RESCREEN["concurrency"].items() if k != "group"},
-                         {"cancel-in-progress": False, "queue": "max"})
+                         {"cancel-in-progress": False})
         self.assertEqual(list(RESCREEN["jobs"]), ["rescreen"])
         job = RESCREEN["jobs"]["rescreen"]["concurrency"]
         self.assertEqual({k: v for k, v in job.items() if k != "group"}, {"cancel-in-progress": False})
@@ -12450,8 +12452,9 @@ class LeftClosedTest(Scheduled):
 class RescreenEventsTest(Scheduled):
     """b13: runs of the rescreen pass (rescreen.yml) on its events, against the stand-in gh: each takes the items that
     wait, oldest reason first and under the limits, starts one workflow_dispatch run of review.yml on main for each,
-    and writes nothing else. And the trust job of a stop that the pass starts: it takes the stop only from the pass, by
-    the pass's name, while the pass's own functions, read again from the API, decide the same stop."""
+    and writes nothing else. b14: a run with a number takes the work of its pull request alone, and then starts the
+    pass on main with no number. And the trust job of a stop that the pass starts: it takes the stop only from the
+    pass, by the pass's name, while the pass's own functions, read again from the API, decide the same stop."""
 
     # An approve run of HEAD whose post job failed at the approval itself: a try of the head (due_approve).
     REFUSED = [attempt_job("gather"), attempt_job("screen", name="screen mallory"),
@@ -12508,8 +12511,9 @@ class RescreenEventsTest(Scheduled):
 
     def numbered(self, number):
         """A run of the pass that screen-start.yml started (workflow_dispatch, -f number=<number>), on main of the
-        public repository: its job runs, and its step runs on what is served now. Its exit status and log, the runs
-        that it started, every write of the stand-in gh, and the endpoint of each call of the API that it made."""
+        public repository: its job runs, and its step that starts the runs that the open items are due runs on what is
+        served now, with no later step of the job (run_pass runs them). Its exit status and log, the runs that it
+        started, every write of the stand-in gh, and the endpoint of each call of the API that it made."""
         github = {"github.event_name": "workflow_dispatch",
                   "github.repository": "theorem-labs/rocq-linux-process-semantics",
                   "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
@@ -12517,20 +12521,105 @@ class RescreenEventsTest(Scheduled):
         rc, out, runs = self.started(number=number)
         return rc, out, runs, writes(self.api), self.calls()
 
+    # The step that ends a run with a number, the token of the job's steps, and what pass_start gives for the start of
+    # rescreen.yml on main with no number.
+    LAST = "Start the rescreen pass with no number"
+    TOKEN = "rescreen-token"
+    FULL = ("main", [])
+
+    @staticmethod
+    def pass_start(call):
+        """For a call of gh that starts rescreen.yml, in either form that b14 takes (gh workflow run rescreen.yml, or a
+        POST to the workflow's dispatches endpoint), its ref and each other argument that it gives (an input, say).
+        None for any other call."""
+        endpoint = f"repos/{REPO}/actions/workflows/rescreen.yml/dispatches"
+        if call[:3] == ["workflow", "run", "rescreen.yml"]:
+            rest = call[3:]
+        elif endpoint in call:
+            rest = [a for a in call if a != endpoint]
+            for flag in ("--method", "-X"):
+                if flag in rest:
+                    del rest[rest.index(flag):rest.index(flag) + 2]
+        else:
+            return None
+        ref, other = None, []
+        while rest:
+            arg = rest.pop(0)
+            if arg in ("--ref", "-r") and rest:
+                ref = rest.pop(0)
+            elif arg in ("-f", "-F", "--field", "--raw-field") and rest and rest[0].startswith("ref="):
+                ref = rest.pop(0)[len("ref="):]
+            else:
+                other.append(arg)
+        return ref, other
+
+    def run_pass(self, number=None):
+        """A run of the pass by workflow_dispatch on main of the public repository, with the input number number (None:
+        a run with no number), as GitHub runs its job's steps after the checkout: the step that starts the runs that
+        the open items are due, on what is served now (schedule), then each later step whose if holds. A step whose if
+        names no status function runs only while no step before it failed (GitHub's implicit success()), and the run
+        is not cancelled. gh serves gh workflow run here too, and fails it with the text of $FAKE_GH/workflow.fail
+        when that file exists. The outcome of each step, by its name; the log of the steps; the runs of review.yml
+        that they started; every write of gh, in order, a gh workflow run among them; and the endpoint of each call."""
+        github = {"github.event_name": "workflow_dispatch",
+                  "github.repository": "theorem-labs/rocq-linux-process-semantics",
+                  "github.repository_id": 1425819621, "github.ref": "refs/heads/main"}
+        self.assertTrue(evaluate(RESCREEN["jobs"]["rescreen"]["if"], github))
+        # The contexts of each step's if and env, for the stand-in repository.
+        ctx = {"github.event_name": "workflow_dispatch", "github.repository": REPO, "github.token": self.TOKEN,
+               **({} if number is None else {"inputs.number": int(number)})}
+        bin_dir = os.path.join(self.dir, "bin")
+        if not os.path.exists(os.path.join(bin_dir, "gh-api")):
+            os.rename(os.path.join(bin_dir, "gh"), os.path.join(bin_dir, "gh-api"))
+            with open(os.path.join(bin_dir, "gh"), "w") as f:
+                f.write('#!/usr/bin/env bash\n'
+                        'if [ "$1" = workflow ]; then\n'
+                        '  [ "${2-}" = run ] || { echo "gh: only workflow run is served here: $*" >&2; exit 9; }\n'
+                        '  echo "workflow run" >> "$FAKE_GH/calls"\n'
+                        '  printf "%s\\0" "$@" >> "$FAKE_GH/args"; printf "\\1" >> "$FAKE_GH/args"\n'
+                        '  printf "%s\\1" "${GH_TOKEN-}" >> "$FAKE_GH/tokens"\n'
+                        '  [ ! -f "$FAKE_GH/workflow.fail" ] || { cat "$FAKE_GH/workflow.fail" >&2; exit 1; }\n'
+                        '  exit 0\n'
+                        'fi\n'
+                        'exec "$(dirname "$0")/gh-api" "$@"\n')
+            os.chmod(os.path.join(bin_dir, "gh"), 0o755)
+        self.serve(f"repos/{REPO}/actions/workflows/rescreen.yml/dispatches", {})
+        self.forget()
+        steps, logs, runs, failed = {}, [], [], False
+        for s in RESCREEN["jobs"]["rescreen"]["steps"]:
+            if "uses" in s:
+                continue   # the checkout of held.sh and trusted.sh, which self.checkout() gives
+            cond = s.get("if", "")
+            if (failed and not STATUS_FUNCTIONS.search(cond)) or (cond and not evaluate(cond, ctx)):
+                steps[s["name"]] = "skipped"
+                continue
+            if s["name"] == RESCREEN_JOB:
+                rc, out, runs = schedule(self, number=number)
+            else:
+                rc, out, _ = self.run_script(s["run"], **filled({**RESCREEN["env"], **s.get("env", {})}, ctx))
+            steps[s["name"]] = "success" if rc == 0 else "failure"
+            failed = failed or rc != 0
+            logs.append(out)
+        made = writes(self.api)
+        wrote = [c for c in gh_calls(self.api) if c[:1] == ["workflow"] or c in made]
+        return steps, "\n".join(logs), runs, wrote, self.calls()
+
     def waiting(self):
         """mallory's issue #8, held at SCREENED_HOURLY_CAP over an hour ago: a run of the pass that takes the open
         items starts its rescreen."""
         self.origin(51, "mallory", title="review #8")
         self.item(8, labels=("review-held",), comments=[dict(limit_hold(51, at=ago(300), kind="cap", tries=0), id=51)])
 
-    def test_screen_start_a_pass_with_a_number_whose_head_has_no_held_run_ends_after_3_calls_at_most(self):
-        """R14 and b14: a run of the pass that screen-start.yml started with the number of a pull request with no merge
-        conflict, whose head has no run that GitHub holds from its head repository and head branch, reads that pull
-        request and the held runs of its head, at most 3 calls of the API, and ends there: it starts nothing and writes
-        nothing, though another item waits, whose rescreen a run with no number starts. So it does for a head whose CI
-        run GitHub does not hold, for held runs of the same commit from another fork, for a pull request whose merge
-        state GitHub has not computed, for a head repository that is gone, and for a pull request that is not open. A
-        number that is not a whole number above 0 (7x, 0, -3, 1.5), or that names no pull request, fails the run."""
+    def test_screen_start_a_numbered_pass_with_no_held_run_makes_3_calls_at_most_then_starts_the_pass_with_none(self):
+        """R14 and b14 (4): a run of the pass that screen-start.yml started with the number of a pull request with no
+        merge conflict, whose head has no run that GitHub holds from its head repository and head branch, reads that
+        pull request and the held runs of its head, at most 3 calls of the API. Its last call then starts the pass on
+        main with no number, which takes the rescreen of #8 that waits. It starts nothing else and writes nothing
+        else. So it does for a head whose CI run GitHub does not hold, for held runs of the same commit from another
+        fork, for a pull request whose merge state GitHub has not computed, for a head repository that is gone, and for
+        a pull request that is not open. A number that is not a whole number above 0 (7x, 0, -3, 1.5) fails the step.
+        So does a number that names no pull request, after one call, and the run still ends with the start of the pass
+        with no number."""
         def not_held():
             self.ci(ended=2)
 
@@ -12556,11 +12645,13 @@ class RescreenEventsTest(Scheduled):
                 self.waiting()
                 self.item(kind="pr", **kwargs)
                 given()
-                rc, out, runs, wrote, calls = self.numbered(7)
-                self.assertEqual((rc, runs, wrote), (0, [], []), out)
-                self.assertLessEqual(len(calls), 3, calls)
-                self.assertEqual(calls, want, out)
-                self.assertIn("the rescreen pass starts no run", out)
+                steps, out, runs, wrote, calls = self.run_pass(7)
+                self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"}, []), out)
+                self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
+                self.assertEqual(self.pass_start(gh_calls(self.api)[-1]), self.FULL)
+                self.assertLessEqual(len(calls[:-1]), 3, calls)
+                self.assertEqual(calls[:-1], want, out)
+                self.assertIn("this run starts no run of review.yml", out)
         # The same items, in a run with no number: the rescreen of #8 starts.
         self.tearDown()
         self.setUp()
@@ -12568,14 +12659,72 @@ class RescreenEventsTest(Scheduled):
         self.item(kind="pr")
         not_held()
         self.assertEqual(self.started()[::2], (0, [("8", "rescreen", "mallory", "", "")]))
-        not_number = "The input number is not a whole number above 0"
-        for number, text in (("7x", not_number), ("0", not_number), ("-3", not_number), ("1.5", not_number),
-                             ("8", "pull request #8 could not be read")):
+        for number in ("7x", "0", "-3", "1.5"):
             with self.subTest(number=number):
                 rc, out, runs, wrote, calls = self.numbered(number)
                 self.assertEqual((rc, runs, wrote), (1, [], []), out)
                 self.assertLessEqual(len(calls), 1, calls)
-                self.assertIn(text, out)
+                self.assertIn("The input number is not a whole number above 0", out)
+        steps, out, runs, wrote, calls = self.run_pass(8)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "failure", self.LAST: "success"}, []), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
+        self.assertLessEqual(len(calls[:-1]), 1, calls)
+        self.assertIn("pull request #8 could not be read", out)
+
+    def test_screen_start_a_numbered_pass_ends_with_one_start_of_the_pass_with_no_number(self):
+        """R14 and b14 (7) (OSSV-221's architect, 2026-11-23 18:42Z and 18:54Z): a run of the pass with a number ends,
+        after its own work, with exactly one start of rescreen.yml on main with no number, as its last call, with the
+        job's token. So it does with no held run, with a held run (after the approve run of the head that it starts),
+        with a merge conflict (after the conflict run), for a closed pull request, and when its read of the pull
+        request fails, which fails its step. A run with no number starts no run of rescreen.yml, also when its step
+        fails, and a cancelled run starts none. When GitHub refuses the start, the last step fails and says so."""
+        approve, conflict = ("7", "approve", "mallory", HEAD, ""), ("7", "conflict", "", HEAD, "")
+        for case, kwargs, given, outcome, want in (
+                ("no held run", {}, lambda: self.ci(ended=2), "success", []),
+                ("a held run", {}, lambda: self.held_runs(made=300), "success", [approve]),
+                ("a merge conflict", {"merge": "dirty"}, lambda: None, "success", [conflict]),
+                ("a closed pull request", {}, lambda: self.merge(7, "clean", state="closed"), "success", []),
+                ("a read of the pull request that fails", {},
+                 lambda: self.refuse(f"repos/{REPO}/pulls/7", 502, "Bad Gateway"), "failure", [])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.waiting()
+                self.item(kind="pr", **kwargs)
+                given()
+                steps, out, runs, wrote, _calls = self.run_pass(7)
+                self.assertEqual((steps, runs), ({RESCREEN_JOB: outcome, self.LAST: "success"}, want), out)
+                self.assertEqual([self.pass_start(c) for c in wrote], [None] * len(want) + [self.FULL], out)
+                self.assertEqual((self.pass_start(gh_calls(self.api)[-1]), gh_tokens(self.api)[-1]),
+                                 (self.FULL, self.TOKEN))
+                self.assertIn("The rescreen pass starts on main with no number.", out)
+        for case, given, outcome in (("its step passes", lambda: None, "success"),
+                                     ("its step fails", lambda: self.refuse(f"repos/{REPO}/pulls", 502, "Bad Gateway"),
+                                      "failure")):
+            with self.subTest(number=None, case=case):
+                self.tearDown()
+                self.setUp()
+                self.waiting()
+                given()
+                steps, out, _runs, wrote, _calls = self.run_pass()
+                self.assertEqual(steps, {RESCREEN_JOB: outcome, self.LAST: "skipped"}, out)
+                self.assertEqual([c for c in wrote if self.pass_start(c) is not None], [], out)
+        (last,) = [s for s in RESCREEN["jobs"]["rescreen"]["steps"] if s.get("name") == self.LAST]
+        self.assertTrue(evaluate(last["if"], {"inputs.number": 7}))
+        self.assertFalse(evaluate(last["if"], {"inputs.number": 7, "cancelled": True}))
+        self.tearDown()
+        self.setUp()
+        self.item(kind="pr")
+        self.ci(ended=2)
+        self.refuse(f"repos/{REPO}/actions/workflows/rescreen.yml/dispatches", 403,
+                    "Resource not accessible by integration")
+        with open(os.path.join(self.api, "workflow.fail"), "w") as f:
+            f.write("HTTP 403: Resource not accessible by integration\n")
+        steps, out, _runs, wrote, _calls = self.run_pass(7)
+        self.assertEqual(steps, {RESCREEN_JOB: "success", self.LAST: "failure"}, out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
+        self.assertIn("::error::GitHub refused the start of the rescreen pass with no number, so the pass did not "
+                      "start. The next event on which the pass runs starts it.", out)
 
     def test_screen_start_a_pass_with_a_number_whose_head_has_a_merge_conflict_starts_its_conflict_run(self):
         """R14 and OSSV-221's architect's ruling (2026-11-19 08:17Z): GitHub starts no CI run for a pull request with
@@ -12597,13 +12746,14 @@ class RescreenEventsTest(Scheduled):
         rc, out, runs, wrote, calls = self.numbered(7)
         self.assertEqual((rc, runs, wrote), (0, [], []), out)
 
-    def test_screen_start_a_pass_with_the_number_of_a_closed_pull_request_screens_nothing_and_ends(self):
-        """OSSV-221's architect, 2026-11-23 02:35Z: screen-start.yml runs also on a close (main's cache-cleanup.yml
-        runs on pull_request closed, and GitHub can hold such a run of a first-time contributor), and starts the pass
-        with the number of the pull request. That run reads the pull request alone and ends with success. It starts no
-        run of review.yml, so nothing screens the head, no model runs and no held run is approved, and it writes
-        nothing. So it does for a pull request that is closed or merged, labelled review-held, whose head has held runs
-        or a merge conflict, while another item waits."""
+    def test_screen_start_a_numbered_pass_of_a_closed_pull_request_screens_nothing_then_starts_the_pass_with_none(self):
+        """OSSV-221's architect, 2026-11-23 02:35Z and 18:42Z: screen-start.yml runs also on a close (main's
+        cache-cleanup.yml runs on pull_request closed, and GitHub can hold such a run of a first-time contributor), and
+        starts the pass with the number of the pull request. That run reads the pull request alone, and its step ends
+        with success. It starts no run of review.yml, so nothing screens the head, no model runs and no held run is
+        approved. Its one write is its last call, the start of the pass on main with no number (R14). So it does for a
+        pull request that is closed or merged, labelled review-held, whose head has held runs or a merge conflict,
+        while another item waits."""
         self.assertIn("closed", SCREEN_START["on"]["pull_request_target"]["types"])
         for case, merge, facts in (("closed", "clean", {"state": "closed"}),
                                    ("merged", "clean", {"state": "closed", "merged": True}),
@@ -12615,25 +12765,27 @@ class RescreenEventsTest(Scheduled):
                 self.item(kind="pr", labels=("review-held",))
                 self.held_runs()
                 self.merge(7, merge, **facts)
-                rc, out, runs, wrote, calls = self.numbered(7)
-                self.assertEqual((rc, runs, wrote), (0, [], []), out)
-                self.assertEqual(calls, [f"repos/{REPO}/pulls/7"], out)
-                self.assertIn("#7 is not an open pull request, so the rescreen pass starts no run.", out)
+                steps, out, runs, wrote, calls = self.run_pass(7)
+                self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"}, []), out)
+                self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
+                self.assertEqual(calls[:-1], [f"repos/{REPO}/pulls/7"], out)
+                self.assertIn("#7 is not an open pull request, so this run starts no run of review.yml.", out)
 
-    def test_screen_start_a_pass_with_a_number_whose_head_has_a_held_run_starts_its_approval_alone(self):
-        """R14 and OSSV-221's architect's ruling (2026-11-19 08:17Z and 09:30Z): when GitHub holds a run of the head of
-        that pull request, from its head repository and head branch, the run starts the approval of that head (the task
-        approve, which screens it), as a run with no number decides it, and nothing else: no rescreen of #8, which
-        waits, and no approval of the held head of eve's #9. The trust job takes that run. A run with no number starts
-        all three."""
+    def test_screen_start_a_numbered_pass_with_a_held_run_starts_its_approval_alone_then_the_pass_with_none(self):
+        """R14 and OSSV-221's architect's ruling (2026-11-19 08:17Z, 09:30Z and 2026-11-23 18:42Z): when GitHub holds a
+        run of the head of that pull request, from its head repository and head branch, the run starts the approval of
+        that head (the task approve, which screens it), as a run with no number decides it, and no other run of
+        review.yml: no rescreen of #8, which waits, and no approval of the held head of eve's #9. The trust job takes
+        that run. Then its last call starts the pass on main with no number, which starts all three."""
         self.waiting()
         self.item(kind="pr")
         self.held_runs(made=300)
         self.item(9, kind="pr", author="eve", head=OTHER_HEAD)
         self.held_runs(made=200, head=OTHER_HEAD)
-        rc, out, runs, wrote, _calls = self.numbered(7)
-        self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
-        self.assertEqual(len(wrote), 1, wrote)
+        steps, out, runs, wrote, _calls = self.run_pass(7)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"},
+                                         [("7", "approve", "mallory", HEAD, "")]), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [None, self.FULL], out)
         self.assertNotRegex(out, r"#[89]\b")
         self.assertEqual(self.dispatched("approve", account="mallory")["route"], "screen")
         rc, out, runs = self.started()
@@ -12663,33 +12815,39 @@ class RescreenEventsTest(Scheduled):
         held head, for an account under its limit, the run reads the runs of the 8 days and decides again, as a run
         with no number does. So REVIEW_TRIES approve runs of the head over an hour old, whose post job failed at the
         approval, give the stop head-approve and no approve run. An answer run of #7 that started an hour and a half ago
-        and has not finished gives no run."""
+        and has not finished gives no run of review.yml. Each run ends with the start of the pass with no number."""
         self.approval_tried(self.TRIES)
-        rc, out, runs, _wrote, _calls = self.numbered(7)
-        self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-approve")]), out)
-        self.assertEqual(self.started()[::2], (rc, runs))
+        steps, out, runs, wrote, _calls = self.run_pass(7)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "failure", self.LAST: "success"},
+                                         [("7", "stop", "", HEAD, "head-approve")]), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [None, self.FULL], out)
+        self.assertEqual(self.started()[::2], (1, runs))
         self.tearDown()
         self.setUp()
         self.item(kind="pr")
         self.held_runs(made=600)
         self.ran(80, "answer #7 for 5 by mallory", made=90, event="issue_comment", status="in_progress")
-        rc, out, runs, wrote, _calls = self.numbered(7)
-        self.assertEqual((rc, runs, wrote), (0, [], []), out)
+        steps, out, runs, wrote, _calls = self.run_pass(7)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"}, []), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
         self.assertIn("#7: a run of it has not finished", out)
 
     def test_screen_start_a_pass_with_a_number_starts_a_conflict_run_whatever_the_limit(self):
         """A conflict run screens nothing and counts toward no limit: a run with the number of mallory's #7, which has
         a merge conflict, starts it while mallory is at OUTSIDE_HOURLY_LIMIT. A writer's pull request gets no conflict
-        run, as from a run with no number."""
+        run, as from a run with no number. Each run ends with the start of the pass with no number."""
         self.item(kind="pr", merge="dirty")
         for i in range(self.LIMIT):
             self.ran(10 + i, f"approve #7 at {str(i) * 40} of mallory", made=10 + 10 * i,
                      jobs=[attempt_job("gather"), self.screened()])
-        rc, out, runs, _wrote, _calls = self.numbered(7)
-        self.assertEqual((rc, runs), (0, [("7", "conflict", "", HEAD, "")]), out)
+        steps, out, runs, wrote, _calls = self.run_pass(7)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"},
+                                         [("7", "conflict", "", HEAD, "")]), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [None, self.FULL], out)
         self.item(9, kind="pr", author="alice", head=OTHER_HEAD, merge="dirty")
-        rc, out, runs, wrote, _calls = self.numbered(9)
-        self.assertEqual((rc, runs, wrote), (0, [], []), out)
+        steps, out, runs, wrote, _calls = self.run_pass(9)
+        self.assertEqual((steps, runs), ({RESCREEN_JOB: "success", self.LAST: "success"}, []), out)
+        self.assertEqual([self.pass_start(c) for c in wrote], [self.FULL], out)
         self.assertIn("#9: its author has write access", out)
 
     def test_screen_start_a_pass_with_a_number_and_a_pass_with_none_start_one_run_of_a_task_of_an_item(self):
@@ -12731,18 +12889,19 @@ class RescreenEventsTest(Scheduled):
         self.assertEqual((rc, runs), (0, []), out)
         self.assertIn("#7: a run of it has not finished", out)
 
-    def test_screen_start_runs_with_the_number_of_one_pull_request_keep_the_newest_that_waits(self):
-        """R14 and OSSV-221's architect's ruling (2026-11-19 09:30Z), read from rescreen.yml's concurrency: the runs
-        with the number of one pull request share one group, the group rescreen-<n> of the job, with no queue and no
+    def test_screen_start_runs_of_one_pull_request_and_runs_with_no_number_each_keep_the_newest_that_waits(self):
+        """R14 and OSSV-221's architect's rulings (2026-11-19 09:30Z and 2026-11-23 18:42Z), read from rescreen.yml's
+        concurrency: the runs with the number of one pull request share one group, the group rescreen-<n> of the job,
+        and the runs with no number share the group rescreen of the workflow. Neither group has a queue or
         cancel-in-progress. By GitHub's rule (its docs, "Control the concurrency of workflows and jobs"), a newer run
-        that comes takes the place of the one that waits, and the run in progress ends as it is. So a burst of events
-        of #7 that come while one run of #7 is in progress leaves one run after it, the newest. A run of #8 runs at
-        once. A run with no number is in the group rescreen of the workflow, where up to 100 wait (queue: max), and no
-        run with a number is in that group: a run with a number never waits for a run with no number, nor cancels
+        that comes takes the place of the one that waits, which ends cancelled, and the run in progress ends as it is.
+        So a burst of events of #7 that come while one run of #7 is in progress leaves one run after it, the newest,
+        and so does a burst of runs with no number, which the newest of them takes. A run of #8 runs at once. No run
+        with a number is in the group rescreen: a run with a number never waits for a run with no number, nor cancels
         one, and the reverse."""
         top, job = RESCREEN["concurrency"], RESCREEN["jobs"]["rescreen"]["concurrency"]
         self.assertEqual((top.get("cancel-in-progress"), job.get("cancel-in-progress")), (False, False))
-        self.assertEqual((top.get("queue"), job.get("queue")), ("max", None))
+        self.assertEqual((top.get("queue"), job.get("queue")), (None, None))
 
         def groups(run, number):
             ctx = {"github.run_id": str(run), **({} if number is None else {"inputs.number": number})}
@@ -12767,9 +12926,10 @@ class RescreenEventsTest(Scheduled):
 
         self.assertEqual(ran([(101, 7), (102, 7), (103, 7), (104, 7)]), [101, 104])
         self.assertEqual(ran([(101, 7), (102, 8), (103, 7)]), [101, 102, 103])
-        self.assertEqual(ran([(201, None), (202, None), (203, None)]), [201, 202, 203])
+        self.assertEqual(ran([(201, None), (202, None), (203, None)]), [201, 203])
         self.assertEqual(ran([(201, None), (101, 7), (202, None), (102, 7)]), [201, 101, 202, 102])
         self.assertEqual(ran([(101, 7), (201, None), (102, 7), (103, 7)]), [101, 201, 103])
+        self.assertEqual(ran([(201, None), (202, None), (101, 7), (203, None), (102, 7)]), [201, 101, 203, 102])
         self.assertEqual(groups(101, 7)[1][0], "rescreen-7")
         self.assertEqual(groups(201, None)[0][0], "rescreen")
 
@@ -13946,12 +14106,13 @@ def pull_request_types(wf):
 
 class ScreenStartTest(Runner):
     """b14 (R14): .github/workflows/screen-start.yml, the one workflow on pull_request_target. The file: its trigger
-    and types (those of the repository's pull_request workflows), the fork condition of its job, its permissions, its
+    and types (those of the repository's pull_request workflows), the fork condition of its job, its permissions, no
     concurrency group, and what its step reads. Its step against the stand-in gh, with a stand-in clock that only its
     sleeps move: a read of the runs of the head commit, at most every 10 seconds, until GitHub lists one that it made
     at or after the event or 2 minutes pass, then one write, the start of rescreen.yml on main with the number of the
-    pull request, and exit 0. The run of rescreen.yml that it starts ends after a few calls of the API when the pull
-    request has no merge conflict and its head has no run that GitHub holds (RescreenEventsTest)."""
+    pull request, and exit 0. The run of rescreen.yml that it starts makes a few calls of the API when the pull request
+    has no merge conflict and its head has no run that GitHub holds, and then starts the pass with no number
+    (RescreenEventsTest)."""
 
     START = ["workflow", "run", "rescreen.yml", "--ref", "main", "-f", "number=7"]
     TOKEN = "screen-start-token"   # the step's github.token
@@ -14154,22 +14315,14 @@ class ScreenStartTest(Runner):
             with self.subTest(word=word):
                 self.assertNotIn(word, out + calls)
 
-    def test_screen_start_a_newer_event_of_the_pull_request_cancels_the_run_that_waits(self):
-        """A burst of events of one pull request (an author who pushes many times): the runs of one pull request share
-        one group of the whole workflow, by its number, and a newer one cancels the one that waits. Each event still
-        ends in a start of the pass: a run that a newer event cancelled while it waited started nothing, and the newest
-        run starts the pass with the number of the pull request, which does the work of that pull request alone. The
-        runs of another pull request, and the runs of rescreen.yml, with a number or with none, are in other groups."""
-        group = SCREEN_START["concurrency"]["group"]
-        self.assertEqual(SCREEN_START["concurrency"], {"group": group, "cancel-in-progress": True})
+    def test_screen_start_sets_no_concurrency_group(self):
+        """R14 and b14 (6) (OSSV-221's architect, 2026-11-23): screen-start.yml sets no concurrency key, at the workflow
+        or at its job, so no newer event cancels a run of it: root check c21 asks that each of its runs for a pull
+        request from a fork ends with success. Each event starts a run of the pass with the number of the pull request.
+        In a burst, the group rescreen-<n> of rescreen.yml keeps one of them that waits, the newest
+        (RescreenEventsTest)."""
+        self.assertNotIn("concurrency", SCREEN_START)
         self.assertNotIn("concurrency", self.job())
-        self.assertNotRegex(group, AUTHOR_FIELDS)
-        seven, eight = (interpolate(group, {"github.event.pull_request.number": n}) for n in (7, 8))
-        self.assertNotEqual(seven, eight)
-        rescreen = {interpolate(c["group"], ctx) for c in (RESCREEN["concurrency"],
-                                                           RESCREEN["jobs"]["rescreen"]["concurrency"])
-                    for ctx in ({"github.run_id": "201"}, {"github.run_id": "201", "inputs.number": 7})}
-        self.assertNotIn(seven, rescreen | {interpolate(group, {})})
 
     def test_screen_start_starts_the_pass_once_when_github_lists_a_run_of_the_head(self):
         """R14: once GitHub lists a pull_request run of the head commit, at the first read or at a later one, the
