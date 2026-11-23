@@ -11650,6 +11650,34 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
 
+    def test_relabels_whose_trust_jobs_failed_count_their_tries_after_an_approval_that_could_not_sign_in(self):
+        """OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z: a relabel whose trust job failed counts a try
+        (failures), so the App's retry stops at REVIEW_TRIES also when the trust jobs of its relabels keep failing. The
+        screen held HEAD of mallory's #7 after its review, so the pass tries again only the withdrawal of the import
+        check runs of HEAD. The newest approval run of HEAD failed at "Sign in as the OSS Verify App to approve", which
+        counts no try, and the App's retry takes it. Each relabel that the pass then started, an hour or more apart,
+        ended at a failed trust job (GitHub refused a read). After REVIEW_TRIES of them, the head gets the stop
+        head-import, and the pass fails; with one fewer, one relabel again. Else a relabel starts each hour for ever."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(450), "updated_at": ago(450),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        signed_out = post_job({self.HELD: "success", MINT_B: "failure"})
+        failed = [dict(attempt_job("trust"), conclusion="failure"), *self.stopped_jobs()]
+        for relabels, want in ((self.TRIES - 1, (0, [("7", "relabel", "", HEAD, "")])),
+                               (self.TRIES, (1, [("7", "stop", "", HEAD, "head-import")]))):
+            with self.subTest(relabels=relabels):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(500)), hold])
+                self.ran(10, f"approve #7 at {HEAD} of mallory", made=400, ended=395,
+                         jobs=[attempt_job("gather"), self.screened(), signed_out])
+                for i in range(1, relabels + 1):
+                    self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 100 * i)
+                    self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": failed})
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), want, out)
+
     def test_a_refused_withdrawal_stops_after_relabels_whose_trust_jobs_failed(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (B): a run whose trust job failed counts a try, for every task, so
         the App's retry of a refused withdrawal is bounded also when the trust jobs of its relabels keep failing. The
