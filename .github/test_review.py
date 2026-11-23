@@ -11632,6 +11632,36 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (1, [("7", "stop", "", HEAD, "head-import")]), out)
 
+    def test_relabels_whose_trust_jobs_ran_out_of_time_count_their_tries_after_an_approval_that_could_not_sign_in(self):
+        """R10 (OSSV-221's architect, 2026-11-22 04:30Z: a job that failed or was cancelled counts a try) and the
+        architect's ruling of 2026-11-23 01:37Z (2), for the runs that due_retry passes over: a relabel whose trust job
+        ran out of time (cancelled) counts a try, as one whose trust job failed. The screen held HEAD of mallory's #7
+        after its review, so the pass tries again only the withdrawal of the import check runs of HEAD. The newest
+        approval run of HEAD failed at "Sign in as the OSS Verify App to approve", which counts no try, and the App's
+        retry takes it. Each relabel that the pass then started, an hour or more apart, ended at a trust job that ran
+        out of time, and every job after it was skipped. Only these relabels make due_retry count the tries of the head
+        (failures). After REVIEW_TRIES of them, the head gets the stop head-import, and the pass fails; with one fewer,
+        one relabel again. Else a relabel starts each hour for ever."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(450), "updated_at": ago(450),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->"}
+        signed_out = post_job({self.HELD: "success", MINT_B: "failure"})
+        timed_out = [dict(attempt_job("trust"), conclusion="cancelled"), *self.stopped_jobs()]
+        for relabels, want in ((self.TRIES - 1, (0, [("7", "relabel", "", HEAD, "")])),
+                               (self.TRIES, (1, [("7", "stop", "", HEAD, "head-import")]))):
+            with self.subTest(relabels=relabels):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(500)), hold])
+                self.ran(10, f"approve #7 at {HEAD} of mallory", made=400, ended=395,
+                         jobs=[attempt_job("gather"), self.screened(), signed_out])
+                for i in range(1, relabels + 1):
+                    self.ran(10 + i, f"relabel #7 at {HEAD}", made=400 - 100 * i)
+                    self.serve(f"repos/{REPO}/actions/runs/{10 + i}/jobs", {"jobs": timed_out})
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), want, out)
+
     def test_a_withdrawal_after_a_held_screen_whose_post_job_ran_out_of_time_gets_one_relabel_after_an_hour(self):
         """R10 (OSSV-221's architect, 2026-11-22 04:30Z: a job that failed or was cancelled counts a try) and ruling 2
         of 2026-11-20 07:33Z. The review of mallory's #7 recorded the check run on HEAD. A later review run of HEAD,
@@ -16011,8 +16041,10 @@ class ImportCheckTest(ReaderRunner):
         withdrawal: a withdrawal is itself the record of its reason (OSSV-221's architect, 2026-11-23 01:47Z and
         03:06Z). That time is the time of the withdrawal: for its own verdict or screen, and for the relabel, whose
         review comment names no run, so that the workflow knows no time of that earlier run (the fresh reader of round
-        19, F1 and S1). The request names no name and no external_id, so both stay. The other check runs of the commit
-        stay as they are. The logs of both steps name the import check run, and the first says why in words."""
+        19, F1 and S1). The relabel's texts do not say later, as the review that it reads can be older than the check
+        run, and they give a past verdict (b7). The request names no name and no external_id, so both stay. The other
+        check runs of the commit stay as they are. The logs of both steps name the import check run, and the first says
+        why in words."""
         listed, others = self.recorded()
         person = ("because a later review has questions for Sami",
                   "A later automated review of this head commit has questions for Sami.",
@@ -16027,7 +16059,9 @@ class ImportCheckTest(ReaderRunner):
                  ("because a later screen held it", "A later automated screen held this head commit.",
                   f"a later screen held {HEAD}", "screen")),
                 ("a relabel of a review with the verdict person", "", self.RELABEL, "", (review_of(HEAD, "person"),),
-                 person)):
+                 ("because an automated review of this head commit had questions for Sami",
+                  "An automated review of this head commit had questions for Sami.",
+                  f"an automated review of {HEAD} had questions for Sami", "person"))):
             with self.subTest(case=case):
                 start = len(self.logs)
                 got = self.judge(["README.md"], verdict, self.LPS, trust=trust, screen=screen, comments=comments,
@@ -16414,8 +16448,10 @@ class ImportCheckTest(ReaderRunner):
                 "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
                         "request, so the automated review did not run. You do not need to do anything.\n\n"
                         f"<!-- review-held-head {HEAD} -->"}
-        title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later screen held it"
-        asks = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later review asks for a change"
+        title = (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated screen held this "
+                 "head commit")
+        asks = (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated review of this "
+                "head commit asked for a change")
         blocked = review_of(HEAD, "blocking", at=ago(60), id_=32, screened=False)
         for case, comments, checks, decision, withdrawn in (
                 ("a screened review, then a review by hand, with the check run", [screened, by_hand], [listed], "hand",
@@ -16496,6 +16532,8 @@ class ImportCheckTest(ReaderRunner):
                "body": rules.label_comment("import", "", [marker])}
         screened = review_of(HEAD, at=ago(90))
         title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later review "
+        asked = (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated review of this "
+                 "head commit asked for a change")
         changed = dict(old, body=rules.label_comment("change", "", [marker]))
         conflict = [review_of(HEAD, at=ago(120)), dict(old, body=rules.label_comment("conflict", "", [marker],
                                                                                      OTHER_HEAD))]
@@ -16521,9 +16559,9 @@ class ImportCheckTest(ReaderRunner):
                 ("a pass after a screened review with a blocking finding", "pass", blocked, author, neutral,
                  "screened", [], moved, "decide"),
                 ("a pass after a screened review with a blocking finding whose withdrawal failed", "pass", blocked,
-                 author, stands, "screened", [f"{title}asks for a change"], moved, "decide"),
+                 author, stands, "screened", [asked], moved, "decide"),
                 ("a pass after a screened pass, a blocking finding with no screen and a pass by hand", "pass", later,
-                 author, stands, "screened", [f"{title}asks for a change"], moved, "decide"),
+                 author, stands, "screened", [asked], moved, "decide"),
                 ("a pass with no screened review", "pass", [review_of(HEAD, at=ago(90), screened=False), old], held,
                  [], "screen", [], [("+", THEOREM_LABEL)], "decide")):
             with self.subTest(case=case):
@@ -18108,6 +18146,37 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(got["post"]["decision"], "screened", self.logs)
         self.assertEqual(len(edited), 1, self.logs)
 
+    def test_a_line_whose_comment_job_has_not_completed_has_no_time_and_stays(self):
+        """OSSV-221's architect, 2026-11-23 04:39Z: a run whose comment or hold job has not completed gives its line no
+        time, and the line stays, as a step of that job can still write the line (its label step) or post the comment
+        that gives its reason. The comment job of run 90 is still in progress: its step OWE ended 45 minutes ago, and
+        its label step has not run yet. The screened pass of run 110 posted 30 minutes ago (refused_line). Relabel 1
+        withdraws 901 for the line, its decision is withdrawn, and the step OWE of its comment job keeps the line. With
+        a time from the step that ended, the line would go and relabel 2 would record, though run 90's own label step
+        and comment have not run."""
+        owe_step, label_step = rules.LINE_STEPS["comment"]
+
+        def running(run, started, ended):
+            for job, names in rules.LINE_STEPS.items():
+                for name in names:
+                    step(job, name)
+            job = dict(attempt_job("comment"), run_id=int(run), run_attempt=1, status="in_progress", conclusion=None)
+            names = [s["name"] for s in job["steps"]]
+            at = names.index(owe_step)
+            job["steps"] = [dict(s, started_at=f"{started[:-1]}.000Z", completed_at=f"{ended[:-1]}.000Z")
+                            if i <= at else dict(s, status="queued" if i > at + 1 else "in_progress",
+                                                 conclusion=None, started_at=None, completed_at=None)
+                            for i, s in enumerate(job["steps"])]
+            self.assertLess(at, names.index(label_step))
+            self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"total_count": 1, "jobs": [job]})
+
+        self.line_jobs = running
+        got, edited, label, passed, listed = self.refused_line(ago(30), ago(46), ago(45))
+        self.assertEqual((got["post"]["decision"], edited), ("withdrawn", []), self.logs)
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                         event="workflow_dispatch", comments=[passed, label], listed=[self.applied(listed, got)])
+        self.assertNotRecorded(got, "withdrawn")
+
     def test_a_relabels_withdrawal_for_an_older_reason_holds_from_its_source_and_the_next_relabel_records(self):
         """OSSV-221's architect, 2026-11-23 03:06Z, case (a): run 80 (R1) gave HEAD of mallory's #7 a blocking finding:
         it withdrew check run 900 60 minutes ago, its line stands, and its review comment never posted. The screened CI
@@ -18539,7 +18608,8 @@ class ImportCheckTest(ReaderRunner):
                          ("success", "held", "false"), logs)
         self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD}, and no review "
                       "comment whose run screened it is newer).", logs)
-        title = f"Not approved for the import: pull request #7 at {HEAD[:12]}, because a later screen held it"
+        title = (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because an automated screen held this "
+                 "head commit")
         self.assertEqual([(token, endpoint, body["conclusion"], body["output"]["title"])
                           for token, endpoint, body in got["withdrawn"]],
                          [("token-A", f"repos/{REPO}/check-runs/901", "neutral", title)])
@@ -18601,7 +18671,7 @@ class ImportCheckTest(ReaderRunner):
                 for _token, _endpoint, body in got["withdrawn"]:
                     self.assertEqual((body["conclusion"], body["output"]["title"]),
                                      ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, "
-                                                 "because a later screen held it"))
+                                                 "because an automated screen held this head commit"))
         got = self.judge(["README.md"], value=self.LPS, trust=self.RELABEL, event="workflow_dispatch",
                          comments=[dict(hold, updated_at=ago(90)), review])
         self.assertRecorded(got, self.LPS)
@@ -19173,8 +19243,14 @@ class KindTableTest(Scheduled, ReaderRunner):
                "C": [("token-A", "PATCH", f"repos/{REPO}/pulls/7", "state=closed")],
                "O": [("token-A", "PATCH", f"repos/{REPO}/pulls/7", "state=open")]}
         self.assertEqual(self.app_writes(), [x for letter in w["app"] for x in app[letter]], log)
-        because = {"blocking": "because a later review asks for a change",
-                   "person": "because a later review has questions for Sami"}
+        # A relabel withdraws for a review or a hold of an earlier run, which can be older than the check run, so its
+        # texts do not say later (b7).
+        because = ({"blocking": "because a later review asks for a change",
+                    "person": "because a later review has questions for Sami",
+                    "screen": "because a later screen held it"} if route != "relabel" else
+                   {"blocking": "because an automated review of this head commit asked for a change",
+                    "person": "because an automated review of this head commit had questions for Sami",
+                    "screen": "because an automated screen held this head commit"})
         because["proof"] = because["person"]
         for c, sent in zip([c for c in gh_calls(self.api) if "--input" in c], gh_inputs(self.api)):
             if c[:3] == ["--method", "POST", f"repos/{REPO}/check-runs"]:
@@ -19184,7 +19260,7 @@ class KindTableTest(Scheduled, ReaderRunner):
             if c[:3] == ["--method", "PATCH", f"repos/{REPO}/check-runs/901"]:
                 self.assertEqual((sent["conclusion"], sent["output"]["title"]),
                                  ("neutral", f"Not approved for the import: pull request #7 at {HEAD[:12]}, "
-                                             f"{because.get(case, 'because a later screen held it')}"))
+                                             f"{because.get(case, because['screen'])}"))
         wrote = writes(self.api)
         holds = [a[len("body="):] for c in wrote for a in c if a.startswith("body=<!-- review-held -->")]
         self.assertEqual([h.split("\n")[1] for h in holds], [f"**{w['held']}**"] if w["held"] else [], log)

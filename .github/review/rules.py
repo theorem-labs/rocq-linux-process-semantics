@@ -227,16 +227,16 @@ withdrawal then counts from the time now, which fails closed. It reads the comme
 <number>.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
-<number> (withdrawal), for <why>: blocking or person, the verdict of a later review of <head>, or screen, a later
-screen that held it (R12). <kind> is own when <why> is the verdict or the screen of <run>, the id of the run that
-withdraws them, and else held, owed or earlier, as for source. For owed, <why> is the reason of the line of OWED, whose
-review or hold can be older than the check run: the texts then do not say later (OWED_WITHDRAWN). <source> and <at>
-are the source run of <why> and the time from which the withdrawal counts (source), or - and - for own, or when no
-time of the source is known: then the time is now. The summary of each request names <run>, <head>, <why>, the source
-and the time (WITHDREW), and its completed_at is the time now. <checks.jsonl> holds each check run {id, text}, its id
-and its output text, one on each line. Each request goes to <directory>/withdraw-<id>.json, for PATCH
-repos/<repo>/check-runs/<id>, and each id goes to standard output, one on each line. The status is 2 when an argument
-or a line is not one of these.
+<number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, or screen, a screen that
+held it (R12). <kind> is own when <why> is the verdict or the screen of <run>, the id of the run that withdraws
+them, and else held, owed or earlier, as for source. The texts say later only for own (WITHDRAWN). For each other
+kind, the review or the hold that gave <why> can be older than the check run, so the texts do not say later
+(OWED_WITHDRAWN). <source> and <at> are the source run of <why> and the time from which the withdrawal counts
+(source), or - and - for own, or when no time of the source is known: then the time is now. The summary of each
+request names <run>, <head>, <why>, the source and the time (WITHDREW), and its completed_at is the time now.
+<checks.jsonl> holds each check run {id, text}, its id and its output text, one on each line. Each request goes to
+<directory>/withdraw-<id>.json, for PATCH repos/<repo>/check-runs/<id>, and each id goes to standard output, one on
+each line. The status is 2 when an argument or a line is not one of these.
 
 steering: whether a pull request changes a steering file (steering, a file under .github/), from <files.jsonl>, its
 files as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line: true
@@ -1502,9 +1502,9 @@ def check_run(number, head, value, hold):
                        "summary": " ".join(summary), "text": import_marker(head, value)}}
 
 
-# Why a later run of a head withdraws the import check run that the workflow recorded on it (R12): its review gave a
-# blocking finding or the verdict person, or its screen held the head. Each is (the end of the output title, the
-# summary's first sentence).
+# Why a later run of a head withdraws the import check run that the workflow recorded on it (R12), for the kind own
+# (CAUSES) alone: its own review gave a blocking finding or the verdict person, or its own screen held the head. Each is
+# (the end of the output title, the summary's first sentence).
 WITHDRAWN = {
     "blocking": ("because a later review asks for a change",
                  "A later automated review of this head commit asks for a change."),
@@ -1512,9 +1512,11 @@ WITHDRAWN = {
                "A later automated review of this head commit has questions for Sami."),
     "screen": ("because a later screen held it", "A later automated screen held this head commit."),
 }
-# The same reasons when they come from the line of OWED: an earlier run owes the withdrawal, and the review or the hold
-# that gave the reason can be older than the check run. So these texts do not say later. A review's reason is a past
-# verdict: an edit of the review comment in place can replace that review. So these texts say what it asked.
+# The same reasons for each other kind (held, owed and earlier): an earlier run gave the reason, in a hold of its
+# screen, the line of OWED or a review comment that a relabel or a review by hand reads. That hold or review can be
+# older than the check run: a relabel can withdraw a check run for a review that came before it. So these texts do not
+# say later. A review's reason is a past verdict: an edit of the review comment in place can replace that review. So
+# these texts say what it asked.
 OWED_WITHDRAWN = {
     "blocking": ("because an automated review of this head commit asked for a change",
                  "An automated review of this head commit asked for a change."),
@@ -1531,17 +1533,17 @@ CAUSES = ("own", "held", "owed", "earlier")
 
 def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
     """The body of the request that updates an import check run on head of pull request number (PATCH
-    repos/<repo>/check-runs/<id>) for why, whose cause is kind, one of CAUSES (WITHDRAWN, or OWED_WITHDRAWN for owed:
-    the reason of the line of OWED): the conclusion neutral, so that the import no longer reads it as the approval of
-    the pull request, and an output title that names the pull request and says why. Its name and its external_id stay,
-    and so does text, its output text: the marker line of the value that it recorded. A withdrawal is itself the record
-    of its reason (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z): its summary also names run, the run that
-    withdraws it, the head, why, and the time from which the withdrawal counts (WITHDREW; withdrawal_stands). For own,
-    why is the reason of run itself, and the time is at, or now when at is empty: run writes the withdrawal after its
-    verdict, so that it fails closed. For another kind, source and at are the run that gave why and its time
-    (reason_source), and the summary names both. When neither is given, the workflow knows no time of that earlier
-    run: the summary says so, and the withdrawal counts from now, which fails closed. Its completed_at is the time
-    now."""
+    repos/<repo>/check-runs/<id>) for why, whose cause is kind, one of CAUSES (WITHDRAWN for own, else OWED_WITHDRAWN:
+    the hold or the review of another kind can be older than the check run): the conclusion neutral, so that the
+    import no longer reads it as the approval of the pull request, and an output title that names the pull request and
+    says why. Its name and its external_id stay, and so does text, its output text: the marker line of the value that
+    it recorded. A withdrawal is itself the record of its reason (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z):
+    its summary also names run, the run that withdraws it, the head, why, and the time from which the withdrawal
+    counts (WITHDREW; withdrawal_stands). For own, why is the reason of run itself, and the time is at, or now when at
+    is empty: run writes the withdrawal after its verdict, so that it fails closed. For another kind, source and at
+    are the run that gave why and its time (reason_source), and the summary names both. When neither is given, the
+    workflow knows no time of that earlier run: the summary says so, and the withdrawal counts from now, which fails
+    closed. Its completed_at is the time now."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     own = kind == "own"
     if not (NUMBER.fullmatch(number) and HEAD.fullmatch(head) and NUMBER.fullmatch(run) and why in WITHDRAWN
@@ -1549,7 +1551,7 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
             and (not source if own else bool(source) == bool(at) and (not source or NUMBER.fullmatch(source)))):
         raise ValueError(f"not a pull request number, a head commit, a reason, a run id, a cause, a source run and a "
                          f"time: {number!r} {head!r} {why!r} {run!r} {kind!r} {source!r} {at!r}")
-    end, first = (OWED_WITHDRAWN if kind == "owed" else WITHDRAWN)[why]
+    end, first = (WITHDRAWN if own else OWED_WITHDRAWN)[why]
     did = (f"{first} So this check is no longer an approval for the import. Run {run} of the review workflow withdrew "
            f"it from head commit {head}")
     if own:

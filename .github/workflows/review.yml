@@ -3170,10 +3170,10 @@ jobs:
       # gives a blocking finding or the verdict person, or the label comment holds the line
       # <!-- withdraw-owed <head> <why> <run> --> (held.sh, consider). Such a relabel records no check run. After
       # REVIEW_TRIES failed tries, this run among them, the head is not tried again, and the label comment names the
-      # next step for Sami (held.sh, head_stopped). A later run of the head whose trust job failed counts a try too
-      # (held.sh failures). So the error says so. The pass tries no App write of another author's pull request again
-      # (held.sh, consider and access_of), so for such an author, and for a run whose name gives no head, the error says
-      # to re-run this run.
+      # next step for Sami (held.sh, head_stopped). A later run of the head whose trust job failed or was cancelled (it
+      # ran out of time, say) counts a try too (held.sh failures). So the error says so. The pass tries no App write of
+      # another author's pull request again (held.sh, consider and access_of), so for such an author, and for a run
+      # whose name gives no head, the error says to re-run this run.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -3219,25 +3219,32 @@ jobs:
             head=$TRUST_HEAD why=screen gave=trust
           fi
           [ "${HELD:-}" != true ] || why=screen
-          # who: the review whose verdict withdraws: a review later than the check run, or, when this run's own verdict
-          # withdraws nothing, a review of the head before this run (EARLIER, from rules.py verdict). The why of the
-          # line <!-- withdraw-owed <head> <why> <run> --> (FROM_OWED) comes from a review or a hold that can be older
-          # than the check run, so its texts do not say later, and a review's why is a past verdict, which an edit of
-          # the review comment in place can replace: asked and had (rules.py OWED_WITHDRAWN).
           # kind: own when the cause is this run's own verdict or the hold of its own screen, else the kind of the
-          # older cause (rules.py source): held for a newer hold of the screen, owed for the line, and earlier for a
-          # review comment. A relabel gives no verdict of its own. The texts of owed do not say later.
+          # older cause (rules.py source): held for a newer hold of the screen, owed for the line
+          # <!-- withdraw-owed <head> <why> <run> --> (FROM_OWED), and earlier for a review comment of the head: the
+          # newest one, which a relabel reads (a relabel gives no verdict of its own), or EARLIER (rules.py verdict).
+          # who, asks and has: the review whose verdict withdraws, and what it says. For own, it is this run's review, a
+          # review later than the check run. The review of another kind can be older than the check run, so its texts do
+          # not say later. For a relabel's review and for the line, the texts are those of the check run's title
+          # (rules.py OWED_WITHDRAWN): a past verdict, asked and had. For EARLIER, who says that the review came before
+          # this run, and asks and has give the verdict that its comment gives now.
           who="a later review" asks="asks for a change" has="has questions for Sami" kind=own
-          [ "$TASK" != relabel ] || kind=earlier
+          if [ "$TASK" = relabel ]; then
+            who="an automated review of $head" asks="asked for a change" has="had questions for Sami" kind=earlier
+          fi
           [ "${HELD:-}" != true ] || kind=held
           if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ]; then
-            why=$EARLIER who="a review of $head before this run" kind=earlier
+            why=$EARLIER who="a review of $head before this run" asks="asks for a change" has="has questions for Sami"
+            kind=earlier
             if [ "${FROM_OWED:-}" = true ]; then
               who="an automated review of $head" asks="asked for a change" has="had questions for Sami"
               kind=owed
             fi
           fi
-          # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
+          # because: why the import check runs of the head are withdrawn. For the screen, own and held say a later
+          # screen. For own, it is this run's own screen. For held, the hold is newer than each screened review comment
+          # of the head (the decision's held). The hold of the line can be older than the check run, so its text does
+          # not say later.
           case $why in
             blocking) because="$who $asks" ;;
             person) because="$who $has" ;;

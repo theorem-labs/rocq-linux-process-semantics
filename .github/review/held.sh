@@ -837,22 +837,24 @@ left_stopped() {
 }
 # failures <tasks>: of the runs of the head of #number of a task of <tasks>, newest first, back to the newest
 # whose post job succeeded, how many count a try (tried, of facts) and had a post job that ran and did not succeed, or
-# a trust job that failed. Such a post job failed at a write of the App or at a sign-in, or was cancelled, or ended in a
-# way that this does not name. A failed "Sign in as the OSS Verify App to approve" counts no try (R10), and a failed
-# "Sign in as the OSS Verify App" counts one. A run whose trust job failed (its conclusion failure) counts for every
-# task, so that the App's retry stops also when the trust jobs of its relabels keep failing (OSSV-221's architect,
-# 2026-11-22 16:06Z). For the approval (<tasks> approve), each run that counts a try counts, also a run whose post job
-# did not run for another cause: its screen job ran out of time, say, or its screen job and its hold job failed. A run
-# that its trust job stopped (tried stopped) counts for no task: it tried nothing. A run of the pass with a number and
-# a run with none can each start an approval run of one head, and the trust job stops the later one. At most
-# REVIEW_TRIES: each counts a try of the head.
+# a trust job that failed or was cancelled. Such a post job failed at a write of the App or at a sign-in, or was
+# cancelled, or ended in a way that this does not name. A failed "Sign in as the OSS Verify App to approve" counts no
+# try (R10), and a failed "Sign in as the OSS Verify App" counts one. A run whose trust job failed or was cancelled
+# (its conclusion failure or cancelled) counts for every task, so that the App's retry stops also when the trust jobs
+# of its relabels keep failing (OSSV-221's architect, 2026-11-22 16:06Z). A trust job that runs past its
+# timeout-minutes ends cancelled, and each job after it is skipped. Such a run counts as one whose trust job failed
+# (OSSV-221's architect, 2026-11-22 04:30Z and 2026-11-23 01:37Z). For the approval (<tasks> approve), each run that
+# counts a try counts, also a run whose post job did not run for another cause: its screen job ran out of time, say,
+# or its screen job and its hold job failed. A run that its trust job stopped (tried stopped) counts for no task: it
+# tried nothing. A run of the pass with a number and a run with none can each start an approval run of one head, and
+# the trust job stops the later one. At most REVIEW_TRIES: each counts a try of the head.
 failures() {
   local n=0 run f tried post trust
   while read -r _ _ run; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read." >&2; return 1; }
     read -r tried _ post _ _ _ _ _ _ _ trust _ <<< "$f"
     [ "$post" != success ] || break
-    if [ "$tried" = try ] && { [ "$1" = approve ] || [ "$trust" = failure ] \
+    if [ "$tried" = try ] && { [ "$1" = approve ] || [ "$trust" = failure ] || [ "$trust" = cancelled ] \
       || { [ "$post" != - ] && [ "$post" != skipped ]; }; }; then
       n=$((n + 1))
     fi
@@ -1197,26 +1199,27 @@ due_approve() {
 # head is due <task> again. A CI run that did nothing after its trust job (early, of facts) is not that newest run: it
 # posted nothing, and it can be the run of another pull request of the head (one into another branch). For the task
 # relabel, a run of the pass that did nothing after its trust job is not that newest run either: a relabel that its
-# trust job stopped (GitHub had not computed the merge state yet, say), or whose trust job failed, wrote nothing, so it
-# ends no retry of a withdrawal that GitHub refused (ruling 2 of OSSV-221's architect, 2026-11-20 07:33Z). The retry
-# comes once an hour after the end of the newest run of the pass among that newest run and the runs after it, or after
-# the end of that newest run when it is a CI run and no run of the pass came after it. When that newest run counts a try
-# (tried, of facts), or a run passed over to reach it had a trust job that failed, the runs of the head whose post job
-# did not succeed count the tries of the head (failures): a failed "Sign in as the OSS Verify App to approve" counts
-# none (R10), and a failed "Sign in as the OSS Verify App", a failed write of the App or a cancelled post job counts
-# one. So does a run whose trust job failed, but not one that its trust job stopped (OSSV-221's architect, 2026-11-22
-# 16:06Z and 2026-11-23 01:37Z). After REVIEW_TRIES of them, the automated <work> of the head is not tried again
-# (head_stopped <work>).
+# trust job stopped (GitHub had not computed the merge state yet, say), or whose trust job failed or was cancelled,
+# wrote nothing, so it ends no retry of a withdrawal that GitHub refused (ruling 2 of OSSV-221's architect, 2026-11-20
+# 07:33Z). The retry comes once an hour after the end of the newest run of the pass among that newest run and the runs
+# after it, or after the end of that newest run when it is a CI run and no run of the pass came after it. When that
+# newest run counts a try (tried, of facts), or a run passed over to reach it had a trust job that failed or was
+# cancelled, the runs of the head whose post job did not succeed count the tries of the head (failures): a failed "Sign
+# in as the OSS Verify App to approve" counts none (R10), and a failed "Sign in as the OSS Verify App", a failed write
+# of the App or a cancelled post job counts one. So does a run whose trust job failed or was cancelled (it ran out of
+# time, say), but not one that its trust job stopped (OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z).
+# After REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped <work>).
 due_retry() {
   local created ended run event f tried post early trust tries how=failed last="" latest="" untrusted=""
   # The runs of the head, newest first, to the newest one that did work after its trust job. last: when the newest run
-  # of the pass among them ended (latest). untrusted: a run passed over here whose trust job failed, which counts a try.
+  # of the pass among them ended (latest). untrusted: a run passed over here whose trust job failed or was cancelled
+  # (it ran out of time, say), which counts a try.
   while read -r created ended run event; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
     read -r tried _ post _ early _ _ _ _ _ trust _ <<< "$f"
     if [ "$event" != workflow_run ] && [ -z "$last" ]; then last=$ended latest=$run; fi
     if [ "$early" != stopped ] || { [ "$event" != workflow_run ] && [ "$2" != relabel ]; }; then break; fi
-    [ "$trust" != failure ] || untrusted=1
+    if [ "$trust" = failure ] || [ "$trust" = cancelled ]; then untrusted=1; fi
   done < <(awk -v n="$number" -v re="^($1)\$" -v h="$head" '$7 == n && $8 ~ re && $9 == h {
     print $2, $3, $1, $6 }' "$seen/runs" | sort -r)
   [ -n "${run:-}" ] || return 0
