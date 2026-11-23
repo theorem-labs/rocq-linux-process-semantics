@@ -16033,6 +16033,35 @@ class ImportCheckTest(ReaderRunner):
                               f"{logged}.", logs)
                 self.assertIn(f"Withdrew the import check run 901 of {HEAD}: its conclusion is now neutral.", logs)
 
+    def test_a_relabel_that_withdraws_for_a_review_older_than_the_check_run_does_not_call_that_review_later(self):
+        """b7 (the tester's fresh reader of round 19, F1): run 80's screened review of HEAD of mallory's #7 gave a
+        blocking finding or the verdict person 60 minutes ago. Run 90 then rescreened HEAD, its screen and review
+        passed, and its post job recorded check run 901 just now; its comment job has not posted its review yet (post
+        jobs share post-7, comment jobs label-7, so a relabel queued behind run 90's post job reads the comments first).
+        The relabel reads run 80's review as the newest and withdraws 901 for it. That review is older than 901, so the
+        check run's title and summary, and the step's log, must not say that a later review asks for a change or has
+        questions: the withdrawal's own summary names run 80 or an earlier run as the source, which came before 901.
+        At 8407477d the title says 'because a later review asks for a change' and the summary starts 'A later
+        automated review of this head commit asks for a change.' (rules.py withdrawal uses WITHDRAWN for every kind but
+        owed; review.yml's withdraw step keeps who='a later review' for a relabel)."""
+        listed, _others = self.recorded()
+        listed = dict(listed, completed_at=ago(1))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        for verdict in ("blocking", "person"):
+            with self.subTest(verdict=verdict):
+                earlier = review_of(HEAD, verdict, at=ago(60), run=80)
+                start = len(self.logs)
+                got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                                 event="workflow_dispatch", comments=[earlier, old], listed=[listed])
+                self.assertEqual((got["result"], got["post"]["withdrawn"]), ("success", HEAD), self.logs)
+                (_token, endpoint, body), = got["withdrawn"]
+                self.assertEqual(endpoint, f"repos/{REPO}/check-runs/901")
+                self.assertGreater(listed["completed_at"], earlier["updated_at"])
+                self.assertNotIn("later", body["output"]["title"])
+                self.assertNotIn("A later", body["output"]["summary"])
+                self.assertNotIn("because a later review", "\n".join(self.logs[start:]))
+
     def test_a_held_screen_of_a_review_a_rescreen_or_an_approval_withdraws_the_check_run_of_its_head(self):
         """R12 (review round 1, part I): the review of HEAD recorded the check run with conclusion success. A later
         screen of HEAD that holds it, in the run of each task that screens a pull request: a review (of a CI run, or by
