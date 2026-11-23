@@ -1830,9 +1830,10 @@ Qed.
     36544 bytes, an AF_UNIX stream socket's first skb.
 
     The model classifies fds 1 and 2 as channels without knowing what is
-    on them: SCOPE.md ("Short writes to a channel") names a pipe, a
-    terminal and a file, and [State.in_channel_reader] a socket, a TCP or
-    an AF_UNIX stream one.  Which one, and in what state, is hidden, so
+    on them.  SCOPE.md ("Assumptions that the model does not check")
+    names the kinds a launch may put there: a pipe, a terminal, a regular
+    file on tmpfs or ramfs, a TCP stream socket and an AF_UNIX stream
+    socket.  Which one, and in what state, is hidden, so
     the bound is the largest first copy over those kinds in the
     configuration of record (SCOPE.md, "The configuration of record": the
     riscv64 defconfig of v6.18.46 with testing/vm/kernel.fragment merged
@@ -1890,11 +1891,12 @@ Qed.
       (include/net/sock.h:3003-3005), each more than 256 + 320 bytes
       (include/linux/skbuff.h:273-275).
 
-    So 36544, the AF_UNIX stream socket's.  A datagram socket, whose
-    write is one record that a fault anywhere in it fails, and an
-    arbitrary character device, whose [write] may copy the whole count
-    at once, are not far ends the model admits for fds 1 and 2 (SCOPE.md
-    names the kinds), so they do not widen the bound. *)
+    So 36544, the AF_UNIX stream socket's.  An AF_UNIX datagram or
+    seqpacket socket, whose write is one record that a fault anywhere in
+    it fails, and an arbitrary character device, whose [write] may copy
+    the whole count at once, are outside the model on fds 1 and 2: the
+    SCOPE.md assumption named at the head of this comment excludes them,
+    and says why a record over 36544 bytes would break the bound. *)
 Definition channel_first_copy_max : Z := 36544.
 
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=

@@ -888,6 +888,24 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
+- The far end of descriptors 1 and 2 is one of these kinds: a pipe, a
+  terminal, a regular file on tmpfs or ramfs, a TCP stream socket, or an
+  AF_UNIX stream socket. The write arms classify both descriptors as
+  channels (`Sys/Fs/ReadWrite.v`) and admit a short write of any nonempty
+  readable prefix, and an `-EFAULT` with nothing written only for a fault
+  inside `ReadWrite.channel_first_copy_max` (36544 bytes), the largest
+  first copy of those kinds ("Short writes to a channel" below). An
+  AF_UNIX datagram or seqpacket socket is outside the model: its write is
+  one record, copied whole, so a fault anywhere in it answers `-EFAULT`
+  with nothing sent: `unix_dgram_sendmsg` copies the record at
+  `net/unix/af_unix.c:2174-2176`, Linux v6.18.46, and refuses a record
+  only over `sk_sndbuf - 32` (`net/unix/af_unix.c:2147`), so a record may
+  be longer than 36544 bytes; `unix_seqpacket_sendmsg` sends through it
+  (`net/unix/af_unix.c:2564`). There the model refuses that
+  `-EFAULT`, so a run whose descriptor 1 or 2 is such a socket is outside
+  what any statement covers. Any other character device on those
+  descriptors is outside the model too: its `write` may copy the whole
+  count at once.
 - The launch leaves `RLIMIT_FSIZE` at `RLIM_INFINITY`, its initial value
   (`INIT_RLIMITS`, `include/asm-generic/resource.h:14`, Linux v6.18.46),
   and a run cannot lower it: the model answers `prlimit64` for
@@ -1852,9 +1870,11 @@ serious half.
   it or fails, so the positive short return that the model admits here is
   a behavior no supported system gives. The write arm of
   `Sys/Fs/ReadWrite.v` names it a known soundness gap. The model
-  classifies fds 1 and 2 as channels without knowing whether the far end
-  is a pipe, a terminal or a file, so it admits the short return for all
-  three. Beside it, a source readable at its first byte but not
+  classifies fds 1 and 2 as channels without knowing which far end of
+  the kinds "Assumptions that the model does not check" allows them it is
+  (a pipe, a terminal, a regular file, a TCP or an AF_UNIX stream
+  socket), so it admits the short return for all of them. Beside it, a
+  source readable at its first byte but not
   throughout may be `-EFAULT` with nothing written, when its first
   unreadable byte lies inside the largest first copy any far end of
   those fds makes in the configuration of record
