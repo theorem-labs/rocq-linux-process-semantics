@@ -1856,10 +1856,13 @@ serious half.
   is a pipe, a terminal or a file, so it admits the short return for all
   three. Beside it, a source readable at its first byte but not
   throughout may be `-EFAULT` with nothing written, when its first
-  unreadable byte lies inside the largest first copy any of those far
-  ends makes (`ReadWrite.channel_first_copy_max`): a pipe answers a short
-  copy with nothing counted `-EFAULT` however many readable bytes came
-  before the hole, and the model cannot see which far end it is.
+  unreadable byte lies inside the largest first copy any far end of
+  those fds makes in the configuration of record
+  (`ReadWrite.channel_first_copy_max`, 36544 bytes: an AF_UNIX stream
+  socket's first skb, which beats a terminal's 2048-byte chunk, a TCP
+  socket's 32768-byte fragment and a pipe's page): a pipe answers a
+  short copy with nothing counted `-EFAULT` however many readable bytes
+  came before the hole, and the model cannot see which far end it is.
 - **A channel with no reader — fixed, and what it cost.** This used to
   be a gap: the write arm could not see whether fds 1 and 2 still had a
   reader, so a write to a stdout whose reader was gone got a count,

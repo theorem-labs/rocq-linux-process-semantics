@@ -2433,7 +2433,9 @@ Definition send_state (sk : SockState) : SendState :=
     a segment goal of at least that.  Linux v6.18.46, commit
     1f99e9ab748f.
 
-    v4.17, the oldest supported version, gives the same bound: the same
+    The supported kernels are SCOPE.md's, v6.16 to v6.18.46.  v4.17, the
+    older floor AGENTS.md still names, was read as a cross-check only,
+    and gives the same bound: the same
     fragment path (net/ipv4/tcp.c:1320-1347 in v4.17), the fragment's
     order get_order(32768) and its refill at net/core/sock.c:2184 and
     :2196-2226 in v4.17, and a linear-head path (net/ipv4/tcp.c:1314-1319

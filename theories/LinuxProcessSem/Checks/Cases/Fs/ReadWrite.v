@@ -5609,21 +5609,27 @@ Example write_channel_fault_inside_the_first_copy_is_efault :
 Proof. split_conj; check_eq. Qed.
 
 (** THE BOUND IS THE LARGEST FIRST COPY OF ANY FAR END,
-    [ReadWrite.channel_first_copy_max] = 65536: which far end fds 1 and
-    2 have, and in what state, is hidden, and a terminal under
-    [TTY_NO_WRITE_SPLIT] copies 65536 bytes first (drivers/tty/tty_io.c
-    [iterate_tty_write] :975-979, :1000-1004), more than a pipe's page or
-    a TCP fragment.  So -EFAULT is admitted for a fault at offset 65535,
-    which that first chunk holds -- a choice over the hidden far end, not
-    an answer of its own -- and refused for a fault at offset 65536, past
-    every first chunk, where the first copy moves bytes and a short
-    count answers. *)
+    [ReadWrite.channel_first_copy_max] = 36544: which far end fds 1 and
+    2 have, and in what state, is hidden, and in the configuration of
+    record an AF_UNIX stream socket copies one skb of up to
+    SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ = 3776 + 32768 = 36544 bytes first
+    (net/unix/af_unix.c [unix_stream_sendmsg] :2457, copied whole at
+    :2493-2495, Linux v6.18.46), more than a pipe's page, a terminal's
+    2048-byte chunk or a TCP fragment.  So -EFAULT is admitted for a
+    fault at offset 36543, which that first skb holds -- a choice over
+    the hidden far end, not an answer of its own -- and refused for a
+    fault at offset 36544, past every first copy, where the first copy
+    moves bytes and a short count answers; the one-byte short write
+    stays admitted there.  A terminal copies 65536 bytes first only under
+    [TTY_NO_WRITE_SPLIT] (drivers/tty/tty_io.c [iterate_tty_write]
+    :976-977), whose setters the configuration of record does not build,
+    so a fault at offset 36544 is not inside any first copy. *)
 Example write_channel_fault_at_the_largest_first_copy :
-  chan_write_from 1 (chan_mem_prefix 4096 65535) 65536 (errno_ret EFAULT) []
+  chan_write_from 1 (chan_mem_prefix 4096 36543) 36544 (errno_ret EFAULT) []
     = CheckOk chan_model []
-  /\ chan_write_from 1 (chan_mem_prefix 4096 65536) 65537 (errno_ret EFAULT) []
+  /\ chan_write_from 1 (chan_mem_prefix 4096 36544) 36545 (errno_ret EFAULT) []
     = CheckReject
-  /\ chan_write_from 1 (chan_mem_prefix 4096 65536) 65537 1 [(4096, 1%nat)]
+  /\ chan_write_from 1 (chan_mem_prefix 4096 36544) 36545 1 [(4096, 1%nat)]
     = CheckOk chan_model [WriteEv 1 0].
 Proof. split_conj; check_eq. Qed.
 

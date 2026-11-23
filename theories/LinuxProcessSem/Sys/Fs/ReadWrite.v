@@ -1826,42 +1826,76 @@ Proof.
                          |right; exact H].
 Qed.
 
-(** THE LARGEST FIRST COPY OF ANY FAR END A LAUNCH MAY GIVE FDS 1 AND 2.
+(** THE LARGEST FIRST COPY OF ANY FAR END A LAUNCH MAY GIVE FDS 1 AND 2:
+    36544 bytes, an AF_UNIX stream socket's first skb.
 
     The model classifies fds 1 and 2 as channels without knowing what is
     on them: SCOPE.md ("Short writes to a channel") names a pipe, a
-    terminal and a file, and [State.in_channel_reader] a socket.  Which
-    one, and in what state, is hidden, so the bound is the largest first
-    copy over those kinds, each read in Linux v6.18.46 (commit
-    1f99e9ab748f) and in v4.17, the oldest supported version:
+    terminal and a file, and [State.in_channel_reader] a socket, a TCP or
+    an AF_UNIX stream one.  Which one, and in what state, is hidden, so
+    the bound is the largest first copy over those kinds in the
+    configuration of record (SCOPE.md, "The configuration of record": the
+    riscv64 defconfig of v6.18.46 with testing/vm/kernel.fragment merged
+    over it and every other =m symbol off), each read in Linux v6.18.46
+    (commit 1f99e9ab748f).  The supported kernels are SCOPE.md's, v6.16
+    to v6.18.46; the v4.17 lines below are a cross-check against the
+    older floor AGENTS.md still names, not a claim that v4.17 is
+    supported.
 
     - a PIPE copies at most PAGE_SIZE = 4096 bytes first: either the
       merge of [total_len & (PAGE_SIZE-1)] bytes into the last buffer
       (fs/pipe.c [anon_pipe_write] :477-492; v4.17 [pipe_write]
       :375-391) or one fresh page (:522-528; v4.17 :429-434), and both
       answer -EFAULT on a short copy while nothing is counted;
-    - a REGULAR FILE copies at most a page first, and from v5.18 on
-      answers -EFAULT only when not one byte was readable
-      (bugs/write-file-prefault-before-v5-18-answers-a-chunk.md);
+    - a REGULAR FILE answers -EFAULT only when not one byte was readable
+      (mm/filemap.c [generic_perform_write] :4321-4323, the written
+      bytes returned instead at :4331-4334), so it adds nothing to the
+      bound;
     - a TCP SOCKET copies at most [Net.Socket.tcp_first_copy_max] =
       32768 bytes first;
-    - an AF_UNIX STREAM SOCKET copies one skb of at most
-      [SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ] bytes, under PAGE_SIZE +
-      32768 = 36864 (net/unix/af_unix.c [unix_stream_sendmsg]
-      :2454-2457, copied at :2493-2495 and answered [sent ? : err] at
-      :2541-2545; v4.17 :1856-1889 and :1916-1918);
-    - a TERMINAL copies a chunk of 2048 bytes, or of 65536 under
-      [TTY_NO_WRITE_SPLIT], which n_hdlc and cdc-acm set
-      (drivers/tty/tty_io.c [iterate_tty_write] :975-979, the copy
-      failing whole with -EFAULT at :1000-1004, [written] returned
-      instead at :1026-1029; v4.17 [tty_write] :927-931, :951-957,
-      :971-974).
+    - a TERMINAL copies a chunk of 2048 bytes first
+      (drivers/tty/tty_io.c [iterate_tty_write] :975, the copy failing
+      whole with -EFAULT at :1000-1004, [written] returned instead at
+      :1026-1029; v4.17 [tty_write] :927-931, :951-957, :971-974).  The
+      65536-byte chunk of :976-977 needs the [TTY_NO_WRITE_SPLIT] flag,
+      and the configuration of record builds neither of its setters:
+      n_hdlc (drivers/tty/n_hdlc.c:246) needs CONFIG_N_HDLC and so
+      CONFIG_SERIAL_NONSTANDARD, which neither the defconfig nor the
+      fragment sets, and cdc-acm (drivers/usb/class/cdc-acm.c:710) needs
+      CONFIG_USB_SUPPORT, which the fragment turns off;
+    - an AF_UNIX STREAM SOCKET copies one skb first, of at most
+      SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ bytes (net/unix/af_unix.c
+      [unix_stream_sendmsg] :2457), copied whole at :2493-2495 and
+      answered [sent ? : err] at :2545 (v4.17 :1856-1889, :1916-1918).
+      In the configuration of record that is 36544 bytes.
+      [UNIX_SKB_FRAGS_SZ] (net/unix/af_unix.c:2338) is PAGE_SIZE <<
+      get_order(32768) = 4096 << 3 = 32768.  [SKB_MAX_HEAD] of 0
+      (include/linux/skbuff.h:257-258 and :267-269) is PAGE_SIZE less
+      the size of [skb_shared_info] (include/linux/skbuff.h:593-629)
+      rounded up to SMP_CACHE_BYTES, which is L1_CACHE_BYTES = 64
+      (include/vdso/cache.h:8, arch/riscv/include/asm/cache.h:10-12).
+      That struct is 48 bytes of fields before [frags] (four bytes, two
+      shorts, the [frag_list] pointer, an 8-byte union, two 32-bit
+      words, [dataref], and an 8-byte union aligned to offset 40), then
+      MAX_SKB_FRAGS = CONFIG_MAX_SKB_FRAGS = 17 (include/linux/skbuff.h:354;
+      net/Kconfig's default, which neither the defconfig nor the
+      fragment changes) frags of 16 bytes each ([skb_frag_t],
+      include/linux/skbuff.h:361-365: an 8-byte [netmem_ref] and two
+      unsigned ints): 48 + 17 * 16 = 320, already a multiple of 64.  So
+      SKB_MAX_HEAD(0) = 4096 - 320 = 3776, and 3776 + 32768 = 36544.
+      The send buffer cuts the skb only below that: the cut
+      (sk_sndbuf >> 1) - 64 (net/unix/af_unix.c:2454) is at least 73664
+      at the default [sk_sndbuf] (net/core/sock.c:288 and :3653), whose
+      SK_WMEM_DEFAULT is 256 times SKB_TRUESIZE(256)
+      (include/net/sock.h:3003-3005), each more than 256 + 320 bytes
+      (include/linux/skbuff.h:273-275).
 
-    So 65536, the terminal's.  An arbitrary character device, whose
-    [write] may copy the whole count at once, is not a far end the model
-    admits for fds 1 and 2 (SCOPE.md names the kinds), so it does not
-    widen the bound. *)
-Definition channel_first_copy_max : Z := 65536.
+    So 36544, the AF_UNIX stream socket's.  A datagram socket, whose
+    write is one record that a fault anywhere in it fails, and an
+    arbitrary character device, whose [write] may copy the whole count
+    at once, are not far ends the model admits for fds 1 and 2 (SCOPE.md
+    names the kinds), so they do not widen the bound. *)
+Definition channel_first_copy_max : Z := 36544.
 
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
