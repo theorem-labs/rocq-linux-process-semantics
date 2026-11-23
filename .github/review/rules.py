@@ -19,6 +19,7 @@ labels").
         <hold> <request.json> [<import paths>]
     python3 .github/review/rules.py import-marker <head> [<import paths>]
     python3 .github/review/rules.py verdict <number> <head> [<checks.jsonl>]
+    python3 .github/review/rules.py own-record <number> <head> <started> <checks.jsonl>
     python3 .github/review/rules.py sources <head> <checks.jsonl>
     python3 .github/review/rules.py source <number> <head> <why> <kind> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
@@ -211,6 +212,16 @@ and screened else, and with <stands> it is withdrawn. For earlier with the verdi
 screened or earlier with no <why>, and screened with a <why>: the review of this run has not posted yet. It is held for
 held, and screen for unscreened. For the decision hand, the label step counts an import check run of <head> that still
 stands, for the value of the variable now, as recorded.
+
+own-record: "<decision> <what> <since>" on standard output for <head> of the pull request <number>, for a run on the
+route screen whose own screen and review passed <head> (own_record): whether a newer run held <head> or withdrew its
+import check run while this run ran. <started> is the time when the trust job of this run read the item. <decision>
+is held when a hold comment of the screen that names <head> is at or after <started>, and <what> is the time of that
+hold; withdrawn when the newest import check run of <checks.jsonl> is a withdrawal that stands (withdrawal_stands)
+and that counts from a time at or after <started>, and then <what> is its id and <since> that time, or - when its
+summary names none; and - for neither, with <what> and <since> -. The run records nothing for held and for
+withdrawn. A hold or a withdrawal older than <started> leaves the record of this run, as after a blocking review, a
+fix and a screen that passed <head> again.
 
 sources: the source runs and times that the withdrawals among the import check runs of <checks.jsonl> on <head> name
 (sources_of), as verdict reads them, on one line of standard output: <run>=<time> for each source run, with the latest
@@ -432,19 +443,20 @@ STATES = {
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
-    # A held pull request whose head changes a file under .github/ (R10): the post job approved none of its runs. The
-    # label comment records the head (steering_line).
+    # A held pull request whose head changes a file under .github/ (R10): the post job approved none of its runs. Its
+    # next step names Sami, the person at Theorem who approves them on GitHub, and the label comment records the head
+    # (steering_line).
     "steering": (
-        THEOREM, "A person at Theorem approves the checks of this pull request.",
-        "This pull request changes a file under `.github/`, so the workflow does not approve its checks. You do not "
-        "need to do anything."),
+        THEOREM, "Sami approves the checks of this pull request on GitHub.",
+        "This pull request changes a file under `.github/`, so the workflow does not approve its checks. A person at "
+        "Theorem with write access approves the runs of this pull request on GitHub. You do not need to do anything."),
     # A held pull request whose head the screen passed, while the environment post held no key of the
-    # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. The
-    # label comment records the head (no_key_line).
+    # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. Its
+    # next step names Sami, as for the state steering, and the label comment records the head (no_key_line).
     "no-key": (
-        THEOREM, "A person at Theorem approves the checks of this pull request.",
-        "The workflow cannot approve the checks of a pull request in this repository yet. You do not need to do "
-        "anything."),
+        THEOREM, "Sami approves the checks of this pull request on GitHub.",
+        "The workflow cannot approve the checks of a pull request in this repository yet. A person at Theorem with "
+        "write access approves the runs of this pull request on GitHub. You do not need to do anything."),
     "will-fix": (
         THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
@@ -1873,6 +1885,36 @@ def withdrawal_stands(checks, comments, head):
     return str(newest.get("id") or "-")
 
 
+def own_record(checks, comments, head, started):
+    """Whether a run on the route screen, whose own screen and review passed head, still records its import check run
+    at head, and why not (OSSV-221's architect, 2026-11-23 18:38Z): the post jobs of an item share one group, so this
+    run's post job can run long after its review, behind the post job of a newer run of the same head. started is the
+    time when this run's trust job read the item (its output started). (decision, what, since):
+    ("held", the time of the hold, "") when a hold comment of BOT of the screen that names head (hold_fact
+    screen_held, HELD_HEAD) is at or after started: a newer run held head, and this run records nothing. GitHub edits
+    a hold comment in place, so its updated_at counts, which fails closed.
+    ("withdrawn", the id of the check run, the time from which it counts) when the newest import check run of head is
+    a withdrawal that stands (withdrawal_stands) and that counts from a time at or after started (blocks_from): no
+    screened pass of head is newer than that time, and this run's own pass counts from started. A withdrawal whose
+    summary names no time stands, as it does for a relabel, and so does one at started (fail closed).
+    ("", "", "") when neither holds: a hold or a withdrawal older than the start of this run leaves its record, as
+    after a blocking review, a fix and a screen that passed the head again."""
+    held = ""
+    for c in comments:
+        body = c.get("body") or ""
+        if of_bot(c) and body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
+            m = HELD_HEAD.search(body)
+            if m and m.group(1) == head and (c.get("updated_at") or "") >= started:
+                held = max(held, c.get("updated_at") or "")
+    if held:
+        return "held", held, ""
+    stands = withdrawal_stands(checks, comments, head)
+    at = blocks_from(newest_check(checks), head) if stands else ""
+    if stands and not (at and at < started):
+        return "withdrawn", stands, at
+    return "", "", ""
+
+
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
 # uses, code, section and the constants from USES to LISTED are copied from theorem-labs/oss-verify-proofs-internal
 # .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its checks are its CI lanes on stock Rocq,
@@ -2701,6 +2743,14 @@ def main(argv):
             since = blocks_from(newest_check(checks), argv[2]) if stands else ""
             print(f"{verdict or '-'} {state} {why or '-'} {'owed' if owed else '-'} {posted} {stands or '-'} "
                   f"{since or '-'}")
+            return 0
+        if (len(argv) == 5 and argv[0] == "own-record" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
+                and TIME.fullmatch(argv[3])):
+            comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
+                                  f".[] | select(.user.login == {json.dumps(BOT)})"
+                                  " | {user: {login: .user.login}, body, updated_at} | @json")
+            decision, what, since = own_record(check_lines(argv[4]), comments, argv[2], argv[3])
+            print(f"{decision or '-'} {what or '-'} {since or '-'}")
             return 0
         if len(argv) == 3 and argv[0] == "sources" and HEAD.fullmatch(argv[1]):
             print(" ".join(f"{run}={at}" for run, at in sorted(sources_of(check_lines(argv[2]), argv[1]).items())))

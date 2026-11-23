@@ -504,6 +504,32 @@ class Runner(unittest.TestCase):
         if not os.path.lexists(path):
             os.symlink(GITHUB_DIR, path)
 
+    def changed_rules(self, old, new, run):
+        """run() with a changed .github/review/rules.py, as a control: main's .github/ in the work directory, which the
+        steps read, is then a copy whose rules.py holds new in the place of old, which rules.py holds once. Its
+        result."""
+        with open(RULES_PY, encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(text.count(old), 1, old)
+        root = os.path.join(tempfile.mkdtemp(prefix="changed-", dir=self.dir), ".github")
+        os.mkdir(root)
+        for name in os.listdir(GITHUB_DIR):
+            if name not in ("review", "__pycache__"):
+                os.symlink(os.path.join(GITHUB_DIR, name), os.path.join(root, name))
+        shutil.copytree(os.path.join(GITHUB_DIR, "review"), os.path.join(root, "review"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        with open(os.path.join(root, "review", "rules.py"), "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new))
+        link = os.path.join(self.work, ".github")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(root, link)
+        try:
+            return run()
+        finally:
+            os.remove(link)
+            self.checkout()
+
     def refuse(self, endpoint, status, text="Validation Failed"):
         """Every call of endpoint fails with an HTTP status, as gh names it."""
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
@@ -4376,21 +4402,35 @@ class ApproveTest(Holding):
         return run_job(self, "comment", ctx, {})
 
     def test_a_head_that_changes_a_file_under_github_gets_no_approval_and_waits_on_a_person_at_theorem(self):
-        """R10 (spec v69, Verification v58 b8): the screen passes a held head that adds a file under
-        .github/workflows/, that changes .github/review.md, or that renames a file out of .github/ (only the path that
-        it had before is under .github/). The post job reads the files of the head from every page of the API, then
-        the head again: it mints no token B, approves no run, writes nothing, and names the head in its output
-        steering. The comment job then runs, gives the pull request waits-on-theorem, and posts the label comment that
-        says that a person at Theorem approves its runs, because it changes a file under .github/, and that records the
-        head. No text names a maintainer or says that anyone decides. A head whose paths only look alike gets its
-        approval: the guard reads only the folder .github/ at the top."""
+        """R10 (spec v69, v88 and v90, Verification v58, v70 and v72, b8): the screen passes a held head that adds a
+        file under .github/workflows/, that changes .github/review.md, that renames a file out of .github/ (only the
+        path that it had before is under .github/), or whose list of files reaches GitHub's limit of 3,000 files,
+        which can hide a file under .github/. The post job reads the files of the pull request, its whole diff from
+        its base, from every page of the API, and never the files of the last push of the head, which touch no file
+        under .github/. It reads the head after the files too: it mints no token B, approves no run, writes nothing,
+        and names the head in its output steering. The comment job then runs, gives the pull request
+        waits-on-theorem, and posts the label comment whose next step names Sami, who approves the checks on GitHub.
+        The comment says that a person at Theorem with write access approves its runs on GitHub, because the pull
+        request changes a file under .github/, and it records the head. No text names a maintainer or says that
+        anyone decides. A head whose paths only look alike gets its approval: the guard reads only the folder
+        .github/ at the top. A head that moves while its files are read gets no approval and no steering: the files
+        that the step read are the old head's. Each control on the changed code approves a head that a case refuses:
+        the step with no rule of the limit approves the 3,000 files, rules.py that does not read the path before a
+        rename approves the rename, and the step that reads the files of the last push approves the change of
+        .github/review.md."""
         self.runs(*self.RUNS)
         trust = self.by_hand()
         self.serve(f"repos/{REPO}/issues/7/labels", [])
         self.serve(f"repos/{REPO}/issues/7/comments", [])
         self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
+        # The files of the last push of the head, which no step reads: GitHub gives them for the head commit and for
+        # the comparison of the commit before it with it. None of them is under .github/.
+        for endpoint in (f"repos/{REPO}/commits/{HEAD}", f"repos/{REPO}/compare/{OTHER_HEAD}...{HEAD}"):
+            self.serve(endpoint, {"files": [{"filename": "README.md", "previous_filename": None}]})
+        limit = [f"docs/page-{i}.md" for i in range(3000)]
         for case, files in (("a new workflow", ("README.md", ".github/workflows/mine.yml")),
                             ("a change of the rules", (".github/review.md",)),
+                            ("3,000 files, the limit of the API", limit),
                             ("a rename out of .github/", (("docs/review.md", ".github/review.md"),))):
             with self.subTest(case=case):
                 self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=len(files))
@@ -4401,6 +4441,8 @@ class ApproveTest(Holding):
                 self.assertEqual((self.approvals(), writes(self.api)), ([], []))
                 self.assertEqual(self.calls().count(f"repos/{REPO}/pulls/7"), 2)
                 self.assertIn(f"repos/{REPO}/pulls/7/files", self.calls())
+                self.assertNotIn(f"repos/{REPO}/commits/{HEAD}", self.calls())
+                self.assertNotIn(f"repos/{REPO}/compare/{OTHER_HEAD}...{HEAD}", self.calls())
                 post = filled(JOBS["post"]["outputs"], self.ctx)
                 self.assertEqual(post["steering"], HEAD)
                 self.assertEqual(self.jobs(trust, outputs={"screen": {"verdict": "clean"}, "post": post}),
@@ -4411,11 +4453,25 @@ class ApproveTest(Holding):
                 self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
                 (method, _endpoint, body), = label_comments(self.api)
                 self.assertEqual((method, body), ("POST", rules.label_comment("steering", head=HEAD)))
-                self.assertEqual(body, "<!-- review-label -->\n**Next step:** A person at Theorem approves the checks "
-                                       "of this pull request.\n\nThis pull request changes a file under `.github/`, so "
-                                       "the workflow does not approve its checks. You do not need to do anything.\n\n"
-                                       f"<!-- review-steering {HEAD} -->\n<!-- waits-on-theorem: Sami -->")
+                self.assertEqual(body, "<!-- review-label -->\n**Next step:** Sami approves the checks of this pull "
+                                       "request on GitHub.\n\nThis pull request changes a file under `.github/`, so "
+                                       "the workflow does not approve its checks. A person at Theorem with write "
+                                       "access approves the runs of this pull request on GitHub. You do not need to "
+                                       f"do anything.\n\n<!-- review-steering {HEAD} -->\n"
+                                       "<!-- waits-on-theorem: Sami -->")
                 self.assertNotRegex(body, r"(?i)maintainer|decide|will look")
+        # The head moves between the two reads of the pull request, after its files were read: no approval, and no
+        # steering, whatever those files hold.
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.serve_files(7, ".github/workflows/mine.yml")
+        self.serve(f"repos/{REPO}/pulls/7.then", {"number": 7, "state": "open", "head": {"sha": OTHER_HEAD},
+                                                  "changed_files": 1})
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
+                         ("success", "skipped", "skipped"), self.logs)
+        self.assertEqual((self.approvals(), writes(self.api)), ([], []))
+        self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["steering"], "")
+        self.assertIn(f"#7 moved from {HEAD} to {OTHER_HEAD} while its files were read.", "\n".join(self.logs))
         for files in (("docs/.github/x.md", ".githubx/y.md", "github/z.md"),):
             self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=len(files))
             self.serve_files(7, *files)
@@ -4424,15 +4480,46 @@ class ApproveTest(Holding):
             self.assertEqual(self.approvals(), self.APPROVED)
             self.assertEqual(filled(JOBS["post"]["outputs"], self.ctx)["steering"], "")
 
+        def steering():
+            """The post job's output steering after a screen that passed, in a run by hand."""
+            self.post(trust, "clean")
+            return filled(JOBS["post"]["outputs"], self.ctx)["steering"]
+
+        # The controls, each on the changed code of one case: the step with no rule of the limit approves the head
+        # of 3,000 files; rules.py that does not read the path before a rename approves the rename out of .github/;
+        # and the step that reads the files of the last push, which hold no file under .github/, approves the change
+        # of .github/review.md.
+        held = step("post", self.HELD)
+        script = held["run"]
+        for case, files, old, new in (
+                ("the rule of the limit", limit, ' || [ "$listed" -ge 3000 ] || [ "$count" -ge 3000 ]', ""),
+                ("the files of the last push", (".github/review.md",),
+                 '"repos/$REPO/pulls/$NUMBER/files?per_page=100" \\\n  --jq \'.[] |',
+                 '"repos/$REPO/commits/$HEAD" \\\n  --jq \'.files[] |')):
+            with self.subTest(control=case):
+                self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=len(files))
+                self.serve_files(7, *files)
+                self.assertEqual(script.count(old), 1)
+                held["run"] = script.replace(old, new)
+                try:
+                    self.assertEqual(steering(), "")
+                finally:
+                    held["run"] = script
+        self.serve_item(7, "mallory", kind="pr", head=HEAD, changed=1)
+        self.serve_files(7, ("docs/review.md", ".github/review.md"))
+        self.assertEqual(self.changed_rules('        if f.get("previous_filename"):\n'
+                                            '            paths.append(f["previous_filename"])\n', "", steering), "")
+
     def test_with_no_key_in_the_environment_post_a_screened_held_head_waits_on_a_person_at_theorem(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
-        Verify App, so its secret is empty, and the post job's env value APP_KEY_SET is false. The screen passes a held
-        head that changes no file under .github/. The post job reads the pull request and the runs with this run's own
-        token, mints neither token, approves no run and writes nothing. It ends with success, its summary says that
-        the environment holds no key and that the run approved no held run, and its output no_key names the head. The
-        comment job gives the pull request waits-on-theorem, with a label comment that says that a person at Theorem
-        approves its checks, that the workflow cannot approve them yet, and that records the head. It says nothing of
-        .github/. With the key, the same head gets its approval."""
+        """R10 (spec v76, and v90 for the next step): until the LPS move of dispatch://OSSV-321, the environment post
+        holds no key of the OSS Verify App, so its secret is empty, and the post job's env value APP_KEY_SET is
+        false. The screen passes a held head that changes no file under .github/. The post job reads the pull request
+        and the runs with this run's own token, mints neither token, approves no run and writes nothing. It ends with
+        success, its summary says that the environment holds no key and that the run approved no held run, and its
+        output no_key names the head. The comment job gives the pull request waits-on-theorem, with a label comment
+        whose next step names Sami, who approves the checks on GitHub, that says that a person at Theorem with write
+        access approves its runs and that the workflow cannot approve them yet, and that records the head. It says
+        nothing of .github/. With the key, the same head gets its approval."""
         self.runs(*self.RUNS)
         trust = self.by_hand()
         summary = os.path.join(self.dir, "summary.md")
@@ -4460,10 +4547,12 @@ class ApproveTest(Holding):
                 self.assertEqual(state_labels(self.api), [("+", THEOREM_LABEL)])
                 (method, _endpoint, body), = label_comments(self.api)
                 self.assertEqual((method, body), ("POST", rules.label_comment("no-key", head=HEAD)))
-                self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** A person at Theorem approves "
-                                                "the checks of this pull request.\n\nThe workflow cannot approve the "
-                                                "checks of a pull request in this repository yet. You do not need to "
-                                                f"do anything.\n\n<!-- review-no-key {HEAD} -->\n"), body)
+                self.assertTrue(body.startswith("<!-- review-label -->\n**Next step:** Sami approves the checks of "
+                                                "this pull request on GitHub.\n\nThe workflow cannot approve the "
+                                                "checks of a pull request in this repository yet. A person at "
+                                                "Theorem with write access approves the runs of this pull request on "
+                                                "GitHub. You do not need to do anything.\n\n"
+                                                f"<!-- review-no-key {HEAD} -->\n"), body)
                 self.assertNotRegex(body, r"(?i)maintainer|decide|will look|\.github")
         steps = self.post(trust, "clean")
         self.assertEqual([steps[n] for n in (self.HELD, MINT_B, self.APPROVE, NO_KEY)],
@@ -11004,12 +11093,12 @@ class ScheduleTest(Scheduled):
                           if any(a.endswith("/approve") for a in c)], ApproveTest.APPROVED)
 
     def test_a_held_head_that_changes_a_file_under_github_gets_no_second_approve_run(self):
-        """R10 (spec v69, Verification v58 b8): the approve run that the pass starts for a held head that adds a file
-        under .github/workflows/ passes the screen, and its post job approves no run. Its comment job records the head
-        in the label comment and gives waits-on-theorem. The next runs of the pass, with a number and with none, start
-        no approve run of that head, also for a held run made after that approve run (a CI run that its author started
-        again, say), which would start one an hour after the approve run ended. The trust job of an approve run of the
-        pass for that head stops."""
+        """R10 (spec v69 and v90, Verification v58 and v72, b8): the approve run that the pass starts for a held head
+        that adds a file under .github/workflows/ passes the screen, and its post job approves no run. Its comment job
+        records the head in the label comment and gives waits-on-theorem. The next runs of the pass, with a number and
+        with none, start no approve run of that head, also for a held run made after that approve run (a CI run that
+        its author started again, say), which would start one an hour after the approve run ended, and they post and
+        edit no comment of it. The trust job of an approve run of the pass for that head stops."""
         self.item(kind="pr")
         self.held_runs(made=300)
         rc, out, runs = self.started()
@@ -11047,18 +11136,21 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started(number=number)
                 self.assertEqual((rc, runs), (0, []), out)
                 self.assertIn(f"#7: {HEAD} changes a file under .github/, as its label comment records", out)
+                self.assertEqual(label_comments(self.api), [], out)
+                self.assertEqual([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c], [], out)
         rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="approve", head=HEAD, account="mallory")
         self.assertEqual((rc, got.get("route")), (0, None), out)
         self.assertIn(f"its label comment records that {HEAD} changes a file under .github/, so a person at Theorem "
                       "approves its runs.", out)
 
     def test_with_no_key_a_screened_held_head_waits_on_a_person_and_gets_no_second_approve_run(self):
-        """R10 (spec v76): until the LPS move of dispatch://OSSV-321, the environment post holds no key of the OSS
-        Verify App. The approve run that the pass starts for a held head passes the screen, and its post job approves
-        no run, writes nothing and ends with success. Its comment job records the head in the label comment and gives
-        waits-on-theorem. The next runs of the pass, with a number and with none, start no approve run of that head,
-        also for a held run made after that approve run, which would start one an hour after the approve run ended.
-        Without the line of the label comment, the pass starts that approve run."""
+        """R10 (spec v76, and v90 for the second event): until the LPS move of dispatch://OSSV-321, the environment
+        post holds no key of the OSS Verify App. The approve run that the pass starts for a held head passes the
+        screen, and its post job approves no run, writes nothing and ends with success. Its comment job records the
+        head in the label comment and gives waits-on-theorem. The next runs of the pass, with a number and with none,
+        start no approve run of that head, also for a held run made after that approve run, which would start one an
+        hour after the approve run ended, and they post and edit no comment of it. Without the line of the label
+        comment, the pass starts that approve run."""
         self.env["GITHUB_STEP_SUMMARY"] = os.path.join(self.dir, "summary.md")
         self.item(kind="pr")
         self.held_runs(made=300)
@@ -11102,6 +11194,8 @@ class ScheduleTest(Scheduled):
                     self.assertIn(f"#7: its label comment records that a run screened {HEAD} while the environment "
                                   f"post had no key of the OSS Verify App. So a person at Theorem approves the runs "
                                   f"of {HEAD}.", out)
+                    self.assertEqual(label_comments(self.api), [], out)
+                    self.assertEqual([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c], [], out)
 
     def test_runs_that_github_holds_in_the_form_that_it_lists_them_get_an_approve_run_and_no_catch_up(self):
         """b8 (R10, D16 (a) and (f)): GitHub lists a run that it holds for a person's approval with status completed
@@ -14826,14 +14920,14 @@ class LabelRuleTest(unittest.TestCase):
         self.assertEqual({row[2] for row in self.TABLE} | {"after-hold"}, set(rules.STATES))
 
     def test_each_label_comment_names_the_next_step_and_who_takes_it(self):
-        """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's (a person's at
-        Theorem, who approves the checks of a pull request that changes a file under .github/, or of one whose screen
-        passed while the environment post held no key of the App: R10 names no one) and whose last line is the marker
-        of Sami, for each state of the variable and each decision of the post job too; each waits-on-author with one
-        whose next step is the author's; no label, with one that names no one at Theorem. The one exception is
-        after-hold, mark's alone, for a later hold that the workflow does not try again: it names Sami's next step in
-        the words of the state screen, with no marker of a state label. No text says that anyone decides or will look
-        at the item."""
+        """b1 and b10: each waits-on-theorem comes with a label comment whose next step is Sami's, also for a pull
+        request that changes a file under .github/ and for one whose screen passed while the environment post held no
+        key of the App (R10, spec v88: Sami is the person who acts), and whose last line is the marker of Sami, for
+        each state of the variable and each decision of the post job too; each waits-on-author with one whose next
+        step is the author's; no label, with one that names no one at Theorem. The one exception is after-hold,
+        mark's alone, for a later hold that the workflow does not try again: it names Sami's next step in the words
+        of the state screen, with no marker of a state label. No text says that anyone decides or will look at the
+        item."""
         variants = [(state, None) for state in rules.STATES] + [
             (state, (value, decision)) for state in ("decide", "person") for value in (None, "README.md")
             for decision in rules.DECISIONS]
@@ -14846,8 +14940,7 @@ class LabelRuleTest(unittest.TestCase):
                 self.assertNotIn(";", body)
                 label = rules.label_of(state)
                 if label == THEOREM_LABEL:
-                    who = "A person at Theorem " if state in ("steering", "no-key") else "Sami "
-                    self.assertTrue(step_line.startswith(f"**Next step:** {who}"), step_line)
+                    self.assertTrue(step_line.startswith("**Next step:** Sami "), step_line)
                     self.assertTrue(body.endswith("\n<!-- waits-on-theorem: Sami -->"), body)
                 elif label == AUTHOR_LABEL:
                     self.assertTrue(step_line.startswith("**Next step:** You "), step_line)
@@ -14960,16 +15053,18 @@ class LabelRuleTest(unittest.TestCase):
                 rules.label_comment("steering", head=head)
 
     def test_the_no_key_state_records_its_head_and_every_later_state_keeps_it(self):
-        """R10 (spec v76): while the environment post holds no key of the OSS Verify App, a held pull request whose
-        screen passed gets waits-on-theorem with a label comment that says that a person at Theorem approves its checks,
-        that the workflow cannot approve them in this repository yet, and that the author needs to do nothing. It says
-        nothing of a file under .github/, and it holds the line <!-- review-no-key <head> -->, which the rescreen pass
-        reads. Each later state keeps that line, beside a steering line, and the line of a newer such head takes its
-        place. The state needs its head."""
+        """R10 (spec v76, and v90 for the next step): while the environment post holds no key of the OSS Verify App, a
+        held pull request whose screen passed gets waits-on-theorem with a label comment whose next step names Sami,
+        who approves its checks on GitHub. The comment says that the workflow cannot approve them in this repository
+        yet, that a person at Theorem with write access approves its runs on GitHub, and that the author needs to do
+        nothing. It says nothing of a file under .github/, and it holds the line <!-- review-no-key <head> -->, which
+        the rescreen pass reads. Each later state keeps that line, beside a steering line, and the line of a newer such
+        head takes its place. The state needs its head."""
         body = rules.label_comment("no-key", head=HEAD)
-        self.assertEqual(body, "<!-- review-label -->\n**Next step:** A person at Theorem approves the checks of this "
-                               "pull request.\n\nThe workflow cannot approve the checks of a pull request in this "
-                               "repository yet. You do not need to do anything.\n\n"
+        self.assertEqual(body, "<!-- review-label -->\n**Next step:** Sami approves the checks of this pull request "
+                               "on GitHub.\n\nThe workflow cannot approve the checks of a pull request in this "
+                               "repository yet. A person at Theorem with write access approves the runs of this pull "
+                               "request on GitHub. You do not need to do anything.\n\n"
                                f"<!-- review-no-key {HEAD} -->\n<!-- waits-on-theorem: Sami -->")
         self.assertNotIn(".github", body)
         later = rules.label_comment("steering", rules.label_comment("person", body), head=OTHER_HEAD).split("\n")
@@ -15364,9 +15459,11 @@ class ImportCheckTest(ReaderRunner):
     request gets the check run, with token A, only when the screen passed it, the review gave no blocking finding and
     no person verdict, no changed path is under .github/, each changed file is a Markdown file while SOUNDNESS_HOLD is
     "true", and, while the variable REPO_PAIRS_IMPORT_PATHS is set, the import's glob rules match each changed path.
-    Each other head that passed the screen with no blocking finding gets waits-on-theorem, with a label comment that
-    names its next step for the state of the variable. The check run's output text and the label comment each hold
-    one marker line of the value that the decision read."""
+    A run on the route screen records it only while no hold of the screen that names the head, and no withdrawal of
+    its import check run, is newer than the time when its own trust job read the item. Each other head that passed
+    the screen with no blocking finding gets waits-on-theorem, with a label comment that names its next step for the
+    state of the variable. The check run's output text and the label comment each hold one marker line of the value
+    that the decision read."""
 
     RUN_TOKEN = "token-of-this-run"
     TOKENS = {MINT_A: "token-A", MINT_B: "token-B"}
@@ -15399,6 +15496,9 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
         self.serve(f"repos/{REPO}/issues/comments/40", {"html_url": f"https://github.com/{REPO}/pull/7#c40"})
+        # The head has no import check run until a test gives it one (judge, with listed): the decision of a run on
+        # the route screen reads them, as the step that withdraws them does.
+        self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": []})
 
     def judge(self, paths, verdict="pass", value=None, trust=None, screen="clean", mint=True, event="workflow_run",
               changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",), outside="true",
@@ -16335,7 +16435,8 @@ class ImportCheckTest(ReaderRunner):
         the others of the commit): the post job reads the check runs of the head, mints no token A and sends no
         PATCH, and its log says that the head has no import check run to withdraw. A later review of the head that
         meets the rule leaves the check run with conclusion success: the post job records a new one, and withdraws
-        none."""
+        none. The withdrawal of run 90 on the head, 90 minutes ago, is older than the start of that review, 40
+        minutes ago, so it stands in the way of no record (OSSV-221's architect, 2026-11-23 18:38Z)."""
         listed, others = self.recorded()
         for case, checks in (("no check run", []), ("only the others", others)):
             with self.subTest(case=case):
@@ -16347,7 +16448,9 @@ class ImportCheckTest(ReaderRunner):
                 self.assertIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
                 self.assertIn(f"#7: a later review has questions for Sami, but {HEAD} has no import check run to "
                               "withdraw.", "\n".join(self.logs[start:]))
-        got = self.judge(["README.md"], value=self.LPS, listed=[listed, *others])
+        aged = self.withdrawn(dict(listed, id=904), "blocking", "90", ago(90))
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, started=ago(40)),
+                         listed=[listed, *others[:2], aged])
         self.assertRecorded(got, self.LPS)
         self.assertEqual(got["withdrawn"], [])
 
@@ -18170,32 +18273,6 @@ class ImportCheckTest(ReaderRunner):
                         for s in job["steps"]]
         self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"total_count": 1, "jobs": [job]})
 
-    def changed_rules(self, old, new, run):
-        """run() with a changed .github/review/rules.py, as a control: main's .github/ in the work directory, which the
-        steps read, is then a copy whose rules.py holds new in the place of old, which rules.py holds once. Its
-        result."""
-        with open(RULES_PY, encoding="utf-8") as f:
-            text = f.read()
-        self.assertEqual(text.count(old), 1, old)
-        root = os.path.join(tempfile.mkdtemp(prefix="changed-", dir=self.dir), ".github")
-        os.mkdir(root)
-        for name in os.listdir(GITHUB_DIR):
-            if name not in ("review", "__pycache__"):
-                os.symlink(os.path.join(GITHUB_DIR, name), os.path.join(root, name))
-        shutil.copytree(os.path.join(GITHUB_DIR, "review"), os.path.join(root, "review"),
-                        ignore=shutil.ignore_patterns("__pycache__"))
-        with open(os.path.join(root, "review", "rules.py"), "w", encoding="utf-8") as f:
-            f.write(text.replace(old, new))
-        link = os.path.join(self.work, ".github")
-        if os.path.lexists(link):
-            os.remove(link)
-        os.symlink(root, link)
-        try:
-            return run()
-        finally:
-            os.remove(link)
-            self.checkout()
-
     def refused_line(self, at, started=None, ended=None):
         """Run 90 gave HEAD of mallory's #7 a blocking finding, and GitHub refused its withdrawal of check run 901,
         which stands: the step OWE of its comment job wrote the line <!-- withdraw-owed <head> blocking 90 -->. A later
@@ -18440,6 +18517,119 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(rules.withdrawal_stands([withdrawn], [earlier, hold], HEAD), "900")
         got = self.judge(["README.md"], value=self.LPS, comments=[earlier, hold], listed=[withdrawn])
         self.assertNotRecorded(got)
+
+    def test_a_screened_run_records_after_a_withdrawal_older_than_the_start_of_its_run(self):
+        """OSSV-221's architect, 2026-11-23 18:38Z: a run on the route screen gives way only to a hold or a
+        withdrawal of its head that is newer than the time when its own trust job read the item. The screened run 100
+        gave HEAD of mallory's #7 a blocking finding 75 minutes ago, and its post job withdrew check run 901 for that
+        verdict 70 minutes ago. Mallory pushed the fix as no new commit, and the rescreen of HEAD that Sami started
+        40 minutes ago passed its screen and its review. It records the check run: its own pass is newer than the
+        withdrawal. The control, whose rules.py compares the withdrawal with the wrong side of that start, records
+        nothing."""
+        listed, _others = self.recorded()
+        withdrawn = self.withdrawn(listed, "blocking", "100", ago(70))
+        blocking = review_of(HEAD, "blocking", at=ago(75), run=100)
+        trust = dict(self.REVIEWED, task="rescreen", started=ago(40))
+        got = self.judge(["README.md"], value=self.LPS, trust=trust, event="workflow_dispatch",
+                         comments=[blocking], listed=[withdrawn])
+        self.assertRecorded(got, self.LPS)
+        got = self.changed_rules("at and at < started", "at and at > started",
+                                 lambda: self.judge(["README.md"], value=self.LPS, trust=trust,
+                                                    event="workflow_dispatch", comments=[blocking],
+                                                    listed=[withdrawn]))
+        self.assertNotRecorded(got, "withdrawn")
+
+    def test_a_screened_run_records_nothing_when_a_hold_of_the_screen_is_newer_than_its_start(self):
+        """OSSV-221's architect, 2026-11-23 18:38Z: the post jobs of #7 share the group post-7, so the post job of
+        the screened CI review of HEAD (run 100), whose trust job read the item 40 minutes ago, can run behind the
+        post job of a newer run. Run 120 held HEAD, and its hold comment posted 10 minutes ago. Run 100 records
+        nothing: its decision is held, as a relabel's is after such a hold, and the step that withdraws the import
+        check runs of HEAD looks for them for that hold. It finds none, so its output withdrawn names the head and
+        nothing is owed. Its label step writes no label comment: the hold is newer than the start of this run, so
+        the labels stay as that hold left them. The control, with the check of the decide step taken out, records
+        the check run."""
+        at, started = ago(10), ago(40)
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": at, "updated_at": at,
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
+        trust = dict(self.REVIEWED, started=started)
+        start = len(self.logs)
+        got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[hold])
+        self.assertNotRecorded(got, "held")
+        self.assertEqual((got["post"]["owed"], got["post"]["withdrawn"], got["labels"], got["comments"]),
+                         ("", HEAD, [], []), self.logs)
+        self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD} at {at}, after "
+                      f"this run read #7 at {started}).", "\n".join(self.logs[start:]))
+        self.assertIn(f"#7: a later screen held {HEAD}, but {HEAD} has no import check run to withdraw.",
+                      "\n".join(self.logs[start:]))
+        self.assertRecorded(self.without_own_record(
+            lambda: self.judge(["README.md"], value=self.LPS, trust=trust, comments=[hold])), self.LPS)
+
+    def test_a_screened_run_records_nothing_when_a_withdrawal_of_its_head_is_newer_than_its_start(self):
+        """OSSV-221's architect, 2026-11-23 18:38Z: run 120 held HEAD of mallory's #7 and withdrew check run 900 for
+        its own screen 10 minutes ago, and GitHub refused its hold comment, so no hold comment names HEAD. The
+        screened CI review of HEAD (run 100) read the item 40 minutes ago, and its post job runs now: the newest
+        import check run of HEAD is a withdrawal that counts from a time after that, and the screened pass of run 60,
+        70 minutes ago, is older than it. The pass of this run counts from the time when it read the item, so the
+        withdrawal stands: the decision is withdrawn, nothing is recorded, and the label comment says that a run of
+        the workflow found a reason to withdraw the check and that no comment gives that reason, with Sami's review
+        of the head by hand as the next step. The control, with the check of the decide step taken out, records the
+        check run."""
+        listed, _others = self.recorded()
+        since, started = ago(10), ago(40)
+        withdrawn = self.withdrawn(dict(listed, id=900), "screen", "120", since)
+        earlier = review_of(HEAD, at=ago(70), run=60)
+        trust = dict(self.REVIEWED, started=started)
+        start = len(self.logs)
+        got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[earlier], listed=[withdrawn])
+        self.assertNotRecorded(got, "withdrawn")
+        self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD}. It counts from {since}, after "
+                      f"this run read #7 at {started}, and no screened pass of {HEAD} is newer than {since}.",
+                      "\n".join(self.logs[start:]))
+        body = self.assertWaits(got, rules.REVIEW_AGAIN, f"{rules.NO_REASON} You do not need to do anything.",
+                                value=self.LPS)
+        self.assertNotIn(rules.PASSED, body)
+        self.assertRecorded(self.without_own_record(
+            lambda: self.judge(["README.md"], value=self.LPS, trust=trust, comments=[earlier],
+                               listed=[withdrawn])), self.LPS)
+
+    def without_own_record(self, run):
+        """run() with the decide step changed, as a control: the step does not read whether a newer run held the head
+        or withdrew its import check run (screened_run). Its result."""
+        decide = step("post", self.DECIDE)
+        script = decide["run"]
+        call = '[ "$TASK" = relabel ] || [ "$screen" != true ] || screened_run\n'
+        self.assertEqual(script.count(call), 1)
+        decide["run"] = script.replace(call, "")
+        try:
+            return run()
+        finally:
+            decide["run"] = script
+
+    def test_a_read_that_fails_leaves_the_own_record_of_a_screened_run_undone(self):
+        """OSSV-221's architect, 2026-11-23 18:38Z: a read of the own record of a run on the route screen that fails
+        fails the decide step, as the other reads of that step do, so the run records nothing. Here the import check
+        runs of HEAD cannot be read, and then GitHub refuses the read of the comments of #7 that rules.py own-record
+        makes; the label step reads those comments with a filter of its own, which still works."""
+        checks = f"repos/{REPO}/commits/{HEAD}/check-runs"
+        comments = f"repos/{REPO}/issues/7/comments"
+        read = ('.[] | select(.user.login == "github-actions[bot]")'
+                " | {user: {login: .user.login}, body, updated_at} | @json")
+        for case, refuse, error in (
+                ("the check runs of the head", lambda: self.refuse(checks, 502, "Bad Gateway"),
+                 f"::error::the import check runs of {HEAD} could not be read."),
+                ("the comments of the item", lambda: self.refuse_field(comments, read),
+                 "::error::the comments of #7 could not be read.")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                refuse()
+                start = len(self.logs)
+                got = self.judge(["README.md"], value=self.LPS)
+                self.assertEqual((got["result"], got["steps"][self.DECIDE]), ("failure", "failure"), self.logs)
+                self.assertNotRecorded(got)
+                self.assertIn(error, "\n".join(self.logs[start:]))
 
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,

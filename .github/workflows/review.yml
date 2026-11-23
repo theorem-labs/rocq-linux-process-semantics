@@ -2900,6 +2900,16 @@ jobs:
       # own. The changed paths come from every page of the files of the pull request at the head, each file's path and
       # the path that it had before a rename, read after the check of the head and before a second check of it. The
       # list stops at 3,000 files: when it does not hold each changed file, no check run is recorded.
+      # A run on the route screen whose review passed the head records its own check run only while that pass is the
+      # newest word on the head (OSSV-221's architect, 2026-11-23 18:38Z). The post jobs of an item share one group,
+      # so this one can run long after its review, behind the post job of a newer run of the same head, and its own
+      # review comment posts only after it. So it reads the comments of the item and the import check runs of the
+      # head against the time when its trust job read the item (STARTED): the decision is held when a hold comment of
+      # the screen that names the head is at or after that time, and withdrawn when the newest import check run of
+      # the head is a withdrawal that stands and that counts from a time at or after it (.github/review/rules.py
+      # own-record). Each of them records nothing, as the same decision of a relabel does. A hold or a withdrawal
+      # older than that time leaves the record: a blocking review, then a fix and a screen that passed the head
+      # again.
       - name: Decide the import check of the head
         id: decide
         if: >-
@@ -2919,6 +2929,9 @@ jobs:
           # The head that the review read, or the head of a relabel, which the trust job read.
           HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
           VERDICT: ${{ needs.review.outputs.verdict }}
+          # The time when the trust job of this run read the item: the bound of the own record of a run on the route
+          # screen (screened_run).
+          STARTED: ${{ needs.trust.outputs.started }}
           # The import's paths, one glob on each line, while the import is live (R12). An empty value is no variable:
           # GitHub gives an empty value for a variable that is not set.
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
@@ -3100,6 +3113,46 @@ jobs:
             fi
             replaced "$earlier" "$state" "$why"
           }
+          # screened_run: for a review or a rescreen on the route screen of an outside author whose review passed the
+          # head, whether a newer run of the head held it or withdrew its import check run while this run ran
+          # (OSSV-221's architect, 2026-11-23 18:38Z). Only such a run records a check run: with any other verdict,
+          # the rules of R12 below give the decision that the label comment needs, and this run withdraws each check
+          # run that stands for that verdict. It reads the comments of the item and the import check runs of the head
+          # (import_checks) against STARTED, the time when the trust job of this run read the item (rules.py
+          # own-record). held: a hold comment of the screen that names the head is at or after that time, so a newer
+          # screen held the head. The decision is held, as for a relabel: the outputs owed and held give the step
+          # that withdraws an import check run its why (write_owed), nothing is recorded, and the label step
+          # leaves the labels to that hold. withdrawn: the newest import check run of the head is a withdrawal that
+          # stands, and it counts from a time at or after that time, so the pass of this run gives way to it. The
+          # decision is withdrawn, as for a relabel: nothing is recorded, and the label comment says that no comment
+          # gives the cause of the withdrawal. Else this decides nothing, and the rules of R12 below decide. A read
+          # that fails fails this step.
+          screened_run() {
+            local found decision what since said
+            [ "$verdict" = pass ] || return 0
+            [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+              || { echo "::error::no start time of this run, so it records no import check."; exit 1; }
+            import_checks
+            found=$(python3 .github/review/rules.py own-record "$NUMBER" "$HEAD" "$STARTED" \
+              "$RUNNER_TEMP/import-checks.jsonl") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            read -r decision what since <<< "$found"
+            if [ "$decision" = held ]; then
+              write_owed screen
+              echo "held=true" >> "$GITHUB_OUTPUT"
+              decided held "a screen held $HEAD at $what, after this run read #$NUMBER at $STARTED"
+            fi
+            if [ "$decision" = withdrawn ]; then
+              said="#$NUMBER: check run $what is the newest import check run of $HEAD."
+              if [ "$since" != - ]; then
+                echo "$said It counts from $since, after this run read #$NUMBER at $STARTED, and no screened pass of" \
+                  "$HEAD is newer than $since."
+              else
+                echo "$said Its summary names no time, so it stands whatever review is newer."
+              fi
+              decided withdrawn "check run $what is a withdrawal that stands"
+            fi
+          }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
@@ -3123,6 +3176,7 @@ jobs:
           [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
           [ "$TASK" != relabel ] || relabeled
           [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
+          [ "$TASK" = relabel ] || [ "$screen" != true ] || screened_run
           # The variable's text, given only when it is set: an empty value is no variable.
           imports=()
           [ -z "$IMPORT_PATHS" ] || imports=("$IMPORT_PATHS")
@@ -3463,10 +3517,12 @@ jobs:
       # file steers the workflows, and an approved run of such a head could misuse the runners. The step reads each path
       # from every page of the files of the pull request at the head: the path of each file, and the path that it had
       # before a rename (.github/review/rules.py steering). It reads them after the runs and before a second check of
-      # the head. For such a head, the output steering names the head, and the comment job records it. A read that
-      # fails fails this step, and so does a list that does not hold each changed file (GitHub lists at most 3,000): no
-      # run is approved. While the environment post holds no key, this step still runs, and the last step of this job
-      # names the head whose held runs it found (no_key).
+      # the head. For such a head, the output steering names the head, and the comment job records it. GitHub lists at
+      # most 3,000 files of a pull request, so a list of 3,000 files or more, and a count of 3,000 or more, can hide
+      # such a file: that head counts as one that changes one, and gets the same output steering. A read that fails
+      # fails this step, and so does a list shorter than a count below 3,000, which is a read that did not give each
+      # changed file: no run is approved. While the environment post holds no key, this step still runs, and the last
+      # step of this job names the head whose held runs it found (no_key).
       - name: The held runs of the screened head
         id: held
         if: >-
@@ -3538,13 +3594,23 @@ jobs:
               "$HEAD or of $sha."
             exit 0
           fi
-          if [ "$steered" = true ]; then
-            echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. The workflow approves no run of $HEAD." \
-              "A person at Theorem approves its runs."
+          # GitHub lists at most 3,000 files of a pull request. So a list of 3,000 files or more, and a count of
+          # 3,000 or more, can hide a file under .github/: such a head counts as one that changes one (R10). A list
+          # shorter than a count below 3,000 is a read that did not give each changed file: the step refuses, and the
+          # rescreen pass tries the approval again.
+          listed=$(grep -c . "$files" || true)
+          if [ "$steered" = true ] || [ "$listed" -ge 3000 ] || [ "$count" -ge 3000 ]; then
+            if [ "$steered" = true ]; then
+              echo "::notice::#$NUMBER changes a file under .github/ at $HEAD. The workflow approves no run of" \
+                "$HEAD. A person at Theorem with write access approves its runs on GitHub."
+            else
+              echo "::notice::#$NUMBER changes $count files at $HEAD, and GitHub lists at most 3,000 of them. The" \
+                "list can hide a file under .github/, so the workflow approves no run of $HEAD. A person at Theorem" \
+                "with write access approves its runs on GitHub."
+            fi
             echo "steering=$HEAD" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          listed=$(grep -c . "$files" || true)
           [ "$listed" = "$count" ] || refuse "GitHub lists $listed of the $count changed files of #$NUMBER."
           echo "runs=$ids" >> "$GITHUB_OUTPUT"
       # Token B: for the approval of the runs that the step before found, only when the screen passed, the author-kind
