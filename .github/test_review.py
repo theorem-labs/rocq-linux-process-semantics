@@ -16831,6 +16831,36 @@ class ImportCheckTest(ReaderRunner):
                     edited = self.owe(got, relabel, [screened, label]) or []
                     label = dict(label, body=edited[-1]) if edited else label
 
+    def test_a_relabel_records_nothing_after_a_withdrawal_whose_comment_job_did_not_reach_its_owed_step(self):
+        """OSSV-221's architect, 2026-11-22 13:38Z, 14:21Z and 14:43Z (write ahead): the screened CI run of mallory's #7
+        recorded check run 901 on HEAD, and its screened pass (30) is #7's review comment. A screened rescreen of HEAD
+        gives a blocking finding: its post job withdraws 901 and ends with success (withdrawn names HEAD). Its comment
+        job then does not reach the step "Record a withdrawal that the post job owes": its checkout of main's .github/
+        fails, or the run is cancelled, so that job is skipped (its if holds !cancelled()). So no line and no review of
+        the blocking verdict is on #7. Relabels of HEAD, as the rescreen pass starts one when REPO_PAIRS_IMPORT_PATHS
+        changed (held.sh due_variable), read the screened pass as HEAD's newest review: none may record a check run on
+        HEAD, whose newest verdict asks for a change."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(1))
+        record = ["--method", "POST", f"repos/{REPO}/check-runs"]
+        self.serve(f"repos/{REPO}/check-runs/901", {"id": 901, "conclusion": "neutral"})
+        got = self.judge(["README.md"], "blocking", self.LPS, trust=rescreen, event="workflow_dispatch",
+                         comments=[screened, old], listed=[listed], named=HEAD)
+        self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]), ("success", "", HEAD),
+                         self.logs)
+        label = old
+        for value in (self.LPS + "\nCHANGES.md", self.LPS + "\nNEWS.md"):
+            relabel = dict(self.RELABEL, started=ago(-1))
+            got = self.judge(["README.md"], value=value, trust=relabel, event="workflow_dispatch",
+                             comments=[screened, label], listed=[dict(listed, conclusion="neutral")])
+            self.assertEqual([c for c in got["writes"] if c[:3] == record], [], self.logs)
+            self.assertNotEqual(got["post"].get("recorded"), "true", self.logs)
+            edited = self.owe(got, relabel, [screened, label]) or []
+            label = dict(label, body=edited[-1]) if edited else label
+
     def test_a_relabel_records_nothing_after_a_withdrawal_whose_hold_comment_did_not_post(self):
         """OSSV-221's architect, 2026-11-22 13:38Z, for the hold job: the screened CI run of mallory's #7 recorded check
         run 901 on HEAD, and its screened pass (30) is #7's review comment. A rescreen of HEAD then has a screen that
