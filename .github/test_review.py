@@ -18198,6 +18198,27 @@ class ImportCheckTest(ReaderRunner):
                     self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. Its summary names no "
                                   "time, so it stands whatever review is newer.\n", "\n".join(self.logs[start:]))
 
+    def test_a_screened_review_records_nothing_after_a_newer_runs_hold_and_withdrawal_of_its_head(self):
+        """OSSV-221's architect, 2026-11-23 18:28Z (the tester's audit of round 19): a screened review's own record
+        must not write a success after a newer run's hold and withdrawal. The screened CI review of mallory's #7 at HEAD
+        (run 100) passed its screen and its review gave no blocking finding, but its post job ran late: post jobs share
+        post-7, so it waited behind the post job of run 120, a newer rescreen of HEAD whose screen held it. Run 120's
+        hold comment, which names HEAD and run 120, posted 10 minutes ago, and its post job withdrew check run 900
+        (run 60's record) for its own screen at that time. Run 100's own review comment has not posted yet (its comment
+        job runs after its post job). Run 100's post job records nothing: a newer hold of the screen of HEAD stands, and
+        so does run 120's withdrawal, which no screened pass that posted after it gives way to. At 8407477d it records
+        repo-pairs/import-approved with conclusion success on HEAD (the route screen's own record reads neither)."""
+        listed, _others = self.recorded()
+        withdrawn = self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(10), "updated_at": ago(10),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
+        earlier = review_of(HEAD, at=ago(70), run=60)
+        self.assertEqual(rules.withdrawal_stands([withdrawn], [earlier, hold], HEAD), "900")
+        got = self.judge(["README.md"], value=self.LPS, comments=[earlier, hold], listed=[withdrawn])
+        self.assertNotRecorded(got)
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head newer than the hold or the
