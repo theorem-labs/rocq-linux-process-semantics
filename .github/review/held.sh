@@ -238,13 +238,14 @@ no_key_of() {
 # and did not finish it, or no comment gives that reason yet), while a label comment holds its marker line
 # <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
 # the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
-# the comment of run <run> that gives <why>, or a review of <head> newer than the hold or the withdrawal of run <run>
-# (rules.py owed). Else blocking or person, of the newest review comment of <head> newer than the newest screened one
-# (of any, when none is screened) that gives one, or of the newest screened review comment when it does not pass. Else
-# -: then a relabel of <head> withdraws nothing. It records an import check run only when the newest review comment of
-# <head> holds the marker <!-- review-screened <head> --> and passes, with no such line, and the newest import check run
-# of <head> is no withdrawal that blocks it: one whose summary names no source run, or whose source is newer than that
-# review comment (rules.py verdict, screened, and withdrawal_stands).
+# the comment of run <run> that gives <why>, or a review of <head> newer than the time of the line: the hold or the
+# withdrawal of run <run>, or else when the step of run <run> that wrote the line ended (rules.py owed, line_reason).
+# Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none
+# is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel
+# of <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
+# marker <!-- review-screened <head> --> and passes, with no such line, and the newest import check run of <head> is no
+# withdrawal that blocks it: one whose summary names no time, or whose time is newer than that review comment
+# (rules.py verdict, screened, and withdrawal_stands).
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")

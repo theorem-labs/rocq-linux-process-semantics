@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2860,8 +2861,9 @@ class HoldingsTest(unittest.TestCase):
 
     def test_the_jobs_that_post_hold_no_model(self):
         for name, permissions in (
-                # contents: read checks out main's .github/, for .github/review/rules.py.
-                ("comment", {"contents": "read", "issues": "write", "pull-requests": "write"}),
+                # contents: read checks out main's .github/, for .github/review/rules.py; actions: read reads the jobs
+                # of the run that a withdraw-owed line names, which give the time of the line (rules.py line_written).
+                ("comment", {"contents": "read", "issues": "write", "pull-requests": "write", "actions": "read"}),
                 # The hold job reads this workflow's runs and jobs too: was its review stopped at the cap, or cancelled
                 # by a newer run of the item? checks: read gives the notices of a newer CI run's trust job, which name
                 # its pull request when more than one into main has its head.
@@ -3156,8 +3158,8 @@ class HoldTest(Holding):
         self.assertTrue(body.startswith("<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held "
                                         "this pull request"), body)
         self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
-        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
-                      "neither its state label nor its label comment.", out)
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
+                      "neither its state label nor the text of its label comment.", out)
 
     # A hold that is tried again says first from when, and which events start the run that takes it again (there is
     # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why. The events
@@ -10103,10 +10105,7 @@ class Scheduled(Held):
         os.makedirs(os.path.dirname(path))
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"{held_sh()}\n{changed}\n")
-        with open(TRUSTED_SH, encoding="utf-8") as f:
-            trusted = f.read()
-        with open(os.path.join(root, ".github", "review", "trusted.sh"), "w", encoding="utf-8") as f:
-            f.write(trusted)
+        shutil.copyfile(TRUSTED_SH, os.path.join(root, ".github", "review", "trusted.sh"))
         before = run()
         workspace = self.env["GITHUB_WORKSPACE"]
         self.env["GITHUB_WORKSPACE"] = root
@@ -14414,8 +14413,8 @@ class ConflictTest(Runner):
         bodies = self.comment(got["head"], [old], labels=("review-held", THEOREM_LABEL))
         self.assertEqual(len(bodies), 1, gh_calls(self.api))
         self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
-        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
-                      "neither its state label nor its label comment.", self.out)
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
+                      "neither its state label nor the text of its label comment.", self.out)
 
     # The trust job's outputs of a conflict run of mallory's #7: an outside author, and no screen.
     MALLORY = {"task": "conflict", "route": "review", "outsider": "", "kind": "outsider", "outside": "true",
@@ -15018,8 +15017,8 @@ class LabelTest(Runner):
                                                                  rules.label_comment("screen", old["body"]))])
                     continue
                 self.assertEqual(self.calls(), [])
-                self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so the workflow "
-                              "changes neither its state label nor its label comment.", out)
+                self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step "
+                              "changes neither its state label nor the text of its label comment.", out)
 
 
 class GlobTest(unittest.TestCase):
@@ -15942,9 +15941,9 @@ class ImportCheckTest(ReaderRunner):
     @staticmethod
     def withdrawn(check, why, run, at, id_=None):
         """check as GitHub lists it once run withdrew it at the time at for its own verdict or screen why: the request
-        of rules.withdrawal, whose summary names run as its source, at at (OSSV-221's architect, 2026-11-23 03:06Z).
-        With id_, as the check run of that id."""
-        return {**check, **rules.withdrawal("7", HEAD, why, check["output"]["text"], run, run, at),
+        of rules.withdrawal for its own reason, whose summary names run and at (OSSV-221's architect, 2026-11-23
+        03:06Z). With id_, as the check run of that id."""
+        return {**check, **rules.withdrawal("7", HEAD, why, check["output"]["text"], run, "own", "", at),
                 "completed_at": at, **({} if id_ is None else {"id": id_})}
 
     @staticmethod
@@ -15962,12 +15961,12 @@ class ImportCheckTest(ReaderRunner):
         the check runs of HEAD with its own token, and then updates the check run of #7, with token A, to the
         conclusion neutral. The request's output title names #7 and says why, and its output text is the check run's
         own, the marker line of the value that it recorded. Its summary also names the run that withdraws it (run 100),
-        HEAD, the reason and its source, the run whose verdict gave it with the time from which the withdrawal holds,
-        and its completed_at is the time of the withdrawal: a withdrawal is itself the record of its reason (OSSV-221's
-        architect, 2026-11-23 01:47Z and 03:06Z). Each source is run 100 at that time: its own verdict or screen, and
-        for the relabel a review comment that names no run. The request names no name and no external_id, so both
-        stay. The other check runs of the commit stay as they are. The logs of both steps name the import check run,
-        and the first says why in words."""
+        HEAD, the reason and the time from which the withdrawal counts, and its completed_at is the time of the
+        withdrawal: a withdrawal is itself the record of its reason (OSSV-221's architect, 2026-11-23 01:47Z and
+        03:06Z). That time is the time of the withdrawal: for its own verdict or screen, and for the relabel, whose
+        review comment names no run, so that the workflow knows no time of that earlier run (the fresh reader of round
+        19, F1 and S1). The request names no name and no external_id, so both stay. The other check runs of the commit
+        stay as they are. The logs of both steps name the import check run, and the first says why in words."""
         listed, others = self.recorded()
         person = ("because a later review has questions for Sami",
                   "A later automated review of this head commit has questions for Sami.",
@@ -15992,16 +15991,19 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(got["steps"][MINT_A], "success")
                 (token, endpoint, body), = got["withdrawn"]
                 self.assertEqual((token, endpoint), ("token-A", f"repos/{REPO}/check-runs/901"))
-                # The time of the withdrawal, in the form in which GitHub gives a time, which is also the time of its
-                # source, this run (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z).
+                # The time of the withdrawal, in the form in which GitHub gives a time, which is also the time from
+                # which it counts (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z).
                 at = body.pop("completed_at", "")
                 self.assertTrue(rules.TIME.fullmatch(at), at)
+                ended = (f"at {at}, for its own reason `{reason}`." if trust is not self.RELABEL else
+                         f"at {at}, for the reason `{reason}` of an earlier run. The workflow knows no time of that "
+                         "run, so the withdrawal counts from this time.")
                 self.assertEqual(body, {"status": "completed", "conclusion": "neutral", "output": {
                     "title": f"Not approved for the import: pull request #7 at {HEAD[:12]}, {why}",
                     "summary": f"{said} So this check is no longer an approval for the import. Run 100 of the review "
-                               f"workflow withdrew it from head commit {HEAD}, for the verdict `{reason}` of run 100 "
-                               f"at {at}.",
+                               f"workflow withdrew it from head commit {HEAD} {ended}",
                     "text": listed["output"]["text"]}})
+                self.assertEqual(rules.withdrawn_by(dict(body, conclusion="neutral"), HEAD), (reason, "100", at))
                 self.assertMarker(body["output"]["text"], self.LPS)
                 self.assertEqual(got["writes"], [["--method", "PATCH", f"repos/{REPO}/check-runs/901", "--input",
                                                   os.path.join(self.temp, "withdraw-901.json"), "--jq",
@@ -16302,8 +16304,8 @@ class ImportCheckTest(ReaderRunner):
                               trust.get("outside")), (0, task, "review", "", "unknown", "false"), out)
             runs.append({k: trust[k] for k in keys})
         old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("person")}
-        notice = ("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes "
-                  "neither its state label nor its label comment.")
+        notice = ("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
+                  "neither its state label nor the text of its label comment.")
         for trust, verdict, comments in ((runs[0], "pass", [old]), (runs[0], "blocking", [old]),
                                          (runs[0], "person", [old]), (runs[1], "", [review_of(HEAD, "person"), old])):
             with self.subTest(task=trust["task"], verdict=verdict):
@@ -16697,12 +16699,13 @@ class ImportCheckTest(ReaderRunner):
                                  "An automated review of this head commit had questions for Sami."),
                                 ("screen", "an automated screen held this head commit",
                                  "An automated screen held this head commit.")):
-            output = rules.withdrawal("7", HEAD, why, "", "100", "80", "2026-11-23T01:00:00Z", owed=True)["output"]
+            output = rules.withdrawal("7", HEAD, why, "", "100", "owed", "80", "2026-11-23T01:00:00Z")["output"]
             self.assertEqual((output["title"], output["summary"]),
                              (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because {end}",
                               f"{first} So this check is no longer an approval for the import. Run 100 of the review "
-                              f"workflow withdrew it from head commit {HEAD}, for the verdict `{why}` of run 80 at "
-                              "2026-11-23T01:00:00Z."))
+                              f"workflow withdrew it from head commit {HEAD}, for the reason `{why}` of run 80. The "
+                              "withdrawal counts from 2026-11-23T01:00:00Z, when run 80 held this head commit, "
+                              "withdrew a check of it, or wrote that it owes a withdrawal."))
 
     def test_the_line_of_a_refused_withdrawal_is_recorded_also_when_the_review_could_not_be_posted(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z): a refused withdrawal leaves the line
@@ -17560,9 +17563,9 @@ class ImportCheckTest(ReaderRunner):
                                          else [], self.logs)
                         if not refused:
                             self.assertIn(f"#7: its label comment keeps {line}. No review comment of run 100 gives "
-                                          f"{HEAD} the verdict {verdict}, and no screened review comment of {HEAD} can "
-                                          "be newer: no hold or withdrawal of run 100 gives a time.",
-                                          "\n".join(self.logs))
+                                          f"{HEAD} the verdict {verdict}. No hold, withdrawal or step of run 100 gives "
+                                          f"a time for the line. So no review comment of {HEAD} from another run takes "
+                                          "it out.", "\n".join(self.logs))
                         self.assertEqual(state_labels(self.api), [])
                         self.assertNotIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"],
                                          writes(self.api))
@@ -17654,8 +17657,8 @@ class ImportCheckTest(ReaderRunner):
                       "withdraw.", "\n".join(self.logs))
         self.assertEqual(self.owe(got, relabel, [passed, marked]), [])
         self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 100 -->. No review comment of "
-                      f"run 100 gives {HEAD} the verdict blocking, and no screened review comment of {HEAD} can be "
-                      "newer: no hold or withdrawal of run 100 gives a time.", self.logs[-1])
+                      f"run 100 gives {HEAD} the verdict blocking. No hold, withdrawal or step of run 100 gives a time "
+                      f"for the line. So no review comment of {HEAD} from another run takes it out.", self.logs[-1])
 
     def test_a_post_job_that_fails_before_its_withdrawal_owes_the_withdrawal_of_its_own_verdict(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z), and the post job's output owed (review.yml): "<head>
@@ -17734,7 +17737,9 @@ class ImportCheckTest(ReaderRunner):
                                   "screen held this head commit",
                                   "An automated screen held this head commit. So this check is no longer an approval "
                                   f"for the import. Run 100 of the review workflow withdrew it from head commit "
-                                  f"{HEAD}, for the verdict `screen` of run 90 at {at90}."))
+                                  f"{HEAD}, for the reason `screen` of run 90. The withdrawal counts from {at90}, when "
+                                  "run 90 held this head commit, withdrew a check of it, or wrote that it owes a "
+                                  "withdrawal."))
                 logs = "\n".join(self.logs[start:])
                 self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
                               f"automated screen held {HEAD}.", logs)
@@ -17749,8 +17754,8 @@ class ImportCheckTest(ReaderRunner):
                 else:
                     self.assertEqual(edited, [])
                     self.assertIn(f"#7: its label comment keeps {line}. No hold comment of the screen of run 90 names "
-                                  f"{HEAD}, and no screened review comment of {HEAD} is newer than the hold or the "
-                                  f"withdrawal of run 90, at {at90}.", self.logs[-1])
+                                  f"{HEAD}. No screened review comment of {HEAD} is newer than {at90}, the time of the "
+                                  "hold or the withdrawal of run 90.", self.logs[-1])
                     cleared = label["body"]
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[*held, screened, dict(label, body=cleared)])
@@ -17801,8 +17806,8 @@ class ImportCheckTest(ReaderRunner):
                 else:
                     self.assertEqual(edited, [])
                     self.assertIn(f"#7: its label comment keeps {line}. No review comment of run 80 gives {HEAD} the "
-                                  f"verdict blocking, and no screened review comment of {HEAD} is newer than the hold "
-                                  f"or the withdrawal of run 80, at {at80}.", self.logs[-1])
+                                  f"verdict blocking. No screened review comment of {HEAD} is newer than {at80}, the "
+                                  "time of the hold or the withdrawal of run 80.", self.logs[-1])
                     cleared = label["body"]
                 # Relabel 2: a pass with no line has no reason to withdraw, and records only for an outside author.
                 applied = self.applied(listed, got)
@@ -17846,9 +17851,9 @@ class ImportCheckTest(ReaderRunner):
         mallory's #7 40 minutes ago for its own blocking finding, and its line stands. A screened pass of run 70 (it
         started before run 80) that posted 20 minutes ago takes the line out in relabel 1, and relabel 2 records. A
         screened pass of run 90 that posted 60 minutes ago, before the withdrawal, takes no line out, and relabel 2
-        records nothing (the decision withdrawn). A withdrawal whose summary names no source gives no time: no review
-        is newer, and the line stays. A success that a run recorded after the withdrawal is the newest check run, and
-        no withdrawal stands then."""
+        records nothing (the decision withdrawn). A withdrawal whose summary names no time gives no time, and the jobs
+        of run 80 give none either (none is served here): no review is newer, and the line stays. A success that a run
+        recorded after the withdrawal is the newest check run, and no withdrawal stands then."""
         listed, _others = self.recorded()
         at80 = ago(40)
         withdrawn = self.withdrawn(listed, "blocking", "80", at80)
@@ -17887,6 +17892,147 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((rules.withdrawal_stands([withdrawn, newer], passed, HEAD),
                           rules.withdrawal_stands([withdrawn], passed, HEAD)), ("", "901"))
 
+    def line_jobs(self, run, started, ended):
+        """Serves the jobs of run as GitHub's Actions API lists them (actions/runs/<run>/jobs): its comment job, whose
+        steps are the workflow's own, each of which ran from started to ended, in GitHub's form of the time of a step,
+        with a part of a second. Each step of rules.LINE_STEPS is a step of its job in the workflow."""
+        for job, names in rules.LINE_STEPS.items():
+            for name in names:
+                step(job, name)
+        job = dict(attempt_job("comment"), run_id=int(run), run_attempt=1)
+        job["steps"] = [dict(s, started_at=f"{started[:-1]}.000Z", completed_at=f"{ended[:-1]}.000Z")
+                        for s in job["steps"]]
+        self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"total_count": 1, "jobs": [job]})
+
+    def changed_rules(self, old, new, run):
+        """run() with a changed .github/review/rules.py, as a control: main's .github/ in the work directory, which the
+        steps read, is then a copy whose rules.py holds new in the place of old, which rules.py holds once. Its
+        result."""
+        with open(RULES_PY, encoding="utf-8") as f:
+            text = f.read()
+        self.assertEqual(text.count(old), 1, old)
+        root = os.path.join(tempfile.mkdtemp(prefix="changed-", dir=self.dir), ".github")
+        os.mkdir(root)
+        for name in os.listdir(GITHUB_DIR):
+            if name not in ("review", "__pycache__"):
+                os.symlink(os.path.join(GITHUB_DIR, name), os.path.join(root, name))
+        shutil.copytree(os.path.join(GITHUB_DIR, "review"), os.path.join(root, "review"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        with open(os.path.join(root, "review", "rules.py"), "w", encoding="utf-8") as f:
+            f.write(text.replace(old, new))
+        link = os.path.join(self.work, ".github")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(root, link)
+        try:
+            return run()
+        finally:
+            os.remove(link)
+            self.checkout()
+
+    def refused_line(self, at, started=None, ended=None):
+        """Run 90 gave HEAD of mallory's #7 a blocking finding, and GitHub refused its withdrawal of check run 901,
+        which stands: the step OWE of its comment job wrote the line <!-- withdraw-owed <head> blocking 90 -->. A later
+        relabel wrote the label comment again 5 minutes ago. The screened pass of run 110 then replaced the review
+        comment of run 90 in place at the time at, so no comment of run 90 gives the reason, and no hold or withdrawal
+        of run 90 gives a time. The comment job of run 90 ran from started to ended (line_jobs), or its jobs cannot be
+        read when ended is None. Relabel 1 (run 100) runs (judge), then the step OWE of its comment job (owe). What
+        each gave, with the label comment, the pass and 901 as they were before relabel 1."""
+        listed, _others = self.recorded()
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(5),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        label = dict(old, body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 90 -->"))
+        passed = review_of(HEAD, at=at, run=110)
+        if ended is None:
+            self.refuse(f"repos/{REPO}/actions/runs/90/jobs", 502, "Bad Gateway")
+        else:
+            self.line_jobs("90", started, ended)
+        relabel = dict(self.RELABEL, started=ago(-1))
+        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                         comments=[passed, label], listed=[listed])
+        self.assertEqual((got["result"], got["post"]["withdrawn"], got["checks"]), ("success", HEAD, []), self.logs)
+        return got, self.owe(got, relabel, [passed, label]), label, passed, listed
+
+    def test_a_line_whose_run_left_no_hold_or_withdrawal_takes_its_time_from_the_step_that_wrote_it(self):
+        """OSSV-221's architect, 2026-11-23 04:39Z (the design point of the fresh reader of round 19): a line whose run
+        left no hold and no withdrawal record takes its time from the step of its own run that wrote it, its
+        completed_at as the jobs of that run give it. The comment job of run 90 ended 45 minutes ago, and the screened
+        pass of run 110 posted 30 minutes ago (refused_line). Relabel 1 reads that time: its decision is screened, it
+        withdraws 901 for the line, from run 90 at that time, and the step OWE of its comment job takes the line out.
+        Relabel 2 then records. The updated_at of the label comment, 5 minutes ago, is no time of the line: each
+        relabel writes the label comment again. A time with a part of a second rounds up, as a later time fails closed.
+        The control: rules.py with no time from the jobs, as before this rule. Then relabel 1's decision is withdrawn
+        and the line stays, so that each relabel withdraws again, also after a screened review by hand (the loop)."""
+        ended = ago(45)
+        got, edited, label, passed, listed = self.refused_line(ago(30), ago(46), ended)
+        self.assertEqual(got["post"]["decision"], "screened", self.logs)
+        (_token, endpoint, request), = got["withdrawn"]
+        self.assertEqual((endpoint, request["output"]["summary"]),
+                         (f"repos/{REPO}/check-runs/901",
+                          "An automated review of this head commit asked for a change. So this check is no longer an "
+                          "approval for the import. Run 100 of the review workflow withdrew it from head commit "
+                          f"{HEAD}, for the reason `blocking` of run 90. The withdrawal counts from {ended}, when run "
+                          "90 held this head commit, withdrew a check of it, or wrote that it owes a withdrawal."))
+        (cleared,) = edited
+        self.assertNotIn(f"<!-- withdraw-owed {HEAD} blocking 90 -->", cleared.split("\n"))
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                         event="workflow_dispatch", comments=[passed, dict(label, body=cleared)],
+                         listed=[self.applied(listed, got)])
+        self.assertRecorded(got, self.LPS)
+        self.assertEqual(rules.github_time("2026-11-23T01:59:59.250-01:00"), "2026-11-23T03:00:00Z")
+        got, edited, *_ = self.changed_rules("def line_written(run):\n", 'def line_written(run):\n    return ""\n',
+                                             lambda: self.refused_line(ago(30), ago(46), ended))
+        self.assertEqual((got["post"]["decision"], edited), ("withdrawn", []), self.logs)
+
+    def test_a_review_that_posted_before_the_step_that_wrote_the_line_ended_leaves_the_line(self):
+        """OSSV-221's architect, 2026-11-23 04:39Z: the time of the line from the jobs of its run is when the step that
+        wrote it ended, at or after the write, so that it fails closed. The comment job of run 90 ran from 55 to 45
+        minutes ago, and the screened pass of run 110 posted 50 minutes ago, before that end (refused_line). Relabel 1
+        withdraws 901 for the line, from run 90 at that end, and its decision is withdrawn. The step OWE of its comment
+        job keeps the line and says why, and relabel 2 records nothing. The control: rules.py that reads when that step
+        started. Then relabel 1's decision is screened, and the line goes."""
+        ended = ago(45)
+        got, edited, label, passed, listed = self.refused_line(ago(50), ago(55), ended)
+        self.assertEqual((got["post"]["decision"], edited), ("withdrawn", []), self.logs)
+        (_token, _endpoint, request), = got["withdrawn"]
+        self.assertEqual(rules.withdrawn_by(dict(request, conclusion="neutral"), HEAD), ("blocking", "90", ended))
+        self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 90 -->. No review comment of "
+                      f"run 90 gives {HEAD} the verdict blocking. No screened review comment of {HEAD} is newer than "
+                      f"{ended}, when the last step of run 90 that can write such a line ended.", self.logs[-1])
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                         event="workflow_dispatch", comments=[passed, label], listed=[self.applied(listed, got)])
+        self.assertNotRecorded(got, "withdrawn")
+        got, edited, *_ = self.changed_rules('github_time(s.get("completed_at"))', 'github_time(s.get("started_at"))',
+                                             lambda: self.refused_line(ago(50), ago(55), ended))
+        self.assertEqual(got["post"]["decision"], "screened", self.logs)
+        self.assertEqual(len(edited), 1, self.logs)
+
+    def test_a_line_whose_run_left_no_hold_or_withdrawal_and_whose_jobs_cannot_be_read_stays(self):
+        """OSSV-221's architect, 2026-11-23 04:39Z: a run whose jobs cannot be read gives its line no time, and the
+        line stays. GitHub refuses the jobs of run 90, and the screened pass of run 110 posted 30 minutes ago
+        (refused_line). Relabel 1 withdraws 901 for the line at the time now, as the workflow knows no time of run 90,
+        and its summary says so (the fresh reader of round 19, F1). Its decision is withdrawn, and the step OWE of its
+        comment job keeps the line and says why. The control: rules.py that gives a line whose jobs cannot be read an
+        early time. Then relabel 1's decision is screened, and the line goes."""
+        got, edited, *_ = self.refused_line(ago(30))
+        self.assertEqual((got["post"]["decision"], edited), ("withdrawn", []), self.logs)
+        (_token, _endpoint, request), = got["withdrawn"]
+        self.assertEqual(request["output"]["summary"],
+                         "An automated review of this head commit asked for a change. So this check is no longer an "
+                         f"approval for the import. Run 100 of the review workflow withdrew it from head commit {HEAD} "
+                         f"at {request['completed_at']}, for the reason `blocking` of an earlier run. The workflow "
+                         "knows no time of that run, so the withdrawal counts from this time.")
+        self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 90 -->. No review comment of "
+                      f"run 90 gives {HEAD} the verdict blocking. No hold, withdrawal or step of run 90 gives a time "
+                      f"for the line. So no review comment of {HEAD} from another run takes it out.", self.logs[-1])
+        self.assertIn("The jobs of run 90 could not be read, so they give its withdraw-owed line no time: gh: Bad "
+                      "Gateway (HTTP 502)", self.logs[-1])
+        got, edited, *_ = self.changed_rules('        return ""\n    times = []\n',
+                                             '        return "2000-01-01T00:00:00Z"\n    times = []\n',
+                                             lambda: self.refused_line(ago(30)))
+        self.assertEqual(got["post"]["decision"], "screened", self.logs)
+        self.assertEqual(len(edited), 1, self.logs)
+
     def test_a_relabels_withdrawal_for_an_older_reason_holds_from_its_source_and_the_next_relabel_records(self):
         """OSSV-221's architect, 2026-11-23 03:06Z, case (a): run 80 (R1) gave HEAD of mallory's #7 a blocking finding:
         it withdrew check run 900 60 minutes ago, its line stands, and its review comment never posted. The screened CI
@@ -17921,10 +18067,10 @@ class ImportCheckTest(ReaderRunner):
     def test_a_runs_own_withdrawal_blocks_each_relabel_until_a_screened_pass_newer_than_it_stands(self):
         """OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z, case (b): a screened rescreen of HEAD of mallory's #7
         gives a blocking finding or the verdict person, or its screen holds HEAD. Its post job withdraws 901 for that
-        own reason, and the summary names its run, 100, as the source, at the time of the withdrawal. Its comment job
-        or hold job never posts. A relabel then reads the older screened pass (30) as the newest review: it records
-        nothing, and its decision is withdrawn. Once a screened pass posts after that withdrawal, the next relabel
-        records."""
+        own reason, and the summary names its run, 100, and the time of the withdrawal. Its comment job or hold job
+        never posts. A relabel then reads the older screened pass (30) as the newest review: it records nothing, its
+        decision is withdrawn, and its log names the check run and that time (the fresh reader of round 19, M2). Once a
+        screened pass posts after that withdrawal, the next relabel records."""
         listed, _others = self.recorded()
         screened = review_of(HEAD, at=ago(120))
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
@@ -17939,19 +18085,26 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((got["result"], got["post"]["withdrawn"]), ("success", HEAD), self.logs)
                 withdrawn = self.applied(listed, got)
                 self.assertEqual(rules.withdrawn_by(withdrawn, HEAD), (why, "100", withdrawn["completed_at"]))
+                start = len(self.logs)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[screened, old], listed=[withdrawn])
                 self.assertNotRecorded(got, "withdrawn")
+                logs = "\n".join(self.logs[start:])
+                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. No screened pass of {HEAD} "
+                              f"is newer than {withdrawn['completed_at']}, the time that its summary names.\n", logs)
+                self.assertIn(f"#7 at {HEAD}: the decision on the import check is withdrawn (check run 901 is a "
+                              "withdrawal that stands).\n", logs)
                 newer = review_of(HEAD, at=ago(-1), id_=31)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[screened, newer, old], listed=[withdrawn])
                 self.assertRecorded(got, self.LPS)
 
     def test_a_withdrawal_whose_summary_names_no_source_blocks_each_relabel(self):
-        """OSSV-221's architect, 2026-11-23 03:06Z, case (c): a neutral import check run whose summary names no source
-        run (one that a run withdrew before this rule) blocks: a relabel of mallory's #7 records nothing over it, also
-        below a screened pass newer than each time, and its decision is withdrawn. The same check run with a summary
-        that names its source gives way to that pass, and the relabel records."""
+        """OSSV-221's architect, 2026-11-23 03:06Z, case (c): a neutral import check run whose summary names no time
+        (one that a run withdrew before this rule) blocks: a relabel of mallory's #7 records nothing over it, also below
+        a screened pass newer than each time, its decision is withdrawn, and its log says that the summary names no time
+        (the fresh reader of round 19, M2). The same check run with a summary that names a time gives way to that pass,
+        and the relabel records."""
         listed, _others = self.recorded()
         newer = review_of(HEAD, at=ago(-1))
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
@@ -17960,12 +18113,15 @@ class ImportCheckTest(ReaderRunner):
         for case, check, records in (("no source", dict(listed, conclusion="neutral", completed_at=ago(60)), False),
                                      ("a source", self.withdrawn(listed, "blocking", "80", ago(60)), True)):
             with self.subTest(case=case):
+                start = len(self.logs)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[newer, old], listed=[check])
                 if records:
                     self.assertRecorded(got, self.LPS)
                 else:
                     self.assertNotRecorded(got, "withdrawn")
+                    self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. Its summary names no "
+                                  "time, so it stands whatever review is newer.\n", "\n".join(self.logs[start:]))
 
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
@@ -18068,8 +18224,8 @@ class ImportCheckTest(ReaderRunner):
                 if refused:
                     self.assertIn(line, label["body"].split("\n"))
                     self.assertIn(f"#7: its label comment keeps {line}. No hold comment of the screen of run 100 names "
-                                  f"{HEAD}, and no screened review comment of {HEAD} can be newer: no hold or "
-                                  "withdrawal of run 100 gives a time.", self.logs[-1])
+                                  f"{HEAD}. No hold, withdrawal or step of run 100 gives a time for the line. So no "
+                                  f"review comment of {HEAD} from another run takes it out.", self.logs[-1])
                 else:
                     self.assertEqual(got["post"]["decision"], "held", self.logs)
 
@@ -18463,8 +18619,8 @@ class KindTableTest(Scheduled, ReaderRunner):
 
     AUTHORS = {"writer": "alice", "outsider": "mallory", "unknown": "carol"}
     UNCHANGED = "unchanged"
-    NOTICE = ("::notice::#7: GitHub did not say whether its author has write access, so the workflow changes neither "
-              "its state label nor its label comment.")
+    NOTICE = ("::notice::#7: GitHub did not say whether its author has write access, so this step changes neither "
+              "its state label nor the text of its label comment.")
     # The label of each state that a cell gives, as the approved table names it (None: no state label).
     LABEL_OF = {"reviewed": None, "import": None, "working": None, "decide": THEOREM_LABEL, "person": THEOREM_LABEL,
                 "will-fix": THEOREM_LABEL, "refused-answer": THEOREM_LABEL, "draft": THEOREM_LABEL,
@@ -18887,7 +19043,8 @@ class KindTableTest(Scheduled, ReaderRunner):
         2026-11-22 14:21Z): the step after that comment takes the line out again once the comment of run 100 stands. A
         relabel withdraws for comments that are there already. The label comment of an author whose write access GitHub
         did not give gets that line too, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23
-        01:47Z), and stays as it is else: no line goes out for such an author."""
+        01:47Z), and stays as it is else: no line goes out for such an author, and the step that would take it out says
+        so (the fresh reader of round 19, M1)."""
         log = got["log"]
         self.assertEqual(state_labels(self.api), self.moves(kind, w["state"]), log)
         body = None
@@ -18904,6 +19061,9 @@ class KindTableTest(Scheduled, ReaderRunner):
                          ahead + ([] if body is None else [("PATCH", f"repos/{REPO}/issues/comments/40", body)]), log)
         if w["state"] == self.UNCHANGED:
             self.assertIn(self.NOTICE, log)
+            if "W" in w["app"]:
+                self.assertIn(f"::notice::#7: GitHub did not say whether its author has write access, so this step "
+                              f"takes no withdraw-owed line of {HEAD} out of its label comment.", log)
         if w["decision"]:
             self.assertEqual(got["decision"], w["decision"], log)
         if w["said"]:
