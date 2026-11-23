@@ -17850,6 +17850,31 @@ class ImportCheckTest(ReaderRunner):
                                  ("success", 1 if passed and trust is outside else 0, "" if passed else HEAD),
                                  self.logs)
 
+    def test_a_review_of_a_later_run_that_posted_before_the_line_does_not_take_the_line_out(self):
+        """OSSV-221's architect, 2026-11-22 13:38Z, 14:21Z and 16:06Z: the line goes once the comment of its run that
+        gives its reason stands, or a newer review of the head. Run ids follow the start of a run, not its verdict: a
+        review by hand of mallory's #7 (run 90, its group review-review-7) and the rescreen run 80 (review-rescreen-7)
+        review HEAD at once. Run 90's screened pass posts first, at 60 minutes ago, and its post job records 901. Run
+        80 then gives a blocking finding: its post job withdraws 901, its comment job writes the line of run 80 (30
+        minutes ago), and GitHub refuses its edit of run 90's comment. Run 90's pass is older than run 80's verdict:
+        relabel 1 withdraws for the line and must keep it, and relabel 2 must record no check run on HEAD."""
+        listed, _others = self.recorded()
+        neutral = dict(listed, conclusion="neutral")
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("decide", "", [rules.import_marker(HEAD, self.LPS)])}
+        line = f"<!-- withdraw-owed {HEAD} blocking 80 -->"
+        label = dict(old, updated_at=ago(30), body=rules.with_marker(old["body"], line))
+        review = review_of(HEAD, at=ago(60), run=90)
+        relabel = dict(self.RELABEL, started=ago(-1))
+        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                         comments=[review, label], listed=[neutral])
+        self.assertEqual((got["result"], got["post"]["withdrawn"], got["checks"]), ("success", HEAD, []), self.logs)
+        edited = self.owe(got, relabel, [review, label])
+        self.assertEqual(edited, [], self.logs)
+        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                         comments=[review, label], listed=[neutral])
+        self.assertEqual((got["result"], got["checks"], got["post"]["withdrawn"]), ("success", [], HEAD), self.logs)
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head from a later run. An older
