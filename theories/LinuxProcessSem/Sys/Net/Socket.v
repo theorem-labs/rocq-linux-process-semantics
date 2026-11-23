@@ -2415,6 +2415,32 @@ Definition send_state (sk : SockState) : SendState :=
   | SkFresh                       => SendDead      (* no autobind for TCP *)
   end.
 
+(** THE LARGEST FIRST COPY OF A TCP SEND: 32768 bytes.
+
+    [tcp_sendmsg_locked]'s first chunk is the room left in the tail
+    segment, or a whole [size_goal] for a new one, cut to the bytes asked
+    for (net/ipv4/tcp.c:1197-1242) and then to the room left in the page
+    fragment it copies into, [copy = min_t(int, copy, pfrag->size -
+    pfrag->offset)] (:1261).  [sk_page_frag_refill] hands out a fragment
+    of at most [PAGE_SIZE << SKB_FRAG_PAGE_ORDER]
+    (net/core/sock.c [skb_page_frag_refill] :3108-3139), and
+    [SKB_FRAG_PAGE_ORDER] is [get_order(32768)] (include/net/sock.h:3014),
+    so 32768 on riscv64's 4096-byte
+    pages.  How long the chunk really is turns on [size_goal], on how
+    full the tail segment and the fragment are, and on whether the
+    order-3 allocation succeeded, none of which the model holds; 32768
+    is the longest any of them allows, reached by a fresh fragment under
+    a segment goal of at least that.  Linux v6.18.46, commit
+    1f99e9ab748f.
+
+    v4.17, the oldest supported version, gives the same bound: the same
+    fragment path (net/ipv4/tcp.c:1320-1347 in v4.17), the fragment's
+    order get_order(32768) and its refill at net/core/sock.c:2184 and
+    :2196-2226 in v4.17, and a linear-head path (net/ipv4/tcp.c:1314-1319
+    in v4.17) whose room is at most SKB_WITH_OVERHEAD(2048 -
+    MAX_TCP_HEADER) (net/ipv4/tcp.c:1108-1112 in v4.17), smaller. *)
+Definition tcp_first_copy_max : Z := 32768.
+
 (** The body both calls share once their arguments have been reduced to
     "these bytes, on this socket".
 
@@ -2448,6 +2474,22 @@ Definition send_state (sk : SockState) : SendState :=
     chosen prefix is [1 <= length ds], and why an unreadable buffer is
     -EFAULT rather than a zero-length success.
 
+    A FAULT INSIDE THE FIRST COPY IS -EFAULT, however many readable
+    bytes precede it.  [tcp_sendmsg_locked] copies a chunk at a time
+    with [skb_copy_to_page_nocache] (net/ipv4/tcp.c:1273-1278), which
+    reaches [skb_do_copy_data_nocache] (include/net/sock.h:2258-2274):
+    the chunk goes through [copy_from_iter_full] or its [_nocache] or
+    checksumming twin, a short copy reverts the iterator and answers
+    -EFAULT (include/linux/uio.h:243-250, :261-268), and with nothing
+    copied yet [do_error:] returns it (net/ipv4/tcp.c:1387-1391;
+    [sk_stream_error] changes only -EPIPE, net/core/stream.c:190-197).
+    The first chunk is at most [tcp_first_copy_max] long, which is
+    where [Fs.ReadWrite.fault_in_first_copyb] draws the line; a prefix
+    stays admitted beside the fault, because a shorter first chunk can
+    go out before a later one faults.  The fault queues no byte and
+    reads none the ledger counts, so it records [pre] alone and leaves
+    the table, like the -EFAULT of a wholly unreadable source.
+
     A ZERO-LENGTH REQUEST returns 0 — [tcp_sendmsg_locked]'s copy loop
     does not run, [copied] stays 0 and [out:] returns it — but only
     after the connection state has been consulted, which is why this is
@@ -2466,15 +2508,19 @@ Definition send_bytes (pre : list (word * nat)) (acc : nat -> list (word * nat))
   if w_is0 total then record_copyins pre (ret_only (Z_to_bv 64 0))
   else if Nat.eqb (length bs) 0 then record_copyins pre (err_ret EFAULT)
   else
-    ds <- choose (fun ds : list byte =>
-                    (1 <= Z.of_nat (length ds))%Z
-                    /\ (Z.of_nat (length ds) <= bv_unsigned total)%Z
-                    /\ ds = firstn (length ds) bs) ;;
-    set_fds fds ;;
-    emit (map (WriteEv ch) ds) ;;   (* one event per byte, on the CONNECTION's
-                                       channel — the same alphabet a channel
-                                       write emits, on a different channel *)
-    record_copyins (pre ++ acc (length ds)) (ret_only (len_word ds)).
+    let deliver :=
+      ds <- choose (fun ds : list byte =>
+                      (1 <= Z.of_nat (length ds))%Z
+                      /\ (Z.of_nat (length ds) <= bv_unsigned total)%Z
+                      /\ ds = firstn (length ds) bs) ;;
+      set_fds fds ;;
+      emit (map (WriteEv ch) ds) ;;   (* one event per byte, on the CONNECTION's
+                                         channel — the same alphabet a channel
+                                         write emits, on a different channel *)
+      record_copyins (pre ++ acc (length ds)) (ret_only (len_word ds)) in
+    if fault_in_first_copyb tcp_first_copy_max (Z.of_nat (length bs)) (bv_unsigned total)
+    then alt (record_copyins pre (err_ret EFAULT)) deliver
+    else deliver.
 
 (** The socket half of both calls: dispatch on the connection's state,
     then send.  [total] and [bs] are the caller's; [fd] and [m] are

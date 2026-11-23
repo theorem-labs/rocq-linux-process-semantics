@@ -20,6 +20,33 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Export
   Prelude Uaccess.
 
+(** THE FAULT INSIDE THE FIRST COPY, as the acceptors read it.
+    [ReadWrite.write_spec]'s and [ReadWrite.writev_spec]'s channel arms
+    and [Net.Socket.send_bytes] admit -EFAULT beside the delivery when
+    [ReadWrite.fault_in_first_copyb] holds ([ReadWrite.if_alt_r] and
+    [ReadWrite.if_alt_inv] take that [alt] apart), and their acceptors
+    read the -EFAULT off the claimed return only where a delivery's range
+    test has failed: a claimed -EFAULT always fails it
+    ([efault_above]), and a delivered length is never -EFAULT
+    ([efault_not_below]). *)
+Lemma efault_above : forall n : Z,
+  (n < two_pow_64 - 14)%Z ->
+  (bv_unsigned (errno_ret EFAULT) <=? n)%Z = false.
+Proof.
+  intros n Hn. apply Z.leb_gt.
+  rewrite errno_ret_unsigned by (unfold EFAULT; lia).
+  unfold EFAULT. lia.
+Qed.
+
+Lemma efault_not_below : forall r : word,
+  (bv_unsigned r <= two_pow_64 - 4096)%Z ->
+  bv_eqb r (errno_ret EFAULT) = false.
+Proof.
+  intros r Hr. unfold bv_eqb. apply Z.eqb_neq.
+  rewrite errno_ret_unsigned by (unfold EFAULT; lia).
+  unfold EFAULT. lia.
+Qed.
+
 (** THE PEER'S STORED ERROR, CONSUMED, on the read side: the claimed
     return is one of [es] — ECONNRESET alone for a RST, ETIMEDOUT or one
     of [State.tcp_soft_errnos] for the retransmit timer's end — and the
@@ -2379,6 +2406,15 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
               then CheckOk m (map (WriteEv ch)
                                 (firstn (Z.to_nat (bv_unsigned ret)) bs))
               else CheckReject
+            else
+            if bv_eqb ret (errno_ret EFAULT)
+               && fault_in_first_copyb channel_first_copy_max
+                    (Z.of_nat (length bs)) (rw_count_clamp count)
+            then check_ret_only eff (errno_ret EFAULT) m []
+              (* the fault inside the first copy, with nothing counted
+                 and nothing in the ledger: see [ReadWrite.write_spec].
+                 Read only where the range test failed, which a claimed
+                 -EFAULT always does ([efault_above]) *)
             else CheckReject
         | _ => CheckReject
         end
@@ -3710,14 +3746,28 @@ Proof.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hm.
       srw Hcr. srw Hg.
       apply pure_ok.
-    + (* short or full delivery, picked by the claimed return *)
+    + (* short or full delivery, picked by the claimed return, or the
+         fault inside the first copy *)
       destruct eff as [ret ws zs us cs copyins]; destruct ws as [|? ?];
         destruct zs as [|? ?]; destruct us as [|? ?];
         destruct cs as [|? ?]; try discriminate.
       destruct ((1 <=? bv_unsigned ret)%Z
                 && (bv_unsigned ret
                     <=? Z.of_nat (length (write_source (in_mem i) buf count)))%Z)
-        eqn:Hb; [|discriminate].
+        eqn:Hb.
+      2:{ (* -EFAULT with nothing counted: the left half of the [alt] *)
+        cbv beta iota in H.
+        destruct (bv_eqb ret (errno_ret EFAULT)
+                  && fault_in_first_copyb channel_first_copy_max
+                       (Z.of_nat (length (write_source (in_mem i) buf count)))
+                       (rw_count_clamp count)) eqn:Hf; [|discriminate].
+        apply andb_true_iff in Hf as [_ Hf].
+        apply check_ret_only_ok_iff in H. destruct H as (Heff & -> & ->).
+        rewrite Heff.
+        eapply bind_ok0; [apply input_ok|]. cbv beta.
+        eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hm.
+        srw Hcr. srw Hg. rewrite Hf. cbv beta iota.
+        apply alt_l. apply pure_ok. }
       destruct (access_ranges_eqb copyins [(buf, Z.to_nat (bv_unsigned ret))])
         eqn:Hreads; [|discriminate].
       inversion H; clear H; subst.
@@ -3730,7 +3780,7 @@ Proof.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hm.
       srw Hcr.
       set (bs := write_source (in_mem i) buf count) in *.
-      srw Hg.
+      srw Hg. apply if_alt_r.
       set (ds := firstn (Z.to_nat (bv_unsigned ret)) bs) in *.
       assert (Hlen : Z.of_nat (length ds) = bv_unsigned ret)
         by (apply firstn_length_le_Z; lia).
@@ -4086,7 +4136,13 @@ Proof.
     destruct ((1 <=? bv_unsigned ret)%Z
               && (bv_unsigned ret
                   <=? Z.of_nat (length (write_source (in_mem i) buf count)))%Z);
-      [destruct (access_ranges_eqb _ _)|]; discriminate.
+      [destruct (access_ranges_eqb _ _); discriminate|].
+    cbv beta iota in H.
+    destruct (bv_eqb ret (errno_ret EFAULT)
+              && fault_in_first_copyb channel_first_copy_max
+                   (Z.of_nat (length (write_source (in_mem i) buf count)))
+                   (rw_count_clamp count));
+      [now apply check_ret_only_no_unmodeled in H|discriminate].
   - now apply check_ret_only_no_unmodeled in H.
   - destruct (negb (modeled_rw_range buf count)) eqn:Hn.
     { (* count past [rw_bytes_max]: fail closed *)
@@ -4286,18 +4342,40 @@ Proof.
       eqn:Hg; hall Hg; inv_ok.
     + (* -EFAULT *)
       cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
-    + (* the environment's delivered prefix, replayed through the guard *)
-      cbn.
-      pose proof (word_unsigned_range count) as Hcr.
-      unfold rw_count_clamp in *.
-      pose proof (f_equal (@length _) H5) as Hfl.
-      rewrite length_firstn in Hfl.
-      assert (Hsm : (Z.of_nat (length x3) < two_pow_64)%Z) by lia.
-      rewrite (len_word_unsigned x3 Hsm).
-      assert (Hnat : Z.to_nat (Z.of_nat (length x3)) = length x3) by lia.
-      rewrite Hnat, <- H5.
-      bool_true.
-      cbn. rewrite Nat.eqb_refl. cbn. now rewrite app_nil_r.
+    + (* the fault inside the first copy, or the environment's delivered
+         prefix replayed through the guard *)
+      pose proof (write_source_length_le (in_mem i) buf count) as Hwl.
+      pose proof (rw_count_clamp_range count) as Hcl.
+      destruct (fault_in_first_copyb channel_first_copy_max
+                  (Z.of_nat (length (write_source (in_mem i) buf count)))
+                  (rw_count_clamp count)) eqn:Hf; hall Hf; inv_ok.
+      all: first
+        [ (* -EFAULT, nothing counted: the range test fails on it, and
+             the fault test then holds *)
+          solve [ cbv beta iota;
+                  rewrite (efault_above
+                             (Z.of_nat (length (write_source (in_mem i) buf count))))
+                    by (change two_pow_64 with 18446744073709551616%Z;
+                        unfold MAX_RW_COUNT in *; lia);
+                  rewrite andb_false_r; cbv beta iota;
+                  rewrite ?Hf, bv_eqb_refl; cbn [andb]; cbv beta iota;
+                  refine (proj2 (check_ret_only_ok_iff _ _ _ _ _ _) _);
+                  repeat split ]
+        | (* the delivered prefix: the range test passes *)
+          match goal with
+          | Hpre : ?l = firstn (length ?l) ?src |- _ =>
+              cbn;
+              pose proof (word_unsigned_range count) as Hcr;
+              unfold rw_count_clamp in *;
+              pose proof (f_equal (@length _) Hpre) as Hfl;
+              rewrite length_firstn in Hfl;
+              assert (Hsm : (Z.of_nat (length l) < two_pow_64)%Z) by lia;
+              rewrite (len_word_unsigned l Hsm);
+              assert (Hnat : Z.to_nat (Z.of_nat (length l)) = length l) by lia;
+              rewrite Hnat, <- Hpre
+          end;
+          bool_true;
+          cbn; rewrite Nat.eqb_refl; cbn; now rewrite app_nil_r ].
   - cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
   - destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak; inv_ok.
@@ -4474,7 +4552,10 @@ Proof.
     { sigpipe_complete. }
     cbv zeta.
     destruct (Nat.eqb (length (write_source (in_mem i) buf count)) 0)
-      eqn:Hg; hall Hg; inv_ok; discriminate.
+      eqn:Hg; hall Hg; inv_ok; try discriminate.
+    destruct (fault_in_first_copyb channel_first_copy_max
+                (Z.of_nat (length (write_source (in_mem i) buf count)))
+                (rw_count_clamp count)) eqn:Hf; hall Hf; inv_ok; discriminate.
   - destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok;
       [reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
@@ -5657,6 +5738,16 @@ Definition check_writev (i : SyscallInput) (fd iov iovcnt : word)
                     then CheckOk m (map (WriteEv ch)
                                       (firstn (Z.to_nat (bv_unsigned ret)) bs))
                     else CheckReject
+                  else
+                  if bv_eqb ret (errno_ret EFAULT)
+                     && fault_in_first_copyb channel_first_copy_max
+                          (Z.of_nat (length bs)) total
+                  then check_ret_only_copyins
+                    (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
+                    eff (errno_ret EFAULT) m []
+                    (* the fault inside the first copy: the import in the
+                       ledger and no payload byte, see
+                       [ReadWrite.writev_spec] *)
                   else CheckReject
               | _ => CheckReject
               end
@@ -5979,7 +6070,21 @@ Proof.
     destruct ((1 <=? bv_unsigned ret)%Z
               && (bv_unsigned ret
                   <=? Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))%Z
-              && negb (addr_is_error_b ret)) eqn:Hb; [|discriminate].
+              && negb (addr_is_error_b ret)) eqn:Hb.
+    2:{ (* -EFAULT with nothing counted: the left half of the [alt],
+           behind the import's ledger *)
+      cbv beta iota in H.
+      destruct (bv_eqb ret (errno_ret EFAULT)
+                && fault_in_first_copyb channel_first_copy_max
+                     (Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+                     (iovs_total (cap_iovecs iovs))) eqn:Hf; [|discriminate].
+      apply andb_true_iff in Hf as [_ Hf].
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (Heff & -> & ->).
+      rewrite Heff.
+      wv_open Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht. srw Hae.
+      rewrite Hf. cbv beta iota.
+      apply record_copyins_ok_empty; [reflexivity|].
+      apply alt_l. apply pure_ok. }
     destruct (access_ranges_eqb copyins
                 (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt) ++
                  iov_prefix_accesses (cap_iovecs iovs)
@@ -6005,6 +6110,7 @@ Proof.
       (eff := with_copyins
         (iov_prefix_accesses (cap_iovecs iovs) (length ds))
         (mkEffect (len_word ds) [] [])).
+    apply if_alt_r.
     eapply bind_ok0.
     { apply (choose_ok _ ds). cbv beta.
       repeat split; [lia|lia|rewrite Hlw; exact Hne|].
@@ -6226,7 +6332,13 @@ Proof.
                   && (bv_unsigned ret
                       <=? Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))%Z
                   && negb (addr_is_error_b ret));
-          [destruct (access_ranges_eqb _ _)|]; discriminate. }
+          [destruct (access_ranges_eqb _ _); discriminate|].
+        cbv beta iota in H.
+        destruct (bv_eqb ret (errno_ret EFAULT)
+                  && fault_in_first_copyb channel_first_copy_max
+                       (Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+                       (iovs_total (cap_iovecs iovs)));
+          [now apply check_ret_only_copyins_no_unmodeled in H|discriminate]. }
     wv_open_unmodeled Hfd. srw Hm. srw Hiv. srw Htot. srw Hrdr. srw Ht. srw Hae.
     apply record_copyins_unmodeled.
     unfold writev_buf_gap. apply unmodeled_intro.
@@ -6359,16 +6471,34 @@ Proof.
     { wv_errno_complete. }
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae;
       hall Hae; inv_ok.
-    pose proof (f_equal (@length _) H6) as Hfl.
-    rewrite length_firstn in Hfl.
-    cbn.
-    rewrite (len_word_unsigned x6 H4), H5.
-    assert (Hnat : Z.to_nat (Z.of_nat (length x6)) = length x6) by lia.
-    rewrite Hnat, <- H6.
-    bool_true.
-    rewrite !app_nil_r.
-    rewrite (proj2 (access_ranges_eqb_eq _ _) eq_refl).
-    cbn. now rewrite ?app_nil_r.
+    destruct (fault_in_first_copyb channel_first_copy_max
+                (Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+                (iovs_total (cap_iovecs iovs))) eqn:Hf; hall Hf; inv_ok.
+    all: first
+      [ (* -EFAULT, nothing counted: the range test fails on it (an
+           error-encoded return), and the fault test then holds *)
+        solve [ cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins];
+                cbv beta iota;
+                change (negb (addr_is_error_b (errno_ret EFAULT))) with false;
+                rewrite andb_false_r; cbv beta iota;
+                rewrite ?Hf, bv_eqb_refl; cbn [andb]; cbv beta iota;
+                wv_errno_complete ]
+      | (* the delivered prefix: the range test passes *)
+        match goal with
+        | Hpre : ?l = firstn (length ?l) ?src,
+          Hsm : (Z.of_nat (length ?l) < two_pow_64)%Z,
+          Hne : addr_is_error_b (len_word ?l) = false |- _ =>
+            pose proof (f_equal (@length _) Hpre) as Hfl;
+            rewrite length_firstn in Hfl;
+            cbn;
+            rewrite (len_word_unsigned l Hsm), Hne;
+            assert (Hnat : Z.to_nat (Z.of_nat (length l)) = length l) by lia;
+            rewrite Hnat, <- Hpre
+        end;
+        bool_true;
+        rewrite !app_nil_r;
+        rewrite (proj2 (access_ranges_eqb_eq _ _) eq_refl);
+        cbn; now rewrite ?app_nil_r ].
   - cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity.
   - destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
       hall Hiv; inv_ok.
@@ -6541,8 +6671,10 @@ Proof.
     destruct (Nat.eqb (length (gather_prefix (in_mem i) (cap_iovecs iovs))) 0) eqn:Ht;
       hall Ht; inv_ok; try discriminate.
     destruct (addr_is_error_b (len_word (gather_prefix (in_mem i) (cap_iovecs iovs)))) eqn:Hae;
-      hall Hae; inv_ok; try discriminate.
-    reflexivity.
+      hall Hae; inv_ok; try discriminate; [reflexivity|].
+    destruct (fault_in_first_copyb channel_first_copy_max
+                (Z.of_nat (length (gather_prefix (in_mem i) (cap_iovecs iovs))))
+                (iovs_total (cap_iovecs iovs))) eqn:Hf; hall Hf; inv_ok; discriminate.
   - destruct (import_iovecs (in_mem i) iov (iovcnt32 iovcnt)) as [iovs| |] eqn:Hiv;
       hall Hiv; inv_ok; try discriminate.
     cbv zeta in *.

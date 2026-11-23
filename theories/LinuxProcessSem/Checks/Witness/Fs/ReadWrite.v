@@ -1201,6 +1201,8 @@ Proof.
     + eapply bind_step; [apply input_ok|].
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hm; srw Hcr; srw Hg.
+      (* the delivery, beside any fault inside the first copy *)
+      apply if_alt_r.
       eapply bind_step.
       { apply (choose_ok _ (write_source (in_mem i) buf count)).
         repeat split.
@@ -2063,6 +2065,8 @@ Proof.
       (evs1 := map (WriteEv ch)
                  (firstn 1 (gather_prefix (in_mem i) (cap_iovecs iovs))))
       (evs2 := []); [|apply pure_ok|now rewrite app_nil_r].
+    (* the delivery, beside any fault inside the first copy *)
+    apply if_alt_r.
     eapply bind_step.
     { apply (choose_ok _ (firstn 1 (gather_prefix (in_mem i) (cap_iovecs iovs)))).
       assert (Hl1 : length (firstn 1 (gather_prefix (in_mem i) (cap_iovecs iovs)))

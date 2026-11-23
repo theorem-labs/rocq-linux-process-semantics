@@ -331,8 +331,16 @@ Proof.
     destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
-            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr;
-    [|discriminate].
+            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr.
+  2:{ (* a wholly readable source has no fault inside its first copy *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : (Z.of_nat (length (firstn c buf)) <? rw_count_clamp (ms_gpr ms 2))%Z
+                   = false).
+      { apply Z.ltb_ge. rewrite Hfl. unfold c. clear - Hlen.
+        unfold rw_count_clamp. lia. }
+      unfold fault_in_first_copyb in Hspec. rewrite Hx in Hspec.
+      cbn [andb] in Hspec. rewrite andb_false_r in Hspec.
+      cbv beta iota in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins [(ms_gpr ms 1, Z.to_nat (bv_unsigned ret))])
     eqn:Hreads; [|discriminate].
   inversion Hspec; clear Hspec; subst.
@@ -1660,8 +1668,17 @@ Proof.
     destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
-            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr;
-    [|discriminate].
+            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr.
+  2:{ (* see [write1_ok_inv]: a wholly readable source has no fault
+         inside its first copy *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : (Z.of_nat (length (firstn c buf)) <? rw_count_clamp (ms_gpr ms 2))%Z
+                   = false).
+      { apply Z.ltb_ge. rewrite Hfl. unfold c. clear - Hlen.
+        unfold rw_count_clamp. lia. }
+      unfold fault_in_first_copyb in Hspec. rewrite Hx in Hspec.
+      cbn [andb] in Hspec. rewrite andb_false_r in Hspec.
+      cbv beta iota in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins [(ms_gpr ms 1, Z.to_nat (bv_unsigned ret))])
     eqn:Hreads; [|discriminate].
   inversion Hspec; clear Hspec; subst.

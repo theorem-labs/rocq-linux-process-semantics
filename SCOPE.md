@@ -1854,7 +1854,12 @@ serious half.
   `Sys/Fs/ReadWrite.v` names it a known soundness gap. The model
   classifies fds 1 and 2 as channels without knowing whether the far end
   is a pipe, a terminal or a file, so it admits the short return for all
-  three.
+  three. Beside it, a source readable at its first byte but not
+  throughout may be `-EFAULT` with nothing written, when its first
+  unreadable byte lies inside the largest first copy any of those far
+  ends makes (`ReadWrite.channel_first_copy_max`): a pipe answers a short
+  copy with nothing counted `-EFAULT` however many readable bytes came
+  before the hole, and the model cannot see which far end it is.
 - **A channel with no reader — fixed, and what it cost.** This used to
   be a gap: the write arm could not see whether fds 1 and 2 still had a
   reader, so a write to a stdout whose reader was gone got a count,

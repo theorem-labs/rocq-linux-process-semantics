@@ -625,8 +625,16 @@ Proof.
     destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
-            && (bv_unsigned ret <=? Z.of_nat (length bs))%Z) eqn:Hgr;
-    [|discriminate].
+            && (bv_unsigned ret <=? Z.of_nat (length bs))%Z) eqn:Hgr.
+  2:{ (* a wholly readable source has no fault inside its first copy, so
+         the -EFAULT the arm admits beside the delivery is not reached *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : (Z.of_nat (length bs) <? rw_count_clamp count)%Z = false).
+      { apply Z.ltb_ge. unfold rw_count_clamp, MAX_RW_COUNT.
+        unfold rw_bytes_max in Hmax. lia. }
+      unfold fault_in_first_copyb in Hspec. rewrite Hx in Hspec.
+      cbn [andb] in Hspec. rewrite Bool.andb_false_r in Hspec.
+      cbv beta iota in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins [(buf, Z.to_nat (bv_unsigned ret))])
     eqn:Hreads; [|discriminate].
   inversion Hspec; clear Hspec; subst.
@@ -1260,7 +1268,18 @@ Proof.
     destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
             && (bv_unsigned ret <=? Z.of_nat (length bs))%Z
-            && negb (addr_is_error_b ret)) eqn:Hgr; [|discriminate].
+            && negb (addr_is_error_b ret)) eqn:Hgr.
+  2:{ (* a wholly gathered source has no fault inside its first copy,
+         so the -EFAULT the arm admits beside the delivery is not
+         reached *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : fault_in_first_copyb channel_first_copy_max
+                     (Z.of_nat (length bs)) (iovs_total (cap_iovecs iovs))
+                   = false).
+      { unfold fault_in_first_copyb.
+        rewrite <- (gather_iovecs_length _ _ _ Hg), Z.ltb_irrefl.
+        reflexivity. }
+      rewrite Hx, Bool.andb_false_r in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins
               (import_iovecs_accesses (in_mem i) iov iovcnt ++
                iov_prefix_accesses (cap_iovecs iovs)
@@ -5544,3 +5563,88 @@ Proof.
   - intros ->. apply check_pwritev2_sound_ok. rewrite Hchk.
     apply check_ret_only_copyins_ok_iff. split; [reflexivity | split; reflexivity].
 Qed.
+
+(* ----------- a channel write from a source readable at its start only *)
+
+Definition chan_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof).
+
+(** "a" at 4096 and nothing after it. *)
+Definition chan_mem_a : word -> option byte :=
+  fun a => if bv_eqb a 4096 then Some 97 else None.
+
+(** [n] readable bytes from [base] up, each 0, and nothing past them;
+    constant time per address, so a 64 KiB prefix evaluates. *)
+Definition chan_mem_prefix (base n : Z) : word -> option byte :=
+  fun a => if (base <=? bv_unsigned a)%Z && (bv_unsigned a <? base + n)%Z
+           then Some (Z_to_bv 8 0) else None.
+
+(** [write(fd, 4096, count)] over [mem], answering [r] with ledger [cis]. *)
+Definition chan_write_from (fd : word) (mem : word -> option byte) (count : Z)
+    (r : word) (cis : list (word * nat)) : check_result :=
+  check_syscall (mkInput 64 [fd; 4096; Z_to_bv 64 count; 0; 0; 0] mem (fun _ => None))
+    (mkEffectU r [] [] [] [] cis) chan_model.
+
+(** A WRITE TO STDOUT OR STDERR FROM A SOURCE READABLE AT ITS START AND
+    NOT THROUGHOUT CAN BE -EFAULT.  On a pipe [anon_pipe_write] copies
+    the request into one fresh page, or merges it into the last buffer,
+    with [copy_page_from_iter], and a short copy with nothing counted is
+    -EFAULT (fs/pipe.c:488-492 and :522-528, Linux v6.18.46), however
+    many readable bytes preceded the hole; the other far ends a launch
+    may give fds 1 and 2 fail their first chunk whole the same way
+    ([ReadWrite.channel_first_copy_max]).  So "a" then a hole, count 2,
+    is -EFAULT with an empty ledger on fd 1 and on fd 2, beside the
+    one-byte short write a first chunk of one byte gives.  An -EFAULT
+    claiming the byte it read, and a write of the unreadable byte, are
+    refused.  testing/syscall-check/tests/write_spec.c's
+    [w-full]/[mem-hide:a1+1:1] case and its [efault] probe on fd 2 are
+    the conformance side. *)
+Example write_channel_fault_inside_the_first_copy_is_efault :
+  chan_write_from 1 chan_mem_a 2 (errno_ret EFAULT) [] = CheckOk chan_model []
+  /\ chan_write_from 2 chan_mem_a 2 (errno_ret EFAULT) [] = CheckOk chan_model []
+  /\ chan_write_from 1 chan_mem_a 2 1 [(4096, 1%nat)]
+    = CheckOk chan_model [WriteEv 1 97]
+  /\ chan_write_from 1 chan_mem_a 2 (errno_ret EFAULT) [(4096, 1%nat)] = CheckReject
+  /\ chan_write_from 1 chan_mem_a 2 2 [(4096, 2%nat)] = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** THE BOUND IS THE LARGEST FIRST COPY OF ANY FAR END,
+    [ReadWrite.channel_first_copy_max] = 65536: which far end fds 1 and
+    2 have, and in what state, is hidden, and a terminal under
+    [TTY_NO_WRITE_SPLIT] copies 65536 bytes first (drivers/tty/tty_io.c
+    [iterate_tty_write] :975-979, :1000-1004), more than a pipe's page or
+    a TCP fragment.  So -EFAULT is admitted for a fault at offset 65535,
+    which that first chunk holds -- a choice over the hidden far end, not
+    an answer of its own -- and refused for a fault at offset 65536, past
+    every first chunk, where the first copy moves bytes and a short
+    count answers. *)
+Example write_channel_fault_at_the_largest_first_copy :
+  chan_write_from 1 (chan_mem_prefix 4096 65535) 65536 (errno_ret EFAULT) []
+    = CheckOk chan_model []
+  /\ chan_write_from 1 (chan_mem_prefix 4096 65536) 65537 (errno_ret EFAULT) []
+    = CheckReject
+  /\ chan_write_from 1 (chan_mem_prefix 4096 65536) 65537 1 [(4096, 1%nat)]
+    = CheckOk chan_model [WriteEv 1 0].
+Proof. split_conj; check_eq. Qed.
+
+(** THE VECTORED FORM: the first chunk runs across the iovecs in order
+    ([copy_page_from_iter] over the gathered iterator, fs/pipe.c:488 and
+    :522), so a readable first iovec followed by an unreadable second one
+    inside it is -EFAULT too, behind the import's ledger and with no
+    payload byte in it; the one-byte short write stays beside it, and an
+    -EFAULT that forgets the two descriptors it imported is refused. *)
+Example writev_channel_fault_in_a_later_iovec_is_efault :
+  let mem := mem_iov_pair 4096 1 12288 1 in
+  check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem (fun _ => None))
+    (with_copyins (import_iovecs_accesses mem 8192 2)
+       (mkEffect (errno_ret EFAULT) [] [])) chan_model
+  = CheckOk chan_model []
+  /\ check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem 8192 2 ++
+                      iov_prefix_accesses (cap_iovecs [(4096, 1); (12288, 1)]) 1)
+          (mkEffect 1 [] [])) chan_model
+     = CheckOk chan_model [WriteEv 1 97]
+  /\ check_syscall (mkInput 66 [1; 8192; 2; 0; 0; 0] mem (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) chan_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.

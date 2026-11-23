@@ -771,6 +771,10 @@ Proof.
       [apply record_copyins_outcome; apply pure_ok|].
     destruct (Nat.eqb (length bs) 0) eqn:Hb;
       [apply record_copyins_outcome; apply pure_ok|].
+    (* the one-byte send is the delivery, which [send_bytes] admits
+       whether or not a fault inside the first copy is admitted beside
+       it *)
+    cbv beta iota zeta. apply if_alt_r.
     assert (Hpos : (1 <= bv_unsigned total)%Z).
     { unfold w_is0, bv_eqb in Ht. apply Z.eqb_neq in Ht.
       change (bv_unsigned (Z_to_bv 64 0)) with 0%Z in Ht.

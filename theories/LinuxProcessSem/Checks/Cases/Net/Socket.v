@@ -3549,3 +3549,65 @@ Example send_on_a_reset_the_bind_left_pending_answers_it_once :
        2 [(4096, 2%nat)]
     = CheckUnmodeled.
 Proof. split_conj; check_eq. Qed.
+
+(* ------------------- a fault inside the first copy: -EFAULT, nothing sent *)
+
+(** A buffer whose [n] bytes from [base] up are readable, each 0, and
+    nothing past them.  Constant time per address, so a 32 KiB prefix
+    evaluates where [bytes_at]'s [nth_error] would be quadratic. *)
+Definition send_mem_prefix (base n : Z) : word -> option byte :=
+  fun a => if (base <=? bv_unsigned a)%Z && (bv_unsigned a <? base + n)%Z
+           then Some (Z_to_bv 8 0) else None.
+
+(** [sendto(4, 4096, count, MSG_NOSIGNAL, NULL, 0)] on the accepted
+    connection over [mem], answering [r] with the ledger [cis]. *)
+Definition sendto_from (mem : word -> option byte) (count : Z) (r : word)
+    (cis : list (word * nat)) : check_result :=
+  check_syscall (mkInput 206 [4; 4096; Z_to_bv 64 count; 16384; 0; 0] mem
+                   (fun _ => None))
+    (mkEffectU r [] [] [] [] cis) accepted_socket_model.
+
+(** A SOURCE READABLE AT ITS START AND NOT THROUGHOUT CAN BE -EFAULT,
+    with nothing sent.  [tcp_sendmsg_locked] copies a chunk at a time
+    through [skb_copy_to_page_nocache] (net/ipv4/tcp.c:1273-1278,
+    Linux v6.18.46), whose [skb_do_copy_data_nocache] fails a chunk
+    holding an unreadable byte whole (include/net/sock.h:2258-2274, the
+    [copy_from_iter_full] revert at include/linux/uio.h:243-250), and
+    with nothing copied yet [do_error:] returns the -EFAULT
+    (net/ipv4/tcp.c:1387-1391).  Here "ab" is readable and the third
+    byte is not, so the first chunk holds the hole.  The ledger stays
+    empty and the connection is not marked [sent]: nothing went out.
+    The two-byte prefix stays admitted beside it (a first chunk of two
+    bytes goes, then the next one faults); an -EFAULT claiming the bytes
+    it read, and a send of the unreadable byte, are refused. *)
+Example send_fault_inside_the_first_copy_is_efault :
+  sendto_from (mem_of send_payload) 3 (errno_ret EFAULT) []
+    = CheckOk accepted_socket_model []
+  /\ sendto_from (mem_of send_payload) 3 2 [(4096, 2%nat)]
+    = CheckOk (sent_socket_model NFin) [WriteEv 3 97; WriteEv 3 98]
+  /\ sendto_from (mem_of send_payload) 3 (errno_ret EFAULT) [(4096, 2%nat)]
+    = CheckReject
+  /\ sendto_from (mem_of send_payload) 3 3 [(4096, 3%nat)] = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** THE BOUND IS THE LARGEST FIRST COPY, [Net.Socket.tcp_first_copy_max]
+    = 32768.  How long the first chunk is turns on state the model does
+    not hold: [size_goal], the tail segment's room and the page
+    fragment's offset (net/ipv4/tcp.c:1197-1261), the fragment being at
+    most [PAGE_SIZE << get_order(32768)] (net/core/sock.c
+    [skb_page_frag_refill] :3108-3139, include/net/sock.h:3014).  So the
+    model admits -EFAULT for a fault anywhere a first chunk can reach, a
+    choice over that hidden state and not an answer of its own: with
+    32767 readable bytes and a hole at offset 32767, a fresh 32 KiB
+    fragment's chunk holds the hole and the call is -EFAULT.  With 32768
+    readable bytes no first chunk reaches the hole, the first copy
+    moves bytes, and the fault in a later chunk returns them: -EFAULT is
+    refused there and a short count answers. *)
+Example send_fault_at_the_largest_first_copy :
+  sendto_from (send_mem_prefix 4096 32767) 32768 (errno_ret EFAULT) []
+    = CheckOk accepted_socket_model []
+  /\ sendto_from (send_mem_prefix 4096 32768) 32769 (errno_ret EFAULT) []
+    = CheckReject
+  /\ sendto_from (send_mem_prefix 4096 32768) 32769 1 [(4096, 1%nat)]
+    = CheckOk (sent_socket_model NFin) [WriteEv 3 0].
+Proof. split_conj; check_eq. Qed.

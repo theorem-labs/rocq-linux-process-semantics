@@ -1787,6 +1787,82 @@ Remark file_extend_at_eof : forall data,
   file_extend data (len_word data) = data.
 Proof. intros data H. apply file_extend_within, H. Qed.
 
+(** * A FAULT INSIDE THE FIRST COPY
+
+    A write to a channel ([write_spec], [writev_spec]) and a TCP send
+    ([Net.Socket.send_bytes]) copy their source a CHUNK at a time, and a
+    chunk that holds an unreadable byte fails WHOLE: the call returns the
+    bytes earlier chunks moved, or -EFAULT when no chunk has moved any.
+    So -EFAULT with nothing sent is an answer exactly when the first
+    unreadable byte lies inside the FIRST chunk, however many readable
+    bytes precede it there, and a fault past the first chunk leaves a
+    positive count.  [got] is the length of the readable prefix, so the
+    first unreadable byte is at offset [got]; [want] is how many bytes
+    the call asks to move; [bound] is the largest first chunk.
+
+    The first chunk's length is not fixed: it turns on kernel state the
+    model does not hold (which object the descriptor names, how full its
+    last buffer or its page fragment is, the segment size the connection
+    negotiated).  Each caller therefore passes the LARGEST first chunk
+    any such state allows, and the rule admits -EFAULT for a fault inside
+    it.  That is a choice over hidden state, every point of which some
+    state makes real -- a first chunk can be that long -- and not an
+    invention; the delivery of a prefix stays admitted beside it, since
+    a shorter first chunk moves bytes before the faulting one fails. *)
+Definition fault_in_first_copyb (bound got want : Z) : bool :=
+  (got <? want)%Z && (got <? bound)%Z.
+
+(** The callers write the rule as [if fault_in_first_copyb .. then alt
+    fault deliver else deliver]; these take that shape apart for the
+    checkers' and the witnesses' proofs. *)
+Lemma if_alt_r {A} : forall (c : bool) (f d : Sys A) i m o,
+  d i m o -> (if c then alt f d else d) i m o.
+Proof. intros [] f d i m o H; [apply alt_r|]; exact H. Qed.
+
+Lemma if_alt_inv {A} : forall (c : bool) (f d : Sys A) i m o,
+  (if c then alt f d else d) i m o -> (c = true /\ f i m o) \/ d i m o.
+Proof.
+  intros [] f d i m o H; [destruct H as [H|H]; [left; split; [reflexivity|exact H]|right; exact H]
+                         |right; exact H].
+Qed.
+
+(** THE LARGEST FIRST COPY OF ANY FAR END A LAUNCH MAY GIVE FDS 1 AND 2.
+
+    The model classifies fds 1 and 2 as channels without knowing what is
+    on them: SCOPE.md ("Short writes to a channel") names a pipe, a
+    terminal and a file, and [State.in_channel_reader] a socket.  Which
+    one, and in what state, is hidden, so the bound is the largest first
+    copy over those kinds, each read in Linux v6.18.46 (commit
+    1f99e9ab748f) and in v4.17, the oldest supported version:
+
+    - a PIPE copies at most PAGE_SIZE = 4096 bytes first: either the
+      merge of [total_len & (PAGE_SIZE-1)] bytes into the last buffer
+      (fs/pipe.c [anon_pipe_write] :477-492; v4.17 [pipe_write]
+      :375-391) or one fresh page (:522-528; v4.17 :429-434), and both
+      answer -EFAULT on a short copy while nothing is counted;
+    - a REGULAR FILE copies at most a page first, and from v5.18 on
+      answers -EFAULT only when not one byte was readable
+      (bugs/write-file-prefault-before-v5-18-answers-a-chunk.md);
+    - a TCP SOCKET copies at most [Net.Socket.tcp_first_copy_max] =
+      32768 bytes first;
+    - an AF_UNIX STREAM SOCKET copies one skb of at most
+      [SKB_MAX_HEAD(0) + UNIX_SKB_FRAGS_SZ] bytes, under PAGE_SIZE +
+      32768 = 36864 (net/unix/af_unix.c [unix_stream_sendmsg]
+      :2454-2457, copied at :2493-2495 and answered [sent ? : err] at
+      :2541-2545; v4.17 :1856-1889 and :1916-1918);
+    - a TERMINAL copies a chunk of 2048 bytes, or of 65536 under
+      [TTY_NO_WRITE_SPLIT], which n_hdlc and cdc-acm set
+      (drivers/tty/tty_io.c [iterate_tty_write] :975-979, the copy
+      failing whole with -EFAULT at :1000-1004, [written] returned
+      instead at :1026-1029; v4.17 [tty_write] :927-931, :951-957,
+      :971-974).
+
+    So 65536, the terminal's.  An arbitrary character device, whose
+    [write] may copy the whole count at once, is not a far end the model
+    admits for fds 1 and 2 (SCOPE.md names the kinds), so it does not
+    widen the bound. *)
+Definition channel_first_copy_max : Z := 65536.
+
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
   i <- input ;;
   m <- get_model ;;
@@ -1907,13 +1983,31 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
         (* deliver a nonempty prefix of the readable prefix (a short
            write is real); which bytes is fixed by the buffer, only how
            many is the environment's choice *)
-        ds <- choose (fun ds : list byte =>
-                        (1 <= Z.of_nat (length ds))%Z
-                        /\ (Z.of_nat (length ds) <= rw_count_clamp count)%Z
-                        /\ ds = firstn (length ds) bs) ;;
-        emit (map (WriteEv ch) ds) ;;            (* record each delivered byte *)
-        record_copyins [(buf, length ds)]
-          (ret_only (len_word ds))               (* the (possibly short) delivered length *)
+        let deliver :=
+          ds <- choose (fun ds : list byte =>
+                          (1 <= Z.of_nat (length ds))%Z
+                          /\ (Z.of_nat (length ds) <= rw_count_clamp count)%Z
+                          /\ ds = firstn (length ds) bs) ;;
+          emit (map (WriteEv ch) ds) ;;          (* record each delivered byte *)
+          record_copyins [(buf, length ds)]
+            (ret_only (len_word ds)) in          (* the (possibly short) delivered length *)
+        if fault_in_first_copyb channel_first_copy_max
+             (Z.of_nat (length bs)) (rw_count_clamp count)
+        then alt (err_ret EFAULT) deliver
+          (* A FAULT INSIDE THE FIRST COPY IS -EFAULT, however many
+             readable bytes precede it: the far end copies the source a
+             chunk at a time, a chunk holding an unreadable byte fails
+             whole, and with nothing counted yet the write answers
+             -EFAULT -- fs/pipe.c [anon_pipe_write] :488-492 and
+             :522-528 on a pipe, the other kinds at
+             [channel_first_copy_max].  The bytes the failed copy read
+             are not counted, so the ledger is empty, as on the -EFAULT
+             above.  The delivery stays beside it: a first chunk shorter
+             than the readable prefix moves bytes, and the fault in a
+             later chunk then returns them.  A fault past every first
+             chunk leaves only the delivery
+             ([fault_in_first_copyb]) *)
+        else deliver
   | Some (FdDir _) => err_ret EBADF                  (* directory fds are O_RDONLY: write is real -EBADF,
                                                     checked before the source buffer as Linux does *)
   | Some (FdSocket sk) =>
@@ -2856,7 +2950,9 @@ Definition writev_buf_gap : Sys SyscallEffect := unmodeled.
        source byte — over the CAPPED vector ([State.cap_iovecs]).  Nothing
        gatherable while something was requested: -EFAULT.  On a channel
        the write delivers a NONEMPTY PREFIX of the gatherable prefix, of
-       the environment's choosing, exactly as [write_spec] does; on a file
+       the environment's choosing, exactly as [write_spec] does, or
+       answers -EFAULT when the first unreadable byte lies inside the
+       far end's first copy ([fault_in_first_copyb]); on a file
        exactly the gatherable prefix, advancing the offset.  A vectored
        write to a pipe or a socket declines ([write_spec]'s socket
        argument; the pipe atomicity argument is per transfer, not per
@@ -3031,15 +3127,25 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
             else if addr_is_error_b (len_word bs) then writev_buf_gap
                  (* unreachable under the aggregate cap; see above *)
             else
-              ds <- choose (fun ds : list byte =>
-                              (1 <= Z.of_nat (length ds))%Z
-                              /\ (Z.of_nat (length ds) < two_pow_64)%Z
-                              /\ addr_is_error_b (len_word ds) = false
-                              /\ ds = firstn (length ds) bs) ;;
-              emit (map (WriteEv ch) ds) ;;      (* the per-byte events of the equivalent write *)
-              record_copyins
-                (iov_prefix_accesses (cap_iovecs iovs0) (length ds))
-                (ret_only (len_word ds))          (* the (possibly short) delivered length *)
+              let deliver :=
+                ds <- choose (fun ds : list byte =>
+                                (1 <= Z.of_nat (length ds))%Z
+                                /\ (Z.of_nat (length ds) < two_pow_64)%Z
+                                /\ addr_is_error_b (len_word ds) = false
+                                /\ ds = firstn (length ds) bs) ;;
+                emit (map (WriteEv ch) ds) ;;    (* the per-byte events of the equivalent write *)
+                record_copyins
+                  (iov_prefix_accesses (cap_iovecs iovs0) (length ds))
+                  (ret_only (len_word ds)) in     (* the (possibly short) delivered length *)
+              if fault_in_first_copyb channel_first_copy_max (Z.of_nat (length bs)) total
+              then alt (err_ret EFAULT) deliver
+                (* [write_spec]'s fault inside the first copy, over the
+                   gathered stream: the far end's first chunk runs across
+                   the iovecs in order ([copy_page_from_iter] on a pipe,
+                   fs/pipe.c :488 and :522), so a fault in a later iovec
+                   inside it is -EFAULT too.  The ledger keeps the import
+                   above and adds no payload byte *)
+              else deliver
         end)
   | Some (FdFileW p off) =>
       writev_file_arm (in_mem i) iov iovcnt off None

@@ -2069,7 +2069,8 @@ Definition mmap_spec (addr len prot flags fd off : word) : Sys SyscallEffect :=
   if negb (mmap_off_aligned_b off) then err_ret EINVAL
   else if negb (mmap_anon_b flags) then
     (* FILE-BACKED: MAP_ANONYMOUS is clear, so Linux resolves [fd] and
-       maps a file's pages.  Everything here is [unmodeled], and there
+       maps a file's pages.  Every LIVE descriptor here is [unmodeled]
+       (a closed one is -EBADF, at the end of this comment), and there
        are two independent reasons, either of which alone would force it.
 
        (1) THE MACHINE MODEL HAS NO READ-ONLY PAGE.  A private file

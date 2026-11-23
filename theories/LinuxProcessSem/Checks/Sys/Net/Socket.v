@@ -2506,6 +2506,11 @@ Definition check_end_err (pre : list (word * nat)) (es : list Z)
     GATHERED source whose length is not related to the requested total by
     any lemma this file carries, and [Net.Socket.send_bytes] requires it.
     Testing it here keeps both callers honest and needs no lemma at all.
+    A claimed return that fails that test is read once more, as the
+    -EFAULT of a fault inside the first copy
+    ([Fs.ReadWrite.fault_in_first_copyb] at [Net.Socket.tcp_first_copy_max]),
+    with [pre] alone and the model as it was; -EFAULT always fails the
+    range test, being an errno above every total.
 
     THE LEDGER IS TESTED ON EVERY ARM, and [pre] is what makes the two
     callers differ: empty for [sendto], the header and the descriptors
@@ -2551,6 +2556,13 @@ Definition check_send_on_socket (pre : list (word * nat))
               then CheckOk (with_fds (fd_insert (m_fds m) fd (FdSocket delivered)) m)
                      (map (WriteEv ch) (firstn (Z.to_nat (bv_unsigned ret)) bs))
               else CheckReject
+            else
+            if bv_eqb ret (errno_ret EFAULT)
+               && fault_in_first_copyb tcp_first_copy_max
+                    (Z.of_nat (length bs)) (bv_unsigned total)
+            then check_ret_only_copyins pre eff (errno_ret EFAULT) m []
+              (* the fault inside the first copy: [pre] alone, the table
+                 as it was -- [Net.Socket.send_bytes] *)
             else CheckReject
         | _ => CheckReject
         end
@@ -2759,8 +2771,18 @@ Proof.
       try discriminate.
     destruct ((1 <=? bv_unsigned ret)%Z
               && (bv_unsigned ret <=? Z.of_nat (length bs))%Z
-              && (bv_unsigned ret <=? bv_unsigned total)%Z) eqn:Hc;
-      [|discriminate].
+              && (bv_unsigned ret <=? bv_unsigned total)%Z) eqn:Hc.
+    2:{ (* the fault inside the first copy: the left half of the [alt],
+           [pre] alone in the ledger and the table as it was *)
+      cbv beta iota in H.
+      destruct (bv_eqb ret (errno_ret EFAULT)
+                && fault_in_first_copyb tcp_first_copy_max
+                     (Z.of_nat (length bs)) (bv_unsigned total)) eqn:Hf; [|discriminate].
+      apply andb_true_iff in Hf as [_ Hf].
+      apply check_ret_only_copyins_ok_iff in H. destruct H as (Heff & -> & ->).
+      rewrite Heff. cbv beta iota zeta. rewrite Hf. cbv beta iota.
+      apply alt_l.
+      apply record_copyins_ok_empty; [reflexivity|apply pure_ok]. }
     destruct (access_ranges_eqb copyins (pre ++ acc (Z.to_nat (bv_unsigned ret))))
       eqn:Hreads; [|discriminate].
     inversion H; clear H; subst.
@@ -2776,6 +2798,7 @@ Proof.
     { unfold len_word. rewrite Hlen. apply Z_to_bv_bv_unsigned. }
     replace (Z.to_nat (bv_unsigned ret)) with (length ds) by lia.
     rewrite <- Hlw.
+    cbv beta iota zeta. apply if_alt_r.
     eapply bind_ok0.
     { apply (choose_ok _ ds). cbv beta. repeat split; [lia|lia|].
       assert (Hlnat : length ds = Z.to_nat (bv_unsigned ret)) by lia.
@@ -2867,6 +2890,11 @@ Proof.
   { apply record_copyins_ok_inv in H. destruct H as (core & Hc & ->).
     unfold err_ret, ret_only, pure in Hc. cbv beta in Hc. inversion Hc; subst.
     left. reflexivity. }
+  cbv zeta in H. apply if_alt_inv in H. destruct H as [[_ H]|H].
+  { (* the fault inside the first copy *)
+    apply record_copyins_ok_inv in H. destruct H as (core & Hc & ->).
+    unfold err_ret, ret_only, pure in Hc. cbv beta in Hc. inversion Hc; subst.
+    left. reflexivity. }
   unfold bind in H. cbv beta iota in H.
   destruct H as (ds & m1 & evs1 & evs2 & Hch & Hk & _).
   unfold choose in Hch. cbv beta in Hch. destruct Hch as (ds0 & HP & Heq).
@@ -2917,7 +2945,12 @@ Proof.
   destruct ((1 <=? bv_unsigned ret)%Z
             && (bv_unsigned ret <=? Z.of_nat (length bs))%Z
             && (bv_unsigned ret <=? bv_unsigned total)%Z);
-    [destruct (access_ranges_eqb _ _)|]; discriminate.
+    [destruct (access_ranges_eqb _ _); discriminate|].
+  cbv beta iota in H.
+  destruct (bv_eqb ret (errno_ret EFAULT)
+            && fault_in_first_copyb tcp_first_copy_max
+                 (Z.of_nat (length bs)) (bv_unsigned total));
+    [now apply check_ret_only_copyins_no_unmodeled in H|discriminate].
 Qed.
 
 Lemma check_send_on_socket_complete_unmodeled :
@@ -2936,6 +2969,9 @@ Proof.
   - unfold send_bytes in H. sys_unfold.
     destruct (w_is0 total); cbv beta iota zeta in H; inv_ok.
     destruct (Nat.eqb (length bs) 0); cbv beta iota zeta in H; inv_ok.
+    destruct (fault_in_first_copyb tcp_first_copy_max
+                (Z.of_nat (length bs)) (bv_unsigned total));
+      cbv beta iota zeta in H; inv_ok.
   - sys_unfold. cbv beta iota zeta in H. inv_ok.
 Qed.
 
@@ -2982,26 +3018,39 @@ Proof.
     [unfold check_ret_only_copyins, clear_copyins; cbn [with_copyins];
      rewrite app_nil_r, (proj2 (access_ranges_eqb_eq _ _) eq_refl);
      cbn; rewrite ?bv_eqb_refl; reflexivity|].
-  (* the environment's chosen prefix, replayed through the guard.  The
-     checker's match on the effect is reducible only now, once [inv_ok]
-     has put a literal there, and the projections in front of it need
-     delta as well as iota. *)
-  cbv beta iota zeta.
-  cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
-  match goal with
-  | Hpre : ?l = firstn (length ?l) bs |- _ =>
-      pose proof (f_equal (@length _) Hpre) as Hfl;
-      rewrite length_firstn in Hfl;
-      pose proof (word_unsigned_range total) as Htr;
-      assert (Hsm : (Z.of_nat (length l) < two_pow_64)%Z) by lia;
-      rewrite (len_word_unsigned l Hsm);
-      assert (Hnat : Z.to_nat (Z.of_nat (length l)) = length l) by lia;
-      rewrite Hnat, <- Hpre
-  end.
-  rewrite !app_nil_r, !app_nil_l.
-  bool_true.
-  rewrite (proj2 (access_ranges_eqb_eq _ _) eq_refl).
-  reflexivity.
+  destruct (fault_in_first_copyb tcp_first_copy_max
+              (Z.of_nat (length bs)) (bv_unsigned total)) eqn:Hf;
+    cbv beta iota zeta in H |- *; inv_ok.
+  (* the fault inside the first copy, or the environment's chosen prefix
+     replayed through the guard.  The checker's match on the effect is
+     reducible only now, once [inv_ok] has put a literal there, and the
+     projections in front of it need delta as well as iota. *)
+  all: cbv beta iota zeta;
+    cbn [eff_ret eff_writes eff_zeros eff_unmaps eff_copies eff_copyins].
+  all: first
+    [ (* -EFAULT, nothing sent: past the total, so the range test fails,
+         and the fault test then holds *)
+      solve [ rewrite (efault_above (bv_unsigned total))
+                by (change two_pow_64 with 18446744073709551616%Z;
+                    unfold rw_bytes_max in Htot; lia);
+              rewrite andb_false_r; cbv beta iota;
+              rewrite bv_eqb_refl; cbn [andb]; cbv beta iota;
+              refine (proj2 (check_ret_only_copyins_ok_iff _ _ _ _ _ _ _) _);
+              rewrite ?app_nil_r; repeat split ]
+    | match goal with
+      | Hpre : ?l = firstn (length ?l) ?src |- _ =>
+          pose proof (f_equal (@length _) Hpre) as Hfl;
+          rewrite length_firstn in Hfl;
+          pose proof (word_unsigned_range total) as Htr;
+          assert (Hsm : (Z.of_nat (length l) < two_pow_64)%Z) by lia;
+          rewrite (len_word_unsigned l Hsm);
+          assert (Hnat : Z.to_nat (Z.of_nat (length l)) = length l) by lia;
+          rewrite Hnat, <- Hpre
+      end;
+      rewrite !app_nil_r, !app_nil_l;
+      bool_true;
+      rewrite (proj2 (access_ranges_eqb_eq _ _) eq_refl);
+      reflexivity ].
 Qed.
 
 (* --- sendto --- *)
