@@ -16889,6 +16889,64 @@ class ImportCheckTest(ReaderRunner):
             edited = self.owe(got, relabel, [screened, label]) or []
             label = dict(label, body=edited[-1]) if edited else label
 
+    def test_a_relabel_records_nothing_after_a_withdrawal_of_an_unknown_run_whose_review_comment_did_not_post(self):
+        """OSSV-221's architect, 2026-11-22 13:38Z and 14:21Z, for a run whose trust job could not learn mallory's
+        access (kind unknown, outside false): the screened CI run of mallory's #7 recorded check run 901 on HEAD, and
+        its screened pass (30) is #7's review comment. alice reviews HEAD by hand while GitHub's permission API gives no
+        answer, and her review gives a blocking finding: the post job withdraws 901 for it (the table's withdraw for an
+        unknown author), and its comment job's step "Record a withdrawal that the post job owes" runs first. GitHub
+        then refuses the edit of 30 that her review makes, so that review is nowhere on #7. The withdrawal is owed for
+        that verdict, whatever the kind: the label comment must keep the line of HEAD, and the next relabels of HEAD
+        (the API answers again: mallory is an outside author) must record no check run on HEAD."""
+        listed, _others = self.recorded()
+        screened = review_of(HEAD, at=ago(120))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        refused = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_issues_comments_30.fail")
+        record = ["--method", "POST", f"repos/{REPO}/check-runs"]
+        for case, blocked in (("with a screen", review_of(HEAD, "blocking")),
+                              ("with no screen", review_of(HEAD, "blocking", screened=False))):
+            with self.subTest(case=case):
+                route = "screen" if case == "with a screen" else "review"
+                unknown = dict(self.BY_HAND, route=route, outsider="mallory" if route == "screen" else "",
+                               outside="false", kind="unknown", started=ago(1))
+                comments = [screened, old]
+                self.serve(f"repos/{REPO}/check-runs/901", {"id": 901, "conclusion": "neutral"})
+                got = self.judge(["README.md"], "blocking", self.LPS, trust=unknown, event="workflow_dispatch",
+                                 comments=comments, listed=[listed], named=HEAD)
+                self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]), ("success", "", HEAD),
+                                 self.logs)
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(unknown, named=HEAD).items()}
+                ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                            "github.repository": REPO, "github.token": self.RUN_TOKEN, "needs.trust.result": "success",
+                            "needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                            "needs.screen.result": "success" if route == "screen" else "skipped",
+                            "needs.screen.outputs.verdict": "clean" if route == "screen" else "",
+                            "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                            "needs.review.outputs.verdict": "blocking", "needs.review.outputs.body": blocked["body"],
+                            "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                            "needs.post.result": got["result"], "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                            "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                            **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+                self.forget()
+                self.serve(f"repos/{REPO}/issues/7/comments", comments)
+                self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+                self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
+                outcomes = run_job(self, "comment", ctx, self.TOKENS)
+                self.assertEqual((outcomes[self.OWE], outcomes["Post the review, or replace the one posted before"]),
+                                 ("success", "failure"), self.logs)
+                label = ([dict(old, updated_at=ago(30), body=b) for _m, _e, b in label_comments(self.api)] or [old])[-1]
+                os.remove(refused)
+                standing = [dict(listed, conclusion="neutral")]
+                for value in (self.LPS + "\nCHANGES.md", self.LPS + "\nNEWS.md"):
+                    relabel = dict(self.RELABEL, started=ago(-1))
+                    got = self.judge(["README.md"], value=value, trust=relabel, event="workflow_dispatch",
+                                     comments=[screened, label], listed=standing)
+                    self.assertEqual([c for c in got["writes"] if c[:3] == record], [], self.logs)
+                    self.assertNotEqual(got["post"].get("recorded"), "true", self.logs)
+                    edited = self.owe(got, relabel, [screened, label]) or []
+                    label = dict(label, body=edited[-1]) if edited else label
+
     def test_a_relabel_records_nothing_after_a_withdrawal_whose_hold_comment_did_not_post(self):
         """OSSV-221's architect, 2026-11-22 13:38Z, for the hold job: the screened CI run of mallory's #7 recorded check
         run 901 on HEAD, and its screened pass (30) is #7's review comment. A rescreen of HEAD then has a screen that
