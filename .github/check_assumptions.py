@@ -7,10 +7,17 @@ dune generated, independently recheck its compiled proof closure with
 rocqchk, read the output of its two Print Assumptions blocks, and fail if
 an assumption is not permitted.
 
+The examples are checked in parallel, as many at once as there are CPUs
+this process may run on (CHECK_ASSUMPTIONS_JOBS sets another number).
+Each example still gets its own rocqchk run over its whole closure, as
+when they ran one after another: one run over several closures would check
+a library with universe constraints from outside its own closure loaded.
+
 Permitted: functional_extensionality_dep and the primitives of the
 PrimInt63, PrimString and PrimArray modules.
 """
 
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -18,6 +25,7 @@ import sys
 import tempfile
 
 BUILD = os.path.join("_build", "default", "theories")
+JOBS = "CHECK_ASSUMPTIONS_JOBS"
 PERMITTED_MODULES = ("PrimInt63", "PrimString", "PrimArray")
 PERMITTED_NAMES = ("functional_extensionality_dep",)
 BLOCK = re.compile(r"<PrintAssumptions>\s*(.*?)\s*</PrintAssumptions>", re.S)
@@ -43,6 +51,15 @@ def assumptions(text):
         elif not line.startswith(("Axioms", "Section Variables")):
             names.append(line)
     return names
+
+
+def jobs():
+    value = os.environ.get(JOBS)
+    if value is None:
+        return len(os.sched_getaffinity(0))
+    if not re.fullmatch(r"[0-9]+", value) or int(value) < 1:
+        sys.exit("%s must be a positive integer, not %r" % (JOBS, value))
+    return int(value)
 
 
 def check(name, tmp):
@@ -84,9 +101,10 @@ def main():
     if not examples:
         sys.exit("no examples found; run from the repository root")
     errors = []
-    with tempfile.TemporaryDirectory() as tmp:
-        for name in examples:
-            e = check(name, tmp)
+    with tempfile.TemporaryDirectory() as tmp, \
+            concurrent.futures.ThreadPoolExecutor(jobs()) as pool:
+        for name, e in zip(examples, pool.map(
+                lambda n: check(n, tmp), examples)):
             print("%s: %s" % (name, "ok" if not e else "FAIL"))
             errors += e
     for e in errors:
