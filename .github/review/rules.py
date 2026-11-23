@@ -1025,8 +1025,8 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
     label = answers(run["task"], run["outside"], run["outsider"], run["author"])["label"]
     if label == "unchanged":
         dropped = "".join(f" The workflow does not record {m}." for m in markers if OWED.fullmatch(m))
-        print(f"::notice::#{number}: GitHub did not say whether its author has write access. So this step changes "
-              f"nothing: no state label, no label comment and no line in it.{dropped}")
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access. So this step does not "
+              f"change its state label, and it does not write or change a label comment.{dropped}")
         return
     outsider = outside_author(run["outside"])
     state = label_state(outsider=outsider, **facts)
@@ -1104,11 +1104,12 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
             elif ended:
                 newer += f" {ended}, the end of the last step of run {wrote} that can write such a line."
             else:
-                newer = (f"The workflow has no time for the line, so no review comment of {withdrawn} from another run "
-                         f"removes it. The time comes from a hold of run {wrote}, or from a withdrawal whose summary "
-                         f"names a time of run {wrote}. Else it is the end of the last step of run {wrote} that can "
-                         f"write such a line. The workflow reads that time only after the comment and hold jobs of "
-                         f"run {wrote} end.")
+                newer = (f"The workflow has no time for the line, so it does not remove the line for a review comment "
+                         f"of {withdrawn} from another run. The time comes from a hold of run {wrote}, or from a "
+                         f"withdrawal whose summary names a time of run {wrote}; only a withdrawal that was there when "
+                         f"the post job of this run read the check runs counts. Else it is the end of the last step of "
+                         f"run {wrote} that can write such a line. The workflow reads that time only after the comment "
+                         f"and hold jobs of run {wrote} end.")
             print(f"#{number}: its label comment keeps {kept}. {said} {newer}")
             return ""
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}", labels)
@@ -1555,8 +1556,8 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
         summary = f"{did} at {at or now}, for the reason `{why}` of run {run} itself."
     elif source:
         summary = (f"{did}, for the reason `{why}` of run {source}. The withdrawal counts from {at}, a time of run "
-                   f"{source}. It is the time of a hold, of a withdrawal, or of the end of the last step that can "
-                   "write a withdraw-owed line.")
+                   f"{source}. It is the time of a hold or a withdrawal by run {source}, or the end of the last step "
+                   f"of run {source} that can record an owed withdrawal.")
     else:
         summary = (f"{did} at {now}, for the reason `{why}` of an earlier run. The workflow knows no time of that run, "
                    "so the withdrawal counts from this time.")
@@ -1574,8 +1575,8 @@ WITHDREW = re.compile(
     r"|`(?P<earlier>blocking|person|screen)` of an earlier run\. The workflow knows no time of that run, so the "
     r"withdrawal counts from this time)"
     r"|, for the reason `(?P<why>blocking|person|screen)` of run (?P<source>[1-9][0-9]*)\. The withdrawal counts from "
-    rf"(?P<since>{TIME.pattern}), a time of run (?P=source)\. It is the time of a hold, of a withdrawal, or of the end "
-    r"of the last step that can write a withdraw-owed line)\.$")
+    rf"(?P<since>{TIME.pattern}), a time of run (?P=source)\. It is the time of a hold or a withdrawal by run "
+    r"(?P=source), or the end of the last step of run (?P=source) that can record an owed withdrawal)\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
 WITHDRAWING = ("blocking", "person")
 
