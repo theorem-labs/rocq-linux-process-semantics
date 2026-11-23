@@ -252,9 +252,10 @@ jobs:
   # none needs to: an approval and a reopen start CI with the App's token, in the post job. Beside it, the token only
   # reads: issues and pull-requests (the items, their comments and reviews, and the pull requests), checks (the check
   # runs of a head: the value of REPO_PAIRS_IMPORT_PATHS that the import check recorded) and contents (the checkout).
-  # It holds no model. It checks out .github/review/held.sh alone, at the commit of main whose workflow file runs, and
-  # its step sources that file: it runs no other file of the repository. Its cost: one job of a few seconds for each
-  # event, on a standard runner, whose minutes GitHub does not bill in a public repository.
+  # It holds no model. It checks out .github/review/trusted.sh and .github/review/held.sh alone, at the commit of main
+  # whose workflow file runs, and its step sources those two files: it runs no other file of the repository. Its cost:
+  # one job of a few seconds for each event, on a standard runner, whose minutes GitHub does not bill in a public
+  # repository.
   rescreen:
     if: >-
       github.ref == 'refs/heads/main'
@@ -269,13 +270,15 @@ jobs:
       cancel-in-progress: false
     permissions: {actions: write, contents: read, issues: read, pull-requests: read, checks: read}
     steps:
-      # .github/review/held.sh alone, which the next step sources, at the commit of main whose workflow file runs
-      # (github.sha); never a file of a pull request.
+      # .github/review/trusted.sh and .github/review/held.sh alone, which the next step sources, at the commit of main
+      # whose workflow file runs (github.sha); never a file of a pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-          sparse-checkout: .github/review/held.sh
+          sparse-checkout: |
+            .github/review/trusted.sh
+            .github/review/held.sh
           sparse-checkout-cone-mode: false
       - name: Start the runs that the open items are due
         env:
@@ -370,23 +373,8 @@ jobs:
             fi
           fi
           seen=$(mktemp -d -p "$RUNNER_TEMP")
-          # trusted
-          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
-          # login in this step (permission_of).
-          declare -A permission_of=()
-          trusted() {
-            local permission
-            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
-            [[ ,$APPS, != *",$1,"* ]] || return 0
-            [[ $1 != *'[bot]' ]] || return 1
-            if [ -z "${permission_of[$1]+set}" ]; then
-              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-              permission_of[$1]=$permission
-            fi
-            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
-          }
-          # end of trusted
+          # trusted <login>: 0 for write access or one of the APPS, 1 for neither, 2 when GitHub could not say.
+          source "$GITHUB_WORKSPACE/.github/review/trusted.sh"
           source "$GITHUB_WORKSPACE/.github/review/held.sh"
           # restart <run>: the failed jobs of <run> run again (rerun).
           restart() {

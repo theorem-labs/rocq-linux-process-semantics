@@ -144,9 +144,9 @@
 #
 # The jobs, and what each one holds:
 #   trust   decides the task and the route: review, screen, or held at the limit. For a stop of the rescreen pass, it
-#           runs the pass's own functions again for the item (.github/review/held.sh). It checks out that file alone, at
-#           the workflow's own commit of main, and its token can only read metadata, contents, pull requests and
-#           issues, check runs, and the runs of this repository's workflows.
+#           runs the pass's own functions again for the item (.github/review/held.sh). It checks out that file and
+#           .github/review/trusted.sh alone, at the workflow's own commit of main, and its token can only read
+#           metadata, contents, pull requests and issues, check runs, and the runs of this repository's workflows.
 #   gather  reads the pull request or the issue as data into .review/, and keeps it as this run's artifact, which the
 #           screen job and the review job both take, by its SHA-256: the review reads what the screen passed. For an
 #           answer, it also lists the comments of the author that wait for an answer: each comment, review and
@@ -269,7 +269,8 @@
 # from main, each after Claude. The post, comment and hold jobs check out main's .github/ alone, and run only
 # .github/review/rules.py from it. The hold job also sources .github/review/held.sh from it, for the one rule of what
 # counts as a try of a run (try_rule) and the one rule of each writer of a hold comment (replaced_hold). The trust job
-# checks out .github/review/held.sh alone, at the commit of main whose workflow file runs, and sources that file alone.
+# checks out .github/review/trusted.sh and .github/review/held.sh alone, at the commit of main whose workflow file runs,
+# and sources those two files alone. The gather job sources .github/review/trusted.sh from its checkout of main.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -465,7 +466,8 @@ jobs:
     # actions: read for OUTSIDE_HOURLY_LIMIT, which reads this workflow's runs, and for a head's runs and their jobs;
     # issues and pull-requests: read for the item, its comments and its events, and the open pull requests; checks: read
     # for the check runs of a head, which the rescreen pass's functions read again for a stop (due_variable), and for
-    # the notices of a CI run's trust job (reviewed); contents: read for the checkout of .github/review/held.sh alone.
+    # the notices of a CI run's trust job (reviewed); contents: read for the checkout of .github/review/trusted.sh and
+    # .github/review/held.sh alone.
     permissions: {actions: read, contents: read, issues: read, pull-requests: read, checks: read}
     outputs:
       # review, answer, draft, reply, rescreen, approve, catchup, conflict, relabel, stop or measure (the top of this
@@ -514,13 +516,15 @@ jobs:
       # the hold comment that it takes the place of (empty for a new one), its title and text, and the head it names.
       stop: ${{ steps.trust.outputs.stop }}
     steps:
-      # .github/review/held.sh alone, which the next step sources, at the commit of main whose workflow file runs
-      # (github.sha); never a file of the pull request.
+      # .github/review/trusted.sh and .github/review/held.sh alone, which the next step sources, at the commit of main
+      # whose workflow file runs (github.sha); never a file of the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-          sparse-checkout: .github/review/held.sh
+          sparse-checkout: |
+            .github/review/trusted.sh
+            .github/review/held.sh
           sparse-checkout-cone-mode: false
       - name: Whether the author and the account that started the run have write access
         id: trust
@@ -558,23 +562,8 @@ jobs:
           [ "${GITHUB_REF:-}" = refs/heads/main ] \
             || { echo "::error::This run is not on refs/heads/main, so no job runs."; exit 1; }
           seen=$(mktemp -d -p "$RUNNER_TEMP")
-          # trusted
-          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
-          # login in this step (permission_of).
-          declare -A permission_of=()
-          trusted() {
-            local permission
-            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
-            [[ ,$APPS, != *",$1,"* ]] || return 0
-            [[ $1 != *'[bot]' ]] || return 1
-            if [ -z "${permission_of[$1]+set}" ]; then
-              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-              permission_of[$1]=$permission
-            fi
-            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
-          }
-          # end of trusted
+          # trusted <login>: 0 for write access or one of the APPS, 1 for neither, 2 when GitHub could not say.
+          source "$GITHUB_WORKSPACE/.github/review/trusted.sh"
           # known <login>: trusted's answer, 0 or 1; the run stops when GitHub could not say.
           known() {
             local rc=0
@@ -1437,23 +1426,8 @@ jobs:
           out=.review
           mkdir -p "$out"
           : > "$out/omitted.txt"
-          # trusted
-          # trusted <login>: 0 when <login> is one of the APPS, or an account that GitHub's collaborator permission API
-          # gives admin or write; 1 when it is neither; 2 when the API could not say. The API is asked once for each
-          # login in this step (permission_of).
-          declare -A permission_of=()
-          trusted() {
-            local permission
-            [[ $1 =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || return 1
-            [[ ,$APPS, != *",$1,"* ]] || return 0
-            [[ $1 != *'[bot]' ]] || return 1
-            if [ -z "${permission_of[$1]+set}" ]; then
-              permission=$(gh api "repos/$REPO/collaborators/$1/permission" --jq .permission) || return 2
-              permission_of[$1]=$permission
-            fi
-            [[ ${permission_of[$1]} == admin || ${permission_of[$1]} == write ]]
-          }
-          # end of trusted
+          # trusted <login>: 0 for write access or one of the APPS, 1 for neither, 2 when GitHub could not say.
+          source "$GITHUB_WORKSPACE/.github/review/trusted.sh"
           # comments
           # The comments, reviews and review comments that the review reads: those of the pull request's or the
           # issue's author, and of each account that trusted passes. GitHub's REST API names an App <name>[bot]. An
@@ -1728,10 +1702,12 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
         if: needs.trust.outputs.route != 'measure'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
+      # The one copy of the env and the script of this step: the review job's step of this name runs them as well
+      # (*take-env and *take there).
       - name: Take the gathered pull request or issue
         if: needs.trust.outputs.route != 'measure'
-        env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
-        run: |
+        env: &take-env {DIGEST: "${{ needs.gather.outputs.digest }}"}
+        run: &take |
           set -euo pipefail
           tar=$RUNNER_TEMP/review-data/review.tar
           [[ $DIGEST =~ ^[0-9a-f]{64}$ ]] || { echo "::error::the gather job gave no SHA-256"; exit 1; }
@@ -2024,22 +2000,10 @@ jobs:
       # What the gather job kept.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
+      # The env and the script of the screen job's step of this name (&take-env and &take there).
       - name: Take the gathered pull request or issue
-        env: {DIGEST: "${{ needs.gather.outputs.digest }}"}
-        run: |
-          set -euo pipefail
-          tar=$RUNNER_TEMP/review-data/review.tar
-          [[ $DIGEST =~ ^[0-9a-f]{64}$ ]] || { echo "::error::the gather job gave no SHA-256"; exit 1; }
-          printf '%s  %s\n' "$DIGEST" "$tar" | sha256sum -c --strict
-          # The listing goes to a file first: grep -q in a pipe would stop tar early, and pipefail would read that as
-          # the check passing.
-          tar -tf "$tar" > "$RUNNER_TEMP/review-data/members"
-          ! grep -qvE '^\.review(/|$)' "$RUNNER_TEMP/review-data/members" \
-            || { echo "::error::review.tar holds more than .review/"; exit 1; }
-          ! grep -qE '(^|/)\.\.(/|$)' "$RUNNER_TEMP/review-data/members" || { echo "::error::review.tar holds a .. path"; exit 1; }
-          [ ! -e .review ] || { echo "::error::.review is there already"; exit 1; }
-          tar -xf "$tar" --no-same-owner --no-same-permissions
-          echo "Took $(find .review -type f | wc -l) files."
+        env: *take-env
+        run: *take
 
       # The source the model describes, for the kernel and QEMU code that comments and issues cite.
       - name: Gather the Linux and QEMU source

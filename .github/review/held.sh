@@ -6,14 +6,14 @@
 #   the pass started it;
 # - the hold job's step "Label it and say that it was held" of review.yml, which reads try_rule, the one rule of what
 #   counts as a try of a run, and calls replaced_hold, the one rule of each writer of a hold comment.
-# Before each of the first two steps, its job checks out this file alone, at the commit whose workflow file runs
-# (github.sha, a commit of main). The hold job checks out main's .github/. So a file of main runs, and never a file of a
-# pull request.
+# Before each of the first two steps, its job checks out this file and trusted.sh, the file beside it, alone, at the
+# commit whose workflow file runs (github.sha, a commit of main). The hold job checks out main's .github/. So a file of
+# main runs, and never a file of a pull request.
 # Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
-# define the function trusted before it, and restart after it, which rerun calls. The functions and jq filters of the
-# file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment of the step, GITHUB_REPOSITORY_ID,
-# which GitHub sets in each step, and RUN_ID, which the trust step alone sets. The source line sets values, defines
-# functions, and makes $seen/due and $seen/stops empty. It reads nothing from GitHub.
+# source trusted.sh, which defines the function trusted, before it, and define restart after it, which rerun calls.
+# The functions and jq filters of the file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment
+# of the step, GITHUB_REPOSITORY_ID, which GitHub sets in each step, and RUN_ID, which the trust step alone sets. The
+# source line sets values, defines functions, and makes $seen/due and $seen/stops empty. It reads nothing from GitHub.
 # In the comments below, "this step" is the step that sources the file, and "this workflow" is review.yml.
 
 # titled: the names of the runs that the rescreen pass starts and that name an account (run-name):
