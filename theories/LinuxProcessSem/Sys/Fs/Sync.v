@@ -81,9 +81,10 @@ Open Scope sys_scope.
 
     The one object that answers 0 instead is a REGULAR FILE on a channel
     fd — which plain shell redirection (prog > out.txt) produces.  So
-    this is a MODEL ASSUMPTION that redirected stdio falsifies.
-    [ReadWrite.lseek_spec]'s -ESPIPE rests on the very same assumption
-    and the very same redirection falsifies it.
+    this is a MODEL ASSUMPTION that redirected stdio falsifies, which
+    SCOPE.md's "Assumptions that the model does not check" states for
+    fds 1 and 2.  [ReadWrite.lseek_spec]'s -ESPIPE rests on the very same
+    assumption and the very same redirection falsifies it.
 
     0 FOR A FILE, WHATEVER ITS ACCESS MODE.  fs/sync.c consults [f_mode]
     nowhere — nor [FMODE_*], [MAY_WRITE], [mnt_want_write], [IS_RDONLY]

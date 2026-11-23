@@ -1238,17 +1238,19 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     :1726-1727).  An ordinary catchable signal does not truncate it.
 
     The model cannot tell these cases apart — it classifies fds 1 and 2
-    as [FdChannel] unconditionally, without knowing whether the far end
-    is a pipe, a terminal, or a file — so it admits the short return
-    everywhere.  This is a known soundness gap against the syscall-modeling
-    priority: for a blocking pipe write of at most PIPE_BUF, the model admits
-    a positive short return Linux cannot produce.  Giving BOTH binaries the
-    same widened outcome set may make [equiv] coarser, but it does not make
+    as [FdChannel] unconditionally, without knowing which of the far
+    ends SCOPE.md's "Assumptions that the model does not check" allows
+    is on them — so it admits the short return everywhere.  This is a
+    known soundness gap against the syscall-modeling priority: for a
+    blocking pipe write of at most PIPE_BUF, the model admits a positive
+    short return Linux cannot produce.  Giving BOTH binaries the same
+    widened outcome set may make [equiv] coarser, but it does not make
     the claimed behavior faithful.
 
-    A SECOND thing this arm cannot see is whether the channel still
-    HAS a reader.  Linux kills the process there rather than answering
-    a count, and this arm answers a success.
+    Whether the channel still HAS a reader is a launch fact,
+    [m_channel_reader] ([State.in_channel_reader]): with no reader Linux
+    raises SIGPIPE rather than answering a count, and the channel arm
+    below answers that death (or declines, as [sigpipe_declines] says).
 
     File: fully deterministic — the readable prefix of the source lands
     in the interpreted file system at the fd's offset (zero-filling any
@@ -1830,11 +1832,12 @@ Qed.
     36544 bytes, an AF_UNIX stream socket's first skb.
 
     The model classifies fds 1 and 2 as channels without knowing what is
-    on them.  SCOPE.md ("Assumptions that the model does not check")
-    names the kinds a launch may put there: a pipe, a terminal, a regular
-    file on tmpfs or ramfs, a TCP stream socket and an AF_UNIX stream
-    socket.  Which one, and in what state, is hidden, so
-    the bound is the largest first copy over those kinds in the
+    on them.  SCOPE.md's "Assumptions that the model does not check"
+    names the far ends a launch may put there.  Which one, and in what
+    state, is hidden, so the bound is the largest first copy over those
+    far ends, and over the terminal and the regular file read below as a
+    cross-check (they are outside that scope for other reasons, and copy
+    less first), in the
     configuration of record (SCOPE.md, "The configuration of record": the
     riscv64 defconfig of v6.18.46 with testing/vm/kernel.fragment merged
     over it and every other =m symbol off), each read in Linux v6.18.46
@@ -1891,12 +1894,11 @@ Qed.
       (include/net/sock.h:3003-3005), each more than 256 + 320 bytes
       (include/linux/skbuff.h:273-275).
 
-    So 36544, the AF_UNIX stream socket's.  An AF_UNIX datagram or
-    seqpacket socket, whose write is one record that a fault anywhere in
-    it fails, and an arbitrary character device, whose [write] may copy
-    the whole count at once, are outside the model on fds 1 and 2: the
-    SCOPE.md assumption named at the head of this comment excludes them,
-    and says why a record over 36544 bytes would break the bound. *)
+    So 36544, the AF_UNIX stream socket's.  The far ends that SCOPE.md's
+    assumption puts outside the model on fds 1 and 2 do not change it:
+    the assumption gives each one's reason, and says why an AF_UNIX
+    datagram or seqpacket record over 36544 bytes would break the
+    bound. *)
 Definition channel_first_copy_max : Z := 36544.
 
 Definition write_spec (fd buf count : word) : Sys SyscallEffect :=

@@ -113,7 +113,9 @@ Open Scope sys_scope.
     trace events erase chunking.  It is NOT inert for TCGETS/TCSETS/
     TIOCSCTTY, which a program branches on.  So this arm assumes the
     run's standard descriptors are not terminals -- an obligation on the
-    environment.
+    environment, which SCOPE.md's "Assumptions that the model does not
+    check" states for fds 1 and 2 with the far ends a launch may put
+    there.
 
     OUT-OF-TREE MEASUREMENT (not a checked fact; nothing in this
     repository re-derives it).  Corpus: the eight requests below, issued

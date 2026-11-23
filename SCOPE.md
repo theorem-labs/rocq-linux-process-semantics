@@ -888,24 +888,41 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
-- The far end of descriptors 1 and 2 is one of these kinds: a pipe, a
-  terminal, a regular file on tmpfs or ramfs, a TCP stream socket, or an
-  AF_UNIX stream socket. The write arms classify both descriptors as
-  channels (`Sys/Fs/ReadWrite.v`) and admit a short write of any nonempty
-  readable prefix, and an `-EFAULT` with nothing written only for a fault
-  inside `ReadWrite.channel_first_copy_max` (36544 bytes), the largest
-  first copy of those kinds ("Short writes to a channel" below). An
-  AF_UNIX datagram or seqpacket socket is outside the model: its write is
-  one record, copied whole, so a fault anywhere in it answers `-EFAULT`
-  with nothing sent: `unix_dgram_sendmsg` copies the record at
-  `net/unix/af_unix.c:2174-2176`, Linux v6.18.46, and refuses a record
-  only over `sk_sndbuf - 32` (`net/unix/af_unix.c:2147`), so a record may
-  be longer than 36544 bytes; `unix_seqpacket_sendmsg` sends through it
-  (`net/unix/af_unix.c:2564`). There the model refuses that
-  `-EFAULT`, so a run whose descriptor 1 or 2 is such a socket is outside
-  what any statement covers. Any other character device on those
-  descriptors is outside the model too: its `write` may copy the whole
-  count at once.
+- The far end of descriptors 1 and 2 is a pipe, a TCP stream socket or
+  an AF_UNIX stream socket, open in blocking mode. These are the kinds
+  every arm the model gives an `FdChannel` holds for. The write arms
+  (`Sys/Fs/ReadWrite.v`) admit a short write of any nonempty readable
+  prefix, and an `-EFAULT` with nothing written only for a fault inside
+  `ReadWrite.channel_first_copy_max` (36544 bytes), the largest first copy
+  of those kinds ("Short writes to a channel" below), and they never
+  answer `-EAGAIN`. `lseek`, `pread64` and `pwrite64` answer `-ESPIPE`
+  (`stream_open` clears the seek and positioned modes, `fs/open.c:1658`,
+  Linux v6.18.46), `fsync` answers `-EINVAL` (none of them has an
+  `.fsync`, `fs/sync.c:183-184`), and `ioctl` answers `-ENOTTY` to the
+  terminal requests. Every other far end is outside the model, so a run
+  whose descriptor 1 or 2 is one of them is outside what any statement
+  covers:
+  - a terminal: `ioctl` answers `TIOCGWINSZ` with 0 there
+    (`drivers/tty/tty_io.c:2707-2708`), and `TCGETS` too, where the model
+    answers `-ENOTTY` (`Sys/Fs/Ioctl.v` says so in its header);
+  - a regular file: it is opened seekable (`fs/open.c:961`), so `lseek`,
+    `pread64` and `pwrite64` answer there, and tmpfs and ramfs give
+    `fsync` a `noop_fsync` that answers 0 (`mm/shmem.c:5263`,
+    `fs/ramfs/file-mmu.c:45`), where the model answers `-ESPIPE` and
+    `-EINVAL` (`Sys/Fs/Sync.v` says so);
+  - an AF_UNIX datagram or seqpacket socket: its write is one record,
+    copied whole, so a fault anywhere in it answers `-EFAULT` with nothing
+    sent: `unix_dgram_sendmsg` copies the record at
+    `net/unix/af_unix.c:2174-2176`, Linux v6.18.46, and refuses a record
+    only over `sk_sndbuf - 32` (`net/unix/af_unix.c:2147`), so a record
+    may be longer than 36544 bytes, where the model refuses that
+    `-EFAULT`; `unix_seqpacket_sendmsg` sends through it
+    (`net/unix/af_unix.c:2564`);
+  - any other character device: its `write` may copy the whole count at
+    once, or return it without reading a byte, as `/dev/null`'s
+    `write_null` does (`drivers/char/mem.c:418-422`);
+  - a far end in non-blocking mode: a full pipe, socket buffer or
+    terminal then answers `-EAGAIN`, which the write arms never give.
 - The launch leaves `RLIMIT_FSIZE` at `RLIM_INFINITY`, its initial value
   (`INIT_RLIMITS`, `include/asm-generic/resource.h:14`, Linux v6.18.46),
   and a run cannot lower it: the model answers `prlimit64` for
@@ -1870,17 +1887,15 @@ serious half.
   it or fails, so the positive short return that the model admits here is
   a behavior no supported system gives. The write arm of
   `Sys/Fs/ReadWrite.v` names it a known soundness gap. The model
-  classifies fds 1 and 2 as channels without knowing which far end of
-  the kinds "Assumptions that the model does not check" allows them it is
-  (a pipe, a terminal, a regular file, a TCP or an AF_UNIX stream
-  socket), so it admits the short return for all of them. Beside it, a
-  source readable at its first byte but not
-  throughout may be `-EFAULT` with nothing written, when its first
-  unreadable byte lies inside the largest first copy any far end of
-  those fds makes in the configuration of record
-  (`ReadWrite.channel_first_copy_max`, 36544 bytes: an AF_UNIX stream
-  socket's first skb, which beats a terminal's 2048-byte chunk, a TCP
-  socket's 32768-byte fragment and a pipe's page): a pipe answers a
+  classifies fds 1 and 2 as channels without knowing which of the far
+  ends that "Assumptions that the model does not check" allows is on
+  them, so it admits the short return for all of them. Beside it, a
+  source readable at its first byte but not throughout may be `-EFAULT`
+  with nothing written, when its first unreadable byte lies inside the
+  largest first copy any of those far ends makes in the configuration of
+  record (`ReadWrite.channel_first_copy_max`, 36544 bytes: an AF_UNIX
+  stream socket's first skb, which beats a TCP socket's 32768-byte
+  fragment and a pipe's page): a pipe answers a
   short copy with nothing counted `-EFAULT` however many readable bytes
   came before the hole, and the model cannot see which far end it is.
 - **A channel with no reader — fixed, and what it cost.** This used to
