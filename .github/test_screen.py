@@ -1451,6 +1451,33 @@ class ScreenTest(unittest.TestCase):
         self.assertTrue(text.endswith(got[-1]))
         self.assertEqual(screen.pieces("short", 30, 5), ["short"])
 
+    def test_the_screen_job_of_the_workflow_holds_by_the_rule_claude_or_both_detectors(self):
+        """R13 and b12: the screen's rule claude_or_both_detectors and its verdicts stay. The Screen step runs with the
+        env of the screen job of review.yml: its SCREEN_RULE and SCREEN_CHECKS, not values that a test sets. With
+        them, the Claude check alone, or Model Armor and Prompt Shields both, hold the item, and one detector alone
+        does not; all three checks run, and the reason names the rule claude_or_both_detectors. A workflow whose
+        screen job gives another rule (detectors, any, claude) or leaves a check out fails one of these cases."""
+        with open(os.path.join(HERE, "workflows", "review.yml"), encoding="utf-8") as f:
+            job = re.search(r"(?ms)^  screen:\n(.*?)^  [a-z_-]+:\n", f.read()).group(1)
+        env = {k: re.search(rf"(?m)^      {k}: (.*)$", job).group(1) for k in ("SCREEN_RULE", "SCREEN_CHECKS")}
+        suspicious = {"model_armor": (":sanitizeUserPrompt", lambda _b: armor("MATCH_FOUND", confidence="HIGH")),
+                      "prompt_shields": ("/contentsafety/text:shieldPrompt",
+                                         lambda b: shields(True, *[False] * (len(b["documents"]) - 1))),
+                      "claude": ("/v1/messages", lambda _b: message('{"verdict": "suspicious", "quotes": [], '
+                                                                    '"why": "It asks the model to drop its rules."}'))}
+        for words, want in ((("claude",), "held"), (("model_armor", "prompt_shields"), "held"),
+                            (("model_armor",), "clean"), (("prompt_shields",), "clean"), ((), "clean")):
+            with self.subTest(suspicious=words):
+                self.fresh()
+                self.item()
+                self.env.update(env)
+                for check in words:
+                    path, answer = suspicious[check]
+                    self.services.answers[path] = answer
+                v, reason = self.verdict()
+                self.assertEqual((v, reason["rule"], reason["ran"]),
+                                 (want, "claude_or_both_detectors", ["model_armor", "prompt_shields", "claude"]))
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)

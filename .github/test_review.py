@@ -3158,8 +3158,8 @@ class HoldTest(Holding):
         self.assertTrue(body.startswith("<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held "
                                         "this pull request"), body)
         self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
-        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
-                      "neither its state label nor the text of its label comment.", out)
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access. So this step changes "
+                      "nothing: no state label, no label comment and no line in it.", out)
 
     # A hold that is tried again says first from when, and which events start the run that takes it again (there is
     # no schedule), then that the author does not need to do anything, then, in a paragraph of its own, why. The events
@@ -14413,8 +14413,8 @@ class ConflictTest(Runner):
         bodies = self.comment(got["head"], [old], labels=("review-held", THEOREM_LABEL))
         self.assertEqual(len(bodies), 1, gh_calls(self.api))
         self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
-        self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
-                      "neither its state label nor the text of its label comment.", self.out)
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access. So this step changes "
+                      "nothing: no state label, no label comment and no line in it.", self.out)
 
     # The trust job's outputs of a conflict run of mallory's #7: an outside author, and no screen.
     MALLORY = {"task": "conflict", "route": "review", "outsider": "", "kind": "outsider", "outside": "true",
@@ -14997,7 +14997,9 @@ class LabelTest(Runner):
         gives an outside author's item (outside true) the state label of its state. For any other author (a writer, or
         a run that gives no kind) it takes each state label off but writes the label comment of the state. For an
         author whose write access GitHub did not give (kind unknown) it reads and writes nothing, and a notice says
-        why. An empty outside is not outside, and an empty kind is not unknown."""
+        why. An empty outside is not outside, and an empty kind is not unknown. For that author, a marker line of an
+        owed withdrawal that the label step gives (an item with no label comment) does not go in either, and the notice
+        says so (the fresh reader of round 19b, N1)."""
         old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("working")}
         for case, run, labels, written in (
                 ("an outside author", ("task=hold", "outside=true", "outsider=eve", "author=outsider"),
@@ -15017,8 +15019,15 @@ class LabelTest(Runner):
                                                                  rules.label_comment("screen", old["body"]))])
                     continue
                 self.assertEqual(self.calls(), [])
-                self.assertIn("::notice::#7: GitHub did not say whether its author has write access, so this step "
-                              "changes neither its state label nor the text of its label comment.", out)
+                self.assertIn("::notice::#7: GitHub did not say whether its author has write access. So this step "
+                              "changes nothing: no state label, no label comment and no line in it.", out)
+        line = f"<!-- withdraw-owed {HEAD} screen 100 -->"
+        rc, out = self.rule("label", "7", "screen_held=true", f"marker={line}", labels=("review-held",),
+                            run=("task=hold", "outside=false", "outsider=eve", "author=unknown"))
+        self.assertEqual((rc, self.calls()), (0, []), out)
+        self.assertIn("::notice::#7: GitHub did not say whether its author has write access. So this step changes "
+                      f"nothing: no state label, no label comment and no line in it. The workflow does not record "
+                      f"{line}.\n", out)
 
 
 class GlobTest(unittest.TestCase):
@@ -15953,6 +15962,15 @@ class ImportCheckTest(ReaderRunner):
         (request,) = [b for _t, e, b in got["withdrawn"] if e == f"repos/{REPO}/check-runs/{check['id']}"]
         return {**check, **request}
 
+    @staticmethod
+    def no_time(run):
+        """The end of the log of the step that keeps the line of run on HEAD when no hold, withdrawal or step of run
+        gives the line a time (the fresh reader of round 19b, N2)."""
+        return (f"The workflow has no time for the line, so no review comment of {HEAD} from another run removes it. "
+                f"The time comes from a hold of run {run}, or from a withdrawal whose summary names a time of run "
+                f"{run}. Else it is the end of the last step of run {run} that can write such a line. The workflow "
+                f"reads that time only after the comment and hold jobs of run {run} end.")
+
     def test_a_later_review_or_screen_of_a_head_that_does_not_meet_r12_withdraws_its_check_run(self):
         """R12 (spec v71): the review of HEAD recorded the check run with conclusion success. A later review of the same
         head that gives the verdict person (alice's review by hand, which runs no screen), or a blocking finding (a
@@ -15995,7 +16013,7 @@ class ImportCheckTest(ReaderRunner):
                 # which it counts (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z).
                 at = body.pop("completed_at", "")
                 self.assertTrue(rules.TIME.fullmatch(at), at)
-                ended = (f"at {at}, for its own reason `{reason}`." if trust is not self.RELABEL else
+                ended = (f"at {at}, for the reason `{reason}` of run 100 itself." if trust is not self.RELABEL else
                          f"at {at}, for the reason `{reason}` of an earlier run. The workflow knows no time of that "
                          "run, so the withdrawal counts from this time.")
                 self.assertEqual(body, {"status": "completed", "conclusion": "neutral", "output": {
@@ -16304,8 +16322,8 @@ class ImportCheckTest(ReaderRunner):
                               trust.get("outside")), (0, task, "review", "", "unknown", "false"), out)
             runs.append({k: trust[k] for k in keys})
         old = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("person")}
-        notice = ("::notice::#7: GitHub did not say whether its author has write access, so this step changes "
-                  "neither its state label nor the text of its label comment.")
+        notice = ("::notice::#7: GitHub did not say whether its author has write access. So this step changes "
+                  "nothing: no state label, no label comment and no line in it.")
         for trust, verdict, comments in ((runs[0], "pass", [old]), (runs[0], "blocking", [old]),
                                          (runs[0], "person", [old]), (runs[1], "", [review_of(HEAD, "person"), old])):
             with self.subTest(task=trust["task"], verdict=verdict):
@@ -16704,8 +16722,9 @@ class ImportCheckTest(ReaderRunner):
                              (f"Not approved for the import: pull request #7 at {HEAD[:12]}, because {end}",
                               f"{first} So this check is no longer an approval for the import. Run 100 of the review "
                               f"workflow withdrew it from head commit {HEAD}, for the reason `{why}` of run 80. The "
-                              "withdrawal counts from 2026-11-23T01:00:00Z, when run 80 held this head commit, "
-                              "withdrew a check of it, or wrote that it owes a withdrawal."))
+                              "withdrawal counts from 2026-11-23T01:00:00Z, a time of run 80. It is the time of a "
+                              "hold, of a withdrawal, or of the end of the last step that can write a withdraw-owed "
+                              "line."))
 
     def test_the_line_of_a_refused_withdrawal_is_recorded_also_when_the_review_could_not_be_posted(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z): a refused withdrawal leaves the line
@@ -17563,9 +17582,7 @@ class ImportCheckTest(ReaderRunner):
                                          else [], self.logs)
                         if not refused:
                             self.assertIn(f"#7: its label comment keeps {line}. No review comment of run 100 gives "
-                                          f"{HEAD} the verdict {verdict}. No hold, withdrawal or step of run 100 gives "
-                                          f"a time for the line. So no review comment of {HEAD} from another run takes "
-                                          "it out.", "\n".join(self.logs))
+                                          f"{HEAD} the verdict {verdict}. {self.no_time('100')}", "\n".join(self.logs))
                         self.assertEqual(state_labels(self.api), [])
                         self.assertNotIn(["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"],
                                          writes(self.api))
@@ -17657,8 +17674,7 @@ class ImportCheckTest(ReaderRunner):
                       "withdraw.", "\n".join(self.logs))
         self.assertEqual(self.owe(got, relabel, [passed, marked]), [])
         self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 100 -->. No review comment of "
-                      f"run 100 gives {HEAD} the verdict blocking. No hold, withdrawal or step of run 100 gives a time "
-                      f"for the line. So no review comment of {HEAD} from another run takes it out.", self.logs[-1])
+                      f"run 100 gives {HEAD} the verdict blocking. {self.no_time('100')}", self.logs[-1])
 
     def test_a_post_job_that_fails_before_its_withdrawal_owes_the_withdrawal_of_its_own_verdict(self):
         """Rule (b) of OSSV-221's architect (2026-11-21 04:57Z), and the post job's output owed (review.yml): "<head>
@@ -17737,9 +17753,9 @@ class ImportCheckTest(ReaderRunner):
                                   "screen held this head commit",
                                   "An automated screen held this head commit. So this check is no longer an approval "
                                   f"for the import. Run 100 of the review workflow withdrew it from head commit "
-                                  f"{HEAD}, for the reason `screen` of run 90. The withdrawal counts from {at90}, when "
-                                  "run 90 held this head commit, withdrew a check of it, or wrote that it owes a "
-                                  "withdrawal."))
+                                  f"{HEAD}, for the reason `screen` of run 90. The withdrawal counts from {at90}, a "
+                                  "time of run 90. It is the time of a hold, of a withdrawal, or of the end of the "
+                                  "last step that can write a withdraw-owed line."))
                 logs = "\n".join(self.logs[start:])
                 self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
                               f"automated screen held {HEAD}.", logs)
@@ -17754,8 +17770,9 @@ class ImportCheckTest(ReaderRunner):
                 else:
                     self.assertEqual(edited, [])
                     self.assertIn(f"#7: its label comment keeps {line}. No hold comment of the screen of run 90 names "
-                                  f"{HEAD}. No screened review comment of {HEAD} is newer than {at90}, the time of the "
-                                  "hold or the withdrawal of run 90.", self.logs[-1])
+                                  f"{HEAD}. No screened review comment of {HEAD} is newer than {at90}. That is the "
+                                  "time of the line, from a hold of run 90 or from a withdrawal whose summary names a "
+                                  "time of run 90.", self.logs[-1])
                     cleared = label["body"]
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[*held, screened, dict(label, body=cleared)])
@@ -17806,8 +17823,9 @@ class ImportCheckTest(ReaderRunner):
                 else:
                     self.assertEqual(edited, [])
                     self.assertIn(f"#7: its label comment keeps {line}. No review comment of run 80 gives {HEAD} the "
-                                  f"verdict blocking. No screened review comment of {HEAD} is newer than {at80}, the "
-                                  "time of the hold or the withdrawal of run 80.", self.logs[-1])
+                                  f"verdict blocking. No screened review comment of {HEAD} is newer than {at80}. That "
+                                  "is the time of the line, from a hold of run 80 or from a withdrawal whose summary "
+                                  "names a time of run 80.", self.logs[-1])
                     cleared = label["body"]
                 # Relabel 2: a pass with no line has no reason to withdraw, and records only for an outside author.
                 applied = self.applied(listed, got)
@@ -17971,8 +17989,9 @@ class ImportCheckTest(ReaderRunner):
                          (f"repos/{REPO}/check-runs/901",
                           "An automated review of this head commit asked for a change. So this check is no longer an "
                           "approval for the import. Run 100 of the review workflow withdrew it from head commit "
-                          f"{HEAD}, for the reason `blocking` of run 90. The withdrawal counts from {ended}, when run "
-                          "90 held this head commit, withdrew a check of it, or wrote that it owes a withdrawal."))
+                          f"{HEAD}, for the reason `blocking` of run 90. The withdrawal counts from {ended}, a time of "
+                          "run 90. It is the time of a hold, of a withdrawal, or of the end of the last step that can "
+                          "write a withdraw-owed line."))
         (cleared,) = edited
         self.assertNotIn(f"<!-- withdraw-owed {HEAD} blocking 90 -->", cleared.split("\n"))
         got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
@@ -17998,7 +18017,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(rules.withdrawn_by(dict(request, conclusion="neutral"), HEAD), ("blocking", "90", ended))
         self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 90 -->. No review comment of "
                       f"run 90 gives {HEAD} the verdict blocking. No screened review comment of {HEAD} is newer than "
-                      f"{ended}, when the last step of run 90 that can write such a line ended.", self.logs[-1])
+                      f"{ended}, the end of the last step of run 90 that can write such a line.", self.logs[-1])
         got = self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
                          event="workflow_dispatch", comments=[passed, label], listed=[self.applied(listed, got)])
         self.assertNotRecorded(got, "withdrawn")
@@ -18023,10 +18042,9 @@ class ImportCheckTest(ReaderRunner):
                          f"at {request['completed_at']}, for the reason `blocking` of an earlier run. The workflow "
                          "knows no time of that run, so the withdrawal counts from this time.")
         self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 90 -->. No review comment of "
-                      f"run 90 gives {HEAD} the verdict blocking. No hold, withdrawal or step of run 90 gives a time "
-                      f"for the line. So no review comment of {HEAD} from another run takes it out.", self.logs[-1])
-        self.assertIn("The jobs of run 90 could not be read, so they give its withdraw-owed line no time: gh: Bad "
-                      "Gateway (HTTP 502)", self.logs[-1])
+                      f"run 90 gives {HEAD} the verdict blocking. {self.no_time('90')}", self.logs[-1])
+        self.assertIn("The workflow could not read the jobs of run 90, so it has no time for the withdraw-owed line of "
+                      "run 90: gh: Bad Gateway (HTTP 502)", self.logs[-1])
         got, edited, *_ = self.changed_rules('        return ""\n    times = []\n',
                                              '        return "2000-01-01T00:00:00Z"\n    times = []\n',
                                              lambda: self.refused_line(ago(30)))
@@ -18224,8 +18242,7 @@ class ImportCheckTest(ReaderRunner):
                 if refused:
                     self.assertIn(line, label["body"].split("\n"))
                     self.assertIn(f"#7: its label comment keeps {line}. No hold comment of the screen of run 100 names "
-                                  f"{HEAD}. No hold, withdrawal or step of run 100 gives a time for the line. So no "
-                                  f"review comment of {HEAD} from another run takes it out.", self.logs[-1])
+                                  f"{HEAD}. {self.no_time('100')}", self.logs[-1])
                 else:
                     self.assertEqual(got["post"]["decision"], "held", self.logs)
 
@@ -18619,8 +18636,8 @@ class KindTableTest(Scheduled, ReaderRunner):
 
     AUTHORS = {"writer": "alice", "outsider": "mallory", "unknown": "carol"}
     UNCHANGED = "unchanged"
-    NOTICE = ("::notice::#7: GitHub did not say whether its author has write access, so this step changes neither "
-              "its state label nor the text of its label comment.")
+    NOTICE = ("::notice::#7: GitHub did not say whether its author has write access. So this step changes nothing: "
+              "no state label, no label comment and no line in it.")
     # The label of each state that a cell gives, as the approved table names it (None: no state label).
     LABEL_OF = {"reviewed": None, "import": None, "working": None, "decide": THEOREM_LABEL, "person": THEOREM_LABEL,
                 "will-fix": THEOREM_LABEL, "refused-answer": THEOREM_LABEL, "draft": THEOREM_LABEL,
@@ -19063,7 +19080,7 @@ class KindTableTest(Scheduled, ReaderRunner):
             self.assertIn(self.NOTICE, log)
             if "W" in w["app"]:
                 self.assertIn(f"::notice::#7: GitHub did not say whether its author has write access, so this step "
-                              f"takes no withdraw-owed line of {HEAD} out of its label comment.", log)
+                              f"removes no withdraw-owed line of {HEAD} from its label comment.", log)
         if w["decision"]:
             self.assertEqual(got["decision"], w["decision"], log)
         if w["said"]:

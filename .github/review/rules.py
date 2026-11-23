@@ -1017,14 +1017,16 @@ def answers(task, outside, outsider, kind=""):
 def set_state(number, run, facts, markers=(), head="", labels=None):
     """Gives the item number the state that facts give (label_state), as the label answer of the author-kind table for
     run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice.
-    label_state's outsider is outside_author of the trust job's outside. For an outside pull request, the label comment
-    names the steps of R12 for the import, and holds the marker line of R12 for head when head is given (import_marker).
-    The label comment is made once before any write, so that a marker or a head that it refuses changes nothing on
-    GitHub."""
+    That notice names each line of OWED among markers, which the workflow then does not record: the step gives such a
+    line only for an item with no label comment (owe). label_state's outsider is outside_author of the trust job's
+    outside. For an outside pull request, the label comment names the steps of R12 for the import, and holds the marker
+    line of R12 for head when head is given (import_marker). The label comment is made once before any write, so that a
+    marker or a head that it refuses changes nothing on GitHub."""
     label = answers(run["task"], run["outside"], run["outsider"], run["author"])["label"]
     if label == "unchanged":
-        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so this step changes "
-              "neither its state label nor the text of its label comment.")
+        dropped = "".join(f" The workflow does not record {m}." for m in markers if OWED.fullmatch(m))
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access. So this step changes "
+              f"nothing: no state label, no label comment and no line in it.{dropped}")
         return
     outsider = outside_author(run["outside"])
     state = label_state(outsider=outsider, **facts)
@@ -1074,8 +1076,8 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     sources = sources or {}
     if (withdrawn and not owed
             and answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged"):
-        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so this step takes no "
-              f"withdraw-owed line of {withdrawn} out of its label comment.")
+        print(f"::notice::#{number}: GitHub did not say whether its author has write access, so this step removes no "
+              f"withdraw-owed line of {withdrawn} from its label comment.")
         return ""
     comments = labels = None
     if (withdrawn and not owed) or (owed and not own):
@@ -1097,12 +1099,16 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}."
             newer = f"No {'screened ' if screened else ''}review comment of {withdrawn} is newer than"
             if since:
-                newer += f" {since}, the time of the hold or the withdrawal of run {wrote}."
+                newer += (f" {since}. That is the time of the line, from a hold of run {wrote} or from a withdrawal "
+                          f"whose summary names a time of run {wrote}.")
             elif ended:
-                newer += f" {ended}, when the last step of run {wrote} that can write such a line ended."
+                newer += f" {ended}, the end of the last step of run {wrote} that can write such a line."
             else:
-                newer = (f"No hold, withdrawal or step of run {wrote} gives a time for the line. So no review comment "
-                         f"of {withdrawn} from another run takes it out.")
+                newer = (f"The workflow has no time for the line, so no review comment of {withdrawn} from another run "
+                         f"removes it. The time comes from a hold of run {wrote}, or from a withdrawal whose summary "
+                         f"names a time of run {wrote}. Else it is the end of the last step of run {wrote} that can "
+                         f"write such a line. The workflow reads that time only after the comment and hold jobs of "
+                         f"run {wrote} end.")
             print(f"#{number}: its label comment keeps {kept}. {said} {newer}")
             return ""
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}", labels)
@@ -1546,10 +1552,11 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
     did = (f"{first} So this check is no longer an approval for the import. Run {run} of the review workflow withdrew "
            f"it from head commit {head}")
     if own:
-        summary = f"{did} at {at or now}, for its own reason `{why}`."
+        summary = f"{did} at {at or now}, for the reason `{why}` of run {run} itself."
     elif source:
-        summary = (f"{did}, for the reason `{why}` of run {source}. The withdrawal counts from {at}, when run {source} "
-                   "held this head commit, withdrew a check of it, or wrote that it owes a withdrawal.")
+        summary = (f"{did}, for the reason `{why}` of run {source}. The withdrawal counts from {at}, a time of run "
+                   f"{source}. It is the time of a hold, of a withdrawal, or of the end of the last step that can "
+                   "write a withdraw-owed line.")
     else:
         summary = (f"{did} at {now}, for the reason `{why}` of an earlier run. The workflow knows no time of that run, "
                    "so the withdrawal counts from this time.")
@@ -1563,12 +1570,12 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
 # summary names one.
 WITHDREW = re.compile(
     r" Run (?P<run>[1-9][0-9]*) of the review workflow withdrew it from head commit (?P<head>[0-9a-f]{40})"
-    rf"(?: at (?P<at>{TIME.pattern}), for (?:its own reason `(?P<own>blocking|person|screen)`"
-    r"|the reason `(?P<earlier>blocking|person|screen)` of an earlier run\. The workflow knows no time of that run, so "
-    r"the withdrawal counts from this time)"
+    rf"(?: at (?P<at>{TIME.pattern}), for the reason (?:`(?P<own>blocking|person|screen)` of run (?P=run) itself"
+    r"|`(?P<earlier>blocking|person|screen)` of an earlier run\. The workflow knows no time of that run, so the "
+    r"withdrawal counts from this time)"
     r"|, for the reason `(?P<why>blocking|person|screen)` of run (?P<source>[1-9][0-9]*)\. The withdrawal counts from "
-    rf"(?P<since>{TIME.pattern}), when run (?P=source) held this head commit, withdrew a check of it, or wrote that it "
-    r"owes a withdrawal)\.$")
+    rf"(?P<since>{TIME.pattern}), a time of run (?P=source)\. It is the time of a hold, of a withdrawal, or of the end "
+    r"of the last step that can write a withdraw-owed line)\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
 WITHDRAWING = ("blocking", "person")
 
@@ -1741,8 +1748,8 @@ def line_written(run):
         jobs = gh_objects("--method", "GET", "--paginate", f"repos/{os.environ['REPO']}/actions/runs/{run}/jobs",
                           "-f", "filter=all", "-F", "per_page=100", "--jq", ".jobs[] | @json")
     except (GhError, ValueError) as e:
-        print(f"The jobs of run {run} could not be read, so they give its withdraw-owed line no time: {e}",
-              file=sys.stderr)
+        print(f"The workflow could not read the jobs of run {run}, so it has no time for the withdraw-owed line of run "
+              f"{run}: {e}", file=sys.stderr)
         return ""
     times = []
     for job in jobs:
