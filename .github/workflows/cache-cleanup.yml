@@ -1,0 +1,61 @@
+# Deletes a pull request's Actions caches when the pull request closes.
+#
+# ci.yml saves a dune cache per lane (and one for the opam job) on a pull
+# request from a branch of this repository, scoped by GitHub to
+# refs/pull/<n>/merge, so that the pull request's later pushes rebuild only
+# what changed since its last push. Those entries serve nothing once the pull
+# request closes: GitHub scopes them to that ref alone. They still count
+# against the repository's 10 GB of Actions cache until GitHub evicts the least
+# recently used entries, and on 2026-11-22 they did: with about four pull
+# requests' entries (0.5-0.9 GB each) the repository reached the limit, and
+# GitHub evicted main's 9.2 and 9.3 dune caches within the hour. Deleting a
+# closed pull request's entries keeps the space for main and the open pull
+# requests. This is GitHub's documented clean-up (docs.github.com, "Managing
+# caches", "Force deleting cache entries"), which lists up to 100 entries.
+#
+# A CI run of the pull request can still be running when it closes, and save
+# after the clean-up. So this workflow joins that run's concurrency group,
+# `CI-refs/pull/<n>/merge` (ci.yml's `${{ github.workflow }}-${{ github.ref }}`
+# for a pull request), with cancel-in-progress: starting the clean-up cancels
+# the pull request's running CI run first. The group names the pull request's
+# own ref, so it can never cancel a run of main. If ci.yml's name or group
+# changes, this group must change with it.
+#
+# It checks out nothing and runs no code of the pull request. A fork's pull
+# request saves no dune cache (ci.yml), and its token could not delete one, so
+# the job runs for pull requests from this repository's branches only.
+name: Cache clean-up
+
+on:
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: CI-refs/pull/${{ github.event.pull_request.number }}/merge
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Delete the closed pull request's caches
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Delete the caches on refs/pull/<n>/merge (up to 100)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -uo pipefail
+          ids=$(gh cache list -R "$REPO" --ref "$REF" --limit 100 --json id --jq '.[].id') \
+            || { echo "::warning::could not list the caches of $REF"; exit 0; }
+          [ -n "$ids" ] || { echo "no caches on $REF"; exit 0; }
+          for id in $ids; do
+            gh cache delete -R "$REPO" "$id" && echo "deleted cache $id" \
+              || echo "::warning::could not delete cache $id"
+          done
