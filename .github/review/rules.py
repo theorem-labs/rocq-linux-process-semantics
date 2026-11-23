@@ -37,28 +37,28 @@ trust job's outside is true) it gives the item the state label of its state. For
 did not give (author=unknown) it changes nothing: no state label goes on or off, the label comment stays as it is, and
 a notice says why. For any other author, the item gets no state label and loses each one that it has, but its label
 comment is the one of its state, with the marker of the state's label. The state label is waits-on-author when the
-next step is the author's, waits-on-theorem when it is Sami's (or a person's at Theorem, in the states steering and
-no-key), and none while the workflow works on the item. Setting one label takes the other off. review-held, the mark
-of a hold, stays beside them. The label comment is one comment of github-actions[bot] on the item, edited in place
-(label_comment). Its first line is <!-- review-label -->, its text names the next step and who takes it, and with a
-state label its last line is the marker <!-- waits-on-author --> or <!-- waits-on-theorem: Sami -->. It keeps each
-marker line of KEPT that it holds, and a marker=<line> of the same kind takes the place of that line. It holds
-<!-- review-conflict-state <head> --> while it gives the head waits-on-author for a merge conflict, and loses that line
-with any other state. The state steering (the fact steering=true, with head=<commit>) records
-<!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, so the post job approves none
-of its runs, and the rescreen pass starts no approval of it. The state no-key (the fact no_key=true, with
-head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the screen passed the head, but the environment
-post held no key of the OSS Verify App, so the post job approved none of its runs, and the rescreen pass starts no
-approval of it. In a state with no state label (working, reviewed or import), an item that has a label comment gets
-the text of its state. An item that has none gets none, unless a marker=<line> is the line of an owed withdrawal
-(OWED): then it gets the label comment of its state, with that line. For an outside pull request (the fact kind=pr,
-and an outside author) in the state decide or person, the text also names the step of R12 for the import into the
-internal repository (import_steps), from the facts import_paths, the text of the variable REPO_PAIRS_IMPORT_PATHS,
-given only when it is set, and decision, the post job's decision (DECISIONS). With head=<commit>, the label comment of
-an outside pull request holds the marker line of R12 for that head and that text (import_marker). A pull request whose
-review gave a verdict, and that no rule before it takes (a conflict, a hold, a stop of the post job, a refusal, or the
-outcome of an outside author's item), is in the state reviewed, whoever started the run: its review names the next
-step. GH_TOKEN and REPO come from the job's environment, as for gh in the workflow.
+next step is the author's, waits-on-theorem when it is Sami's, and none while the workflow works on the item. Setting
+one label takes the other off. review-held, the mark of a hold, stays beside them. The label comment is one comment of
+github-actions[bot] on the item, edited in place (label_comment). Its first line is <!-- review-label -->, its text
+names the next step and who takes it, and with a state label its last line is the marker <!-- waits-on-author --> or
+<!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds, and a marker=<line> of the same kind
+takes the place of that line. It holds <!-- review-conflict-state <head> --> while it gives the head waits-on-author
+for a merge conflict, and loses that line with any other state. The state steering (the fact steering=true, with
+head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, or
+3,000 files or more, so the post job approves none of its runs, and the rescreen pass starts no approval of it. The
+state no-key (the fact no_key=true, with head=<commit>) records <!-- review-no-key <head> -->, a line of KEPT: the
+screen passed the head, but the environment post held no key of the OSS Verify App, so the post job approved none of
+its runs, and the rescreen pass starts no approval of it. In a state with no state label (working, reviewed or
+import), an item that has a label comment gets the text of its state. An item that has none gets none, unless a
+marker=<line> is the line of an owed withdrawal (OWED): then it gets the label comment of its state, with that line.
+For an outside pull request (the fact kind=pr, and an outside author) in the state decide or person, the text also
+names the step of R12 for the import into the internal repository (import_steps), from the facts import_paths, the
+text of the variable REPO_PAIRS_IMPORT_PATHS, given only when it is set, and decision, the post job's decision
+(DECISIONS). With head=<commit>, the label comment of an outside pull request holds the marker line of R12 for that
+head and that text (import_marker). A pull request whose review gave a verdict, and that no rule before it takes (a
+conflict, a hold, a stop of the post job, a refusal, or the outcome of an outside author's item), is in the state
+reviewed, whoever started the run: its review names the next step. GH_TOKEN and REPO come from the job's
+environment, as for gh in the workflow.
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
@@ -317,11 +317,11 @@ FACTS = {
     "refused": "",
     # The screen held the item.
     "screen_held": False,
-    # A held pull request whose head changes a file under .github/, so the post job approved none of its runs (R10):
-    # a person at Theorem approves them.
+    # A held pull request whose head changes a file under .github/, or 3,000 files or more, so the post job approved
+    # none of its runs (R10): Sami approves them.
     "steering": False,
     # A held pull request whose head the screen passed, while the environment post held no key of the
-    # OSS Verify App, so the post job approved none of its runs (R10): a person at Theorem approves them.
+    # OSS Verify App, so the post job approved none of its runs (R10): Sami approves them.
     "no_key": False,
     # A hold that the workflow tries again: at the hourly limit of an account, at the hourly cap, or of a review that
     # did not finish. Its hold comment gives the time.
@@ -443,20 +443,22 @@ STATES = {
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
-    # A held pull request whose head changes a file under .github/ (R10): the post job approved none of its runs. Its
-    # next step names Sami, the person at Theorem who approves them on GitHub, and the label comment records the head
-    # (steering_line).
+    # A held pull request whose head changes a file under .github/, or that changes 3,000 files or more, so that
+    # GitHub's list of its files can hide such a file (R10): the post job approved none of its runs. Its next step
+    # names Sami, a person at Theorem with write access, who approves them on GitHub, and the label comment records the
+    # head (steering_line).
     "steering": (
-        THEOREM, "Sami approves the checks of this pull request on GitHub.",
-        "This pull request changes a file under `.github/`, so the workflow does not approve its checks. A person at "
-        "Theorem with write access approves the runs of this pull request on GitHub. You do not need to do anything."),
+        THEOREM, "Sami, a person at Theorem with write access, approves the runs of this pull request on GitHub.",
+        "This pull request changes a file under `.github/`, or it changes 3,000 files or more, and GitHub lists at "
+        "most 3,000 files of a pull request. So the workflow does not approve its runs. You do not need to do "
+        "anything."),
     # A held pull request whose head the screen passed, while the environment post held no key of the
     # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. Its
     # next step names Sami, as for the state steering, and the label comment records the head (no_key_line).
     "no-key": (
-        THEOREM, "Sami approves the checks of this pull request on GitHub.",
-        "The workflow cannot approve the checks of a pull request in this repository yet. A person at Theorem with "
-        "write access approves the runs of this pull request on GitHub. You do not need to do anything."),
+        THEOREM, "Sami, a person at Theorem with write access, approves the runs of this pull request on GitHub.",
+        "The workflow cannot approve the runs of a pull request in this repository yet. You do not need to do "
+        "anything."),
     "will-fix": (
         THEOREM, "Sami replies to your comment.",
         "You wrote that you will make the change, so no automated fix runs. After your push, the automated review "
@@ -507,9 +509,9 @@ TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 # The marker lines of other kinds that a label comment keeps: the import's paths that a decision on a head read
 # (R12), the stored draft of an issue's reply, the approved reply that posted, the head that a catch-up closed and
 # reopened the pull request at (D16 (a): once for each head), the head whose runs the post job did not approve,
-# because it changes a file under .github/ or because the environment post held no key of the OSS Verify App
-# (R10: the rescreen pass starts no approval of it again), and the withdrawal of the import check runs of a head
-# that a run owes (OWED).
+# because it changes a file under .github/ or 3,000 files or more, or because the environment post held no key of the
+# OSS Verify App (R10: the rescreen pass starts no approval of it again), and the withdrawal of the import check runs
+# of a head that a run owes (OWED).
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
                   r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->"
@@ -669,8 +671,9 @@ def conflict_state(head):
 
 
 def steering_line(head):
-    """The marker line of KEPT that records head as a head that changes a file under .github/ (the state steering):
-    the post job approved none of its runs, and the rescreen pass starts no approval of it again."""
+    """The marker line of KEPT that records head as a head that changes a file under .github/, or 3,000 files or more
+    (the state steering): the post job approved none of its runs, and the rescreen pass starts no approval of it
+    again."""
     return f"<!-- review-steering {head} -->"
 
 

@@ -33,8 +33,9 @@
 #   reply     a run by hand with a reply text that Sami approved, which is posted as it is.
 #   rescreen  a held item, screened again (below).
 #   approve   a first-time contributor's pull request whose CI runs GitHub holds: the screen, and, when it passes, the
-#             approval of the held runs. A head that changes a file under .github/ gets no approval: a person at
-#             Theorem approves its runs. A run by hand with the task review on such a pull request gets this task.
+#             approval of the held runs. A head that changes a file under .github/, or 3,000 files or more, gets no
+#             approval: Sami approves its runs. A run by hand with the task review on such a pull request gets this
+#             task.
 #   catchup   an outside pull request whose head no run met: the OSS Verify App closes and reopens it, which starts CI.
 #             A pull request that a catch-up closed and could not reopen is only reopened. The label comment records
 #             the head, so that each head gets one catch-up.
@@ -229,12 +230,12 @@
 #           it posts the label comment alone, and for a reply the approved text, byte for byte and once. For a relabel,
 #           it sets the state label and the label comment of the head again, from what the workflow wrote of the head
 #           and what the post job decided. For a catch-up that reopened the pull request, it adds the line of the head
-#           to the label comment. For an approval whose head changes a file under .github/, or whose held runs the post
-#           job did not approve as the environment post holds no key of the App, it gives the item waits-on-theorem
-#           with a label comment that says that a person at Theorem approves its runs. For a stop of the rescreen pass,
-#           it gives the item waits-on-theorem and writes the hold comment that says that the work is not tried again.
-#           It never commits or pushes: its token can write no file of the repository. It uses this run's GitHub
-#           token, so none of its comments, reviews and labels starts a run of any workflow.
+#           to the label comment. For an approval whose head changes a file under .github/ or 3,000 files or more, or
+#           whose held runs the post job did not approve as the environment post holds no key of the App, it gives the
+#           item waits-on-theorem with a label comment that says that Sami approves its runs. For a stop of the
+#           rescreen pass, it gives the item waits-on-theorem and writes the hold comment that says that the work is
+#           not tried again. It never commits or pushes: its token can write no file of the repository. It uses this
+#           run's GitHub token, so none of its comments, reviews and labels starts a run of any workflow.
 #   hold    labels a held pull request or issue review-held, says so in the hold comment of the work that it held (the
 #           review, the answer, the draft or the approval), and sets the state label and the label comment. It holds
 #           no model, and has no screen's reason to read: the screen job's one output is its verdict. It reads this
@@ -246,8 +247,8 @@
 # token has actions: write, and no job of this file has it.
 #
 # Labels (.github/review.md, "Outside items and labels"). Each outside item has one state label: waits-on-author when
-# the next step is its author's, waits-on-theorem when the next step is Sami's (or a person's at Theorem, who approves
-# the checks of a pull request that changes a file under .github/, or of one whose screen passed while the environment
+# the next step is its author's, waits-on-theorem when the next step is Sami's (also for the runs of a pull request
+# that changes a file under .github/ or 3,000 files or more, or of one whose screen passed while the environment
 # post holds no key of the App), and none while the workflow works on it. The comment and hold jobs set it in the run
 # of the event that changes the state, by the one rule of .github/review/rules.py, and setting one takes the other
 # off. With it, the item gets one label comment of the workflow, edited in place, which names the next step and who
@@ -1279,18 +1280,18 @@ jobs:
                 reply) route review "" ;;
                 # The screen of a first-time contributor's pull request, and the approval of its held runs when it
                 # passes. The rescreen pass's run needs held runs at the head, no line of the label comment that records
-                # that the head changes a file under .github/ (head_marks: the post job approves no run of such a head),
-                # a hold of an approval that it tries again to be over an hour old, and no earlier run of its name that
-                # has not finished. A run of the pass with a number and a run with none are in groups of their own: both
-                # can read #NUMBER before either starts a run, and each then starts an approve run of the head. Without
-                # this check, the later run screens the head a second time and counts a second screen on the author's
-                # limit (a screen that the group screen-approve-<n> cancels counts too). The check costs one more read
-                # of the API: the workflow_dispatch runs of review.yml since 00:00 UTC yesterday (runs_in, which reads
-                # a list that GitHub cut again one day, then one hour, at a time). The later run finds the earlier one
-                # there, unfinished, and stops. The earlier run finds no such run, as it reads only the runs before its
-                # own. A conflict needs no such check: its run screens nothing and counts toward no limit, and the
-                # comment job, one run at a time in the group label-<n>, posts the comment of a head only when it is not
-                # there yet.
+                # the head as one whose runs the workflow does not approve (a file under .github/, or 3,000 files or
+                # more; head_marks: the post job approves no run of such a head), a hold of an approval that it tries
+                # again to be over an hour old, and no earlier run of its name that has not finished. A run of the pass
+                # with a number and a run with none are in groups of their own: both can read #NUMBER before either
+                # starts a run, and each then starts an approve run of the head. Without this check, the later run
+                # screens the head a second time and counts a second screen on the author's limit (a screen that the
+                # group screen-approve-<n> cancels counts too). The check costs one more read of the API: the
+                # workflow_dispatch runs of review.yml since 00:00 UTC yesterday (runs_in, which reads a list that
+                # GitHub cut again one day, then one hour, at a time). The later run finds the earlier one there,
+                # unfinished, and stops. The earlier run finds no such run, as it reads only the runs before its own. A
+                # conflict needs no such check: its run screens nothing and counts toward no limit, and the comment job,
+                # one run at a time in the group label-<n>, posts the comment of a head only when it is not there yet.
                 approve)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
@@ -1298,8 +1299,9 @@ jobs:
                     (( n > 0 )) || stop "GitHub holds no run of $pr_head."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
                     read -r _ _ _ _ steered <<< "$marks"
-                    why="its label comment records that $pr_head changes a file under .github/"
-                    [ "$steered" = false ] || stop "$why, so a person at Theorem approves its runs."
+                    why="its label comment records $pr_head as a head whose runs the workflow does not approve (a file"
+                    why+=" under .github/, or 3,000 files or more)"
+                    [ "$steered" = false ] || stop "$why, so Sami approves its runs."
                     newest approve
                     again approve
                     # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -2705,12 +2707,12 @@ jobs:
   # decided for that check run: record, or why it records none (.github/review/rules.py DECISIONS); standing, for the
   # decision hand, true when an import check run of the head with conclusion success still stands after this job;
   # caught, the head of a pull request that a catch-up closed and reopened, or only reopened, which the comment job
-  # records in the label comment; steering, the head of an approval that changes a file under .github/, whose runs it
-  # does not approve; and no_key, the head of an approval whose held runs it found and did not approve, as the
-  # environment post holds no key. The comment job records each of the last two in the label comment. owed and
-  # withdrawn tell the comment job, or the hold job for a held screen, which head's withdrawal of import check runs
-  # this job owes, and which one it finished, for the marker line <!-- withdraw-owed <head> <why> <run> --> of the
-  # label comment, where <run> is the run whose own comment gives the reason.
+  # records in the label comment; steering, the head of an approval that changes a file under .github/ or 3,000 files
+  # or more, whose runs it does not approve; and no_key, the head of an approval whose held runs it found and did not
+  # approve, as the environment post holds no key. The comment job records each of the last two in the label comment.
+  # owed and withdrawn tell the comment job, or the hold job for a held screen, which head's withdrawal of import check
+  # runs this job owes, and which one it finished, for the marker line <!-- withdraw-owed <head> <why> <run> --> of
+  # the label comment, where <run> is the run whose own comment gives the reason.
   post:
     needs: [trust, gather, screen, review]
     # The review or the rescreen of a pull request whose review succeeded, whoever its author is and whatever the route
@@ -2907,9 +2909,10 @@ jobs:
       # head against the time when its trust job read the item (STARTED): the decision is held when a hold comment of
       # the screen that names the head is at or after that time, and withdrawn when the newest import check run of
       # the head is a withdrawal that stands and that counts from a time at or after it (.github/review/rules.py
-      # own-record). Each of them records nothing, as the same decision of a relabel does. A hold or a withdrawal
-      # older than that time leaves the record: a blocking review, then a fix and a screen that passed the head
-      # again.
+      # own-record). Each of them records nothing, as the same decision of a relabel does. The decision held of such a
+      # run withdraws nothing either: the run of the hold withdraws for its own screen, and a check run that a newer
+      # pass recorded after the hold stays. A hold or a withdrawal older than that time leaves the record: a blocking
+      # review, then a fix and a screen that passed the head again.
       - name: Decide the import check of the head
         id: decide
         if: >-
@@ -3120,15 +3123,16 @@ jobs:
           # run that stands for that verdict. It reads the comments of the item and the import check runs of the head
           # (import_checks) against STARTED, the time when the trust job of this run read the item (rules.py
           # own-record). held: a hold comment of the screen that names the head is at or after that time, so a newer
-          # screen held the head. The decision is held, as for a relabel: the outputs owed and held give the step
-          # that withdraws an import check run its why (write_owed), nothing is recorded, and the label step
-          # leaves the labels to that hold. withdrawn: the newest import check run of the head is a withdrawal that
-          # stands, and it counts from a time at or after that time, so the pass of this run gives way to it. The
-          # decision is withdrawn, as for a relabel: nothing is recorded, and the label comment says that no comment
-          # gives the cause of the withdrawal. Else this decides nothing, and the rules of R12 below decide. A read
-          # that fails fails this step.
+          # screen held the head. The decision is held, and nothing is recorded. Nothing is withdrawn either: this
+          # writes neither the output owed nor held, so the step that withdraws finds no cause in this run. The run of
+          # the hold withdraws for its own screen, or owes that withdrawal, and a check run that a newer pass recorded
+          # after the hold stays. The label step leaves the labels to that hold. withdrawn: the newest import check
+          # run of the head is a withdrawal that stands, and it counts from a time at or after that time, so the pass
+          # of this run gives way to it. The decision is withdrawn, as for a relabel: nothing is recorded, and the
+          # label comment says that no comment gives the cause of the withdrawal. Else this decides nothing, and the
+          # rules of R12 below decide. A read that fails fails this step.
           screened_run() {
-            local found decision what since said
+            local found decision what since
             [ "$verdict" = pass ] || return 0
             [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
               || { echo "::error::no start time of this run, so it records no import check."; exit 1; }
@@ -3138,17 +3142,16 @@ jobs:
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
             read -r decision what since <<< "$found"
             if [ "$decision" = held ]; then
-              write_owed screen
-              echo "held=true" >> "$GITHUB_OUTPUT"
-              decided held "a screen held $HEAD at $what, after this run read #$NUMBER at $STARTED"
+              decided held "a screen held $HEAD at $what, at or after this run read #$NUMBER at $STARTED"
             fi
             if [ "$decision" = withdrawn ]; then
-              said="#$NUMBER: check run $what is the newest import check run of $HEAD."
               if [ "$since" != - ]; then
-                echo "$said It counts from $since, after this run read #$NUMBER at $STARTED, and no screened pass of" \
-                  "$HEAD is newer than $since."
+                echo "#$NUMBER: check run $what, the newest import check run of $HEAD, is a withdrawal that counts" \
+                  "from $since, at or after this run read #$NUMBER at $STARTED. No screened pass of $HEAD is newer" \
+                  "than $since."
               else
-                echo "$said Its summary names no time, so it stands whatever review is newer."
+                echo "#$NUMBER: check run $what is the newest import check run of $HEAD. Its summary names no time," \
+                  "so it stands whatever review is newer."
               fi
               decided withdrawn "check run $what is a withdrawal that stands"
             fi
@@ -3296,16 +3299,19 @@ jobs:
             fi
           fi
           # because: why the import check runs of the head are withdrawn. For the screen, own and held say a later
-          # screen. For own, it is this run's own screen. For held, the hold is newer than each screened review comment
-          # of the head (the decision's held). The hold of the line can be older than the check run, so its text does
-          # not say later.
+          # screen. For own, it is this run's own screen. Only a relabel and a review by hand reach held (the
+          # decision's held, from rules.py verdict): a run on the route screen whose own record finds a newer hold
+          # withdraws nothing for it (screened_run). There the hold is newer than each screened review comment of the
+          # head. A screened run records its check run before its comment job posts that comment, so the hold is later
+          # than each check run whose screened review comment still stands. The hold of the line can be older than the
+          # check run, so its text does not say later.
           case $why in
             blocking) because="$who $asks" ;;
             person) because="$who $has" ;;
             screen)
               because="a later screen held $head"
               [ "$kind" != owed ] || because="an automated screen held $head" ;;
-            *) echo "#$NUMBER: no later review or screen of its head withdraws an import check run."; exit 0 ;;
+            *) echo "#$NUMBER: this run found no cause to withdraw an import check run of $head."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the $gave job gave no head commit: $head"; exit 1; }
           echo "owed=$head $why" >> "$GITHUB_OUTPUT"
@@ -4369,17 +4375,18 @@ jobs:
           [[ $CAUGHT =~ ^[0-9a-f]{40}$ ]] \
             || { echo "::error::the post job names no head that it caught up: $CAUGHT"; exit 1; }
           python3 .github/review/rules.py mark "$NUMBER" "<!-- review-catchup $CAUGHT -->"
-      # An approval whose head changes a file under .github/ (the post job's steering, the head that it read): the post
-      # job approved no run of it, so a person at Theorem approves its runs (R10). The item gets waits-on-theorem, and
-      # its label comment says so and holds the line <!-- review-steering <head> --> (.github/review/rules.py), which
-      # every later label comment keeps. The rescreen pass and the trust job read that line, so that no run of the
-      # pass screens that head again for its approval. An approval whose held runs the post job found while the
-      # environment post held no key of the OSS Verify App (the post job's no_key, the head that the screen read)
-      # gets waits-on-theorem the same way, with a label comment that says that the workflow cannot approve the checks
-      # yet, and the line <!-- review-no-key <head> -->, which the rescreen pass reads (held.sh, due_approve). Nothing
-      # is written when the pull request moved on from the head: the new head gets an approval of its own. The label
-      # call gives the trust job's outputs as they are (the author-kind table): the post job approves the held runs of
-      # an outside author's pull request alone, so only such an approval comes here.
+      # An approval whose head changes a file under .github/ or 3,000 files or more (the post job's steering, the head
+      # that it read): the post job approved no run of it, so Sami, a person at Theorem with write access, approves its
+      # runs (R10). The item gets waits-on-theorem, and its label comment says so and holds the line
+      # <!-- review-steering <head> --> (.github/review/rules.py), which every later label comment keeps. The rescreen
+      # pass and the trust job read that line, so that no run of the pass screens that head again for its approval.
+      # An approval whose held runs the post job found while the environment post held no key of the OSS Verify App
+      # (the post job's no_key, the head that the screen read) gets waits-on-theorem the same way, with a label comment
+      # that says that the workflow cannot approve the runs yet, and the line <!-- review-no-key <head> -->, which the
+      # rescreen pass reads (held.sh, due_approve). Nothing is written when the pull request moved on from the head:
+      # the new head gets an approval of its own. The label call gives the trust job's outputs as they are (the
+      # author-kind table): the post job approves the held runs of an outside author's pull request alone, so only
+      # such an approval comes here.
       - name: Say that a person at Theorem approves the runs of the head
         if: env.POST_REVIEW == 'true' && needs.trust.outputs.task == 'approve'
         env:

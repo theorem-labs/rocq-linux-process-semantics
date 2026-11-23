@@ -124,9 +124,9 @@ jobs:
   #             screened that head with a verdict since the newest held run (its screen job passed and its post job
   #             neither failed nor was cancelled, or a hold that is not tried again names the head), once an hour.
   #             An approval run of this pass made after the newest held run, whose trust job found no work and stopped
-  #             it, settles the head until a newer held run. Never a head that its label comment records as one that
-  #             changes a file under .github/ (<!-- review-steering <head> -->): the post job approves no run of such a
-  #             head, and a person at Theorem approves them.
+  #             it, settles the head until a newer held run. Never a head that its label comment records as one whose
+  #             runs the workflow does not approve (a file under .github/, or 3,000 files or more;
+  #             <!-- review-steering <head> -->): the post job approves no run of such a head, and Sami approves them.
   #   retry     the App's retry: a run of a head whose post job failed, at a sign-in or at a write of the App, or was
   #             cancelled (it ran out of time, say), gets an approval again for an approval, a relabel for a review or
   #             a relabel (it records the import check run with no model), and a catch-up for a catch-up, once an hour.
@@ -533,6 +533,6 @@ jobs:
         run: |
           set -euo pipefail
           gh api --method POST "repos/$REPO/actions/workflows/rescreen.yml/dispatches" -f ref=main > /dev/null \
-            || { echo "::error::GitHub refused the start of the rescreen pass with no number, so the pass did not" \
-                   "start. The next event on which the pass runs starts it."; exit 1; }
+            || { echo "::error::the rescreen pass with no number could not be started. The next event on which the" \
+                   "pass runs starts it."; exit 1; }
           echo "The rescreen pass starts on main with no number."

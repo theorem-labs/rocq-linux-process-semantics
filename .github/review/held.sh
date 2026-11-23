@@ -204,7 +204,7 @@ held_account() {
 # <!-- review-conflict-state <head> -->: <head> waits on its author for a merge conflict. caught is true when
 # the label comment holds <!-- review-catchup <head> -->: a catch-up closed and reopened the pull request at
 # <head>. steered is true when the label comment holds <!-- review-steering <head> -->: <head> changes a file
-# under .github/, so the post job approves no run of it, and a person at Theorem approves its runs.
+# under .github/, or 3,000 files or more, so the post job approves no run of it, and Sami approves its runs.
 head_marks() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs 'map(select(.user.login == "github-actions[bot]") | .body // "") as $b
@@ -223,7 +223,7 @@ head_marks() {
 }
 # no_key_of <number> <head>: true when the label comment of github-actions[bot] on <number> holds
 # <!-- review-no-key <head> -->: the screen passed <head> while the environment post held no key of
-# the OSS Verify App, so the post job approved no run of it, and a person at Theorem approves its runs.
+# the OSS Verify App, so the post job approved no run of it, and Sami approves its runs.
 no_key_of() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs 'any(.[]; .user.login == "github-actions[bot]" and ((.body // "")
@@ -1137,9 +1137,9 @@ due_draft() {
 # App, a cancelled post job, or a post job that did not run (the screen job ran out of time, or the trust job failed,
 # say) counts one. After REVIEW_TRIES of them, the head is not tried again (head_stopped): waits-on-theorem, with Sami's
 # next step. A hold of an approval that is tried again leaves it to that hold (due_held). Never for a head that the
-# label comment records as one that changes a file under .github/ (head_marks, steered), or as one that the screen
-# passed while the environment post held no key of the OSS Verify App (no_key_of): the post job approved no run of such
-# a head.
+# label comment records as one whose runs the workflow does not approve (a file under .github/, or 3,000 files or
+# more; head_marks, steered), or as one that the screen passed while the environment post held no key of the OSS
+# Verify App (no_key_of): the post job approved no run of such a head.
 due_approve() {
   local list n last created ended run f tried screen post tries keyless
   held_of || { echo "::error::the runs of $head could not be read."; return 1; }
@@ -1151,14 +1151,14 @@ due_approve() {
   [[ $retaken != *" approve"* ]] || return 0
   head_of || return 1
   if [ "$steered" = true ]; then
-    echo "#$number: $head changes a file under .github/, as its label comment records, so a person at Theorem" \
-      "approves its runs."
+    echo "#$number: its label comment records $head as a head whose runs the workflow does not approve (a file" \
+      "under .github/, or 3,000 files or more), so Sami approves its runs."
     return 0
   fi
   keyless=$(no_key_of "$number" "$head") || { echo "::error::the comments of #$number could not be read."; return 1; }
   if [ "$keyless" = true ]; then
     echo "#$number: its label comment records that a run screened $head while the environment post had no key of the" \
-      "OSS Verify App. So a person at Theorem approves the runs of $head."
+      "OSS Verify App. So Sami approves the runs of $head."
     return 0
   fi
   if [ -n "$(awk -v h="$head" -v last="$last" '$3 == "-" && $9 == h && $2 >= last' <<< "$hold")" ]; then
