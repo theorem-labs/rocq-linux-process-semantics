@@ -10581,6 +10581,25 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_a_run_by_hand_that_its_trust_job_stopped_settles_no_hold(self):
+        """OSSV-221's architect, 2026-11-22 14:14Z: a trust stop settles a name only when the run is the pass's own
+        workflow_dispatch run of that name. A person with write access can start a run of a task by hand (review.yml:
+        -f task=<task>). alice's rescreen of mallory's #7 by hand, with no account, 70 minutes after the limit hold of
+        #7: its trust job stops it, as the run that the workflow held is mallory's. That run settles nothing: the hold,
+        whose label comment says that the workflow tries again, gets its rescreen. Else it waits for ever."""
+        self.origin(50, "mallory", event="workflow_run", title=f"review {HEAD} by mallory")
+        self.item(kind="pr", labels=("review-held",),
+                  comments=[dict(limit_hold(50, at=ago(2000), tries=0, head=HEAD), id=5)])
+        self.ci(ended=2100)
+        rc, out, trust = self.run_trust("workflow_dispatch", actor="alice", number="7", task="rescreen")
+        self.assertEqual((rc, trust.get("route")), (0, None), out)
+        self.assertIn("the account of the run that the workflow held is mallory, not none.", out)
+        self.ran(10, "rescreen #7", made=70, jobs=self.stopped_jobs())
+        self.listed_runs[-1]["actor"] = {"login": "alice"}
+        self.publish()
+        rc, out, runs = self.started()
+        self.assertEqual((rc, runs), (0, [("7", "rescreen", "mallory", HEAD, "")]), out)
+
     def test_an_approval_whose_post_job_ran_out_of_time_after_a_passed_screen_is_tried_up_to_review_tries(self):
         """Round 16, part 2, item 2 (OSSV-221's architect, 2026-11-22 06:21Z, residual (a)): an approve run of HEAD
         whose screen passed and whose post job ran out of time at the approval, which GitHub gives as cancelled,
