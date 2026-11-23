@@ -1,8 +1,9 @@
-# screen-start.yml: at each event of a pull request from a fork on which CI runs (opened, synchronize and reopened,
-# below), it starts the rescreen pass (.github/workflows/rescreen.yml) on main with the number of the pull request, and
-# writes nothing else. By the rules of the pass (rescreen.yml), that run of the pass takes only the conflict run of that
-# pull request when it has a merge conflict, else the screen and the approval of the runs of its head that GitHub
-# holds, else nothing.
+# screen-start.yml: at each event of a pull request from a fork on which a pull_request workflow of this repository
+# runs (opened, synchronize, reopened and closed, below), it starts the rescreen pass (.github/workflows/rescreen.yml)
+# on main with the number of the pull request, and writes nothing else. By the rules of the pass (rescreen.yml), that
+# run of the pass takes only the conflict run of that pull request when it has a merge conflict, else the screen and
+# the approval of the runs of its head that GitHub holds, else nothing. For a pull request that is not open (a close),
+# it takes nothing: it screens nothing, starts no review and approves no run.
 #
 # Why pull_request_target: GitHub holds the CI run (pull_request) of a first-time contributor's pull request for a
 # person's approval, and a run that GitHub holds starts no workflow_run. Without this file, such a pull request waits
@@ -16,9 +17,9 @@
 # dispatch://INFRA-3395 sets the Actions event policy that allows it for this file alone.
 #
 # The types: the types on which a pull_request workflow of this repository runs, as only such an event can make a run
-# that GitHub holds. ci.yml is the one such workflow, and its pull_request names no types, so GitHub's default:
-# opened, synchronize and reopened (GitHub's docs, "Events that trigger workflows"). An edit, a label or a close of a
-# pull request starts nothing here. .github/test_review.py reads the types from the other workflow files.
+# that GitHub holds. ci.yml and review-tests.yml name no types, so GitHub's default: opened, synchronize and reopened
+# (GitHub's docs, "Events that trigger workflows"). cache-cleanup.yml runs on closed. An edit or a label of a pull
+# request starts nothing here. .github/test_review.py reads the types from the other workflow files.
 #
 # What it reads and writes: its token has actions: write alone. It reads the runs of the head commit whose event is
 # pull_request (repos/<repo>/actions/runs), and it makes one write, the start of rescreen.yml on main with the number of
@@ -38,11 +39,12 @@
 # A burst: a newer event of the same pull request cancels the run of this file that waits (the concurrency group of
 # the pull request's number). So in a burst of events (an author who pushes many times), each run that a newer event
 # cancelled while it waited starts nothing, and the newest event starts the pass. A run of the pass with a number
-# reads that pull request and the held runs of its head, and ends there when it has no merge conflict and no held run.
-# With a held run, it reads the runs of review.yml of the last hour, and starts no approval, with no more reads, when
-# the author is at OUTSIDE_HOURLY_LIMIT or a run of the pull request has not finished. The runs of the pass with the
-# number of one pull request share a group of their own, in which a newer run takes the place of the one that waits.
-# The runs of the pass with no number queue in another group, and none of them is cancelled.
+# reads that pull request, and ends there when it is not open. Else it reads the held runs of its head, and ends there
+# when it has no merge conflict and no held run. With a held run, it reads the runs of review.yml of the last hour,
+# and starts no approval, with no more reads, when the author is at OUTSIDE_HOURLY_LIMIT or a run of the pull request
+# has not finished. The runs of the pass with the number of one pull request share a group of their own, in which a
+# newer run takes the place of the one that waits. The runs of the pass with no number queue in another group, and
+# none of them is cancelled.
 #
 # The cost of an event: the wait reads the API at most 13 times, at its start and then every 10 seconds for 2 minutes.
 # Then the step starts at most one run of the pass, with the number of the pull request. That start and that run cost
@@ -54,15 +56,16 @@
 # No loop: review.yml's jobs write their labels, comments and reviews with github.token, and an event that
 # github.token makes starts no run of this file (GitHub's docs, "Events that trigger workflows": its workflow_dispatch
 # and repository_dispatch start runs, and so does a pull request that it opens or pushes to, which review.yml never
-# does). The OSS Verify App's reopen of a catch-up is an event of the pull request, and starts this file again: the
-# run of the pass with the number of the pull request takes only its conflict or the approval of its held runs, and
-# starts no catch-up. So an event starts no loop of screens. Its cost: one job of up to 2 minutes for each event, on a
-# standard runner, whose minutes GitHub does not bill in a public repository.
+# does). The OSS Verify App's close and reopen of a catch-up are events of the pull request, and start this file
+# again: the run of the pass with the number of the pull request takes nothing while it is closed, and only its
+# conflict or the approval of its held runs while it is open, and starts no catch-up. So an event starts no loop of
+# screens. Its cost: one job of up to 2 minutes for each event, on a standard runner, whose minutes GitHub does not
+# bill in a public repository.
 name: screen-start
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
 
 permissions: {}
 

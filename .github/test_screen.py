@@ -70,6 +70,15 @@ def message(text='{"verdict": "clean", "quotes": [], "why": ""}', stop="end_turn
                  "content": content if content is not None else [{"type": "text", "text": text}]}
 
 
+def start_server(handler):
+    """A stand-in HTTP server of handler on 127.0.0.1, on a thread of its own. It polls for a shutdown every 0.01 s,
+    so each shutdown() waits at most 0.01 s; serve_forever's default poll of 0.5 s made it wait up to 0.5 s. The
+    server."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+    return server
+
+
 class Services:
     """The stand-in services. Each answer is a function of the request body, or a fixed (status, body) pair."""
 
@@ -119,9 +128,8 @@ class Services:
             def do_POST(self):
                 self.handle_one("POST")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = start_server(Handler)
         self.url = f"http://127.0.0.1:{self.server.server_port}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def close(self):
         self.server.shutdown()
@@ -505,8 +513,7 @@ class ScreenTest(unittest.TestCase):
             def do_POST(self):
                 self.rfile.read(int(self.headers["Content-Length"]))
                 self.wfile.write(f"NOT-HTTP {MARK}\r\n\r\n".encode())
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Bucket)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        server = start_server(Bucket)
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
         host = f"127.0.0.1:{server.server_port}"

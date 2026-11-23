@@ -16,11 +16,11 @@
 # an if: the step of the trust job, which every other job needs, also compares the ref byte for byte in the shell, and
 # stops on any other ref. The rescreen pass (.github/workflows/rescreen.yml) runs on events alone too, and starts the
 # runs of this file that the open items are due (below); it holds no identity and no secret, and writes nothing but
-# those runs. Each event of a pull request from a fork on which CI runs (opened, synchronize and reopened) starts it
-# too, through .github/workflows/screen-start.yml, the one workflow of this repository that runs on
-# pull_request_target: it holds actions: write alone, and only starts the pass with the number of that pull request.
-# That run of the pass takes only the conflict run of that pull request, or the screen and the approval of the runs of
-# its head that GitHub holds.
+# those runs. Each event of a pull request from a fork on which a pull_request workflow runs (opened, synchronize,
+# reopened and closed) starts it too, through .github/workflows/screen-start.yml, the one workflow of this repository
+# that runs on pull_request_target: it holds actions: write alone, and only starts the pass with the number of that
+# pull request. That run of the pass takes nothing for a pull request that is not open, and else only the conflict run
+# of that pull request, or the screen and the approval of the runs of its head that GitHub holds.
 #
 # Tasks. The trust job gives each run one task, and the jobs after it do that task alone:
 #   review    a pull request's new head (the workflow_run of its CI run), a new issue of an account with write access,
@@ -112,9 +112,10 @@
 #   has none stored, the approval of a first-time contributor's held runs, the catch-up and the review of a head that
 #   no run reviewed, the comment on a merge conflict, a relabel when a conflict went away or the import's paths
 #   changed, the App's writes again when the post job could not make them, and a stop when the work of an item reached
-#   its bound of tries (rescreen.yml). Each event of a pull request from a fork on which CI runs starts a run of the
-#   pass with the number of that pull request (screen-start.yml). That run takes the conflict of that pull request, or
-#   the approval of the runs of its head that GitHub holds and the hold of that approval, and no other work.
+#   its bound of tries (rescreen.yml). Each event of a pull request from a fork on which a pull_request workflow runs
+#   starts a run of the pass with the number of that pull request (screen-start.yml). That run takes nothing for a pull
+#   request that is not open. Else it takes the conflict of that pull request, or the approval of the runs of its head
+#   that GitHub holds and the hold of that approval, and no other work.
 # - An account with write access can start a run by hand for any pull request or issue, with a task (-f task=<task>,
 #   review when none is given) and, for a review, with the screen first (-f screen=true):
 #
@@ -2316,7 +2317,8 @@ jobs:
       # head whose review holds it. A review whose route was review (a writer's item, or a writer's run by hand with no
       # screen) holds none. The header's last marker, <!-- review-run <run> -->, gives the id of this run
       # (GITHUB_RUN_ID). The line of a withdrawal that this run owes for its verdict goes once this review stands, and
-      # a review of a later run can take the line of an earlier run out (.github/review/rules.py owed).
+      # a review that GitHub last changed after the hold or the withdrawal of the run that a line names can take that
+      # line out (.github/review/rules.py owed).
       # The run's summary gets the text that the reader read, the list, and the section on soundness with every line.
       # For a review, every step after this one belongs to the fix. So when this step gave a blocking finding or the
       # verdict person and the job then failed or was cancelled, this text is final: the comment job posts it as for a
@@ -2814,6 +2816,11 @@ jobs:
         ${{ steps.withdraw.outputs.clear == '' && steps.withdrawn.outputs.head == ''
         && (steps.withdraw.outputs.owed || steps.decide.outputs.owed || steps.own.outputs.owed) || '' }}
       withdrawn: ${{ steps.withdraw.outputs.clear || steps.withdrawn.outputs.head }}
+      # The source runs of the withdrawals of the head before this job withdrew any, each with the time from which its
+      # withdrawals hold (.github/review/rules.py sources): "<run>=<time> ...", or empty. The line
+      # <!-- withdraw-owed <head> <why> <run> --> goes for a review comment of the head only when GitHub last changed
+      # it after the hold or the withdrawal of <run> (.github/review/rules.py reason_posted).
+      sources: ${{ steps.withdraw.outputs.sources }}
     steps:
       # main's .github/, for .github/review/rules.py; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -2890,6 +2897,12 @@ jobs:
       # one rule (rules.py verdict; OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). A relabel records a check run
       # only when the newest review comment of the head is a screened pass: it holds the marker
       # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer (screened).
+      # It records none either when the newest import check run of the head is a withdrawal (conclusion neutral) and no
+      # such screened pass is newer than its source: the time that its summary names, when the run of the verdict or
+      # the hold that gave its reason wrote it (for a run's own verdict, when that run withdrew). A withdrawal that
+      # succeeded is itself the record of its reason, also when the comment of that reason never posted, and one whose
+      # summary names no source blocks (OSSV-221's architect, 2026-11-23 01:47Z and 03:06Z). The decision is then
+      # withdrawn (.github/review/rules.py withdrawal_stands).
       # Each run withdraws each check run of the head that still stands when the newest screened review comment does
       # not pass, or one newer than it gives a blocking finding or the verdict person (output earlier, with that
       # reason). It withdraws also while the label comment holds the line <!-- withdraw-owed <head> <why> <run> --> for
@@ -2996,6 +3009,21 @@ jobs:
                 || decided hand "the newest review of $HEAD passed it with no screen, and its import check run stands"
             fi
           }
+          # import_checks: each import check run of the OSS Verify App for this pull request (external_id
+          # <number>:<head>) on the head, with its conclusion, completed_at and summary (which names the source of a
+          # withdrawal), one on each line of $RUNNER_TEMP/import-checks.jsonl. The read asks for every check run of
+          # the head (filter=all).
+          import_checks() {
+            # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
+            SHA=$HEAD gh api --method GET --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+              -f check_name=repo-pairs/import-approved -f filter=all -F per_page=100 --jq '.check_runs[]
+                | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
+                         and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
+                         and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
+                | {id, conclusion, completed_at, summary: (.output.summary // "")} | @json' \
+                > "$RUNNER_TEMP/import-checks.jsonl" \
+              || { echo "::error::the import check runs of $HEAD could not be read."; exit 1; }
+          }
           # relabeled: for a relabel, the verdict of the newest review comment that names the head, its state and why
           # (rules.py verdict). screen is true only for screened: that comment holds the marker
           # <!-- review-screened <head> --> and no hold comment of the screen that names the head is newer. The outputs
@@ -3004,15 +3032,28 @@ jobs:
           # that withdraws an import check run, and held or a why writes the output owed first (write_owed). A newer
           # hold comment (held) gives the decision held. For an outside author, the state screened with the verdict pass
           # and a why (that line) gives a decision that records no check run, as a relabel that withdraws records none:
-          # withdrawn when no review or hold comment of the workflow gives the why of that line (posted is unposted), so
-          # that the label comment says so (rules.py, the decision withdrawn), and screened else. The state earlier with
-          # the verdict pass gives the decision screened with a why, and hand with none. The state unscreened gives
-          # replaced.
+          # withdrawn when no comment of the workflow gives the why of that line (posted is unposted: the comment of the
+          # line's run that gives its why, or a screened review comment newer than the hold or the withdrawal of that
+          # run; rules.py owed), so that the label comment says so (rules.py, the decision withdrawn), and screened
+          # else. For an outside author whose newest review comment is a screened pass, rules.py verdict reads the
+          # comments again with the import check runs of the head (import_checks), whose summaries decide posted. A
+          # withdrawal that succeeded is itself the record of the verdict that caused it (OSSV-221's architect,
+          # 2026-11-23 01:47Z and 03:06Z), and the run that withdrew it can have ended before its comment posted. So
+          # when the newest of them is a withdrawal and no screened review comment that passes the head is newer than
+          # its source (stands names it), the state screened with the verdict pass gives the decision withdrawn too, and
+          # no check run is recorded. The state earlier with the verdict pass gives the decision screened with a why,
+          # and hand with none. The state unscreened gives replaced.
           relabeled() {
-            local reviewed state why from posted said
+            local reviewed state why from posted stands said
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state why from posted <<< "$reviewed"
+            read -r verdict state why from posted stands <<< "$reviewed"
+            if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ]; then
+              import_checks
+              reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl") \
+                || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+              read -r verdict state why from posted stands <<< "$reviewed"
+            fi
             [ "$verdict" != - ] || verdict=""
             screen=false
             [ "$state" != screened ] || screen=true
@@ -3032,6 +3073,10 @@ jobs:
               [ "$posted" != unposted ] \
                 || decided withdrawn "no review or hold comment gives the cause that the label comment names"
               decided screened "$said"
+            fi
+            if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
+              said="the newest import check run of $HEAD, $stands, is a withdrawal, and no screened review comment"
+              decided withdrawn "$said that passes $HEAD is newer than its source"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
               if [ "$why" != - ]; then
@@ -3134,10 +3179,12 @@ jobs:
       # asks for every check run of the head (filter=all): by default GitHub lists only the newest of each name, which
       # can hide an older success under a newer one that was withdrawn.
       # The request of each check run goes to the runner's temporary directory (.github/review/rules.py withdrawal):
-      # the conclusion neutral, and an output title that names the pull request and says why. Its name, its external_id
-      # and its output text, the marker line of the value that it recorded, stay. With no such check run, nothing is
-      # withdrawn and no token is minted. While the environment post holds no key (APP_KEY_SET), no step can withdraw
-      # what this step finds, so it does not run. A read that fails fails the job. The step runs when the author-kind
+      # the conclusion neutral, an output title that names the pull request and says why, a summary that also names
+      # this run, the head, why, and the source of why with its time (the run whose own verdict or hold gave it), and
+      # completed_at, the time of the withdrawal. Its name, its external_id and its output text, the marker line of the
+      # value that it recorded, stay. With no such check run, nothing is withdrawn and no token is minted. While the
+      # environment post holds no key (APP_KEY_SET), no step can withdraw what this step finds, so it does not run. A
+      # read that fails fails the job. The step runs when the author-kind
       # table's withdraw holds (the first step of this job), for every author: a check run of R12 that an earlier run
       # recorded may stand on the head, whatever the trust job says of the author now. The error of a read that fails,
       # and of a withdrawal that GitHub refuses (the step after the sign-in), follows the table's retry and the name of
@@ -3204,11 +3251,17 @@ jobs:
           # line <!-- withdraw-owed <head> <why> <run> --> (FROM_OWED) comes from a review or a hold that can be older
           # than the check run, so its texts do not say later, and a review's why is a past verdict, which an edit of
           # the review comment in place can replace: asked and had (rules.py OWED_WITHDRAWN).
-          who="a later review" asks="asks for a change" has="has questions for Sami" owing=()
+          # kind: own when the cause is this run's own verdict or the hold of its own screen, else the kind of the
+          # older cause (rules.py source): held for a newer hold of the screen, owed for the line, and earlier for a
+          # review comment. A relabel gives no verdict of its own.
+          who="a later review" asks="asks for a change" has="has questions for Sami" owing=() kind=own
+          [ "$TASK" != relabel ] || kind=earlier
+          [ "${HELD:-}" != true ] || kind=held
           if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ]; then
-            why=$EARLIER who="a review of $head before this run"
+            why=$EARLIER who="a review of $head before this run" kind=earlier
             if [ "${FROM_OWED:-}" = true ]; then
               owing=(owed) who="an automated review of $head" asks="asked for a change" has="had questions for Sami"
+              kind=owed
             fi
           fi
           # because: what a later run of the head did, which is why the import check runs of the head are withdrawn.
@@ -3230,17 +3283,40 @@ jobs:
             again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
             again+=" step for Sami."
           fi
+          # Each import check run of the OSS Verify App for this pull request on the head, with its conclusion,
+          # completed_at and summary, and the output text that a withdrawal keeps.
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
           SHA=$head gh api --method GET --paginate "repos/$REPO/commits/$head/check-runs" \
             -f check_name=repo-pairs/import-approved -f filter=all -F per_page=100 --jq '.check_runs[]
               | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
                        and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
-                       and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success")
-              | {id, text: (.output.text // "")} | @json' > "$RUNNER_TEMP/approved.jsonl" \
+                       and .external_id == "\($ENV.NUMBER):\($ENV.SHA)")
+              | {id, conclusion, completed_at, summary: (.output.summary // ""), text: (.output.text // "")} | @json' \
+            > "$RUNNER_TEMP/import-checks.jsonl" \
             || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
                  exit 1; }
-          ids=$(python3 .github/review/rules.py withdrawal "$NUMBER" "$head" "$why" "$RUNNER_TEMP/approved.jsonl" \
-            "$RUNNER_TEMP" "${owing[@]}") \
+          # sources: the source runs and times that the withdrawals of the head name, before this run withdraws any
+          # (rules.py sources). The comment job or the hold job takes the line <!-- withdraw-owed <head> <why> <run> -->
+          # out for a review comment of the head only when it is newer than the hold or the withdrawal of <run>.
+          sources=$(python3 .github/review/rules.py sources "$head" "$RUNNER_TEMP/import-checks.jsonl") \
+            || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
+                 exit 1; }
+          echo "sources=$sources" >> "$GITHUB_OUTPUT"
+          jq -c 'select(.conclusion == "success")' "$RUNNER_TEMP/import-checks.jsonl" > "$RUNNER_TEMP/approved.jsonl"
+          # Each request names this run (GITHUB_RUN_ID) as the run that withdraws the check run, and the source of the
+          # cause: this run, at the time of the withdrawal, for its own verdict or screen; else the run of the older
+          # cause at the time of its hold or withdrawal (rules.py source), or this run and the time now when none is
+          # known (OSSV-221's architect, 2026-11-23 03:06Z).
+          source=- at=-
+          if [ "$kind" != own ] && [ -s "$RUNNER_TEMP/approved.jsonl" ]; then
+            found=$(python3 .github/review/rules.py source "$NUMBER" "$head" "$why" "$kind" \
+              "$RUNNER_TEMP/import-checks.jsonl") \
+              || { echo "::error::the comments of #$NUMBER could not be read, so none of the import check runs is" \
+                     "withdrawn.$again"; exit 1; }
+            read -r source at <<< "$found"
+          fi
+          ids=$(python3 .github/review/rules.py withdrawal "$NUMBER" "$head" "$why" "$GITHUB_RUN_ID" "$source" "$at" \
+            "$RUNNER_TEMP/approved.jsonl" "$RUNNER_TEMP" "${owing[@]}") \
             || { echo "::error::the requests that withdraw the import check runs could not be made."; exit 1; }
           ids=$(tr '\n' ' ' <<< "$ids")
           ids=${ids% }
@@ -3636,31 +3712,35 @@ jobs:
       # whatever the newest review says (rules.py verdict, held.sh relabel_withdraws): an edit of a review comment in
       # place can hide the review that gave the reason. Only a run that finished the withdrawal of that head takes the
       # line out (the post job's output withdrawn), and only while a comment of the workflow gives a reason for it: the
-      # hold comment or the review comment of the line's run that gives its why, or a review comment of the head from a
-      # later run, which must be screened unless the trust job's outside is false (OSSV-221's architect, 2026-11-22
-      # 16:06Z and 16:08Z). Until then, each later relabel withdraws and records nothing. When the post job finished the
-      # withdrawal for a blocking finding or the verdict person of this run's own review of that head, that review has
-      # not posted yet. So this step writes the line of that head and verdict all the same (rules.py owed with owed=
-      # and withdrawn=), and gives the head to the step after the post of the review (its output pending), which takes
-      # the line out once that review, which names this run, stands. When GitHub refuses the post of the review, the
-      # line stays. This step reads the post job's outputs whatever that job's result: GitHub fills them in at the end
-      # of that job, also when it failed. It is the first step after the checkout, and its if reads no other step, so
-      # no step of this job that fails skips it: it runs for a relabel whose post job failed too, which the label step
-      # leaves as it is, and for a review that GitHub refused to post. The label step after it keeps the line. For an
-      # author whose write access GitHub did not give, the label comment stays as it is. A record of an owed withdrawal
-      # never makes a label comment: for an item with none, rules.py writes nothing (status 3) and gives the line as
-      # this step's output line, which the label step gives to the label comment that it writes (marker=<line>). The
-      # label step writes the line also when it stops for a hold made after the run started (rules.py mark). Else, when
-      # the label step writes no label comment, the line of an item with no label comment is not recorded. That is so
-      # when the step is skipped, stops before its label call, or leaves the labels of a relabel whose post job failed.
-      # For a line of this run's own review, rules.py gives status 0 for an item with no label comment, and the label
-      # step gets no line: that review gives the reason once it posts.
+      # hold comment or the review comment of the line's run that gives its why, or a review comment of the head that
+      # GitHub last changed after the hold or the withdrawal of the line's run (the post job's output sources),
+      # which must be screened unless the trust job's outside is false (OSSV-221's architect, 2026-11-22 16:06Z and
+      # 16:08Z, and 2026-11-23 01:47Z). Until then, each later relabel withdraws and records nothing. When the post job
+      # finished the withdrawal for a blocking finding or the verdict person of this run's own review of that head,
+      # that review has not posted yet. So this step writes the line of that head and verdict all the same (rules.py
+      # owed with owed= and withdrawn=), and gives the head to the step after the post of the review (its output
+      # pending), which takes the line out once that review, which names this run, stands. When GitHub refuses the post
+      # of the review, the line stays. This step reads the post job's outputs whatever that job's result: GitHub fills
+      # them in at the end of that job, also when it failed. It is the first step after the checkout, and its if reads
+      # no other step, so no step of this job that fails skips it: it runs for a relabel whose post job failed too,
+      # which the label step leaves as it is, and for a review that GitHub refused to post. The label step after it
+      # keeps the line. For an author whose write access GitHub did not give, the line goes in all the same, as the post
+      # job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z), but no line goes out. A record of an
+      # owed withdrawal never makes a label comment: for an item with none, rules.py writes nothing (status 3) and gives
+      # the line as this step's output line, which the label step gives to the label comment that it writes
+      # (marker=<line>). The label step writes the line also when it stops for a hold made after the run started
+      # (rules.py mark). Else, when the label step writes no label comment, the line of an item with no label comment is
+      # not recorded. That is so when the step is skipped, stops before its label call, or leaves the labels of a
+      # relabel whose post job failed, or of an author whose write access GitHub did not give. For a line of this run's
+      # own review, rules.py gives status 0 for an item with no label comment, and the label step gets no line: that
+      # review gives the reason once it posts.
       - name: Record a withdrawal that the post job owes
         id: owed
         if: env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')
         env:
           OWED: ${{ needs.post.outputs.owed }}
           WITHDRAWN: ${{ needs.post.outputs.withdrawn }}
+          SOURCES: ${{ needs.post.outputs.sources }}
           TASK: ${{ needs.trust.outputs.task }}
           # The head that this run's review read, and its verdict.
           REVIEW_HEAD: ${{ needs.review.outputs.head }}
@@ -3688,7 +3768,8 @@ jobs:
           fi
           rc=0
           python3 .github/review/rules.py owed "$NUMBER" owed="$owed" withdrawn="${WITHDRAWN:-}" own="$own" \
-            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
+            sources="${SOURCES:-}" task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
+            author="${AUTHOR_KIND:-}" || rc=$?
           (( rc != 3 )) || exit 0
           exit "$rc"
       # The review comment: it replaces the newest review comment of the workflow on the item, or posts a new one when
@@ -3752,6 +3833,7 @@ jobs:
         if: steps.owed.outputs.pending != ''
         env:
           PENDING: ${{ steps.owed.outputs.pending }}
+          SOURCES: ${{ needs.post.outputs.sources }}
           TASK: ${{ needs.trust.outputs.task }}
           # The trust job's outputs as they are, which .github/review/rules.py reads (the author-kind table).
           OUTSIDE: ${{ needs.trust.outputs.outside }}
@@ -3760,8 +3842,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
-          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= task="$TASK" \
-            outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
+          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= sources="${SOURCES:-}" \
+            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
       # The answer, once for each comment that it answers, from the comments of the item as they are just before it
       # posts. A comment of github-actions[bot] with the same text is this run's answer, which an earlier attempt of
       # this job posted. Any other answer of github-actions[bot] (it starts with <!-- review-answer ) that names the
@@ -4398,7 +4480,8 @@ jobs:
       # withdrawal that the post job finished, the step after the label step takes the line out (this step's output
       # pending). In some runs the post job does not run, or does not finish its withdrawal. A later run that finds no
       # import check run of the head with conclusion success takes the line out, once the hold comment of this run
-      # names the head, or a review comment of the head from a later run stands. The step runs before the label step,
+      # names the head, or a review comment of the head stands that GitHub last changed after the hold or the
+      # withdrawal of the line's run (the post job's output sources). The step runs before the label step,
       # which can fail. A record of an owed withdrawal never makes a label comment: for an item with none, rules.py
       # writes nothing (status 3) and gives the line as this step's output line, which the label step gives to the
       # label comment that its label call writes (marker=<line>). When the label step writes no label comment (it stops
@@ -4414,6 +4497,7 @@ jobs:
         env:
           OWED: ${{ needs.post.outputs.owed }}
           WITHDRAWN: ${{ needs.post.outputs.withdrawn }}
+          SOURCES: ${{ needs.post.outputs.sources }}
           # true when the screen of this run held the head in a review, a rescreen or an approval (the step before).
           SCREEN_HELD: ${{ steps.screened.outputs.held }}
         run: |
@@ -4430,7 +4514,8 @@ jobs:
           [ -n "$owed" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
           rc=0
           python3 .github/review/rules.py owed "$NUMBER" owed="$owed" withdrawn="${WITHDRAWN:-}" own="$own" \
-            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
+            sources="${SOURCES:-}" task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
+            author="${AUTHOR_KIND:-}" || rc=$?
           (( rc != 3 )) || exit 0
           exit "$rc"
       - name: Label it and say that it was held
@@ -4755,8 +4840,9 @@ jobs:
         if: steps.owed.outputs.pending != ''
         env:
           PENDING: ${{ steps.owed.outputs.pending }}
+          SOURCES: ${{ needs.post.outputs.sources }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
-          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= task="$TASK" \
-            outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
+          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= sources="${SOURCES:-}" \
+            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"

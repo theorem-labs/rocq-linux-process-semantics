@@ -238,11 +238,13 @@ no_key_of() {
 # and did not finish it, or no comment gives that reason yet), while a label comment holds its marker line
 # <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
 # the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
-# the comment of run <run> that gives <why>, or a later review of <head> (rules.py owed). Else blocking or person, of
-# the newest review comment of <head> newer than the newest screened one (of any, when none is screened) that gives
-# one, or of the newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws
-# nothing. It records an import check run only when the newest review comment of <head> holds the marker
-# <!-- review-screened <head> --> and passes, with no such line (rules.py verdict, screened).
+# the comment of run <run> that gives <why>, or a review of <head> newer than the hold or the withdrawal of run <run>
+# (rules.py owed). Else blocking or person, of the newest review comment of <head> newer than the newest screened one
+# (of any, when none is screened) that gives one, or of the newest screened review comment when it does not pass. Else
+# -: then a relabel of <head> withdraws nothing. It records an import check run only when the newest review comment of
+# <head> holds the marker <!-- review-screened <head> --> and passes, with no such line, and the newest import check run
+# of <head> is no withdrawal that blocks it: one whose summary names no source run, or whose source is newer than that
+# review comment (rules.py verdict, screened, and withdrawal_stands).
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
@@ -388,11 +390,12 @@ read_pulls() {
   done <<< "$pulls"
 }
 # row gives each run of review.yml on one line: "<id> <created> <ended> <status> <conclusion> <event>
-# <started> <attempt> <name>", - for none (ended, for a run that is not completed); attempt is its
-# run_attempt, 1 for its first.
+# <started> <attempt> <actor> <name>", - for none (ended, for a run that is not completed); attempt is its
+# run_attempt, 1 for its first, and actor the login of the account that started it.
 row='def row: "\(.id) \(.created_at // "-") \(if .status == "completed"
   then (.updated_at // .created_at // "-") else "-" end) \(.status // "-") \(.conclusion // "-") \(.event) \(
-  .run_started_at // .created_at // "-") \(.run_attempt // 1) \(.display_title // "" | gsub("[\r\n]"; " "))";'
+  .run_started_at // .created_at // "-") \(.run_attempt // 1) \(.actor.login // "-" | gsub("\\s"; "-")) \(
+  .display_title // "" | gsub("[\r\n]"; " "))";'
 # by_hand <day>: the workflow_dispatch runs of <day>, as rows.
 by_hand() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -442,7 +445,7 @@ reviewed() {
   fi
 }
 # take <file>: each run of the rows of <file> that names an item, into $seen/runs: "<id> <created> <ended>
-# <status> <conclusion> <event> <number> <task> <head> <comment> <account> <started> <attempt>", - for none. A
+# <status> <conclusion> <event> <number> <task> <head> <comment> <account> <started> <attempt> <actor>", - for none. A
 # name gives its task and its item (run-name): #<n> ends at a space or at the end of the name, so that #12 is
 # never #123, and a workflow_run's name gives its head, which the open pull requests into main map to the
 # pull request into main with that head (pr_of), or, when more than one into main has it, to the one that the
@@ -450,13 +453,13 @@ reviewed() {
 # finished, of any task, gets no run (running). The run of this step (RUN_ID, the run of a stop whose trust
 # job decides it again) is not one of them.
 take() {
-  local id created ended status conclusion event started attempt title number task head comment account
+  local id created ended status conclusion event started attempt actor title number task head comment account
   local numbers
   local named='^(review|answer|draft|reply|rescreen|approve|catchup|conflict|relabel|stop) #([1-9][0-9]*)( at ([0-9a-f]{40}))?( for ([1-9][0-9]*|[a-z-]+))?( of ([A-Za-z0-9-]+(\[bot\])?))?$'
   local pushed='^review ([0-9a-f]{40}) by '
   local opened='^review #([1-9][0-9]*)$'
   local answered='^answer #([1-9][0-9]*) for ([1-9][0-9]*) by '
-  while read -r id created ended status conclusion event started attempt title; do
+  while read -r id created ended status conclusion event started attempt actor title; do
     [[ ${id:-} =~ ^[1-9][0-9]*$ ]] || continue
     [ "$id" != "${RUN_ID:-}" ] || continue
     numbers="" task="" head=- comment=- account=-
@@ -481,7 +484,7 @@ take() {
     for number in $numbers; do
       [ "$status" = completed ] || running[$number]=1
       echo "$id $created $ended $status $conclusion $event $number $task $head $comment $account $started" \
-        "${attempt:--}" >> "$seen/runs"
+        "${attempt:--} ${actor:--}" >> "$seen/runs"
     done
   done < "$1"
 }
@@ -619,19 +622,21 @@ facts() {
         else "count" end)] | join(" ")' "$file"
 }
 # settles <run> <tried> <task>: whether <run>, whose tried (facts) is <tried>, settles its name: a run of the pass
-# (workflow_dispatch) of <task> (approve, draft, answer, rescreen or review) that its trust job stopped (tried stopped)
-# as it decided that the name of <run> has no task. The pass then starts no run of that name again until a new head,
-# comment or hold gives a new name (OSSV-221's architect, 2026-11-22 14:00Z and 14:14Z). For a review, due_unreviewed
-# asks this of the newest run of the head alone, so a newer run of the head ends the settle. Not a run of an event,
-# nor a duplicate: a run older than <run>, of its event and name, that had not finished when <run> was made, so that
-# the trust job of <run> can have stopped it for that run, as it stops a second approval run of a head.
+# (workflow_dispatch, started by github-actions[bot]) of <task> (approve, draft, answer, rescreen or review) that its
+# trust job stopped (tried stopped) as it decided that the name of <run> has no task. The pass then starts no run of
+# that name again until a new head, comment or hold gives a new name (OSSV-221's architect, 2026-11-22 14:00Z and
+# 14:14Z). For a review, due_unreviewed asks this of the newest run of the head alone, so a newer run of the head ends
+# the settle. Not a run of an event, nor a run that a person or an App started by hand with the same name (its actor
+# is not github-actions[bot]), nor a duplicate: a run older than <run>, of its event and name, that had not finished
+# when <run> was made, so that the trust job of <run> can have stopped it for that run, as it stops a second approval
+# run of a head.
 settles() {
   [ "$2" = stopped ] || return 1
   awk -v r="$1" -v t="$3" 'NR == FNR {
-      if ($1 == r) { e = $6; w = $8; k = $7 " " $8 " " $9 " " $10 " " $11; m = $2 }
+      if ($1 == r) { e = $6; w = $8; k = $7 " " $8 " " $9 " " $10 " " $11; m = $2; a = $14 }
       next }
     $1 + 0 < r + 0 && $6 == e && $7 " " $8 " " $9 " " $10 " " $11 == k && $2 <= m && ($3 == "-" || $3 > m) { d = 1 }
-    END { exit !(e == "workflow_dispatch" && w == t && !d) }' "$seen/runs" "$seen/runs"
+    END { exit !(e == "workflow_dispatch" && a == "github-actions[bot]" && w == t && !d) }' "$seen/runs" "$seen/runs"
 }
 declare -A owed=() access=()
 # access_of <login>: access[<login>], trusted's answer for <login>, 0 or 1, kept for this run. It fails when
@@ -1195,20 +1200,22 @@ due_approve() {
 # ends no retry of a withdrawal that GitHub refused (ruling 2 of OSSV-221's architect, 2026-11-20 07:33Z). The retry
 # comes once an hour after the end of the newest run of the pass among that newest run and the runs after it, or after
 # the end of that newest run when it is a CI run and no run of the pass came after it. When that newest run counts a try
-# (tried, of facts), the runs of the head whose post job did not succeed count the tries of the head (failures): a
-# failed "Sign in as the OSS Verify App to approve" counts none (R10), and a failed "Sign in as the OSS Verify App", a
-# failed write of the App or a cancelled post job counts one. So does a run whose trust job failed, but not one that
-# its trust job stopped. After REVIEW_TRIES of them, the automated <work> of the head is not tried again
+# (tried, of facts), or a run passed over to reach it had a trust job that failed, the runs of the head whose post job
+# did not succeed count the tries of the head (failures): a failed "Sign in as the OSS Verify App to approve" counts
+# none (R10), and a failed "Sign in as the OSS Verify App", a failed write of the App or a cancelled post job counts
+# one. So does a run whose trust job failed, but not one that its trust job stopped (OSSV-221's architect, 2026-11-22
+# 16:06Z and 2026-11-23 01:37Z). After REVIEW_TRIES of them, the automated <work> of the head is not tried again
 # (head_stopped <work>).
 due_retry() {
-  local created ended run event f tried post early tries how=failed last="" latest=""
+  local created ended run event f tried post early trust tries how=failed last="" latest="" untrusted=""
   # The runs of the head, newest first, to the newest one that did work after its trust job. last: when the newest run
-  # of the pass among them ended (latest).
+  # of the pass among them ended (latest). untrusted: a run passed over here whose trust job failed, which counts a try.
   while read -r created ended run event; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
-    read -r tried _ post _ early _ <<< "$f"
+    read -r tried _ post _ early _ _ _ _ _ trust _ <<< "$f"
     if [ "$event" != workflow_run ] && [ -z "$last" ]; then last=$ended latest=$run; fi
     if [ "$early" != stopped ] || { [ "$event" != workflow_run ] && [ "$2" != relabel ]; }; then break; fi
+    [ "$trust" != failure ] || untrusted=1
   done < <(awk -v n="$number" -v re="^($1)\$" -v h="$head" '$7 == n && $8 ~ re && $9 == h {
     print $2, $3, $1, $6 }' "$seen/runs" | sort -r)
   [ -n "${run:-}" ] || return 0
@@ -1223,7 +1230,7 @@ due_retry() {
     fi
     return 0
   fi
-  if [ "$tried" = try ]; then
+  if [ "$tried" = try ] || [ -n "$untrusted" ]; then
     tries=$(failures "$1") || return 1
     if (( tries >= REVIEW_TRIES )); then
       head_stopped "$3" "$tries"

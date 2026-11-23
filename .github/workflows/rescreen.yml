@@ -3,12 +3,13 @@
 # else.
 #
 # It runs on events alone, never on a schedule: each completed run of CI (workflow_run), each push to main, each new
-# or reopened issue, each event of a pull request from a fork on which CI runs (opened, synchronize and reopened:
-# .github/workflows/screen-start.yml starts it on main by workflow_dispatch, with the number of the pull request), and
-# a run by hand (gh workflow run rescreen.yml -R theorem-labs/rocq-linux-process-semantics, or "Run workflow" on this
-# workflow's page in the Actions tab). A run with a number takes only the conflict run of that pull request when it has
-# a merge conflict, else the task approve (the screen of its head, then the approval of the runs of that head that
-# GitHub holds) under the limits below, else nothing: the step below says how. Each other run takes every
+# or reopened issue, each event of a pull request from a fork on which a pull_request workflow runs (opened,
+# synchronize, reopened and closed: .github/workflows/screen-start.yml starts it on main by workflow_dispatch, with the
+# number of the pull request), and a run by hand (gh workflow run rescreen.yml -R
+# theorem-labs/rocq-linux-process-semantics, or "Run workflow" on this workflow's page in the Actions tab). A run with a
+# number takes nothing for a pull request that is not open. Else it takes only the conflict run of that pull request
+# when it has a merge conflict, else the task approve (the screen of its head, then the approval of the runs of that
+# head that GitHub holds) under the limits below, else nothing: the step below says how. Each other run takes every
 # item that waits, oldest reason first and under the limits below, and starts one workflow_dispatch run of review.yml
 # for each item and task. The runs with no number queue in one concurrency group, so that two of them never start the
 # same item. The runs with the number of one pull request share a group of their own (below).
@@ -45,9 +46,9 @@ on:
     branches: [main]
   issues:
     types: [opened, reopened]
-  # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork on which CI
-  # runs, with the number of the pull request: such a run takes only the conflict run of that pull request, or the
-  # screen and the approval of the held runs of its head.
+  # A run by hand, and the start that screen-start.yml makes at each event of a pull request from a fork on which a
+  # pull_request workflow runs, with the number of the pull request: such a run takes nothing for a closed pull request,
+  # and else only the conflict run of that pull request, or the screen and the approval of the held runs of its head.
   workflow_dispatch:
     inputs:
       number:
@@ -302,21 +303,23 @@ jobs:
             echo "::notice::POST_REVIEW is not true: reviews are not posted, so the rescreen pass starts no run."
             exit 0
           fi
-          # A run with a number: screen-start.yml starts it at each event of a pull request from a fork on which CI
-          # runs, and a person can start one by hand. It takes only the work of that pull request that no run of
-          # review.yml starts at such an event: its conflict run, or the screen and the approval of the held runs of its
-          # head. GitHub starts no CI run for a pull request with a merge conflict: the conflict gets the task conflict.
-          # A run that GitHub holds starts no workflow_run: a held head gets the task approve, under the limits of the
-          # pass. It never takes another item, nor other work of this pull request: a run with no number takes them
-          # (the top of this file). First it reads the pull request, with its mergeable_state. With no merge conflict,
-          # it reads the runs of its head that GitHub holds from its head repository and head branch (the runs that
-          # held_at gives, which the post job approves). With none of them, the run ends after that read and starts
-          # nothing. So a burst of events costs at most 2 calls of the API each, and one more for each 100 runs of that
-          # commit past the first 100 that GitHub holds (R14). A head repository that is gone has no such run. While
-          # GitHub has not computed the merge state, the pull request has no merge conflict here: a later run takes its
-          # conflict. A number that is not a whole number above 0, or a pull request that cannot be read, ends the run
-          # with a failure. A pull request that is not open, or whose author GitHub does not name, ends it too. The rest
-          # of this run is at the end of the step, after the functions that it shares with a run with no number.
+          # A run with a number: screen-start.yml starts it at each event of a pull request from a fork on which a
+          # pull_request workflow runs (a close among them), and a person can start one by hand. It takes only the work
+          # of that pull request that no run of review.yml starts at such an event: its conflict run, or the screen and
+          # the approval of the held runs of its head. GitHub starts no CI run for a pull request with a merge
+          # conflict: the conflict gets the task conflict. A run that GitHub holds starts no workflow_run: a held head
+          # gets the task approve, under the limits of the pass. It never takes another item, nor other work of this
+          # pull request: a run with no number takes them (the top of this file). First it reads the pull request, with
+          # its mergeable_state. With no merge conflict, it reads the runs of its head that GitHub holds from its head
+          # repository and head branch (the runs that held_at gives, which the post job approves). With none of them,
+          # the run ends after that read and starts nothing. So a burst of events costs at most 2 calls of the API
+          # each, and one more for each 100 runs of that commit past the first 100 that GitHub holds (R14). A head
+          # repository that is gone has no such run. While GitHub has not computed the merge state, the pull request
+          # has no merge conflict here: a later run takes its conflict. A number that is not a whole number above 0, or
+          # a pull request that cannot be read, ends the run with a failure. A pull request that is not open (closed or
+          # merged), or whose author GitHub does not name, ends it after that one read, with success: it starts no run,
+          # so nothing screens, reviews or approves it. The rest of this run is at the end of the step, after the
+          # functions that it shares with a run with no number.
           if [ -n "${NUMBER:-}" ]; then
             [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::The input number is not a whole number above 0, so the" \
               "rescreen pass starts no run."; exit 1; }
