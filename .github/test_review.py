@@ -2299,17 +2299,20 @@ class LimitTest(Runner):
 
     # The count stop (crowded) and the rules that it rests on, each as a change of the trust step, for a control: the
     # call of crowded in earlier taken out; the count of every listed run of the account, not its event runs alone;
-    # crowded for each run, also one of the rescreen pass; and a cut list of the account's runs taken as a list of no
-    # runs.
+    # crowded for each run, also one of the rescreen pass; a cut list of the account's runs taken as a list of no
+    # runs; and the notice of every task, which for the task conflict reads "No conflict of #N".
     NO_STOP = ('crowded "$1"\n', "")
     COUNT_ALL = ("$3 == 1 && !seen[$1]++", "!seen[$1]++")
     STOP_EVERY_RUN = ('[[ $EVENT != workflow_dispatch && $1 == "$ACTOR" ]] || return 0', ":")
     NO_FLOOD = ('[ "$list" != "actor=$1" ] || flood=1', ":")
+    CONFLICT_WORDS = ('[ "${task:-}" != conflict ] || no="No comment on the merge conflict of"\n', "")
 
     def stop_notice(self, task, account="mallory", number="7"):
-        """The notice of the count stop, which the run's summary shows."""
-        return (f"::notice::No {task} of #{number}: {account} has {2 * self.LIMIT} or more runs of this workflow that "
-                "an event started in the last hour. The rescreen pass takes the item again later.")
+        """The notice of the count stop, which the run's summary shows. For the task conflict, it says that the comment
+        on the merge conflict is not posted: "No conflict of #7" would read as "#7 has no conflict"."""
+        no = "No comment on the merge conflict of" if task == "conflict" else f"No {task} of"
+        return (f"::notice::{no} #{number}: {account} has {2 * self.LIMIT} or more runs of this workflow that an event "
+                "started in the last hour. The rescreen pass takes the item again later.")
 
     def test_an_event_run_of_an_account_with_2_x_limit_event_runs_listed_in_the_hour_takes_no_task(self):
         """The count stop (OSSV-221's architect, 2026-11-24 19:48Z): the run of an event of mallory, who has no write
@@ -2339,8 +2342,9 @@ class LimitTest(Runner):
         comment job writes in the group write-7: each such comment of mallory started a run that put a job in the
         group. It takes the count stop too, and the stop needs one read of the list of her runs and no read of any
         job. With 2 * OUTSIDE_HOURLY_LIMIT - 1 event runs listed, it still gets the task conflict; with
-        2 * OUTSIDE_HOURLY_LIMIT, no task, and its notice names the task conflict. The control, the trust step with
-        the call of crowded taken out, gives the task conflict in both."""
+        2 * OUTSIDE_HOURLY_LIMIT, no task, and its notice says that no comment is posted on the merge conflict, never
+        "No conflict of #7", which reads as "#7 has no conflict". The control, the trust step with the call of crowded
+        taken out, gives the task conflict in both."""
         every = 2 * self.LIMIT
         runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
 
@@ -2355,11 +2359,16 @@ class LimitTest(Runner):
                 rc, out, got = conflict(listed)
                 self.assertEqual((rc, got.get("task"), got.get("route")), (0, "conflict" if want else None, want), out)
                 self.assertEqual(out.count(self.stop_notice("conflict")), 0 if want else 1, out)
+                self.assertNotIn("No conflict of", out)
                 self.assertEqual([c for c in self.calls() if c.endswith(("/runs", "/jobs"))], [runs])
         with self.subTest(control="no stop"):
             rc, out, got = conflict(every, control=True)
             self.assertEqual((rc, got.get("task"), got.get("route")), (0, "conflict", "review"), out)
             self.assertNotIn(self.stop_notice("conflict"), out)
+        with self.subTest(control="the notice of every task"):
+            rc, out, got = self.changed_trust(self.CONFLICT_WORDS, lambda: conflict(every))
+            self.assertEqual((rc, got.get("task"), got.get("route")), (0, None, None), out)
+            self.assertIn("No conflict of #7: mallory has", out)
 
     def test_the_count_stop_counts_the_event_runs_of_the_account_alone_and_stops_no_run_of_the_pass(self):
         """The count stop counts the runs that mallory's events started (own 1 in earlier), each once, and no other:
@@ -15988,6 +15997,30 @@ class DecisionLogTest(unittest.TestCase):
         found = scan(script.replace("decided hand earlier", "decided hand sooner"))[2]
         self.assertEqual(found, ["decided hand sooner"] * script.count("decided hand earlier"))
 
+    def test_a_decision_that_records_no_check_run_says_that_it_is_no_check_run_with_the_conclusion_success(self):
+        """The tester's fresh reader of round 24, M1: the post job records a check run with the conclusion neutral, with
+        the same name (not-approved), when no success stands. So the meaning of a decision that records no check run
+        says which one: no import check run with the conclusion success. No meaning of any table says "no check run"
+        alone. The meaning of record and of screened holds the clause "while the environment post holds the App's
+        key" (F10): the record step and the withdraw step need that key. The control, a meaning in the words of
+        before, is found."""
+        def vague(meaning):
+            return bool(re.search(r"\bno check run\b|records no check run\b", meaning))
+
+        records_none = ("screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved", "writer",
+                        "held", "hand", "screened", "withdrawn", "newer")
+        for table in (rules.LOG_DECISIONS, rules.LOG_CAUSES):
+            for word, meaning in table.items():
+                with self.subTest(word=word):
+                    self.assertFalse(vague(meaning), meaning)
+        for decision in records_none:
+            with self.subTest(decision=decision):
+                self.assertIn("no import check run with the conclusion success", rules.LOG_DECISIONS[decision])
+        for decision in ("record", "screened"):
+            self.assertIn("the environment post holds the App's key", rules.LOG_DECISIONS[decision])
+        self.assertTrue(vague("The author is no outside author, so this run records no check run."))
+        self.assertTrue(vague("A newer run gave the head a blocking finding, so no check run is recorded."))
+
 
 class LabelTest(Runner):
     """rules.py label and make-label, as the comment, hold and rescreen jobs run them, against the stand-in gh: one
@@ -21090,6 +21123,8 @@ class ImportCheckTest(ReaderRunner):
                               f"withdrawn.{again}", self.logs[-1])
 
     FIND = "Find the import check runs that a later review or screen withdraws"
+    # The step of the hold job of an answer that runs the same script (OSSV-221's architect, 2026-11-24 14:29Z, F2).
+    ANSWER_FIND = "Find the import check runs that the screen of this answer withdraws"
 
     def changed_step(self, job, name, old, new, run):
         """run() with the step name of job changed, as a control: its script holds new in the place of old, which it
@@ -21376,7 +21411,7 @@ class ImportCheckTest(ReaderRunner):
         (c) run 100 records."""
         older = review_of(HEAD, at=ago(70), run=60)
         answer = dict(self.REVIEWED, task="answer", started=ago(20), comment="77")
-        find = step("hold", self.FIND)
+        find = step("hold", self.ANSWER_FIND)
 
         def held(checks):
             self.serve_checks(checks)
@@ -21622,6 +21657,12 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(self.successes(end), [], end)
                 self.assertEqual((bodies(labels)[-1:], len(bodies(labels)), states), ([gone], len(labels), []),
                                  self.logs[-4:])
+                self.assertIn(f"#7: its label comment said that the workflow recorded the check "
+                              f"`repo-pairs/import-approved` on {HEAD}. No such check run with the conclusion success "
+                              "stands now: a run withdrew it. So this step wrote the label comment of the state "
+                              "decide, which says that a run withdrew the check. GitHub did not say whether the author "
+                              "has write access, so this step did not add or take off a state label.\n",
+                              "\n".join(self.logs))
                 self.tearDown()
                 self.setUp()
                 unrecord = "    rewritten = unrecord(number, withdrawn) if unchanged else None\n"
@@ -22223,6 +22264,7 @@ class KindTableTest(Scheduled, ReaderRunner):
                 "external_id": f"7:{HEAD}", "status": "completed", "conclusion": "success",
                 "output": {"text": rules.import_marker(HEAD, None)}}
     FIND = "Find the import check runs that a later review or screen withdraws"
+    ANSWER_FIND = "Find the import check runs that the screen of this answer withdraws"
     RETRY = (" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this run "
              f"ends. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment names the "
              "next step for Sami.")
@@ -22706,7 +22748,7 @@ class KindTableTest(Scheduled, ReaderRunner):
         job = "hold" if route == "answer" else "post"
         steps = run_job(self, job, dict(got[f"before {job}"]), ApproveTest.TOKENS)
         log = "\n".join(self.logs[start:])
-        self.assertEqual(steps[self.FIND], "failure", log)
+        self.assertEqual(steps[self.ANSWER_FIND if job == "hold" else self.FIND], "failure", log)
         promised = kind == "outsider" and not w["rerun"]
         again = self.RETRY if promised else " Re-run this run."
         self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so none of them is withdrawn."

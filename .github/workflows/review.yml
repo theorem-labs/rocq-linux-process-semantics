@@ -852,11 +852,13 @@ jobs:
             exit 0
           }
           # stop <why>: no route, so no job after this one runs. Its notice names the item once the step knows it
-          # (reviewed).
+          # (reviewed). For the task conflict, only the count stop (crowded) reaches it, and the notice says that the
+          # comment on the merge conflict is not posted: "No conflict of #N" would read as "#N has no conflict".
           stop() {
-            local what="#$NUMBER"
+            local what="#$NUMBER" no="No ${task:-run} of"
             [ -n "$NUMBER" ] || what="commit $HEAD"
-            echo "::notice::No ${task:-run} of $what: $1"
+            [ "${task:-}" != conflict ] || no="No comment on the merge conflict of"
+            echo "::notice::$no $what: $1"
             exit 0
           }
           # export_stop <repository> <branch>: no task (stop) for an export pull request, whose head repository and head
@@ -5450,7 +5452,7 @@ jobs:
       # line of the step "Record a withdrawal that this run owes" stays. The rescreen pass tries no App write of an
       # answer again (held.sh due_retry), so RETRY is false, and each error says to re-run this run. Only while the
       # environment post holds the App's key.
-      - name: Find the import check runs that a later review or screen withdraws
+      - name: Find the import check runs that the screen of this answer withdraws
         id: withdraw
         if: env.APP_KEY_SET == 'true' && steps.answered.outputs.held == 'true'
         env:

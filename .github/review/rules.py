@@ -659,45 +659,66 @@ OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) (
 # item. The fields come after read, in the order of LOG_FIELDS, and only where the decision needs one. A value that
 # the step does not know is none. Each word of the three tables has one meaning.
 LOG_DECISIONS = {
-    # The decide step of the post job: the decisions of DECISIONS.
-    "record": "The post job records the import check run of the head.",
-    "screen": "No screen passed the head in the run of this review, so no check run is recorded.",
-    "verdict": "The verdict of the review is neither pass nor person, so no check run is recorded.",
-    "steering": "The pull request changes a file under .github/, so no check run is recorded.",
-    "outside": "The pull request changes a path that the import does not take, so no check run is recorded.",
-    "unread": "The step did not read each changed file, so no check run is recorded.",
-    "person": "The verdict is person, so Sami decides, and no check run is recorded.",
-    "markdown": "The soundness hold lasts and a changed path is not a Markdown file, so no check run is recorded.",
-    "moved": "The pull request has another head now, so no check run is recorded for this head.",
-    "writer": "The author is no outside author, so this run records no check run.",
-    "held": "A hold of the screen outranks the pass of this run, so no check run is recorded.",
-    "hand": "This run records no check run, and leaves the record of an earlier screened pass.",
-    "screened": "This run records no check run, and withdraws each one that stands, for the cause.",
-    "withdrawn": "A withdrawal of the import check run stands, so this run records no check run.",
-    "newer": "A newer run gave the head a blocking finding or the verdict person, so no check run is recorded.",
+    # The decide step of the post job: the decisions of DECISIONS. Where a decision says that no import check run with
+    # the conclusion success is recorded, the job can still record a check run with the conclusion neutral
+    # (not-approved).
+    "record": "The post job records the import check run of the head, while the environment post holds the App's key.",
+    "screen": ("No screen passed the head in the run of this review, so no import check run with the conclusion "
+               "success is recorded."),
+    "verdict": ("The verdict of the review is neither pass nor person, so no import check run with the conclusion "
+                "success is recorded."),
+    "steering": ("The pull request changes a file under .github/, so no import check run with the conclusion success "
+                 "is recorded."),
+    "outside": ("The pull request changes a path that the import does not take, so no import check run with the "
+                "conclusion success is recorded."),
+    "unread": ("The step did not read each changed file, so no import check run with the conclusion success is "
+               "recorded."),
+    "person": ("The verdict is person, so Sami decides, and no import check run with the conclusion success is "
+               "recorded."),
+    "markdown": ("The soundness hold lasts and a changed path is not a Markdown file, so no import check run with "
+                 "the conclusion success is recorded."),
+    "moved": ("The pull request has another head now, so no import check run with the conclusion success is recorded "
+              "for this head."),
+    "writer": ("The author is no outside author, so this run records no import check run with the conclusion "
+               "success."),
+    "held": ("A hold of the screen outranks the newest screened review of the head (for a run on the route screen, "
+             "its own pass). So no import check run with the conclusion success is recorded."),
+    "hand": ("This run records no import check run with the conclusion success. It leaves each import check run with "
+             "the conclusion success that an earlier screened pass recorded."),
+    "screened": ("This run records no import check run with the conclusion success. A later step withdraws, for the "
+                 "cause, each import check run with the conclusion success that a run of an older or equal read "
+                 "recorded. It does so while the environment post holds the App's key."),
+    "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line "
+                  "(cause unposted). So this run records no import check run with the conclusion success."),
+    "newer": ("A run that read the item at or after this run gave the head a blocking finding or the verdict person. "
+              "So no import check run with the conclusion success is recorded."),
     # The label step: gone, in the place of the post job's decision, and the hold that keeps the labels.
-    "gone": "No import check run stands now, so the label comment does not say that the workflow recorded the check.",
-    "stay": "The label step leaves the state label and the label comment as they are.",
+    "gone": ("No import check run of the head with the conclusion success and the marker of the import's paths "
+             "stands now. So the label comment does not say that the workflow recorded the check."),
+    "stay": ("The label step leaves the state label and the text of the label comment as they are. It writes only the "
+             "withdraw-owed line of this run, if there is one, in a new label comment when the item has none."),
     # The step that finds the import check runs to withdraw, and the step that records the check run of not-approved.
     "withdraw": "A later step of this job withdraws the import check runs that check names.",
     "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
              "after the time in from."),
     "clear": "This job withdraws no import check run of the head.",
-    "not-approved": "A later step of this job records the check run that says that the head is not approved.",
+    "not-approved": ("This job records the check run that says that the head is not approved. The field check names "
+                     "that check run once it is recorded."),
     # The step of the comment job and of the hold job that gives way to a newer word.
-    "skip": ("The later steps of this run post nothing on the item. A withdraw-owed line that an earlier step wrote "
-             "stays."),
+    "skip": ("The later steps of this run post no comment, no label and no label comment. The withdrawal in the hold "
+             "job of an answer still runs. A withdraw-owed line that an earlier step wrote stays."),
 }
 LOG_CAUSES = {
-    "blocking": "A review of the head gives a blocking finding.",
-    "person": "A review of the head gives the verdict person.",
+    "blocking": "A review of the head, or the withdraw-owed line of the label comment, gives a blocking finding.",
+    "person": "A review of the head, or the withdraw-owed line of the label comment, gives the verdict person.",
     "pass": "A review of the head gives the verdict pass.",
     "verdict": "A review of the head gives a blocking finding or the verdict person: the post job does not say which.",
     "screen": "A screen held the head.",
     "hold": "A hold comment of the workflow counts from a time at or after the read of this run.",
     "access": "GitHub did not say whether the author has write access.",
     "writer": "The author has write access, or is an App that the workflow trusts.",
-    "neutral": "An import check run of the head has the conclusion neutral, and it is the newest word on the head.",
+    "neutral": ("When the post job read the import check runs, the newest of them had the conclusion neutral, and no "
+                "success and no comment outranked it."),
     "missing": ("No import check run of the head with the conclusion success and the marker of the import's paths "
                 "stands."),
     "unposted": "The label comment holds a withdraw-owed line, and no comment of the workflow gives its reason.",
@@ -1326,8 +1347,8 @@ def unrecord(number, head):
     write_label(number, old, body)
     print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. No such "
           "check run with the conclusion success stands now: a run withdrew it. So this step wrote the label comment "
-          "of the state decide, which says so. GitHub did not say whether the author has write access, so this step "
-          "added and took off no state label.")
+          "of the state decide, which says that a run withdrew the check. GitHub did not say whether the author has "
+          "write access, so this step did not add or take off a state label.")
     return [*labels[:-1], dict(old, body=body)]
 
 
