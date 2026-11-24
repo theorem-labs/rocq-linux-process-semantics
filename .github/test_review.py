@@ -16013,15 +16013,14 @@ class DecisionLogTest(unittest.TestCase):
                         "held", "hand", "screened", "withdrawn", "newer")
         for table in (rules.LOG_DECISIONS, rules.LOG_CAUSES):
             for word, meaning in table.items():
-                if word not in ("not-approved", "gone"):
-                    with self.subTest(word=word):
-                        self.assertFalse(vague(meaning), meaning)
+                with self.subTest(word=word):
+                    self.assertFalse(vague(meaning), meaning)
         for decision in records_none:
             with self.subTest(decision=decision):
                 self.assertIn("this run records no import check run with the conclusion success",
                               rules.LOG_DECISIONS[decision].lower())
         key = "while the GitHub environment named post holds the key of the OSS Verify App"
-        for decision in ("record", "screened", "skip"):
+        for decision in ("record", "screened"):
             self.assertIn(key, rules.LOG_DECISIONS[decision])
         self.assertTrue(vague("The author is no outside author, so this run records no check run."))
         self.assertTrue(vague("A newer run gave the head a blocking finding, so no check run is recorded."))
@@ -16041,49 +16040,6 @@ class DecisionLogTest(unittest.TestCase):
                 with self.subTest(table=name, word=word):
                     self.assertEqual(long(meaning), [])
         self.assertEqual(len(long(" ".join(["word"] * 25) + ". " + " ".join(["word"] * 26) + ".")), 1)
-
-    def test_the_meanings_that_the_fresh_reader_of_round_24_corrected_fit_each_place_that_logs_them(self):
-        """The tester's fresh reader of round 24 (F-1, F-2, M-1 to M-3, S-d, S-e): each meaning says what each place
-        that logs its word does. hand: the comments give no reason to withdraw, but a later step can still withdraw for
-        the verdict of the run's own review. neutral: the newest withdrawal, which no success and no screened pass
-        outranks (a blocking review of a newer run, whose post job did not withdraw, can outrank it, so not "no
-        comment"). screened: the time is the one of the later withdraw or keep line, and from none withdraws each one.
-        held: also a head with no screened review. skip: the withdrawal steps of the hold job of an answer whose screen
-        held the head still run. screen: the review that the decision rests on, as a relabel has none of its own.
-        writer: an author that is not known to be outside, as GitHub did not say (cause access). Each phrase is there,
-        and no phrase of before is. The control, the meanings of before, is found."""
-        said = {("decision", "hand"): ("and the comments of the head give no reason to withdraw one",
-                                       "A later step can still withdraw for the verdict of this run's own review."),
-                ("cause", "neutral"): ("the newest withdrawal among them had the conclusion neutral",
-                                       "No success and no screened pass outranked it."),
-                ("decision", "screened"): ("whose run read the item at or before the time in the field from of the "
-                                           "later withdraw or keep line", "each one when from is none"),
-                ("decision", "held"): ("or the head has no screened review", "it outranks its own pass"),
-                ("decision", "skip"): ("In the hold job of an answer whose screen held the head, the withdrawal steps "
-                                       "still run.",),
-                ("decision", "screen"): ("in the run of the review that this decision rests on",),
-                ("decision", "writer"): ("The author is not known to be an outside author",)}
-        before = ("leaves each import check run", "the newest of them had the conclusion neutral",
-                  "no comment outranked it", "an older or equal read", "The withdrawal in the hold job of an answer",
-                  "(for a run on the route screen, its own pass)", "in the run of this review",
-                  "The author is no outside author", "the environment post holds the App's key")
-        tables = {"decision": rules.LOG_DECISIONS, "cause": rules.LOG_CAUSES}
-
-        def stale(meaning):
-            return [phrase for phrase in before if phrase in meaning]
-
-        for (kind, word), phrases in said.items():
-            for phrase in phrases:
-                with self.subTest(word=word, phrase=phrase):
-                    self.assertIn(phrase, tables[kind][word])
-        for table in tables.values():
-            for word, meaning in table.items():
-                with self.subTest(word=word):
-                    self.assertEqual(stale(meaning), [], meaning)
-        self.assertEqual(stale("It leaves each import check run with the conclusion success that an earlier "
-                               "screened pass recorded. The newest of them had the conclusion neutral, and no "
-                               "success and no comment outranked it."),
-                         ["leaves each import check run", "no comment outranked it"])
 
 
 class LabelTest(Runner):

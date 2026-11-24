@@ -664,10 +664,10 @@ LOG_DECISIONS = {
     # The decide step of the post job: the decisions of DECISIONS. Where a decision says that this run records no
     # import check run with the conclusion success, the job can still record a check run with the conclusion neutral
     # (not-approved).
-    "record": ("The post job records the import check run of the head, while the GitHub environment named post holds "
-               "the key of the OSS Verify App."),
-    "screen": ("No screen passed the head in the run of the review that this decision rests on. So this run records "
-               "no import check run with the conclusion success."),
+    "record": ("This run records the import check run of the head, while the GitHub environment named post holds the "
+               "key of the OSS Verify App."),
+    "screen": ("No screen passed the head in the run of the review that this decision rests on, or the head has no "
+               "review. So this run records no import check run with the conclusion success."),
     "verdict": ("The verdict of the review is neither pass nor person, so this run records no import check run with "
                 "the conclusion success."),
     "steering": ("The pull request changes a file under .github/, so this run records no import check run with the "
@@ -684,16 +684,17 @@ LOG_DECISIONS = {
               "success for this head."),
     "writer": ("The author is not known to be an outside author, so this run records no import check run with the "
                "conclusion success."),
-    "held": ("A hold of the screen outranks the newest screened review of the head, or the head has no screened "
-             "review. For a run on the route screen, it outranks its own pass. So this run records no import check "
-             "run with the conclusion success."),
+    "held": ("In a relabel or a review by hand, no screened review of the head outranks a hold of the screen that "
+             "names the head. In a run on the route screen, such a hold outranks the pass of this run. So this run "
+             "records no import check run with the conclusion success."),
     "hand": ("This run records no import check run with the conclusion success, and the comments of the head give no "
-             "reason to withdraw one. A later step can still withdraw for the verdict of this run's own review."),
-    "screened": ("This run records no import check run with the conclusion success. A later step withdraws import "
-                 "check runs with the conclusion success. It withdraws each one whose run read the item at or before "
-                 "the time in the field from of the later withdraw or keep line. It also withdraws each one that "
-                 "names no read, and each one when from is none. That step runs while the GitHub environment named "
-                 "post holds the key of the OSS Verify App."),
+             "reason to withdraw one. In a review by hand, a later step can still withdraw for the verdict of this "
+             "run's own review. In a relabel, which gives no verdict of its own, this run withdraws nothing."),
+    "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
+                 "check run with the conclusion success whose run read the item at or before a time. Its withdraw or "
+                 "keep line names that time in the field from. The step also withdraws each one that names no read, "
+                 "and each one when from is none. That step runs while the GitHub environment named post holds the "
+                 "key of the OSS Verify App."),
     "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line "
                   "(cause unposted). So this run records no import check run with the conclusion success."),
     "newer": ("A run that read the item at or after this run gave the head a blocking finding or the verdict person. "
@@ -709,12 +710,10 @@ LOG_DECISIONS = {
              "after the time in from."),
     "clear": "This job withdraws no import check run of the head.",
     "not-approved": ("This job records the check run that says that the head is not approved. The field check names "
-                     "that check run once it is recorded."),
+                     "that check run in the line of the step that records it."),
     # The step of the comment job and of the hold job that gives way to a newer word.
-    "skip": ("The later steps of this run post no comment, no label and no label comment. In the hold job of an "
-             "answer whose screen held the head, the withdrawal steps still run. They run while the GitHub "
-             "environment named post holds the key of the OSS Verify App. A withdraw-owed line that an earlier step "
-             "wrote stays."),
+    "skip": ("The later steps of this run post no comment, no label and no label comment. A withdraw-owed line that an "
+             "earlier step wrote stays."),
 }
 LOG_CAUSES = {
     "blocking": "A review of the head, or the withdraw-owed line of the label comment, gives a blocking finding.",
@@ -725,8 +724,8 @@ LOG_CAUSES = {
     "hold": "A hold comment of the workflow counts from a time at or after the read of this run.",
     "access": "GitHub did not say whether the author has write access.",
     "writer": "The author has write access, or is an App that the workflow trusts.",
-    "neutral": ("When the post job read the import check runs, the newest withdrawal among them had the conclusion "
-                "neutral. No success and no screened pass outranked it."),
+    "neutral": ("When the post job read the import check runs, one of them was a withdrawal: a check run with the "
+                "conclusion neutral. No success and no screened pass outranked it."),
     "missing": ("No import check run of the head with the conclusion success and the marker of the import's paths "
                 "stands."),
     "unposted": "The label comment holds a withdraw-owed line, and no comment of the workflow gives its reason.",

@@ -4623,7 +4623,7 @@ jobs:
           take_off() {
             local out
             out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
-              || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be taken off: $out"; exit 1; }
+              || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be removed: $out"; exit 1; }
           }
           # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
           # the import check at the head, the state rests on the value that its decision read (IMPORTS), not on this
