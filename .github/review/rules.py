@@ -684,17 +684,17 @@ LOG_DECISIONS = {
               "success for this head."),
     "writer": ("The author is not known to be an outside author, so this run records no import check run with the "
                "conclusion success."),
-    "held": ("In a relabel or a review by hand, no screened review of the head outranks a hold of the screen that "
-             "names the head. In a run on the route screen, such a hold outranks the pass of this run. So this run "
-             "records no import check run with the conclusion success."),
+    "held": ("In a relabel or a review by hand, the newest hold of the screen that names the head outranks each "
+             "screened review of the head. In a run on the route screen, a hold of the screen that names the head "
+             "outranks the pass of this run. So this run records no import check run with the conclusion success."),
     "hand": ("This run records no import check run with the conclusion success, and the comments of the head give no "
              "reason to withdraw one. In a review by hand, a later step can still withdraw for the verdict of this "
              "run's own review. In a relabel, which gives no verdict of its own, this run withdraws nothing."),
     "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
-                 "check run with the conclusion success whose run read the item at or before a time. Its withdraw or "
-                 "keep line names that time in the field from. The step also withdraws each one that names no read, "
-                 "and each one when from is none. That step runs while the GitHub environment named post holds the "
-                 "key of the OSS Verify App."),
+                 "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
+                 "keep line of that step names that time in the field from. The step also withdraws each one that "
+                 "names no read, and each one when from is none. That step runs while the GitHub environment named "
+                 "post holds the key of the OSS Verify App."),
     "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line "
                   "(cause unposted). So this run records no import check run with the conclusion success."),
     "newer": ("A run that read the item at or after this run gave the head a blocking finding or the verdict person. "
@@ -709,11 +709,11 @@ LOG_DECISIONS = {
     "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
              "after the time in from."),
     "clear": "This job withdraws no import check run of the head.",
-    "not-approved": ("This job records the check run that says that the head is not approved. The field check names "
-                     "that check run in the line of the step that records it."),
+    "not-approved": ("This job records the check run that says that the head is not approved for the import. The field "
+                     "check names that check run in the line of the step that records it."),
     # The step of the comment job and of the hold job that gives way to a newer word.
-    "skip": ("The later steps of this run post no comment, no label and no label comment. A withdraw-owed line that an "
-             "earlier step wrote stays."),
+    "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label. A "
+             "withdraw-owed line that an earlier step wrote stays."),
 }
 LOG_CAUSES = {
     "blocking": "A review of the head, or the withdraw-owed line of the label comment, gives a blocking finding.",

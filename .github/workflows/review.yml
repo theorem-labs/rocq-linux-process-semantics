@@ -4143,14 +4143,12 @@ jobs:
       # own record of a screened pass gives: the pass of such a run counts from STARTED. The decisions held and
       # withdrawn of a relabel or of a review by hand set no output gave_way: such a run read the head after that hold
       # or withdrawal, so its read is the newer one. Its posts are still skipped for a word that outranks its own word.
-      # The step "Record a withdrawal that the post job owes" runs before this one: its line makes later runs
-      # withdraw, and it stays in the label comment.
-      # When the item has no label comment, that step writes no line, and a run whose posts are skipped does not record
-      # it. Such a run writes one line to its log and its summary, in the form of rules.py log: the decision skip, the
-      # cause (the kind of the word, or the decision of the post job), and the run and the time of that word. It
-      # writes the output gave_way too. Each later step that writes on
-      # the item reads that output in its if. The step "Keep the review in the run's summary" still runs. A read that
-      # fails fails this step, and nothing posts.
+      # The step "Record a withdrawal that the post job owes" runs before this one: its line makes later runs withdraw,
+      # and it stays in the label comment. When the item has no label comment, that step writes no line, and a run whose
+      # posts are skipped does not record it. Such a run writes one line to its log and its summary, in the form of
+      # rules.py log: the decision skip, the cause (the kind of the word, or the decision of the post job), and the run
+      # and the time of that word. It writes the output gave_way too. Each later step that writes on the item reads that
+      # output in its if. A read that fails fails this step, and nothing posts.
       - name: >-
           Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
           this run's screened pass
@@ -4265,7 +4263,7 @@ jobs:
       # head that verdict, as when this run posted no review: its head moved, or the fresh reader refused it. GitHub
       # runs this step only when no step before it failed, so a review that GitHub refused to post leaves the line. A
       # run whose posts were skipped writes nothing on the item, and the line stays.
-      - name: Take out the line of a withdrawal that the posted review records
+      - name: Remove the line of a withdrawal that the posted review records
         if: steps.owed.outputs.pending != '' && steps.way.outputs.gave_way != 'true'
         env:
           PENDING: ${{ steps.owed.outputs.pending }}
@@ -4623,7 +4621,8 @@ jobs:
           take_off() {
             local out
             out=$(gh api --method DELETE "repos/$REPO/issues/$NUMBER/labels/$HELD_LABEL" 2>&1) \
-              || [[ $out == *"(HTTP 404)"* ]] || { echo "::error::the label could not be removed: $out"; exit 1; }
+              || [[ $out == *"(HTTP 404)"* ]] \
+              || { echo "::error::the label $HELD_LABEL could not be removed: $out"; exit 1; }
           }
           # The variable's text, given only when it is set: an empty value is no variable. When the post job decided on
           # the import check at the head, the state rests on the value that its decision read (IMPORTS), not on this
@@ -5505,7 +5504,7 @@ jobs:
       # label step, it rewrites a label comment that says that the workflow recorded the check on the head, when no
       # such check run stands now: the state decide, with the text that a run withdrew it (rules.py unrecord;
       # OSSV-221's architect, 2026-11-24 16:19Z, F5). It adds and takes off no state label.
-      - name: Take out the line of a withdrawal that the posted hold records
+      - name: Remove the line of a withdrawal that the posted hold records
         if: >-
           (steps.owed.outputs.pending != '' || steps.withdraw.outputs.clear != ''
            || steps.withdrawn.outputs.head != '' || steps.neutral.outputs.head != '')

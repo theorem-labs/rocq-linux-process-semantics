@@ -18659,7 +18659,7 @@ class ImportCheckTest(ReaderRunner):
                         f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 100 -->"}
         earlier = dict(hold, body=hold["body"].replace("review-held-run 100", "review-held-run 80"))
         s = step("hold", "Record a withdrawal that this run owes")
-        after = step("hold", "Take out the line of a withdrawal that the posted hold records")
+        after = step("hold", "Remove the line of a withdrawal that the posted hold records")
         for case, task, route, screen, withdrawn, label, want in (
                 ("no output of the post job", "review", "screen", ("success", "held"), "", old["body"], [marked]),
                 ("an approval", "approve", "screen", ("success", "held"), "", old["body"], [marked]),
@@ -18821,7 +18821,7 @@ class ImportCheckTest(ReaderRunner):
         no fix. Its step "Record a withdrawal that the post job owes" writes the line
         <!-- withdraw-owed <head> <why> <run> --> of its run (100) in both cases (OSSV-221's architect, 2026-11-22
         14:21Z and 16:06Z): after a finished withdrawal, the line stays until the review of that verdict, whose marker
-        names run 100, stands, and the step "Take out the line of a withdrawal that the posted review records", after
+        names run 100, stands, and the step "Remove the line of a withdrawal that the posted review records", after
         the post of the review, takes it out then. Its label step
         takes review-held off and gives the state of a review whose fix posted nothing: change, whose text says that the
         automated fix posted no suggested change, or person. A later relabel of HEAD, by hand or for a new value of
@@ -18909,7 +18909,7 @@ class ImportCheckTest(ReaderRunner):
                     self.assertFalse(evaluate(JOBS["hold"]["if"], ctx))
                     self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
                     ran, wrote = self.comment_job(dict(ctx), comments, labels=("review-held",))
-                    taken = "Take out the line of a withdrawal that the posted review records"
+                    taken = "Remove the line of a withdrawal that the posted review records"
                     self.assertEqual(ran, {"Run actions/checkout": "success",
                                            "Record a withdrawal that the post job owes": "success",
                                            self.SKIP: "success",
@@ -20717,7 +20717,7 @@ class ImportCheckTest(ReaderRunner):
         record = ["--method", "POST", f"repos/{REPO}/check-runs"]
         steps = ("Whether the screen of this run held the item in a review, a rescreen or an approval",
                  "Record a withdrawal that this run owes", "Label it and say that it was held",
-                 "Take out the line of a withdrawal that the posted hold records")
+                 "Remove the line of a withdrawal that the posted hold records")
         for refused, prior in ((True, ""), (True, earlier), (False, ""), (False, earlier)):
             with self.subTest(refused=refused, prior=prior):
                 self.tearDown()
