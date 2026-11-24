@@ -3100,8 +3100,8 @@ jobs:
               if [ "$since" != - ]; then
                 echo "$said It is not an approval, because its conclusion is neutral. It counts from $since, the time" \
                   "that its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
-                said="check run $stands is not an approval, and no screened pass of $HEAD counts from a time after"
-                said+=" $since"
+                said="check run $stands is not an approval, and no screened pass of $HEAD comes from a run that read"
+                said+=" #$NUMBER after $since"
               else
                 echo "$said Its summary names no time, so it counts as newer than each screened pass of $HEAD."
                 said="check run $stands is not an approval, and it counts as newer than each screened pass of $HEAD"
@@ -3209,8 +3209,8 @@ jobs:
                   "because its conclusion is neutral. It counts from $since. This run read #$NUMBER at $STARTED, at" \
                   "or before that time. The pass of this run counts from $STARTED. No screened pass of $HEAD comes" \
                   "from a run that read #$NUMBER after $since."
-                said="check run $what is not an approval, and no screened pass of $HEAD counts from a time after"
-                said+=" $since"
+                said="check run $what is not an approval, and no screened pass of $HEAD comes from a run that read"
+                said+=" #$NUMBER after $since"
               else
                 echo "#$NUMBER: check run $what is the newest import check run of $HEAD. Its summary names no time," \
                   "so it counts as newer than each screened pass of $HEAD."
@@ -4099,10 +4099,9 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job gave the decision withdrawn. The newest import check run of $HEAD is not an approval."
-              said+=" Its summary names a time at or after $STARTED, and no screened pass of $HEAD counts from a time"
-              said+=" after that time. Or its summary names no time, and then it counts as newer than each screened"
-              said+=" pass of $HEAD." ;;
+              said="Its post job gave the decision withdrawn. The newest import check run of $HEAD is not an approval,"
+              said+=" and it counts as newer than each screened pass of $HEAD. Its summary names a time at or after"
+              said+=" $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;

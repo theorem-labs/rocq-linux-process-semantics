@@ -18673,7 +18673,8 @@ class ImportCheckTest(ReaderRunner):
                               f"because its conclusion is neutral. It counts from {since}, the time that its summary "
                               f"names. No screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
                 self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not an "
-                              f"approval, and no screened pass of {HEAD} counts from a time after {since}.\n", logs)
+                              f"approval, and no screened pass of {HEAD} comes from a run that read #7 after "
+                              f"{since}.\n", logs)
                 newer = review_of(HEAD, at=ago(-1), id_=31, run=130)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[screened, newer, old], listed=[withdrawn])
@@ -18828,11 +18829,13 @@ class ImportCheckTest(ReaderRunner):
         start = len(self.logs)
         got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[earlier], listed=[withdrawn])
         self.assertNotRecorded(got, "withdrawn")
+        logs = "\n".join(self.logs[start:])
         self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD}. It is not an approval, because its "
                       f"conclusion is neutral. It counts from {since}. This run read #7 at {started}, at or before "
                       f"that time. The pass of this run counts from {started}. No screened pass of {HEAD} comes from a "
-                      f"run that read #7 after {since}.\n",
-                      "\n".join(self.logs[start:]))
+                      f"run that read #7 after {since}.\n", logs)
+        self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 900 is not an approval, "
+                      f"and no screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
         self.assertEqual(got["post"]["gave_way"], "withdrawn")
         self.assertRecorded(self.changed_decide(self.OWN_RECORD, "", lambda: self.judge(
             ["README.md"], value=self.LPS, trust=trust, comments=[earlier], listed=[withdrawn])), self.LPS)
@@ -19492,10 +19495,9 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is not an approval. "
-                 f"Its summary names a time at or after {started}, and no screened pass of {HEAD} counts from a time "
-                 "after that time. Or its summary names no time, and then it counts as newer than each screened pass "
-                 f"of {HEAD}."),
+                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is not an approval, "
+                 f"and it counts as newer than each screened pass of {HEAD}. Its summary names a time at or after "
+                 f"{started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
