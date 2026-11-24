@@ -4119,9 +4119,9 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job gave the decision withdrawn. When the post job decided, the newest import check run of"
-              said+=" $HEAD, in the order of the time that each one named, was not an approval. It counted as newer"
-              said+=" than each screened pass of $HEAD. Its summary named a time at or after $STARTED, or no time." ;;
+              said="Its post job ordered the import check runs of $HEAD by the time that each one named. When it gave"
+              said+=" the decision withdrawn, the newest one was not an approval. It counted as newer than each"
+              said+=" screened pass of $HEAD, and its summary named a time at or after $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
@@ -4588,8 +4588,8 @@ jobs:
             if [ -z "$found" ]; then
               echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
                 "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
-                "found. So the decision is gone, and the label comment does not say that the workflow recorded the" \
-                "check."
+                "found. So this step sets the post job's decision to gone, and the label comment does not say that" \
+                "the workflow recorded the check."
               approved=false decision=gone
             fi
           fi

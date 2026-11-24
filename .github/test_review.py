@@ -19863,9 +19863,9 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. When the post job decided, the newest import check run of "
-                 f"{HEAD}, in the order of the time that each one named, was not an approval. It counted as newer than "
-                 f"each screened pass of {HEAD}. Its summary named a time at or after {started}, or no time."),
+                 f"Its post job ordered the import check runs of {HEAD} by the time that each one named. When it gave "
+                 "the decision withdrawn, the newest one was not an approval. It counted as newer than each screened "
+                 f"pass of {HEAD}, and its summary named a time at or after {started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
@@ -20629,8 +20629,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotIn(recorded, labels[0])
         self.assertIn(f"#7: no import check run of {HEAD} with the conclusion success and the marker of the import's "
                       "paths stands now. Another run withdrew the check run that the post job of this run recorded or "
-                      "found. So the decision is gone, and the label comment does not say that the workflow recorded "
-                      "the check.\n", out)
+                      "found. So this step sets the post job's decision to gone, and the label comment does not say "
+                      "that the workflow recorded the check.\n", out)
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
         rc, out, wrote, labels = self.label_step(trust, got, [listed], [labelled])
         self.assertEqual((rc, wrote), (1, []), out)
@@ -20695,8 +20695,9 @@ class ImportCheckTest(ReaderRunner):
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         comments = [review_of(HEAD, at=ago(90)), old]
         trust = dict(self.BY_HAND, started=ago(1))
-        said = ("Another run withdrew the check run that the post job of this run recorded or found. So the decision "
-                "is gone, and the label comment does not say that the workflow recorded the check.")
+        said = ("Another run withdrew the check run that the post job of this run recorded or found. So this step sets "
+                "the post job's decision to gone, and the label comment does not say that the workflow recorded the "
+                "check.")
 
         def by_hand():
             return self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch",
