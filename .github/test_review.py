@@ -18682,6 +18682,45 @@ class ImportCheckTest(ReaderRunner):
                          comments=[blocking])
         self.assertNotRecorded(got)
 
+    def older_pass_after_newer_word(self, comments, listed):
+        """Run 100, the screened CI review of mallory's #7 at HEAD, read the item 40 minutes ago, and its review passed
+        HEAD. comments and listed hold a newer run's word on HEAD (a hold, or a blocking review and its withdrawal).
+        Run 100's post job gives way to it (held or withdrawn) and records nothing. Then its comment job's step "Post
+        the review, or replace the one posted before" posts run 100's pass, with the marker of the time when run 100
+        read the item. Then a relabel of HEAD runs (a merge conflict that went away, a new value of
+        REPO_PAIRS_IMPORT_PATHS, or Sami's run by hand). The relabel's result."""
+        trust = dict(self.REVIEWED, started=ago(40))
+        got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=comments, listed=listed)
+        self.assertNotRecorded(got)
+        self.assertIn(got["post"]["decision"], ("held", "withdrawn"), self.logs)
+        at = ago(0)
+        mine = review_of(HEAD, at=at, run=100)
+        mine["body"] = mine["body"].replace(f"<!-- review-read {at} -->", f"<!-- review-read {trust['started']} -->")
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        rc, out, _ = self.run_script(step("comment", "Post the review, or replace the one posted before")["run"],
+                                     NUMBER="7", BODY=mine["body"])
+        self.assertEqual(rc, 0, out)
+        posted = [c[:3] for c in writes(self.api)]
+        after = [c for c in comments if not (c["id"] == 30 and posted[0][1] == "PATCH")] + [mine]
+        return self.judge(["README.md"], value=self.LPS, trust=dict(self.RELABEL, started=ago(-1)),
+                          event="workflow_dispatch", comments=after, listed=listed)
+
+    def test_a_relabel_records_nothing_after_an_older_runs_pass_replaces_a_newer_runs_blocking_review(self):
+        """The tester's audit of round 20, F2 (no failure on the path; OSSV-221's architect, 2026-11-23 18:28Z: a
+        success must not stand after a newer run's verdict). Run 60 recorded check run 901 on HEAD of mallory's #7.
+        Sami's rescreen of HEAD (run 120, newer than run 100) gave a blocking finding, withdrew 901 for it 10 minutes
+        ago, and its review comment (30) posted 9 minutes ago. Run 100's post job gives way (withdrawn), but its
+        comment job then replaces comment 30, run 120's blocking review, with run 100's older pass
+        (older_pass_after_newer_word). The next relabel of HEAD records nothing: the newest verdict on HEAD is still
+        run 120's blocking finding. At 6e19c33f the relabel records repo-pairs/import-approved with conclusion
+        success."""
+        listed, _others = self.recorded()
+        withdrawn = self.withdrawn(dict(listed, completed_at=ago(120)), "blocking", "120", ago(10))
+        blocking = review_of(HEAD, "blocking", at=ago(9), run=120)
+        self.assertNotRecorded(self.older_pass_after_newer_word([blocking], [withdrawn]))
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head newer than the hold or the
