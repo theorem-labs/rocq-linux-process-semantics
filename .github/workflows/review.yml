@@ -3204,7 +3204,7 @@ jobs:
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
-          [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha"
+          [ "$sha" = "$HEAD" ] || decided moved "the head of the pull request is now $sha"
           # The screen of this run passed the head when the route is screen: the review job, which this step needs to
           # have succeeded, runs on that route only after a screen that passed. A review by hand with no screen has the
           # route review (by_hand).
@@ -3221,7 +3221,8 @@ jobs:
             || { echo "::error::the files of #$NUMBER could not be read."; exit 1; }
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
-          [ "$sha" = "$HEAD" ] || decided moved "the pull request moved on to $sha while its files were read"
+          said="the head of the pull request changed to $sha while the step read its files"
+          [ "$sha" = "$HEAD" ] || decided moved "$said"
           [ "$TASK" != relabel ] || relabeled
           [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
           [ "$TASK" = relabel ] || [ "$screen" != true ] || screened_run
@@ -3737,8 +3738,8 @@ jobs:
   # comment alone. A review, an answer or a fix that the fresh reader refused posts nothing: the item gets
   # waits-on-theorem and a label comment with Sami's next step. A review, a rescreen, a relabel or an approval of a pull
   # request posts nothing at all when a review or a hold of its head is newer than the read of this run, or when a
-  # withdrawal is newer than the screened pass of this run (the step "Skip the posts of this run when a review or hold
-  # of the head is newer than this run's read, or a withdrawal is newer than this run's screened pass").
+  # withdrawal is newer than the screened pass of this run (the step "Skip the posts when the head has a review or hold
+  # newer than this run's read, or a withdrawal newer than this run's screened pass").
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed. Whatever that result, it records in the label comment the
@@ -3904,8 +3905,8 @@ jobs:
       # the item reads that output in its if. The step "Keep the review in the run's summary" still runs. A read that
       # fails fails this step, and nothing posts.
       - name: >-
-          Skip the posts of this run when a review or hold of the head is newer than this run's read, or a withdrawal
-          is newer than this run's screened pass
+          Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
+          this run's screened pass
         id: way
         if: >-
           env.POST_REVIEW == 'true' && (needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
@@ -4216,9 +4217,8 @@ jobs:
       # the rule gives for those facts. That review settles the hold of the review as any posted review does, so the
       # label review-held comes off as after any review: the rescreen pass reads a run whose comment job posted as one
       # that settled the hold (held.sh held_work), and the hold job holds no such run. A run whose posts were skipped
-      # (the step "Skip the posts of this run when a review or hold of the head is newer than this run's read, or a
-      # withdrawal is newer than this run's screened pass") writes no label and no label comment: the run of that newer
-      # word owns them.
+      # (the step "Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer
+      # than this run's screened pass") writes no label and no label comment: the run of that newer word owns them.
       - name: Take the label review-held off and set the state label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'

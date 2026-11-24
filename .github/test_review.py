@@ -4477,8 +4477,8 @@ class ApproveTest(Holding):
     STEERED = "Say that a person at Theorem approves the runs of the head"
     # The comment job's step that skips the posts of this run when a review or a hold of the head is newer than the
     # read of this run, or a withdrawal is newer than the screened pass of this run.
-    SKIP = ("Skip the posts of this run when a review or hold of the head is newer than this run's read, or a "
-            "withdrawal is newer than this run's screened pass")
+    SKIP = ("Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer "
+            "than this run's screened pass")
 
     def commented(self, trust):
         """The comment job's steps after the post job that post ran last, with the outputs that it gave, after the
