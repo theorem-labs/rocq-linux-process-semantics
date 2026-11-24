@@ -3097,12 +3097,12 @@ jobs:
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
               said="#$NUMBER: check run $stands is the newest import check run of $HEAD."
               if [ "$since" != - ]; then
-                echo "$said It is not an approval: its conclusion is neutral, and it counts from $since, the time" \
-                  "that its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
+                echo "$said It is not an approval, as its conclusion is neutral. It counts from $since, the time that" \
+                  "its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
               else
-                echo "$said Its summary names no time, so it stands whatever review is newer."
+                echo "$said Its summary names no time, so no review lifts it."
               fi
-              decided withdrawn "check run $stands is not an approval, and it stands"
+              decided withdrawn "check run $stands is not an approval, and no screened pass of a later read lifts it"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
               if [ "$why" != - ]; then
@@ -3201,26 +3201,28 @@ jobs:
             fi
             if [ "$decision" = withdrawn ]; then
               if [ "$since" != - ]; then
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD. It is not an approval: its" \
-                  "conclusion is neutral, and it counts from $since, at or after this run read #$NUMBER at $STARTED." \
-                  "The pass of this run counts from $STARTED. No screened pass of $HEAD comes from a run that read" \
-                  "#$NUMBER after $since."
+                echo "#$NUMBER: check run $what is the newest import check run of $HEAD. It is not an approval, as" \
+                  "its conclusion is neutral. It counts from $since, at or after this run read #$NUMBER at" \
+                  "$STARTED. The pass of this run counts from $STARTED. No screened pass of $HEAD comes from a run" \
+                  "that read #$NUMBER after $since."
               else
                 echo "#$NUMBER: check run $what is the newest import check run of $HEAD. Its summary names no time," \
-                  "so it stands whatever review is newer."
+                  "so no review lifts it."
               fi
-              decided withdrawn "check run $what is not an approval, and it stands"
+              decided withdrawn "check run $what is not an approval, and no screened pass of a later read lifts it"
             fi
             if [ "$decision" = newer ]; then
               if [ "$what" = - ]; then
                 echo "#$NUMBER: a review comment of $HEAD that names no run gives the verdict $given. GitHub last" \
                   "changed it at $since, at or after this run read #$NUMBER at $STARTED."
-                said="a review comment that GitHub changed at or after this run's read gave $HEAD the verdict"
+                said="a review comment that GitHub changed at or after the time when this run read #$NUMBER gave $HEAD"
+                said+=" the verdict"
                 decided newer "$said $given"
               fi
               echo "#$NUMBER: the review of run $what gives $HEAD the verdict $given. Run $what read #$NUMBER at" \
                 "$since, at or after this run read #$NUMBER at $STARTED."
-              decided newer "a run that read #$NUMBER at or after this run's read gave $HEAD the verdict $given"
+              said="a run that read #$NUMBER at or after the time when this run read it gave $HEAD the verdict"
+              decided newer "$said $given"
             fi
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
@@ -3306,9 +3308,10 @@ jobs:
       # the author now. The error of a read that fails, and of a withdrawal or a check run of not-approved that GitHub
       # refuses (the steps after the sign-in), follows the table's retry and the name of this run. For an outside
       # author, the rescreen pass's retry of the App's writes (a relabel, held.sh due_retry) withdraws the check run
-      # again, an hour or more after this run ends. That retry takes only a run whose name gives the head (the trust
-      # job's named): a CI run, or a run by hand whose input head is set, as each run of the pass for a pull request
-      # sets it. held.sh take records no head for any other run. After a hold that is not tried again names the head,
+      # again, an hour or more after this run ends. It records no check run of not-approved, so the error of that path
+      # says so. That retry takes only a run whose name gives the head (the trust job's named): a CI run, or a run by
+      # hand whose input head is set, as each run of the pass for a pull request sets it. held.sh take records no head
+      # for any other run. After a hold that is not tried again names the head,
       # that relabel is the one App write that the pass tries again for the head, and only when the relabel withdraws:
       # a screen held the head after each review that screened it, the newest review of the head gives a blocking
       # finding or the verdict person, or the label comment holds the line
@@ -3473,6 +3476,15 @@ jobs:
               "#$NUMBER after $at. The withdrawal of this run counts from $at, so it leaves them."
           fi
           if [ -z "$ids" ]; then
+            # With no import check run to withdraw, own says what this run's own review or screen gave: no check run
+            # stands for that review or screen to be later than.
+            if [ "$kind" = own ]; then
+              case $why in
+                blocking) because="the review of this run asks for a change" ;;
+                person) because="the review of this run has questions for Sami" ;;
+                screen) because="the screen of this run held $head" ;;
+              esac
+            fi
             # With no import check run of conclusion success at all, a run whose own verdict or screen withdraws, of an
             # outside author's pull request, makes the request of a check run with the conclusion neutral that says
             # that the head is not approved for the import (rules.py not-approved; OSSV-221's architect, 2026-11-24
@@ -3480,6 +3492,15 @@ jobs:
             # that check run as a withdrawal that counts from STARTED. The step "Record that the head is not approved
             # for the import" posts it, after the sign-in.
             if [ -z "$kept" ] && [ "$kind" = own ] && [ "${OUTSIDE:-}" = true ]; then
+              # again: the error of this path says what comes next. The rescreen pass's retry is a relabel, which
+              # withdraws for the line of this run but records no such check run.
+              if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
+                again=" An hour or more after this run ends, the rescreen pass relabels this head. That relabel"
+                again+=" withdraws each import check run with the conclusion success of an older read, for the verdict"
+                again+=" or the screen of this run. It records no check run that says that the head is not approved."
+                again+=" After $REVIEW_TRIES failed tries, this one included, the label comment names the next step for"
+                again+=" Sami."
+              fi
               [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
                 || { echo "::error::no start time of this run, so no check run records that $head is not approved" \
                        "for the import.$again"; exit 1; }
@@ -3593,9 +3614,12 @@ jobs:
       # so it approves nothing. Its summary names this run, the head, why and the time when this run read the item. The
       # post job of a run that read the item before that time can come after this one: it reads the check run as a
       # withdrawal that stands, and records nothing. The step posts only a request for this pull request at that head.
-      # A call that fails fails the job, as a withdrawal that GitHub refuses does: the output owed stays, the comment
-      # job or the hold job records the line <!-- withdraw-owed <head> <why> <run> -->, and the error says what comes
-      # next, as for the step before. Once it is posted, the output head names the head: the job's output withdrawn.
+      # A call that fails fails the job, as a withdrawal that GitHub refuses does: the output owed stays, and the
+      # comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> -->. The error says what
+      # comes next: the rescreen pass's relabel of the head when the author-kind table's retry holds and the name of
+      # this run gives the head, else a re-run of this run. That relabel withdraws for the line, but it records no check
+      # run that says that the head is not approved. Once it is posted, the output head names the head: the job's
+      # output withdrawn.
       - name: Record that the head is not approved for the import
         id: neutral
         if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.neutral != ''
@@ -3610,12 +3634,14 @@ jobs:
           NAMED: ${{ needs.trust.outputs.named }}
         run: |
           set -euo pipefail
-          # again: what the error of a call that fails says comes next, as in the step before.
+          # again: what the error of a call that fails says comes next. The rescreen pass's retry is a relabel, which
+          # withdraws for the line of this run but records no such check run.
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
-            again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
-            again+=" step for Sami."
+            again=" An hour or more after this run ends, the rescreen pass relabels this head. That relabel withdraws"
+            again+=" each import check run with the conclusion success of an older read, for the verdict or the screen"
+            again+=" of this run. It records no check run that says that the head is not approved. After $REVIEW_TRIES"
+            again+=" failed tries, this one included, the label comment names the next step for Sami."
           fi
           request=$RUNNER_TEMP/not-approved.json
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -4066,7 +4092,8 @@ jobs:
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
               said="Its post job gave the decision withdrawn. The newest import check run of $HEAD is not an approval,"
-              said+=" and it stands. Its summary names a time at or after $STARTED, or no time." ;;
+              said+=" and no screened pass of a later read lifts it. Its summary names a time at or after $STARTED, or"
+              said+=" no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
@@ -4521,8 +4548,9 @@ jobs:
               || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
             if [ -z "$found" ]; then
               echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
-                "paths stands now. A run withdrew it after the post job of this run. So the label comment gives the" \
-                "decision withdrawn, and it does not say that the workflow recorded the check."
+                "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
+                "found. So the label comment gives the decision withdrawn, and it does not say that the workflow" \
+                "recorded the check."
               approved=false decision=withdrawn
             fi
           fi
