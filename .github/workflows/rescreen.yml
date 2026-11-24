@@ -36,8 +36,9 @@
 # it read permissions alone. It writes no label and no comment. When it decides that the work of an item is not tried
 # again (a bound of tries), it starts a review.yml run of the task stop: that run's trust job decides it again from the
 # API with the same functions (.github/review/held.sh), and its comment job writes the label and the hold comment, in
-# the item's concurrency group label-<n>, where every write of the item's state label and label comment runs. A run
-# that github-actions[bot] starts starts no other workflow when it ends, and none needs to.
+# the item's concurrency group write-<n>, where every write of the item runs: its check runs, its state label and label
+# comment, and its review and hold comments. A run that github-actions[bot] starts starts no other workflow when it
+# ends, and none needs to.
 name: rescreen
 
 on:
@@ -247,7 +248,7 @@ jobs:
   # closed; answer-post for an answer whose REVIEW_TRIES runs counted a try and posted nothing, with no hold. That run's
   # trust job decides the stop again from the API, for that item alone, with the functions of .github/review/held.sh
   # (consider), and its comment job gives the item the state label and writes the hold comment, in the item's group
-  # label-<n>. While this run starts another run of the item, the item's stop waits for a later run: the trust job of
+  # write-<n>. While this run starts another run of the item, the item's stop waits for a later run: the trust job of
   # the stop would find that run unfinished, and stop. At most one stop of an item in each run.
   # Each reason is a function due_<reason> of .github/review/held.sh, which consider calls for each open item. A failed
   # read or start for one item leaves that item for the next run: the job goes on with the others, and fails at the end.
@@ -258,10 +259,11 @@ jobs:
   # approval and a reopen start CI with the App's token, in the post job. Beside it, the token only reads: issues and
   # pull-requests (the items, their comments and reviews, and the pull requests), checks (the check runs of a head: the
   # value of REPO_PAIRS_IMPORT_PATHS that the import check recorded) and contents (the checkout). It holds no model. It
-  # checks out .github/review/trusted.sh and .github/review/held.sh alone, at the commit of main whose workflow file
-  # runs, and the step that starts the runs of review.yml sources those two files: it runs no other file of the
-  # repository. Its cost: one job of a few seconds for each event, on a standard runner, whose minutes GitHub does not
-  # bill in a public repository. A run with a number costs one more such job, the run with no number that it starts.
+  # checks out .github/review/trusted.sh, .github/review/held.sh and .github/review/rules.py alone, at the commit of
+  # main whose workflow file runs. The step that starts the runs of review.yml sources the first two, and held.sh runs
+  # rules.py for the order of the words on a head (relabel_withdraws): it runs no other file of the repository. Its
+  # cost: one job of a few seconds for each event, on a standard runner, whose minutes GitHub does not bill in a public
+  # repository. A run with a number costs one more such job, the run with no number that it starts.
   rescreen:
     if: >-
       github.ref == 'refs/heads/main'
@@ -276,8 +278,9 @@ jobs:
       cancel-in-progress: false
     permissions: {actions: write, contents: read, issues: read, pull-requests: read, checks: read}
     steps:
-      # .github/review/trusted.sh and .github/review/held.sh alone, which the next step sources, at the commit of main
-      # whose workflow file runs (github.sha); never a file of a pull request.
+      # .github/review/trusted.sh and .github/review/held.sh, which the next step sources, and .github/review/rules.py,
+      # which held.sh runs, alone, at the commit of main whose workflow file runs (github.sha); never a file of a pull
+      # request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with:
           ref: ${{ github.sha }}
@@ -285,6 +288,7 @@ jobs:
           sparse-checkout: |
             .github/review/trusted.sh
             .github/review/held.sh
+            .github/review/rules.py
           sparse-checkout-cone-mode: false
       - name: Start the runs that the open items are due
         env:

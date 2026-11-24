@@ -6,9 +6,10 @@
 #   the pass started it;
 # - the hold job's step "Label it and say that it was held" of review.yml, which reads try_rule, the one rule of what
 #   counts as a try of a run, and calls replaced_hold, the one rule of each writer of a hold comment.
-# Before each of the first two steps, its job checks out this file and trusted.sh, the file beside it, alone, at the
-# commit whose workflow file runs (github.sha, a commit of main). The hold job checks out main's .github/. So a file of
-# main runs, and never a file of a pull request.
+# Before each of the first two steps, its job checks out this file, trusted.sh and rules.py, the files beside it, alone,
+# at the commit whose workflow file runs (github.sha, a commit of main). The hold job checks out main's .github/. So a
+# file of main runs, and never a file of a pull request. relabel_withdraws runs rules.py from that checkout
+# ($GITHUB_WORKSPACE/.github/review/rules.py): the order of the words on a head is written once, in rules.py.
 # Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
 # source trusted.sh, which defines the function trusted, before it, and define restart after it, which rerun calls.
 # The functions and jq filters of the file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment
@@ -230,64 +231,23 @@ no_key_of() {
     | startswith("<!-- review-label -->") and test("\n<!-- review-no-key " + $ENV.SHA + " -->(\n|$)")))'
 }
 # relabel_withdraws <number> <head>: why a relabel of <head> withdraws the import check run of <head>, from the
-# comments of github-actions[bot] on <number>, by the rule that the post job of that relabel reads (rules.py
-# verdict, its why). Each comment counts from one time (rules.py word_time; OSSV-221's architect, 2026-11-24 01:20Z
-# and 01:26Z): a review comment of <head> from the time when its run read the item, the marker
-# <!-- review-read <time> --> in its header just before <!-- review-run <run> -->, never from when it posted. One with
-# no such marker counts from when GitHub last changed it for the verdict blocking or person, and at no time (before
-# each time) for pass. A hold comment of the screen counts from the time when its run read the item too, the marker
-# <!-- review-held-read <time> --> after the head that it names, and one with no such marker from when GitHub last
-# changed it (OSSV-221's architect, 2026-11-24 09:43Z, A3). The review comments of <head> are in the order of those
-# times. Of two at the same time, one with the verdict blocking or person counts as the newer, and else the two keep
-# the order in which GitHub lists them (rules.py head_reviews; OSSV-221's architect, 2026-11-24 05:23Z: a verdict or a
-# hold outranks a pass at a tie). screen when a hold comment of the screen that names <head>
-# (its text holds "The automated screen held ", and it has no marker of a hold that is tried again) is older than no
-# review comment of <head> whose run screened it (the marker <!-- review-screened <head> --> on the line after the
-# marker of its verdict): the state held. Else the reason of a withdrawal of the import check runs of <head>
-# that a run owes (it found a reason for it and did not finish it, or no comment gives that reason yet), while a label
-# comment holds its marker line
-# <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
-# the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
-# the comment of run <run> that gives <why>, or a review of <head> newer than the time of the line: the hold or the
-# withdrawal of run <run>, or else when the step of run <run> that wrote the line ended (rules.py owed, line_reason).
-# Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none
-# is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel
-# of <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
-# marker <!-- review-screened <head> --> and passes, with no such line, and no withdrawal of the newest read among the
-# import check runs of <head> blocks it (by the time that each one names; rules.py newest_withdrawal): one whose summary
-# names no time, or whose time is newer than that review comment (rules.py verdict, screened, and withdrawal_stands).
+# comments of <number>, by the rule that the post job of that relabel reads (rules.py verdict, its why): rules.py
+# relabel-withdraws, which orders the words on <head> by the one model of rules.py (word_key, outranks; OSSV-221's
+# architect, 2026-11-24 14:29Z to 14:40Z). Each review comment and each hold comment of the screen counts from the time
+# when its run read the item (rules.py word_time), and at the same time a verdict or a hold outranks a pass. screen when
+# a hold comment of the screen that names <head> outranks each review comment of <head> whose run screened it: the
+# state held. Else "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> --> of a
+# withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason yet),
+# whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out, and only while
+# a comment of github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or person, of the
+# newest review comment of <head> newer than the newest screened one (of any, when none is screened) that gives one, or
+# of the newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws nothing. It
+# records an import check run only when the newest review comment of <head> holds the marker
+# <!-- review-screened <head> --> and passes, with no such line, and no withdrawal of the newest read among the import
+# check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands).
 relabel_withdraws() {
-  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-  comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
-      | {at: (.updated_at // ""), body: (.body // "")}] as $ours
-    | ([$ours[] | select(.body | startswith("<!-- review -->\n<!-- review-head " + $ENV.SHA + " -->\n"))
-        | .at as $at | (.body | split("\n")) as $l
-        | ($l[2] // "" | capture("^<!-- review-verdict " + $ENV.SHA + " (?<v>pass|blocking|person)( will-fix)? -->$"))
-        | .v as $v | ($l[3] == "<!-- review-screened " + $ENV.SHA + " -->") as $s
-        | (if $s then 4 else 3 end) as $r
-        | (($l[$r] // "" | capture("^<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
-              + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->$")
-            | select($l[$r + 1] // "" | test("^<!-- review-run [1-9][0-9]* -->$")) | .t)
-          // (if $v == "pass" then "" else $at end)) as $t
-        | {at: $t, verdict: $v, screened: $s}] | sort_by([.at, (.verdict | IN("blocking", "person"))])) as $reviews
-    | ([$reviews[] | select(.screened) | .at] | max // "") as $screened
-    | ([range(0; $reviews | length) | select($reviews[.].screened)] | last) as $last
-    | ([$reviews[(($last // -1) + 1):][] | .verdict | select(IN("blocking", "person"))] | last) as $newer
-    | ([$ours[] | select(.body | startswith("<!-- review-held -->")
-          and test("\n<!-- review-held-head " + $ENV.SHA + " -->(\n|$)")
-          and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+"
-            + "( [0-9]+( [a-z]+( [1-9][0-9]*)?)?)? -->(\n|$)") | not)
-          and contains("The automated screen held "))
-        | (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
-            + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) // .at] | max // "") as $held
-    | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
-        | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) [1-9][0-9]* -->$") | .w] | last)
-        as $owed
-    | if $held != "" and $held >= $screened then "screen"
-      elif $owed != null then "\($owed) owed"
-      elif $newer != null then $newer
-      elif $last != null and ($reviews[$last].verdict | IN("blocking", "person")) then $reviews[$last].verdict
-      else "-" end'
+  comments "$1" > /dev/null || return 1
+  python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$2" "$seen/comments-$1"
 }
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
