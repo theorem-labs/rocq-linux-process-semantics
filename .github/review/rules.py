@@ -215,9 +215,13 @@ else. <posted> is, for <from> owed, posted when a comment of github-actions[bot]
 for an outside author (line_reason, with the source runs and times of <checks.jsonl>, and the jobs of the line's run
 when neither they nor a hold give it a time), and unposted when none does; - else. <checks.jsonl> holds the import
 check runs of <head> for <number>, {id, conclusion, completed_at, summary} one on each line; with none given, no check
-run is read. <stands> is the id of the newest of them when it is a withdrawal (the conclusion neutral) that blocks a
-record: its summary names no time, or no screened review comment that passes <head> counts from a time after that
-time (withdrawal_stands); - else. <since> is that time, or - when <stands> is - or the summary names no time. <run>
+run is read. They are in the order of the time that each one names, never of completed_at: for a success, the time when
+its run read the item, and for a withdrawal (the conclusion neutral), the time from which it counts. A success that
+names no time is older than each other one, and a withdrawal that names no time is newer; at a tie, the withdrawal is
+the newer (newest_withdrawal; OSSV-221's architect, 2026-11-24 09:43Z). <stands> is the id of the withdrawal of the
+newest read when no success names a newer read and when it blocks a record: its summary names no time, or no screened
+review comment that passes <head> counts from a time after that time (withdrawal_stands); - else. <since> is that time,
+or - when <stands> is - or the summary names no time. <run>
 and <read> are the run of the newest review comment of <head> and the time when that run read the item, from its
 markers <!-- review-read <time> --> and <!-- review-run <run> -->, or - and - when it has none: a relabel's record names
 them. The line gives only the reason, never the state. A relabel records the import check run only for screened with
@@ -234,13 +238,14 @@ run on the route screen whose own screen and review passed <head> (own_record): 
 withdrew its import check run or gave it a verdict while this run ran. <started> is the time when the trust job of
 this run read the item, from which the pass of this run counts, and <run> is the id of this run. <decision> is held
 when a hold comment of the screen that names <head> is at or after <started>, and <what> is the time of that hold;
-else withdrawn when the newest import check run of <checks.jsonl> is a withdrawal that stands (withdrawal_stands) and
-that counts from a time at or after <started>, and then <what> is its id and <since> that time, or - when its summary
-names none; else newer when a review comment of <head> of another run gives the verdict blocking or person and counts
-from a time at or after <started> (word_time: the time when its run read the item), and then <what> is that run (- for
-a comment that names none), <since> that time and <verdict> that verdict; and - for none, with the others -. The run
-records nothing for held, withdrawn and newer. A hold, a withdrawal or a review older than <started> leaves the record
-of this run, as after a blocking review, a fix and a screen that passed <head> again.
+else withdrawn when a withdrawal among the import check runs of <checks.jsonl> stands (withdrawal_stands, the withdrawal
+of the newest read in the order of verdict) and counts from a time at or after <started>, and then <what> is its id and
+<since> that time, or - when its summary names none; else newer when a review comment of <head> of another run gives the
+verdict blocking or person and counts from a time at or after <started> (word_time: the time when its run read the
+item), and then <what> is that run (- for a comment that names none), <since> that time and <verdict> that verdict;
+and - for none, with the others -. The run records nothing for held, withdrawn and newer. A hold, a withdrawal or a
+review older than <started> leaves the record of this run, as after a blocking review, a fix and a screen that passed
+<head> again.
 
 newer-word: "<other> <kind> <time>" on standard output for <head> of the pull request <number>: the newest word on
 <head> of a run that read the item at or after <started>, the time when the trust job of this run read it (newer_word).
@@ -284,13 +289,13 @@ not-approved: the request that records the check run repo-pairs/import-approved 
 of the pull request <number> (not_approved), for POST repos/<repo>/check-runs, in <request.json>. <why> is the reason
 of <run> itself: blocking or person, the verdict of its review, or screen, its screen that held <head>. <read> is the
 time when <run> read the pull request. The post job of <run> makes it when no import check run of <head> for <number>
-has the conclusion success, as it then has no success to withdraw (OSSV-221's architect, 2026-11-24 05:33Z). The post
-jobs of an item run one at a time, and the post job of a run that read the item before <read> can come after it. The
-summary names <why>, <run>, <head> and <read> in plain sentences (NOT_APPROVED). So own-record, verdict and sources
-read this check run as a withdrawal by <run> that counts from <read> (withdrawn_by), and that older run records
-nothing. Its name, its external_id <number>:<head> and its output text, the marker line of import-marker for
-<import paths>, are those of a record. The import reads only a check run with the conclusion success, so this one
-approves nothing. The status is 2 when an argument is not one of these.
+has the conclusion success, as it then has no success to withdraw (OSSV-221's architect, 2026-11-24 05:33Z), for an
+author whom holds_back treats as outside (2026-11-24 09:28Z). The post jobs of an item run one at a time, and the post
+job of a run that read the item before <read> can come after it. The summary names <why>, <run>, <head> and <read> in
+plain sentences (NOT_APPROVED). So own-record, verdict and sources read this check run as a withdrawal by <run> that
+counts from <read> (withdrawn_by), and that older run records nothing. Its name, its external_id <number>:<head> and its
+output text, the marker line of import-marker for <import paths>, are those of a record. The import reads only a check
+run with the conclusion success, so this one approves nothing. The status is 2 when an argument is not one of these.
 
 steering: whether a pull request changes a steering file (steering, a file under .github/), from <files.jsonl>, its
 files as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line: true
@@ -403,8 +408,9 @@ REFUSALS = ("", "review", "answer", "fix")
 # gives a reason for that line to go (line_reason): the comment of its reason did not post, and no screened review
 # comment is newer than the time of the line. The label step gets a decision only from a post job that succeeded, so
 # the withdrawal is done by then, and the text says so in the place of PASSED (NO_REASON). Else its decision is
-# screened. Its decision is withdrawn also in the state screened with the verdict pass and no such line, when the
-# newest import check run of the head is a withdrawal and no screened pass of the head is newer (withdrawal_stands): a
+# screened. Its decision is withdrawn also in the state screened with the verdict pass and no such line, when a
+# withdrawal among the import check runs of the head stands: the one of the newest read, by the time that each check
+# run names, when no success names a newer read and no screened pass of the head is newer (withdrawal_stands). A
 # withdrawal that succeeded is itself the record of its reason, and the comment of that reason may not have posted.
 # The line of OWED gives only the reason, never the state: with no screened review comment of the head, the decision
 # is screen. For the decision hand, the label step counts an import check run of the head that still stands, for the
@@ -967,7 +973,9 @@ def unmark(number, kind, what, labels=None):
 # (approve, record, the import's pass, a state label, a fix) reads outside alone (outside_author). A rule that holds
 # back or asks a person treats an author whose write access GitHub did not say as outside, as OSSV-221's architect
 # ruled on 2026-11-20 at 16:22Z: the soundness rule reads holds_back, the review's prompt in review.yml has the same
-# form, and a withdrawal runs for every author.
+# form, and a withdrawal runs for every author. The post job's check run that says that the head is not approved for
+# the import (not_approved) has that form too (2026-11-24 09:28Z): a failed read of the author's access never leaves
+# an older pass standing under the verdict or the hold of a run.
 #
 # - label: set gives the item the state label of its state. off takes each state label off, and the label comment is
 #   the state's all the same. unchanged writes nothing of the state: no state label goes on or off, and the label
@@ -1699,15 +1707,16 @@ def not_approved(number, head, why, value, run, at):
     (POST repos/<repo>/check-runs) for why, the verdict blocking or person of the review of run, or screen, the screen
     of run that held head: the reason of run itself. The post job of run makes it when no import check run of head for
     number has the conclusion success, as it then has no success to withdraw (OSSV-221's architect, 2026-11-24 05:33Z;
-    spec R12). The post jobs of an item run one at a time, and the post job of a run that read the item before run can
-    come after this one. Its summary names why, run, head and at, the time when run read the pull request (its trust
-    job's started), in plain sentences, as an outside author reads them on the pull request (NOT_APPROVED). So each
-    reader takes it as a withdrawal by run that counts from at (withdrawn_by): that older run records nothing over it
-    (own_record), and a screened pass whose run read the item after at lifts it (withdrawal_stands). Its name, its
-    external_id <number>:<head> and its output text, the marker line of value (import_marker), are those of a record
-    (check_run). Its output title names the pull request and says why, in the words of OWED_WITHDRAWN: it takes the
-    place of no earlier check run, so it does not say later. The import reads only a check run with the conclusion
-    success, so this one approves nothing."""
+    spec R12), for an author whom holds_back treats as outside (2026-11-24 09:28Z). The post jobs of an item run one at
+    a time, and the post job of a run that read the item before run can come after this one. Its summary names why,
+    run, head and at, the time when run read the pull request (its trust job's started), in plain sentences, as an
+    outside author reads them on the pull request (NOT_APPROVED). So each reader takes it as a withdrawal by run that
+    counts from at (withdrawn_by), in the order of the time that each check run names (newest_withdrawal): that older
+    run records nothing over it (own_record), and a screened pass whose run read the item after at lifts it
+    (withdrawal_stands). Its name, its external_id <number>:<head> and its output text, the marker line of value
+    (import_marker), are those of a record (check_run). Its output title names the pull request and says why, in the
+    words of OWED_WITHDRAWN: it takes the place of no earlier check run, so it does not say later. The import reads
+    only a check run with the conclusion success, so this one approves nothing."""
     if not (NUMBER.fullmatch(number) and HEAD.fullmatch(head) and why in OWED_WITHDRAWN and NUMBER.fullmatch(run)
             and TIME.fullmatch(at)):
         raise ValueError(f"not a pull request number, a head commit, a reason, a run id and a time: {number!r} "
@@ -2056,22 +2065,34 @@ def blocks_from(check, head):
     return named[2] if named else ""
 
 
-def newest_check(checks):
-    """The newest import check run among checks (as the API lists them), or None: by completed_at, a withdrawal (the
-    conclusion neutral) with none is newer than each other check run, and a success with none is older (fail
-    closed)."""
+def newest_withdrawal(checks, head):
+    """The withdrawal of the newest read among checks, the import check runs of head as the API lists them, or None
+    (OSSV-221's architect, 2026-11-24 09:43Z). Each reader orders them by the time that each one names, never by
+    completed_at: a success by the time when the run that recorded it read the pull request (recorded_by), and a
+    withdrawal (the conclusion neutral; withdrawn_by reads a check run of not_approved as one) by the time from which
+    it counts (blocks_from). Both fail closed: a success that names no read counts as read at no time, so it is older
+    than each other check run, and a withdrawal that names no time counts as newer than each. A check run of another
+    conclusion names no read and does not count. The newest read decides, and a withdrawal withdraws each success of
+    an older read or of the same read: at a tie, the withdrawal is the newer. So this is the withdrawal of the newest
+    read, the first in the list of those at the same time, when no success names a newer read. None when a success
+    names a newer read, or when no check run is a withdrawal."""
 
-    def when(check):
-        at, neutral = check.get("completed_at") or "", check.get("conclusion") == "neutral"
-        return (neutral and not at, at, neutral, check.get("id") or 0)
+    def read(check):
+        if check.get("conclusion") == "neutral":
+            at = blocks_from(check, head)
+            return (not at, at)
+        return (False, (recorded_by(check) or ("", ""))[1])
 
-    return max(checks, key=when, default=None)
+    newest = max((c for c in checks if c.get("conclusion") == "neutral"), key=read, default=None)
+    if newest is None or any(read(c) > read(newest) for c in checks if c.get("conclusion") == "success"):
+        return None
+    return newest
 
 
 def withdrawal_stands(checks, comments, head):
-    """The id of the newest import check run among checks (newest_check) when it is a withdrawal (the conclusion
-    neutral; withdrawn_by reads a check run of not_approved as one) that blocks a record, else "". It blocks unless a
-    screened review comment of head that passes it is newer than the time from which it counts (blocks_from): a review
+    """The id of the withdrawal of the newest read among checks, the import check runs of head (newest_withdrawal),
+    when it blocks a record, else "". No success of a newer read stands over it then. It blocks unless a screened
+    review comment of head that passes it is newer than the time from which it counts (blocks_from): a review
     comment of BOT that names head with the verdict pass and the marker <!-- review-screened <head> -->, whose
     word_time is after that time. That is the time when its run read the item, never the time when it posted
     (OSSV-221's architect, 2026-11-24 01:20Z): a pass whose run read the head before the withdrawal's reason does not
@@ -2079,8 +2100,8 @@ def withdrawal_stands(checks, comments, head):
     (01:26Z). A withdrawal whose summary names no time blocks (fail closed). A withdrawal that succeeded is itself the
     record of its reason, so a relabel never records over it unless such a pass stands (2026-11-23 01:47Z and 03:06Z):
     the run that withdrew it can have ended before its comment posted."""
-    newest = newest_check(checks)
-    if not newest or newest.get("conclusion") != "neutral":
+    newest = newest_withdrawal(checks, head)
+    if not newest:
         return ""
     at = blocks_from(newest, head)
     for c in comments:
@@ -2099,13 +2120,15 @@ def own_record(checks, comments, head, started, run):
     ("held", the time of the hold, "", "") when a hold comment of BOT of the screen that names head (hold_fact
     screen_held, HELD_HEAD) is at or after started: a newer run held head, and this run records nothing. A hold
     comment counts from its updated_at (word_time): GitHub edits a hold comment in place, which fails closed.
-    ("withdrawn", the id of the check run, the time from which it counts, "") when the newest import check run of head
-    is a withdrawal that stands (withdrawal_stands) and that counts from a time at or after started (blocks_from): no
-    screened pass of head whose run read the item after that time stands, and this run's own pass counts from
-    started. A withdrawal whose summary names no time stands, as it does for a relabel, and so does one at started
-    (fail closed: a verdict or a hold outranks a pass at the same time). The check run of not_approved of a newer run
-    is such a withdrawal: that run found no success to withdraw, as its post job came before this one (2026-11-24
-    05:33Z).
+    ("withdrawn", the id of the check run, the time from which it counts, "") when a withdrawal among the import check
+    runs of head stands (withdrawal_stands: the withdrawal of the newest read, by the time that each check run names,
+    never by completed_at; OSSV-221's architect, 2026-11-24 09:43Z) and counts from a time at or after started
+    (blocks_from): no success names a newer read, no screened pass of head whose run read the item after that time
+    stands, and this run's own pass counts from started. A withdrawal whose summary names no time stands, as it does
+    for a relabel, and so does one at started (fail closed: a verdict or a hold outranks a pass at the same time). The
+    check run of not_approved of a newer run is such a withdrawal: that run found no success to withdraw, as its post
+    job came before this one (2026-11-24 05:33Z). So is one that completed before the check run of not_approved of an
+    older read: the read decides, never the time when a check run completed.
     ("newer", the run of the review comment, its time, its verdict) when a review comment of BOT of head of another run
     (REVIEW_RUN; "" for a comment that names no run) gives the verdict blocking or person, and its word_time is at or
     after started: a run that read the item at or after this run gave head that verdict, so the pass of this run is
@@ -2130,7 +2153,7 @@ def own_record(checks, comments, head, started, run):
     if held:
         return "held", held, "", ""
     stands = withdrawal_stands(checks, comments, head)
-    at = blocks_from(newest_check(checks), head) if stands else ""
+    at = blocks_from(newest_withdrawal(checks, head), head) if stands else ""
     if stands and not (at and at < started):
         return "withdrawn", stands, at, ""
     if newer[1]:
@@ -3004,7 +3027,7 @@ def main(argv):
                 found = line_reason(comments, argv[2], line_why, line_run, True, sources, line_written)[0]
                 posted = "posted" if found else "unposted"
             stands = withdrawal_stands(checks, comments, argv[2])
-            since = blocks_from(newest_check(checks), argv[2]) if stands else ""
+            since = blocks_from(newest_withdrawal(checks, argv[2]), argv[2]) if stands else ""
             print(f"{verdict or '-'} {state} {why or '-'} {'owed' if owed else '-'} {posted} {stands or '-'} "
                   f"{since or '-'} {newest[3] or '-'} {newest[4] or '-'}")
             return 0

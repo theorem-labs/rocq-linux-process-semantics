@@ -251,9 +251,9 @@ no_key_of() {
 # Else blocking or person, of the newest review comment of <head> newer than the newest screened one (of any, when none
 # is screened) that gives one, or of the newest screened review comment when it does not pass. Else -: then a relabel
 # of <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
-# marker <!-- review-screened <head> --> and passes, with no such line, and the newest import check run of <head> is no
-# withdrawal that blocks it: one whose summary names no time, or whose time is newer than that review comment
-# (rules.py verdict, screened, and withdrawal_stands).
+# marker <!-- review-screened <head> --> and passes, with no such line, and no withdrawal of the newest read among the
+# import check runs of <head> blocks it (by the time that each one names; rules.py newest_withdrawal): one whose summary
+# names no time, or whose time is newer than that review comment (rules.py verdict, screened, and withdrawal_stands).
 relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
