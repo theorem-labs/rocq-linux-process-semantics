@@ -14556,10 +14556,11 @@ class ExportTest(Scheduled):
     def test_the_trust_job_gives_an_export_pull_request_no_task_on_any_event_or_task(self):
         """Mallory's export pull request #7: a CI run of it (one that names it, and one that names no pull request),
         her comment on it, and a run by hand of each task that names a pull request, by alice and by the rescreen pass.
-        Each gets no task and the notice "No <task> of #7: <why>" once. No job after the trust job runs, and the trust
-        job writes nothing: no label, no comment, no check run, no close and no reopen. On the changed code of the
-        control, each of them by alice or by an event gets its task. A draft, a reply and a stop get no task there
-        either, and no notice of an export pull request."""
+        Each gets no task and the notice "No <task> of #7: <why>" once, and the task conflict the notice "No comment on
+        the merge conflict of #7: <why>", which does not read as "#7 has no conflict". No job after the trust job runs,
+        and the trust job writes nothing: no label, no comment, no check run, no close and no reopen. On the changed
+        code of the control, each of them by alice or by an event gets its task. A draft, a reply and a stop get no
+        task there either, and no notice of an export pull request."""
         ci = {"event": "workflow_run", "actor": "mallory", "number": "", "head": HEAD,
               "head_repository": str(REPO_ID), "head_branch": EXPORT_BRANCH}
         cases = [("a CI run that names it", {}, dict(ci, pulls=[named_pr(7)]), "review", "review"),
@@ -14592,7 +14593,8 @@ class ExportTest(Scheduled):
                 else:
                     (rc, out, got, wrote), control = self.both(lambda: run(inputs))
                 self.assertEqual((rc, got.get("task"), got.get("route")), (0, None, None), out)
-                self.assertEqual(out.count(f"::notice::No {task} of #7: {self.WHY}"), 1, out)
+                no = "No comment on the merge conflict of" if task == "conflict" else f"No {task} of"
+                self.assertEqual(out.count(f"::notice::{no} #7: {self.WHY}"), 1, out)
                 self.assertEqual(wrote, [])
                 self.assertEqual(ran_jobs(run_graph(got, github={"github.event_name": inputs["event"]})), {"trust"})
                 if control is not None:
@@ -15998,28 +16000,90 @@ class DecisionLogTest(unittest.TestCase):
         self.assertEqual(found, ["decided hand sooner"] * script.count("decided hand earlier"))
 
     def test_a_decision_that_records_no_check_run_says_that_it_is_no_check_run_with_the_conclusion_success(self):
-        """The tester's fresh reader of round 24, M1: the post job records a check run with the conclusion neutral, with
-        the same name (not-approved), when no success stands. So the meaning of a decision that records no check run
-        says which one: no import check run with the conclusion success. No meaning of any table says "no check run"
-        alone. The meaning of record and of screened holds the clause "while the environment post holds the App's
-        key" (F10): the record step and the withdraw step need that key. The control, a meaning in the words of
-        before, is found."""
+        """The tester's fresh readers of round 24, M1 and S-f: the post job records a check run with the conclusion
+        neutral, with the same name (not-approved), when no success stands. So the meaning of a decision that records
+        no check run says which one: no import check run with the conclusion success. It names its actor, this run,
+        and not the passive. No meaning of any table says "no check run" alone. The meaning of record and of screened
+        holds the clause "while the GitHub environment named post holds the key of the OSS Verify App" (F10, S-c): the
+        record step and the withdraw step need that key. The control, a meaning in the words of before, is found."""
         def vague(meaning):
-            return bool(re.search(r"\bno check run\b|records no check run\b", meaning))
+            return bool(re.search(r"\bno check run\b|records no check run\b|\bis recorded\b", meaning))
 
         records_none = ("screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved", "writer",
                         "held", "hand", "screened", "withdrawn", "newer")
         for table in (rules.LOG_DECISIONS, rules.LOG_CAUSES):
             for word, meaning in table.items():
-                with self.subTest(word=word):
-                    self.assertFalse(vague(meaning), meaning)
+                if word not in ("not-approved", "gone"):
+                    with self.subTest(word=word):
+                        self.assertFalse(vague(meaning), meaning)
         for decision in records_none:
             with self.subTest(decision=decision):
-                self.assertIn("no import check run with the conclusion success", rules.LOG_DECISIONS[decision])
-        for decision in ("record", "screened"):
-            self.assertIn("the environment post holds the App's key", rules.LOG_DECISIONS[decision])
+                self.assertIn("this run records no import check run with the conclusion success",
+                              rules.LOG_DECISIONS[decision].lower())
+        key = "while the GitHub environment named post holds the key of the OSS Verify App"
+        for decision in ("record", "screened", "skip"):
+            self.assertIn(key, rules.LOG_DECISIONS[decision])
         self.assertTrue(vague("The author is no outside author, so this run records no check run."))
         self.assertTrue(vague("A newer run gave the head a blocking finding, so no check run is recorded."))
+        self.assertTrue(vague("The verdict is person, so no import check run with the conclusion success is "
+                              "recorded."))
+
+    def test_each_sentence_of_a_meaning_has_25_words_or_fewer(self):
+        """The tester's fresh reader of round 24, S-b (ASD-STE100: at most 25 words in a description): each sentence of
+        each meaning of the three tables has 25 words or fewer. A sentence ends at a full stop and a space, so the
+        stop in .github/ is not an end. The control, a sentence of 26 words, is found."""
+        def long(meaning):
+            return [s for s in re.split(r"(?<=\.)\s+", meaning) if len(s.split()) > 25]
+
+        for name, table in (("decision", rules.LOG_DECISIONS), ("cause", rules.LOG_CAUSES),
+                            ("field", {k: v[1] for k, v in rules.LOG_FIELDS.items()})):
+            for word, meaning in table.items():
+                with self.subTest(table=name, word=word):
+                    self.assertEqual(long(meaning), [])
+        self.assertEqual(len(long(" ".join(["word"] * 25) + ". " + " ".join(["word"] * 26) + ".")), 1)
+
+    def test_the_meanings_that_the_fresh_reader_of_round_24_corrected_fit_each_place_that_logs_them(self):
+        """The tester's fresh reader of round 24 (F-1, F-2, M-1 to M-3, S-d, S-e): each meaning says what each place
+        that logs its word does. hand: the comments give no reason to withdraw, but a later step can still withdraw for
+        the verdict of the run's own review. neutral: the newest withdrawal, which no success and no screened pass
+        outranks (a blocking review of a newer run, whose post job did not withdraw, can outrank it, so not "no
+        comment"). screened: the time is the one of the later withdraw or keep line, and from none withdraws each one.
+        held: also a head with no screened review. skip: the withdrawal steps of the hold job of an answer whose screen
+        held the head still run. screen: the review that the decision rests on, as a relabel has none of its own.
+        writer: an author that is not known to be outside, as GitHub did not say (cause access). Each phrase is there,
+        and no phrase of before is. The control, the meanings of before, is found."""
+        said = {("decision", "hand"): ("and the comments of the head give no reason to withdraw one",
+                                       "A later step can still withdraw for the verdict of this run's own review."),
+                ("cause", "neutral"): ("the newest withdrawal among them had the conclusion neutral",
+                                       "No success and no screened pass outranked it."),
+                ("decision", "screened"): ("whose run read the item at or before the time in the field from of the "
+                                           "later withdraw or keep line", "each one when from is none"),
+                ("decision", "held"): ("or the head has no screened review", "it outranks its own pass"),
+                ("decision", "skip"): ("In the hold job of an answer whose screen held the head, the withdrawal steps "
+                                       "still run.",),
+                ("decision", "screen"): ("in the run of the review that this decision rests on",),
+                ("decision", "writer"): ("The author is not known to be an outside author",)}
+        before = ("leaves each import check run", "the newest of them had the conclusion neutral",
+                  "no comment outranked it", "an older or equal read", "The withdrawal in the hold job of an answer",
+                  "(for a run on the route screen, its own pass)", "in the run of this review",
+                  "The author is no outside author", "the environment post holds the App's key")
+        tables = {"decision": rules.LOG_DECISIONS, "cause": rules.LOG_CAUSES}
+
+        def stale(meaning):
+            return [phrase for phrase in before if phrase in meaning]
+
+        for (kind, word), phrases in said.items():
+            for phrase in phrases:
+                with self.subTest(word=word, phrase=phrase):
+                    self.assertIn(phrase, tables[kind][word])
+        for table in tables.values():
+            for word, meaning in table.items():
+                with self.subTest(word=word):
+                    self.assertEqual(stale(meaning), [], meaning)
+        self.assertEqual(stale("It leaves each import check run with the conclusion success that an earlier "
+                               "screened pass recorded. The newest of them had the conclusion neutral, and no "
+                               "success and no comment outranked it."),
+                         ["leaves each import check run", "no comment outranked it"])
 
 
 class LabelTest(Runner):
@@ -21659,9 +21723,9 @@ class ImportCheckTest(ReaderRunner):
                                  self.logs[-4:])
                 self.assertIn(f"#7: its label comment said that the workflow recorded the check "
                               f"`repo-pairs/import-approved` on {HEAD}. No such check run with the conclusion success "
-                              "stands now: a run withdrew it. So this step wrote the label comment of the state "
-                              "decide, which says that a run withdrew the check. GitHub did not say whether the author "
-                              "has write access, so this step did not add or take off a state label.\n",
+                              "stands now: a run withdrew it. So this step wrote the label comment, which says that "
+                              "a run withdrew the check. GitHub did not say whether the author has write access, so "
+                              "this step did not add or remove a state label.\n",
                               "\n".join(self.logs))
                 self.tearDown()
                 self.setUp()

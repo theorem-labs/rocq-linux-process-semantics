@@ -852,8 +852,10 @@ jobs:
             exit 0
           }
           # stop <why>: no route, so no job after this one runs. Its notice names the item once the step knows it
-          # (reviewed). For the task conflict, only the count stop (crowded) reaches it, and the notice says that the
-          # comment on the merge conflict is not posted: "No conflict of #N" would read as "#N has no conflict".
+          # (reviewed). Two kinds of run reach it with the task conflict: a comment on a pull request with a merge
+          # conflict, at the count stop (crowded), and a run by hand or of the rescreen pass with that task (a
+          # workflow_dispatch), at the stops of the task below. The notice says that no comment is posted on the merge
+          # conflict: "No conflict of #N" would read as "#N has no conflict".
           stop() {
             local what="#$NUMBER" no="No ${task:-run} of"
             [ -n "$NUMBER" ] || what="commit $HEAD"
