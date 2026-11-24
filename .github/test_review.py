@@ -19450,6 +19450,47 @@ class ImportCheckTest(ReaderRunner):
                 state = rules.review_verdict(comments, HEAD)[1]
                 self.assertFalse(state == "held" and self.successes(checks), (state, checks, self.logs[-6:]))
 
+    def test_a_verdict_or_hold_at_the_same_read_as_a_pass_posts_and_the_label_does_not_say_recorded(self):
+        """The tester's audit of round 23, F1, by OSSV-221's architect's ruling of 2026-11-24 14:29Z (no failure on the
+        path; contract item (3) of 05:23Z applied to newer_word): a run skips its posts only when the other word
+        strictly outranks its own by read time, and at a tie a verdict or hold outranks a pass. Rescreen run 100 and
+        the CI review run 120 of mallory's #7 read the item in the same second. Run 100's screen and review passed HEAD;
+        run 120 gave a blocking finding, or its screen held HEAD. Post-7 runs run 100's post job (it records 901), then
+        label-7 runs run 100's comment job (it posts the pass and writes its label while 901 stands), then post-7 runs
+        run 120's post job (a tie withdraws 901), then label-7 runs run 120's comment job or hold job. At the end run
+        120's blocking review or hold has posted, and the newest label comment does not say that the workflow recorded
+        the check while no success stands. At ae1d3cd5 run 120's job gives way to run 100's pass of the same second, so
+        it posts nothing, and run 100's label stays at the state import with no success."""
+        recorded = "The workflow recorded the check `repo-pairs/import-approved`"
+        for case, screen, verdict in (("a blocking verdict", "clean", "blocking"), ("a screen hold", "held", "pass")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                read = ago(30)
+                older = review_of(HEAD, at=ago(70), run=60)
+                rescreen = dict(self.REVIEWED, task="rescreen", started=read)
+                ci = dict(self.REVIEWED, started=read)
+                mine, checks = self.judged([], "100", trust=rescreen, event="workflow_dispatch", comments=[older])
+                labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60),
+                            "body": rules.label_comment("change")}
+                self.serve_checks(checks)
+                _outcomes, _wrote, labels, review = self.comment_job_after_post(mine, rescreen, "pass",
+                                                                                [older, labelled], "100")
+                after = [dict(review, id=30)] + [dict(labelled, body=body, updated_at=ago(0)) for body in labels[-1:]]
+                theirs, checks = self.judged(checks, "120", verdict=verdict, screen=screen, trust=ci, comments=after)
+                self.serve_checks(checks)
+                self.forget()
+                if screen == "held":
+                    self.hold_job_after_post(theirs, ci, after, "120")
+                    posted = self.posted("<!-- review-held -->")
+                else:
+                    self.comment_job_after_post(theirs, ci, verdict, after, "120")
+                    posted = self.posted("<!-- review -->\n")
+                checks = self.applied_checks(checks)
+                final = ([b for _m, _e, b in label_comments(self.api)] or labels)[-1:]
+                self.assertEqual((len(posted), bool(final and recorded in final[0] and not self.successes(checks))),
+                                 (1, False), (posted, final, self.successes(checks), self.logs[-4:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
