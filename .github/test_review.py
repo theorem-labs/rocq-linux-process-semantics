@@ -18968,6 +18968,34 @@ class ImportCheckTest(ReaderRunner):
                           "The workflow recorded the check `repo-pairs/import-approved`" in label),
                          ("901", False), label)
 
+    def test_no_success_stands_after_a_newer_runs_screen_hold_whose_post_job_ran_before_the_older_record(self):
+        """The tester's audit of round 21, F5 with a hold (no failure on the path; OSSV-221's architect, 2026-11-24
+        05:23Z: each order of the two queues that ends open). The screen of rescreen run 120 of mallory's #7, which read
+        the item 30 minutes ago, held HEAD; its post job ran first in post-7: no import check run stood, so it withdrew
+        nothing. The slow CI review run 100 read the item 40 minutes ago and passed HEAD; its post job runs next, before
+        run 120's hold job posts the hold comment, so it records check run 901. Run 120's hold comment then posts, and
+        run 100's comment job gives way to it. No job is left that withdraws 901: a success stands under a newer hold."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        self.env["GITHUB_RUN_ID"] = "120"
+        try:
+            b = self.judge(["README.md"], value=self.LPS, trust=rescreen, screen="held", event="workflow_dispatch",
+                           comments=[older], named=HEAD)
+        finally:
+            self.env["GITHUB_RUN_ID"] = "100"
+        self.assertEqual((b["checks"], b["withdrawn"]), ([], []), self.logs)
+        trust = dict(self.REVIEWED, started=ago(40))
+        a = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[older])
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
+        after = [older, hold]
+        outcomes, wrote, _labels, _mine = self.comment_job_after_post(a, trust, "pass", after, "100")
+        standing = [body for _t, body in a["checks"] if body["conclusion"] == "success"]
+        self.assertEqual((len(standing), rules.review_verdict(after, HEAD)[1], outcomes[self.SKIP], wrote),
+                         (0, "held", "success", []), self.logs[-4:])
+
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
     POSTED = ('    read = REVIEW_READ.match(body, m.end())\n'
