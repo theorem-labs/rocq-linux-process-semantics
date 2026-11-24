@@ -49,12 +49,31 @@ jobs:
           persist-credentials: false
       - run: python3 .github/test_screen.py
 
+  # Every order of the jobs of two and three runs of one head, and the end state that each order must reach
+  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 747 combinations run in 12
+  # shards (ORDERS_SHARD), each in 4 processes, so each shard stays well inside its 30 minutes.
+  review-workflow-orders:
+    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/12)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+      - env:
+          ORDERS_SHARD: ${{ matrix.shard }}/12
+        run: python3 .github/parallel_tests.py --processes 4 .github/test_orders.py
+
   # The one check of this workflow to require: it always runs, and passes only
   # when every job it needs succeeded. .github/test_ci.py, which ci.yml runs,
   # tests this script.
   gate:
     name: Review tests
-    needs: [review-workflow-review, review-workflow-screen]
+    needs: [review-workflow-review, review-workflow-screen, review-workflow-orders]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

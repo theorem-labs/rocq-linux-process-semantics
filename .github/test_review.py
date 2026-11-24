@@ -14414,7 +14414,8 @@ class TriggerTest(unittest.TestCase):
         """b4 (R7): the tests of the review workflow run on each pull request, so a pull request that changes only a
         workflow file of the review (rescreen.yml, say) or only a file of .github/review/ runs them. Since main's #158
         they have their own workflow, review-tests.yml, with no path selection: its pull_request trigger names no paths,
-        no paths-ignore and no branches, and neither test job has an if. It runs on pull_request alone: no push to main
+        no paths-ignore and no branches, and no test job has an if. Its third test job runs .github/test_orders.py in 12
+        shards (OSSV-221's architect, 2026-11-24 14:36Z). It runs on pull_request alone: no push to main
         and no run by hand starts it (OSSV-221's architect, 2026-11-24 01:33Z). The controls, b4's negative control:
         a copy of review-tests.yml with a push trigger on main, with a workflow_dispatch trigger, with a paths filter
         on pull_request, or with an if on a test job, fails the case."""
@@ -14424,11 +14425,13 @@ class TriggerTest(unittest.TestCase):
             self.assertEqual(set(on), {"pull_request"})
             self.assertEqual({k: v for k, v in (on["pull_request"] or {}).items()
                               if k in ("paths", "paths-ignore", "branches", "branches-ignore")}, {})
-            for name in ("review-workflow-review", "review-workflow-screen"):
+            for name in ("review-workflow-review", "review-workflow-screen", "review-workflow-orders"):
                 self.assertNotIn("if", wf["jobs"][name], name)
             self.assertEqual({j["steps"][-1]["run"] for n, j in wf["jobs"].items() if n != "gate"},
                              {"python3 .github/parallel_tests.py --processes 4 .github/test_review.py",
-                              "python3 .github/test_screen.py"})
+                              "python3 .github/test_screen.py",
+                              "python3 .github/parallel_tests.py --processes 4 .github/test_orders.py"})
+            self.assertEqual(wf["jobs"]["review-workflow-orders"]["strategy"]["matrix"]["shard"], list(range(12)))
 
         check(REVIEW_TESTS)
         on, jobs = REVIEW_TESTS["on"], REVIEW_TESTS["jobs"]
