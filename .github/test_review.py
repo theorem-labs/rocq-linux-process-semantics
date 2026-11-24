@@ -18734,6 +18734,26 @@ class ImportCheckTest(ReaderRunner):
                         f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
         self.assertNotRecorded(self.older_pass_after_newer_word([hold], []))
 
+    def test_a_screened_run_records_nothing_after_a_newer_withdrawal_that_an_older_runs_pass_posted_after(self):
+        """The tester's audit of round 20, F3 (no failure on the path; OSSV-221's architect, 2026-11-24 01:20Z, which
+        replaces the words of 2026-11-23 03:06Z: a screened pass counts by the time its run read the head, its marker
+        <!-- review-read <STARTED> -->, never by the time its comment posted). Run 100, the screened CI review of
+        mallory's #7 at HEAD, read the item 40 minutes ago, and its review is slow. Rescreen run 130 read it 35 minutes
+        ago. Rescreen run 120 read it 30 minutes ago, gave a blocking finding, and withdrew run 60's check run 901 for
+        it 10 minutes ago. Run 130's screened pass then posted 5 minutes ago. Run 130 read the head before run 120's
+        verdict, so its pass is older than that verdict and does not lift the withdrawal. Now the post job of run 100
+        runs: run 120's withdrawal is newer than the start of run 100, so run 100 records nothing. At 6e19c33f it
+        records repo-pairs/import-approved with conclusion success, because withdrawal_stands takes any screened pass
+        that posted after the withdrawal."""
+        listed, _others = self.recorded()
+        withdrawn = self.withdrawn(dict(listed, completed_at=ago(120)), "blocking", "120", ago(10))
+        at, read = ago(5), ago(35)
+        older = review_of(HEAD, at=at, run=130)
+        older["body"] = older["body"].replace(f"<!-- review-read {at} -->", f"<!-- review-read {read} -->")
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, started=ago(40)),
+                         comments=[older], listed=[withdrawn])
+        self.assertNotRecorded(got)
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head newer than the hold or the
