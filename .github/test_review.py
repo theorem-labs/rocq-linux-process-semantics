@@ -18929,6 +18929,45 @@ class ImportCheckTest(ReaderRunner):
                           outcomes[self.REVIEW], wrote),
                          (0, ("blocking", "screened", "blocking"), "success", "skipped", []), self.logs[-4:])
 
+    def test_the_label_does_not_say_recorded_after_an_older_runs_post_job_withdrew_the_newer_record(self):
+        """The tester's audit of round 21, F6 (no failure on the path; a label text false for the case it posts with).
+        Rescreen run 100 of mallory's #7 read the item 30 minutes ago and passed HEAD; its post job ran first in post-7
+        and recorded check run 901. The slow CI review run 90 read the item 40 minutes ago and gave a blocking finding;
+        its post job runs next and withdraws 901 for its own verdict (kind own, from the time of the withdrawal). Run
+        100's comment job then posts its pass and the label state import ("The workflow recorded the check"), and run
+        90's comment job gives way to run 100's pass, so its blocking review and label never post. The label comment
+        says that the check is recorded while 901 is withdrawn and its withdrawal stands (withdrawal_stands)."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        b = self.judge(["README.md"], value=self.LPS, trust=rescreen, event="workflow_dispatch", comments=[older])
+        self.assertEqual(b["post"]["recorded"], "true", self.logs)
+        (_t, body), = b["checks"]
+        listed = dict(body, id=901, app={"id": VERIFY_APP_ID})
+        ci = dict(self.REVIEWED, started=ago(40))
+        self.env["GITHUB_RUN_ID"] = "90"
+        try:
+            a = self.judge(["README.md"], verdict="blocking", value=self.LPS, trust=ci, comments=[older],
+                           listed=[listed])
+        finally:
+            self.env["GITHUB_RUN_ID"] = "100"
+        self.assertEqual([e for _t, e, _b in a["withdrawn"]], [f"repos/{REPO}/check-runs/901"], self.logs)
+        withdrawn = self.applied(listed, a)
+        labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
+        outcomes_b, wrote_b, labels_b, mine = self.comment_job_after_post(b, rescreen, "pass", [older, labelled], "100")
+        self.assertEqual((outcomes_b[self.SKIP], outcomes_b[self.REVIEW], outcomes_b[self.LABEL]),
+                         ("success", "success", "success"), self.logs[-6:])
+        after = [dict(mine, id=30), labelled]
+        self.checkout()
+        self.serve(f"repos/{REPO}/issues/7/comments", after)
+        rc, out, outs = self.run_script(step("comment", self.SKIP)["run"], NUMBER="7", HEAD=HEAD,
+                                        STARTED=ci["started"], GAVE_WAY="", GITHUB_RUN_ID="90")
+        self.assertEqual((rc, outs.get("gave_way")), (0, "true"), out)
+        self.assertEqual(len(labels_b), 1, (wrote_b, self.logs[-8:]))
+        (label,) = labels_b
+        self.assertEqual((rules.withdrawal_stands([withdrawn], after, HEAD),
+                          "The workflow recorded the check `repo-pairs/import-approved`" in label),
+                         ("901", False), label)
+
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
     POSTED = ('    read = REVIEW_READ.match(body, m.end())\n'
