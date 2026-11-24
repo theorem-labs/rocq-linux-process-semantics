@@ -18876,6 +18876,59 @@ class ImportCheckTest(ReaderRunner):
                          comments=[older], listed=[withdrawn])
         self.assertNotRecorded(got)
 
+    def comment_job_after_post(self, got, trust, verdict, comments, run):
+        """The comment job of run <run> (trust; its review gave verdict) after its post job gave got, with #7's comments
+        now comments: (outcomes, writes as (method, endpoint), label comment bodies, its review comment)."""
+        event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
+                    "github.token": self.RUN_TOKEN, "needs.trust.result": "success", "github.run_id": run,
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                    "needs.post.result": got["result"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        mine = review_of(HEAD, verdict, at=ago(0), run=int(run), read=trust["started"])
+        ctx.update({"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
+                    "needs.review.result": "success", "needs.review.outputs.head": HEAD,
+                    "needs.review.outputs.verdict": verdict, "needs.review.outputs.body": mine["body"],
+                    "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false"})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
+        open(self.summary, "w").close()
+        outcomes = run_job(self, "comment", ctx, self.TOKENS)
+        return (outcomes, [tuple(c[1:3]) for c in writes(self.api)],
+                [b for _m, _e, b in label_comments(self.api)], mine)
+
+
+    def test_no_success_stands_after_a_newer_runs_blocking_verdict_whose_post_job_ran_before_the_older_record(self):
+        """The tester's audit of round 21, F5 (no failure on the path; OSSV-221's architect, 2026-11-23 18:28Z and
+        2026-11-24 01:20Z: a success must not stand after a newer run's verdict). Rescreen run 120 of mallory's #7 read
+        the item 30 minutes ago and gave HEAD a blocking finding; its post job ran first in post-7: no import check run
+        stood, so it withdrew nothing and wrote nothing. The slow CI review run 100 read the item 40 minutes ago and
+        passed HEAD; its post job runs next, before run 120's comment job posts the blocking review, so it records check
+        run 901. Run 120's comment job then posts the blocking review, and run 100's comment job gives way to it. No job
+        is left that withdraws 901: a success stands while the newest word on HEAD is a blocking finding."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        self.env["GITHUB_RUN_ID"] = "120"
+        try:
+            b = self.judge(["README.md"], verdict="blocking", value=self.LPS, trust=rescreen,
+                           event="workflow_dispatch", comments=[older])
+        finally:
+            self.env["GITHUB_RUN_ID"] = "100"
+        self.assertEqual((b["checks"], b["withdrawn"]), ([], []), self.logs)
+        trust = dict(self.REVIEWED, started=ago(40))
+        a = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[older])
+        outcomes_b, wrote_b, _labels_b, theirs = self.comment_job_after_post(b, rescreen, "blocking", [older], "120")
+        self.assertIn(("PATCH", f"repos/{REPO}/issues/comments/30"), wrote_b, self.logs[-6:])
+        after = [dict(theirs, id=30)]
+        outcomes, wrote, _labels, _mine = self.comment_job_after_post(a, trust, "pass", after, "100")
+        standing = [body for _t, body in a["checks"] if body["conclusion"] == "success"]
+        self.assertEqual((len(standing), rules.review_verdict(after, HEAD), outcomes[self.SKIP],
+                          outcomes[self.REVIEW], wrote),
+                         (0, ("blocking", "screened", "blocking"), "success", "skipped", []), self.logs[-4:])
+
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
     POSTED = ('    read = REVIEW_READ.match(body, m.end())\n'
