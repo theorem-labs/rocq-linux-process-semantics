@@ -19267,6 +19267,48 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((rules.review_verdict(after, HEAD), self.successes(checks)),
                                  (("blocking", "screened", "blocking"), []), (checks, self.logs[-6:]))
 
+    def posted(self, start):
+        """The body of each comment that the stand-in gh was asked to post or to edit since it last forgot, and that
+        starts with start, in order."""
+        return [a[len("body="):] for c in writes(self.api) for a in c if a.startswith("body=" + start)]
+
+    def test_no_success_stands_under_a_hold_that_an_older_read_posts_after_a_newer_reads_record(self):
+        """The tester's audit of round 22, A3 (no failure on the path; OSSV-221's architect's contract of 2026-11-24
+        05:23Z (1)). Rescreen run 100 of mallory's #7 read the item 30 minutes ago and passed HEAD. The screen of the CI
+        review run 90, which read the item 40 minutes ago, held HEAD. Their post jobs run in post-7 in either order;
+        then run 90's hold job runs, then run 100's comment job, each seeing the check runs as the jobs before it left
+        them. Whatever each job posts, the end state agrees with itself: when the newest word on HEAD, from the comments
+        that the jobs posted (their bodies as posted), is a hold, no success check run stands. At eb9d100d run 90 keeps
+        run 100's record, its hold job posts the hold, run 100's comment job gives way to that hold, and the record
+        stands under it."""
+        for first in ("newer", "older"):
+            with self.subTest(first=first):
+                self.tearDown()
+                self.setUp()
+                older = review_of(HEAD, at=ago(70), run=60)
+                rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+                ci = dict(self.REVIEWED, started=ago(40))
+                checks = []
+                for run in (("100", "90") if first == "newer" else ("90", "100")):
+                    if run == "100":
+                        mine, checks = self.judged(checks, "100", trust=rescreen, event="workflow_dispatch",
+                                                   comments=[older])
+                    else:
+                        theirs, checks = self.judged(checks, "90", screen="held", trust=ci, comments=[older])
+                self.serve_checks(checks)
+                self.hold_job_after_post(theirs, ci, [older], "90")
+                checks = self.applied_checks(checks)
+                comments = [older] + [{"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
+                                       "body": body} for body in self.posted("<!-- review-held -->")]
+                self.serve_checks(checks)
+                self.comment_job_after_post(mine, rescreen, "pass", comments, "100")
+                checks = self.applied_checks(checks)
+                for body in self.posted("<!-- review -->\n"):
+                    comments = [c for c in comments if c["id"] != 30] + [
+                        {"id": 30, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body}]
+                state = rules.review_verdict(comments, HEAD)[1]
+                self.assertFalse(state == "held" and self.successes(checks), (state, checks, self.logs[-6:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
