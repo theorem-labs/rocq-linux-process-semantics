@@ -4711,10 +4711,13 @@ class ApproveTest(Holding):
 
     def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
         """The post job runs only to withdraw an import check run of the head, of which there is none here, and token
-        B's step would not run even with held runs found: no approval. The hold job posts D21's text, which names no
-        maintainer, labels the pull request review-held, and gives it waits-on-theorem, whose label comment names
-        Sami's step."""
+        B's step would not run even with held runs found: no approval. As no import check run of the head has the
+        conclusion success, the post job records with token A one check run with the conclusion neutral that says
+        that the head is not approved for the import, for the screen of this run (OSSV-221's architect, 2026-11-24
+        05:33Z). The hold job posts D21's text, which names no maintainer, labels the pull request review-held, and
+        gives it waits-on-theorem, whose label comment names Sami's step."""
         self.runs(*self.RUNS)
+        self.serve(f"repos/{REPO}/check-runs", {"id": 905})
         trust = self.by_hand()
         for verdict in ("held", ""):
             with self.subTest(verdict=verdict):
@@ -4724,9 +4727,16 @@ class ApproveTest(Holding):
                     "needs.trust.outputs.task": "approve", "needs.screen.outputs.verdict": verdict,
                     "steps.held.outputs.runs": "61 62"}))
                 steps = self.post(trust, verdict)
-                self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
-                                 ("skipped", "skipped", "skipped"))
-                self.assertEqual(writes(self.api), [])
+                self.assertEqual((steps[self.HELD], steps[MINT_B], steps[self.APPROVE], steps[MINT_A],
+                                  steps[ImportCheckTest.NEUTRAL]),
+                                 ("skipped", "skipped", "skipped", "success", "success"), self.logs)
+                self.assertEqual([(t, c[:3]) for t, c in zip(gh_tokens(self.api), gh_calls(self.api))
+                                  if c in writes(self.api)],
+                                 [("token-A", ["--method", "POST", f"repos/{REPO}/check-runs"])])
+                (sent,) = gh_inputs(self.api)
+                self.assertEqual((sent["conclusion"], sent["external_id"], sent["output"]["title"]),
+                                 ("neutral", f"7:{HEAD}", f"Not approved for the import: pull request #7 at "
+                                  f"{HEAD[:12]}, because an automated screen held this head commit"))
         self.forget()
         calls, _post, body = self.hold("screen", task="approve", jobs=[
             attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory")])
@@ -15762,6 +15772,23 @@ class ImportCheckTest(ReaderRunner):
         if decision is not None:
             self.assertEqual(got["post"]["decision"], decision, self.logs)
 
+    def assertNotApproved(self, got, why, decision=None, head=HEAD):
+        """No check run with conclusion success, and recorded is not true: the post job found no import check run of
+        head with conclusion success, so its one write is the check run with the conclusion neutral that says that #7
+        at head is not approved for the import because of why, its own reason, with token A (OSSV-221's architect,
+        2026-11-24 05:33Z). Its output withdrawn names head, so nothing is owed. The post job's decision is decision,
+        when it ran."""
+        self.assertEqual(got["result"], "success", self.logs)
+        (token, body), = got["checks"]
+        self.assertEqual((token, body["conclusion"], body["head_sha"], body["output"]["title"]),
+                         ("token-A", "neutral", head, f"Not approved for the import: pull request #7 at {head[:12]}, "
+                                                       f"{rules.OWED_WITHDRAWN[why][0]}"))
+        self.assertEqual([c[:3] for c in got["writes"]], [["--method", "POST", f"repos/{REPO}/check-runs"]])
+        self.assertEqual((got["post"].get("recorded"), got["post"]["withdrawn"], got["post"]["owed"]),
+                         ("false", head, ""))
+        if decision is not None:
+            self.assertEqual(got["post"]["decision"], decision, self.logs)
+
     def assertWaits(self, got, step_line, *words, value=None, head=HEAD):
         """waits-on-theorem, with one label comment whose next step is step_line and which holds words and one marker
         line of value, says nowhere that anyone decides, and ends with the marker of Sami."""
@@ -15856,18 +15883,20 @@ class ImportCheckTest(ReaderRunner):
     def test_a_blocking_finding_a_person_verdict_a_screen_hold_or_a_file_under_github_gets_no_check_run(self):
         """With the variable set to the pair's import_paths: a blocking finding waits on the author; a person verdict
         on a file that the import takes waits on Sami's approval of the head for the import; a screen hold runs a post
-        job that only looks for an import check run of the head to withdraw (there is none here), and its decision step
-        would not run; a file under .github/, or one renamed from there, waits on a copy by hand. A writer's pull
-        request that a run by hand screened (no outsider, and outside false) is no outside pull request, and gets no
-        check run either: its decision is writer."""
+        job that only looks for an import check run of the head to withdraw, and its decision step would not run. No
+        import check run of the head stands here, so each of the three records only the check run with the conclusion
+        neutral that says that the head is not approved for the import (OSSV-221's architect, 2026-11-24 05:33Z). A
+        file under .github/, or one renamed from there, waits on a copy by hand. A writer's pull request that a run by
+        hand screened (no outsider, and outside false) is no outside pull request, and gets no check run either: its
+        decision is writer."""
         got = self.judge(["README.md"], "blocking", self.LPS)
-        self.assertNotRecorded(got, "verdict")
+        self.assertNotApproved(got, "blocking", "verdict")
         self.assertEqual(got["labels"], [("+", AUTHOR_LABEL)])
         got = self.judge(["README.md"], "person", self.LPS)
-        self.assertNotRecorded(got, "person")
+        self.assertNotApproved(got, "person", "person")
         self.assertWaits(got, self.PERSON, f"{self.ANSWERED} {self.APPROVE}", value=self.LPS)
         got = self.judge(["README.md"], "pass", self.LPS, screen="held")
-        self.assertNotRecorded(got)
+        self.assertNotApproved(got, "screen")
         self.assertEqual((got["result"], got["labels"], got["comments"]), ("success", [], []))
         self.assertEqual(got["steps"][self.DECIDE], "skipped")
         self.assertFalse(evaluate(step("post", self.DECIDE)["if"], {
@@ -15960,9 +15989,12 @@ class ImportCheckTest(ReaderRunner):
         file, only tools/gen_checker.py, only a dune file with an echo rule, only a .hex file under theories/Examples/
         and only tools/check_one.py each get the person verdict of the soundness rule (R8), which counts each file that
         is not a Markdown file. A pass at such a head, as the model gave it, gets no check run either: the Markdown-only
-        rule of R12 reads the changed paths itself and stops it. No check run, and waits-on-theorem with the steps of
-        R12 for the variable's state: with no variable, each step that can follow; with the pair's import_paths, which
-        take each of these paths, Sami's approval of the head for the import."""
+        rule of R12 reads the changed paths itself and stops it. No check run with the conclusion success: after the
+        person verdict, the post job records only the check run with the conclusion neutral that says that the head is
+        not approved for the import, as no import check run of the head stands (OSSV-221's architect, 2026-11-24
+        05:33Z). Waits-on-theorem with the steps of R12 for the variable's state: with no variable, each step that can
+        follow; with the pair's import_paths, which take each of these paths, Sami's approval of the head for the
+        import."""
         self.assertEqual(WF["env"]["SOUNDNESS_HOLD"], "true")
         for path, text, verdict, decision in (
                 ("theories/Fd.v", "Lemma fd : True.\nProof. exact I. Qed.\n", "person", "person"),
@@ -15990,7 +16022,10 @@ class ImportCheckTest(ReaderRunner):
                     else:
                         reviewed = {"verdict": verdict}
                     got = self.judge([path], reviewed["verdict"], value)
-                    self.assertNotRecorded(got, decision)
+                    if verdict == "person":
+                        self.assertNotApproved(got, "person", decision)
+                    else:
+                        self.assertNotRecorded(got, decision)
                     step_line = self.PERSON if verdict == "person" else self.SOME if value is None else self.APPROVE
                     words = [self.MERGE] if value is None else [self.APPROVE]
                     body = self.assertWaits(got, step_line, *words, value=value)
@@ -16000,8 +16035,9 @@ class ImportCheckTest(ReaderRunner):
     def test_a_new_head_after_an_approved_one_gets_no_check_run_until_it_passes(self):
         """HEAD got the check run. The author pushed OTHER_HEAD: the post job of HEAD's review that runs after the push
         records nothing on either head, and the labels stay; a relabel of OTHER_HEAD, whose only review comment names
-        HEAD, records nothing; a blocking finding at OTHER_HEAD records nothing. Once the review passes OTHER_HEAD, the
-        check run is on OTHER_HEAD."""
+        HEAD, records nothing; a blocking finding at OTHER_HEAD records only the check run with the conclusion neutral
+        that says that OTHER_HEAD is not approved for the import, as no import check run of OTHER_HEAD stands
+        (OSSV-221's architect, 2026-11-24 05:33Z). Once the review passes OTHER_HEAD, the check run is on OTHER_HEAD."""
         self.assertRecorded(self.judge(["README.md"], value=self.LPS), self.LPS)
         got = self.judge(["README.md"], value=self.LPS, now=OTHER_HEAD)
         self.assertNotRecorded(got, "moved")
@@ -16016,7 +16052,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotRecorded(got, "screen")
         self.assertEqual((got["labels"], got["comments"]), ([], []))
         pushed = dict(self.REVIEWED, head=OTHER_HEAD)
-        self.assertNotRecorded(self.judge(["README.md"], "blocking", self.LPS, trust=pushed, now=OTHER_HEAD), "verdict")
+        self.assertNotApproved(self.judge(["README.md"], "blocking", self.LPS, trust=pushed, now=OTHER_HEAD),
+                               "blocking", "verdict", OTHER_HEAD)
         self.assertRecorded(self.judge(["README.md"], value=self.LPS, trust=pushed, now=OTHER_HEAD), self.LPS,
                             OTHER_HEAD)
 
@@ -16574,23 +16611,34 @@ class ImportCheckTest(ReaderRunner):
                                       f"Not approved for the import: pull request #7 at {HEAD[:12]}, {why}"))
 
     def test_no_check_run_on_the_head_or_a_later_review_that_meets_r12_withdraws_nothing(self):
-        """A later review with the verdict person of a head that has no check run of the App for #7 (none, or only
-        the others of the commit): the post job reads the check runs of the head, mints no token A and sends no
-        PATCH, and its log says that the head has no import check run to withdraw. A later review of the head that
-        meets the rule leaves the check run with conclusion success: the post job records a new one, and withdraws
-        none. The withdrawal of run 90 on the head, 90 minutes ago, is older than the start of that review, 40
-        minutes ago, so it stands in the way of no record (OSSV-221's architect, 2026-11-23 18:38Z)."""
+        """A later review with the verdict person of a head that has no check run of the App for #7 with the conclusion
+        success (none, or only the others of the commit): the post job reads the check runs of the head and sends no
+        PATCH. For mallory, an outside author, it records with token A only the check run with the conclusion neutral
+        that says that the head is not approved for the import, and its log says so (OSSV-221's architect, 2026-11-24
+        05:33Z). For a writer, whose runs record no check run, it mints no token A, and its log says that the head has
+        no import check run to withdraw. A later review of the head that meets the rule leaves the check run with
+        conclusion success: the post job records a new one, and withdraws none. The withdrawal of run 90 on the head,
+        90 minutes ago, is older than the start of that review, 40 minutes ago, so it stands in the way of no record
+        (OSSV-221's architect, 2026-11-23 18:38Z)."""
         listed, others = self.recorded()
         for case, checks in (("no check run", []), ("only the others", others)):
-            with self.subTest(case=case):
-                start = len(self.logs)
-                got = self.judge(["README.md"], "person", self.LPS, trust=self.BY_HAND, event="workflow_dispatch",
-                                 listed=checks)
-                self.assertEqual((got["result"], got["withdrawn"], got["writes"]), ("success", [], []), self.logs)
-                self.assertEqual(got["steps"][MINT_A], "skipped")
-                self.assertIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
-                self.assertIn(f"#7: a later review has questions for Sami, but {HEAD} has no import check run to "
-                              "withdraw.", "\n".join(self.logs[start:]))
+            for outside in ("true", "false"):
+                with self.subTest(case=case, outside=outside):
+                    start = len(self.logs)
+                    got = self.judge(["README.md"], "person", self.LPS, trust=dict(self.BY_HAND, outside=outside),
+                                     event="workflow_dispatch", listed=checks)
+                    self.assertEqual((got["result"], got["withdrawn"]), ("success", []), self.logs)
+                    self.assertIn(f"repos/{REPO}/commits/{HEAD}/check-runs", self.calls())
+                    log = "\n".join(self.logs[start:])
+                    if outside == "true":
+                        self.assertNotApproved(got, "person")
+                        self.assertIn(f"#7: a later review has questions for Sami, and {HEAD} has no import check run "
+                                      "with the conclusion success. So a later step of this job records a check run "
+                                      f"that says that {HEAD} is not approved for the import.", log)
+                    else:
+                        self.assertEqual((got["writes"], got["steps"][MINT_A]), ([], "skipped"), log)
+                        self.assertIn(f"#7: a later review has questions for Sami, but {HEAD} has no import check run "
+                                      "to withdraw.", log)
         aged = self.withdrawn(dict(listed, id=904), "blocking", "90", ago(90))
         got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, started=ago(40)),
                          listed=[listed, *others[:2], aged])
@@ -18621,11 +18669,11 @@ class ImportCheckTest(ReaderRunner):
                 self.assertNotRecorded(got, "withdrawn")
                 logs = "\n".join(self.logs[start:])
                 since = rescreen["started"]
-                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. It is a withdrawal that "
-                              f"counts from {since}, the time that its summary names. No screened pass of {HEAD} comes "
-                              f"from a run that read #7 after {since}.\n", logs)
-                self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is a "
-                              "withdrawal that stands.\n", logs)
+                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. It is not an approval: its "
+                              f"conclusion is neutral, and it counts from {since}, the time that its summary names. No "
+                              f"screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
+                self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not an "
+                              "approval, and it stands.\n", logs)
                 newer = review_of(HEAD, at=ago(-1), id_=31, run=130)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[screened, newer, old], listed=[withdrawn])
@@ -18777,9 +18825,10 @@ class ImportCheckTest(ReaderRunner):
         start = len(self.logs)
         got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[earlier], listed=[withdrawn])
         self.assertNotRecorded(got, "withdrawn")
-        self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD}. It is a withdrawal that counts "
-                      f"from {since}, at or after this run read #7 at {started}. The pass of this run counts from "
-                      f"{started}. No screened pass of {HEAD} comes from a run that read #7 after {since}.\n",
+        self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD}. It is not an approval: its "
+                      f"conclusion is neutral, and it counts from {since}, at or after this run read #7 at {started}. "
+                      f"The pass of this run counts from {started}. No screened pass of {HEAD} comes from a run that "
+                      f"read #7 after {since}.\n",
                       "\n".join(self.logs[start:]))
         self.assertEqual(got["post"]["gave_way"], "withdrawn")
         self.assertRecorded(self.changed_decide(self.OWN_RECORD, "", lambda: self.judge(
@@ -19440,8 +19489,8 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is a withdrawal "
-                 f"that stands. Its summary names a time at or after {started}, or no time."),
+                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is not an approval, "
+                 f"and it stands. Its summary names a time at or after {started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
@@ -20198,6 +20247,202 @@ class ImportCheckTest(ReaderRunner):
             "comment", self.LABEL, 'if [ "$approved" = true ] && [ -n "$paths" ]; then\n', "if false; then\n",
             lambda: self.label_step(trust, got, [withdrawn], [labelled]))
         self.assertEqual((rc, [recorded in label for label in labels]), (0, [True]), out)
+
+    # The post job's step that posts the check run that says that the head is not approved for the import (rules.py
+    # not_approved; OSSV-221's architect, 2026-11-24 05:33Z).
+    NEUTRAL = "Record that the head is not approved for the import"
+    # Of the two runs of each order below: rescreen run 120 of mallory's #7, which read the item 30 minutes ago, and the
+    # screened CI review run 100, which read it 40 minutes ago and passes HEAD. The end and the first sentence of the
+    # title and the summary of the check run that run 120 posts, for each reason (rules.py OWED_WITHDRAWN).
+    BECAUSE = {"blocking": ("because an automated review of this head commit asked for a change",
+                            "An automated review of this head commit asked for a change."),
+               "screen": ("because an automated screen held this head commit",
+                          "An automated screen held this head commit.")}
+
+    def two_post_jobs(self, first, screen, verdict, outside="true"):
+        """The post jobs of rescreen run 120 of mallory's #7 (read 30 minutes ago: its screen gave screen and its review
+        verdict) and of the screened CI review run 100 (read 40 minutes ago, which passes HEAD), in post-7 in the order
+        first ("newer": run 120's first; or "older"), with no import check run of HEAD before them. Each job sees the
+        check runs as the job before it left them. outside is the trust job's outside of both. (run 120's result, run
+        100's result, the check runs at the end, (the time when run 120 read the item, the same of run 100))."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30), outside=outside)
+        ci = dict(self.REVIEWED, started=ago(40), outside=outside)
+        checks, got = [], {}
+        for run in (("120", "100") if first == "newer" else ("100", "120")):
+            if run == "120":
+                got[run], checks = self.judged(checks, "120", verdict=verdict, trust=rescreen, screen=screen,
+                                               event="workflow_dispatch", comments=[older], named=HEAD)
+            else:
+                got[run], checks = self.judged(checks, "100", trust=ci, comments=[older])
+        return got["120"], got["100"], checks, (rescreen["started"], ci["started"])
+
+    def test_a_newer_runs_post_job_that_finds_no_success_records_that_the_head_is_not_approved(self):
+        """OSSV-221's architect, 2026-11-24 05:33Z (spec v93 R12), order A: a posting job that finds no success to
+        update records a neutral check run with its reason, its run and its read time. Run 120 gave HEAD a blocking
+        finding, or its screen held HEAD, and its post job runs first: no import check run of HEAD stands, so it posts
+        one check run repo-pairs/import-approved with token A, as its one write. It has the conclusion neutral, the
+        external_id and the marker line of a record, a title that says that #7 at HEAD is not approved for the import
+        and why, and a summary that names run 120, the time when it read the item, HEAD and the reason, which
+        rules.py withdrawn_by reads. Its output withdrawn names HEAD, so nothing is owed. Then the post job of run 100,
+        which read the item before run 120, reads that check run as a withdrawal that counts from a time after its own
+        read: its decision is withdrawn, it records nothing, its comment job posts nothing (gave_way), and its log
+        says why. No success stands at the end. A writer's run posts no such check run: no run of a writer records
+        one. The control, the step that makes no such request, lets run 100 record a success over the verdict."""
+        for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
+            with self.subTest(why=why):
+                self.tearDown()
+                self.setUp()
+                start = len(self.logs)
+                newer, mine, checks, (read, older_read) = self.two_post_jobs("newer", screen, verdict)
+                self.assertEqual((newer["result"], newer["withdrawn"], newer["post"]["withdrawn"],
+                                  newer["post"]["owed"], newer["steps"][self.NEUTRAL]),
+                                 ("success", [], HEAD, "", "success"), self.logs)
+                self.assertEqual(newer["writes"], [["--method", "POST", f"repos/{REPO}/check-runs", "--input",
+                                                    os.path.join(self.temp, "not-approved.json"), "--jq", ".id"]])
+                (token, body), = newer["checks"]
+                end, first = self.BECAUSE[why]
+                self.assertEqual((token, body), ("token-A", {
+                    "name": "repo-pairs/import-approved", "head_sha": HEAD, "external_id": f"7:{HEAD}",
+                    "status": "completed", "conclusion": "neutral",
+                    "output": {"title": f"Not approved for the import: pull request #7 at {HEAD[:12]}, {end}",
+                               "summary": f"{first} Run 120 of the review workflow read the pull request at "
+                                          f"{read}. Then it found no import check run of head commit "
+                                          f"{HEAD} that was an approval for the import. So this check records that "
+                                          f"this head commit is not approved for the import, for the reason `{why}` "
+                                          "of run 120 itself.",
+                               "text": rules.import_marker(HEAD, self.LPS)}}))
+                log = "\n".join(self.logs[start:])
+                because = {"blocking": "a later review asks for a change", "screen": f"a later screen held {HEAD}"}
+                self.assertIn(f"#7: {because[why]}, and {HEAD} has no import check run with the conclusion success. So "
+                              f"a later step of this job records a check run that says that {HEAD} is not approved for "
+                              f"the import. It counts from {read}, when this run read #7.\n", log)
+                (posted,) = checks
+                self.assertEqual(rules.withdrawn_by(posted, HEAD), (why, "120", read))
+                self.assertNotRecorded(mine, "withdrawn")
+                self.assertEqual(mine["post"]["gave_way"], "withdrawn")
+                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. It is not an approval: its "
+                              f"conclusion is neutral, and it counts from {read}, at or after this run read #7 at "
+                              f"{older_read}. The pass of this run counts from {older_read}.", log)
+                self.assertEqual(self.successes(checks), [])
+        self.tearDown()
+        self.setUp()
+        newer, mine, checks, _reads = self.two_post_jobs("newer", "clean", "blocking", outside="false")
+        self.assertEqual((newer["writes"], newer["post"]["withdrawn"], mine["post"]["decision"], checks),
+                         ([], HEAD, "writer", []), self.logs)
+        self.tearDown()
+        self.setUp()
+        newer, mine, checks, _reads = self.changed_step(
+            "post", self.FIND, '[ "${OUTSIDE:-}" = true ]; then\n', '[ "${OUTSIDE:-}" = never ]; then\n',
+            lambda: self.two_post_jobs("newer", "clean", "blocking"))
+        self.assertEqual((newer["writes"], mine["post"]["recorded"], self.successes(checks)), ([], "true", [901]),
+                         self.logs)
+
+    def test_a_newer_runs_post_job_after_an_older_record_withdraws_it_and_posts_no_check_run(self):
+        """OSSV-221's architect, 2026-11-24 05:33Z, order B: "a success recorded by a run that read the head earlier is
+        updated to neutral by the run that read it later". Run 100's post job runs first and records check run 901,
+        whose summary names run 100 and the time when it read the item. Run 120's post job then withdraws 901 for its
+        blocking finding, or for its screen that held HEAD (a PATCH to the conclusion neutral, whose summary names run
+        120 and the time when it read the item), and posts no check run: it found a success to update. No success
+        stands at the end. The control, a step that makes the request of the check run that says that the head is not
+        approved for the import for each verdict or screen of its own, also posts that check run."""
+        for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
+            with self.subTest(why=why):
+                self.tearDown()
+                self.setUp()
+                newer, mine, checks, (read, _older_read) = self.two_post_jobs("older", screen, verdict)
+                self.assertEqual(mine["post"]["recorded"], "true", self.logs)
+                self.assertEqual((newer["result"], [c[:3] for c in newer["writes"]], newer["checks"],
+                                  newer["steps"][self.NEUTRAL], newer["post"]["withdrawn"], newer["post"]["owed"]),
+                                 ("success", [["--method", "PATCH", f"repos/{REPO}/check-runs/901"]], [], "skipped",
+                                  HEAD, ""), self.logs)
+                (withdrawn,) = checks
+                self.assertEqual((self.successes(checks), rules.withdrawn_by(withdrawn, HEAD)),
+                                 ([], (why, "120", read)))
+        self.tearDown()
+        self.setUp()
+        always = ('python3 .github/review/rules.py not-approved "$NUMBER" "$head" "$why" "$GITHUB_RUN_ID" "$STARTED" '
+                  '"$RUNNER_TEMP/not-approved.json"\necho "neutral=$head" >> "$GITHUB_OUTPUT"\n')
+        newer, _mine, checks, _reads = self.changed_step(
+            "post", self.FIND, 'if [ -z "$ids" ]; then\n', always + 'if [ -z "$ids" ]; then\n',
+            lambda: self.two_post_jobs("older", "clean", "blocking"))
+        self.assertEqual(([c[:3] for c in newer["writes"]], self.successes(checks)),
+                         ([["--method", "PATCH", f"repos/{REPO}/check-runs/901"],
+                           ["--method", "POST", f"repos/{REPO}/check-runs"]], []), self.logs)
+
+    def test_an_older_runs_own_verdict_posts_nothing_while_a_newer_reads_record_stands(self):
+        """OSSV-221's architect, 2026-11-24 05:33Z: the check run that says that the head is not approved for the import
+        is for a post job that finds no success at all. Rescreen run 100 of mallory's #7 read the item 30 minutes ago,
+        passed HEAD, and recorded check run 901. The CI review run 90 read the item 40 minutes ago and gives a blocking
+        finding. Its post job withdraws nothing, as 901 is the record of a newer read (2026-11-24 05:23Z), and it posts
+        no check run either: it mints no token A and writes nothing. Its output withdrawn names HEAD, so nothing is
+        owed, and 901 stands. The control, a step that makes the request when it withdraws nothing, whatever stands,
+        posts that check run."""
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        _mine, recorded = self.judged([], "100", trust=rescreen, event="workflow_dispatch")
+        self.assertEqual(self.successes(recorded), [901], self.logs)
+
+        def blocking():
+            return self.judged(recorded, "90", verdict="blocking", trust=dict(self.REVIEWED, started=ago(40)))
+
+        got, checks = blocking()
+        self.assertEqual((got["result"], got["writes"], got["steps"][MINT_A], got["steps"][self.NEUTRAL],
+                          got["post"]["withdrawn"], got["post"]["owed"], self.successes(checks)),
+                         ("success", [], "skipped", "skipped", HEAD, "", [901]), self.logs)
+        got, checks = self.changed_step("post", self.FIND, 'if [ -z "$kept" ] && [ "$kind" = own ]',
+                                        'if [ "$kind" = own ]', blocking)
+        self.assertEqual([c[:3] for c in got["writes"]], [["--method", "POST", f"repos/{REPO}/check-runs"]],
+                         self.logs)
+
+    def test_a_screened_pass_of_a_run_that_read_the_item_later_records_over_the_check_run_that_says_not_approved(self):
+        """OSSV-221's architect, 2026-11-24 05:33Z (c): the check run that says that the head is not approved for the
+        import counts as a withdrawal from the time when its run read the item, and a screened pass whose run read the
+        item after that time lifts it, as for a withdrawal. Run 120 of mallory's #7 read the item 30 minutes ago, gave
+        HEAD a blocking finding, and its post job posted that check run, as no success stood; its review comment
+        posted. Rescreen run 130 read the item 20 minutes ago, after that time, and its screen and review pass HEAD (a
+        fix of the cause, say). Its post job records a check run with the conclusion success over it. The control,
+        rules.py whose withdrawn_by does not read the summary of such a check run, takes it as a withdrawal that names
+        no time, which blocks every record (fail closed): run 130 records nothing."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        _newer, checks = self.judged([], "120", verdict="blocking", trust=rescreen, event="workflow_dispatch",
+                                     comments=[older], named=HEAD)
+        self.assertEqual([(c["id"], c["conclusion"]) for c in checks], [(901, "neutral")], self.logs)
+        blocking = review_of(HEAD, "blocking", at=ago(25), id_=31, run=120, read=rescreen["started"])
+        later = dict(self.REVIEWED, task="rescreen", started=ago(20))
+
+        def passed():
+            return self.judged(checks, "130", trust=later, event="workflow_dispatch", comments=[older, blocking],
+                               named=HEAD)
+
+        got, end = passed()
+        self.assertRecorded(got, self.LPS)
+        self.assertEqual((self.successes(end), rules.recorded_by(end[-1])), ([902], ("130", later["started"])))
+        got, _end = self.changed_rules("        m = WITHDREW.search(summary) or NOT_APPROVED.search(summary)\n",
+                                       "        m = WITHDREW.search(summary)\n", passed)
+        self.assertNotRecorded(got, "withdrawn")
+
+    def test_a_check_run_that_says_not_approved_that_github_refuses_leaves_the_withdrawal_owed(self):
+        """OSSV-221's architect, 2026-11-24 05:33Z: a POST of the check run that says that the head is not approved for
+        the import that GitHub refuses follows the path of a refused withdrawal. Rescreen run 100 of mallory's #7 gave
+        HEAD a blocking finding, or its screen held HEAD, and no import check run of HEAD stands. The step that posts
+        it fails, and so does the post job: its output owed names HEAD and the reason, and withdrawn is empty, so the
+        comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> -->. The error names HEAD
+        and says what comes next: the rescreen pass's retry when the run's name gives HEAD, else a re-run."""
+        retry = (" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this "
+                 f"run ends. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment "
+                 "names the next step for Sami.")
+        self.refuse(f"repos/{REPO}/check-runs", 422)
+        for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
+            for named, again in ((HEAD, retry), ("", " Re-run this run.")):
+                with self.subTest(why=why, named=bool(named)):
+                    got = self.judge(["README.md"], verdict, self.LPS, trust=dict(self.REVIEWED, task="rescreen"),
+                                     screen=screen, event="workflow_dispatch", named=named)
+                    self.assertEqual((got["result"], got["steps"][self.NEUTRAL], got["post"]["owed"],
+                                      got["post"]["withdrawn"]), ("failure", "failure", f"{HEAD} {why}", ""),
+                                     self.logs)
+                    self.assertIn(f"::error::the check run that says that {HEAD} is not approved for the import could "
+                                  f"not be recorded.{again}", self.logs[-1])
 
 
 def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False, rerun=False):
