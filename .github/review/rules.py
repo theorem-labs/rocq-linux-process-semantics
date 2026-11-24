@@ -477,7 +477,7 @@ STATES = {
     "steering": (
         THEOREM, "Sami, a person at Theorem with write access, approves the runs of this pull request on GitHub.",
         "The workflow does not approve the runs of this pull request, because it changes a file under `.github/` or "
-        "it changes 3,000 files or more. GitHub lists at most 3,000 files of a pull request, so the workflow counts "
+        "it changes 3,000 files or more. GitHub lists at most 3,000 files of a pull request. So the workflow counts "
         "a pull request of 3,000 files or more as one that changes a file under `.github/`. You do not need to do "
         "anything."),
     # A held pull request whose head the screen passed, while the environment post held no key of the
@@ -1146,7 +1146,7 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
                 newer += (f" {since}. That is the time of the line, from a hold of run {wrote} or from a withdrawal "
                           f"whose summary names a time of run {wrote}.")
             elif ended:
-                newer += f" {ended}, the end of the last step of run {wrote} that can write such a line."
+                newer += f" {ended}. That time is the end of the last step of run {wrote} that can write such a line."
             else:
                 newer = (f"The workflow has no time for the line, so it does not remove the line for a review comment "
                          f"of {withdrawn} from another run. The time comes from a hold of run {wrote}, or from a "
@@ -1606,9 +1606,9 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at=""):
         summary = f"{did} at {at or now}, for the reason `{why}` of run {run} itself."
     elif source:
         summary = (f"{did}, for the reason `{why}` of run {source}. The withdrawal counts from {at}, a time of run "
-                   f"{source}. It is the time when run {source} read the pull request, the time of a hold or a "
-                   f"withdrawal by run {source}, or the end of the last step of run {source} that can record an owed "
-                   "withdrawal.")
+                   f"{source}. It is the time when run {source} read the pull request, or the time of a hold or a "
+                   f"withdrawal by run {source}. Else it is the end of the last step of run {source} that can record "
+                   "an owed withdrawal.")
     else:
         summary = (f"{did} at {now}, for the reason `{why}` of an earlier run. The workflow knows no time of that run, "
                    "so the withdrawal counts from this time.")
@@ -1627,8 +1627,8 @@ WITHDREW = re.compile(
     r"withdrawal counts from this time)"
     r"|, for the reason `(?P<why>blocking|person|screen)` of run (?P<source>[1-9][0-9]*)\. The withdrawal counts from "
     rf"(?P<since>{TIME.pattern}), a time of run (?P=source)\. It is the time when run (?P=source) read the pull "
-    r"request, the time of a hold or a withdrawal by run (?P=source), or the end of the last step of run (?P=source) "
-    r"that can record an owed withdrawal)\.$")
+    r"request, or the time of a hold or a withdrawal by run (?P=source)\. Else it is the end of the last step of run "
+    r"(?P=source) that can record an owed withdrawal)\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
 WITHDRAWING = ("blocking", "person")
 
@@ -2017,9 +2017,9 @@ def newer_word(comments, head, started, run):
     review comment of BOT that names head (kind: its verdict, pass, blocking or person), or a hold comment of BOT of
     the screen that names head (hold_fact screen_held; kind: hold). It counts from its word_time: a review from the
     time when its run read the item, and a hold from its updated_at. So a pass with no marker of that read counts at no
-    time, and never makes a run give way. A word at started counts, which fails closed. The word of this run (its
-    REVIEW_RUN or HELD_RUN is run) never counts: an earlier attempt of this run can have posted it. The word's run is
-    "" when it names none. Of such words, the newest by word_time, and the later in the list at the same time."""
+    time, and never makes this run skip its posts. A word at started counts, which fails closed. The word of this run
+    (its REVIEW_RUN or HELD_RUN is run) never counts: an earlier attempt of this run can have posted it. The word's run
+    is "" when it names none. Of such words, the newest by word_time, and the later in the list at the same time."""
     found = None
     for c in comments:
         if not of_bot(c):
