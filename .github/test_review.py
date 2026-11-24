@@ -19208,6 +19208,33 @@ class ImportCheckTest(ReaderRunner):
                 said = "The workflow recorded the check `repo-pairs/import-approved`" in labels[0]
                 self.assertEqual((self.successes(checks), said), ([], False), (checks, labels[0]))
 
+    def test_no_success_stands_after_a_newer_blocking_verdict_of_a_run_that_could_not_read_the_authors_access(self):
+        """The tester's round 22, by OSSV-221's architect's ruling of 2026-11-24 09:28Z (a read that failed and an
+        approval that stands: it fails open). GitHub did not say whether mallory has write access in rescreen run 120
+        of #7 (the author kind unknown, so the trust job's outside is false), which read the item 30 minutes ago and
+        gave HEAD a blocking finding; its post job ran first in post-7, while no import check run stood. The CI review
+        run 100, which read the item 40 minutes ago with mallory read as an outsider, passed HEAD; its post job runs
+        next, before run 120's comment job posts. Then run 120's comment job runs, then run 100's, which gives way to
+        it. Each job sees the check runs as the jobs before it left them. At the end no success check run stands under
+        run 120's blocking finding: a run whose author kind is unknown counts as an outside author's run for the check
+        run that says that the head is not approved (holds_back). At eb9d100d run 120 records no such check run, run
+        100 records 901, and it stands."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30), outside="false", kind="unknown")
+        ci = dict(self.REVIEWED, started=ago(40))
+        newer, checks = self.judged([], "120", verdict="blocking", trust=rescreen, event="workflow_dispatch",
+                                    comments=[older], named=HEAD)
+        mine, checks = self.judged(checks, "100", trust=ci, comments=[older])
+        self.serve_checks(checks)
+        _outcomes, _wrote, _labels, theirs = self.comment_job_after_post(newer, rescreen, "blocking", [older], "120")
+        checks = self.applied_checks(checks)
+        after = [dict(theirs, id=30)]
+        self.serve_checks(checks)
+        self.comment_job_after_post(mine, ci, "pass", after, "100")
+        checks = self.applied_checks(checks)
+        self.assertEqual((rules.review_verdict(after, HEAD), self.successes(checks)),
+                         (("blocking", "screened", "blocking"), []), (checks, self.logs[-6:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
