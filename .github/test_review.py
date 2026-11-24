@@ -19516,6 +19516,46 @@ class ImportCheckTest(ReaderRunner):
         state = rules.review_verdict(comments, HEAD)[1]
         self.assertEqual((len(holds), state, self.successes(checks)), (1, "held", []), (holds, self.logs[-4:]))
 
+    def test_a_run_whose_author_kind_is_unknown_is_a_not_approved_word_whatever_its_verdict(self):
+        """The tester's audit of round 23, F3, by OSSV-221's architect's ruling of 2026-11-24 14:29Z (a failure path:
+        GitHub did not say whether the author has write access): a run of kind unknown, whatever its verdict, counts
+        for the order of words as a not-approved word at its read time. It records the check run that says that the
+        head is not approved when it finds no success, it withdraws each success of an older or equal read, and its pass
+        lifts no withdrawal (the author-kind table of 2026-11-20, extending the U ruling of 09:28Z to every verdict).
+        (i) The CI review run 100 of mallory's #7 read the item 40 minutes ago and passed HEAD; rescreen run 120 read
+        it 30 minutes ago and gave a blocking finding, and recorded the check run 901 that says HEAD is not approved;
+        rescreen run 130 read it 20 minutes ago, with mallory's access not given (outside false, kind unknown), and
+        passed HEAD, and its review replaced run 120's in place. Then run 100's post job runs. (ii) Run 100 recorded
+        901, a success; then run 130 (kind unknown) passes HEAD. In each case no success stands at the end. At ae1d3cd5
+        run 130 decides writer and writes nothing: in (i) its pass lifts 901 and run 100 records 902, and in (ii) 901
+        stands."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        for case in ("(i) after a blocking verdict", "(ii) over an older success"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                ci = dict(self.REVIEWED, started=ago(40))
+                unknown = dict(self.REVIEWED, task="rescreen", started=ago(20), outside="false", kind="unknown")
+                if case.startswith("(i)"):
+                    blocking = dict(self.REVIEWED, task="rescreen", started=ago(30))
+                    got, checks = self.judged([], "120", verdict="blocking", trust=blocking, event="workflow_dispatch",
+                                              comments=[older], named=HEAD)
+                    self.serve_checks(checks)
+                    _o, _w, _l, review = self.comment_job_after_post(got, blocking, "blocking", [older], "120")
+                    after = [dict(review, id=30)]
+                    got, checks = self.judged(checks, "130", trust=unknown, event="workflow_dispatch", comments=after,
+                                              named=HEAD)
+                    self.serve_checks(checks)
+                    _o, _w, _l, review = self.comment_job_after_post(got, unknown, "pass", after, "130")
+                    after = [dict(review, id=30)]
+                    _got, checks = self.judged(checks, "100", trust=ci, comments=after)
+                else:
+                    _got, checks = self.judged([], "100", trust=ci, comments=[older])
+                    _got, checks = self.judged(checks, "130", trust=unknown, event="workflow_dispatch",
+                                               comments=[older], named=HEAD)
+                self.assertEqual(self.successes(checks), [],
+                                 ([(c["id"], c["conclusion"], rules.recorded_by(c)) for c in checks], self.logs[-4:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
