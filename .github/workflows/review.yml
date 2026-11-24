@@ -266,7 +266,10 @@
 # the item's author is an outside author (its outputs outside and kind), and each step reads the answer of the
 # author-kind table of .github/review/rules.py: only an outside author's item gets a state label, an approval of its
 # held runs and the import check run of R12. Any other item gets no state label, and when GitHub did not say whether
-# its author has write access, its state label and its label comment stay as they are.
+# its author has write access, its state label and its label comment stay as they are. One case differs (OSSV-221's
+# architect, 2026-11-24 16:19Z, F5): after the withdrawal of a run of such an author, a label comment that says that
+# the workflow recorded the check of the head, while no such check run stands, becomes the label comment of the state
+# decide that says that a run withdrew it (rules.py owed and unrecord). The state labels stay as they are.
 #
 # No job runs code of a pull request. The gather job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
@@ -4069,7 +4072,12 @@ jobs:
       # whose post job failed too, which the label step leaves as it is, and for a review that GitHub refused to post.
       # The label step after it keeps the line. For an author whose write access GitHub did not give, the line goes in
       # all the same, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z), but no line
-      # goes out. A record of an owed withdrawal never makes a label comment: for an item with none, rules.py writes
+      # goes out. For such an author, the label step changes no label comment. So when the post job finished the
+      # withdrawal of a head, this step reads the label comment (rules.py unrecord; 2026-11-24 16:19Z, F5). When that
+      # comment says that the workflow recorded the check on that head, and no such check run with the conclusion
+      # success stands now, this step writes the label comment of the state decide in its place: a run of the workflow
+      # withdrew the check (rules.py GONE). It adds and takes off no state label.
+      # A record of an owed withdrawal never makes a label comment: for an item with none, rules.py writes
       # nothing (status 3) and gives the line as this step's output line, which the label step gives to the label
       # comment that it writes (marker=<line>). The label step writes the line also when it stops for a hold made after
       # the run started (rules.py mark). Else, when the label step writes no label comment, the line of an item with no
@@ -4429,7 +4437,8 @@ jobs:
       # the state label of the outcome, and the label comment (.github/review/rules.py), from the item's kind, the
       # trust job's outside, outsider and kind as they are (the author-kind table: an outside author's item gets its
       # state label; the item of an author whose write access GitHub did not give keeps its state label and its label
-      # comment as they are; any other item gets no state label), the review's verdict, the two
+      # comment as they are here: only the step "Record a withdrawal that the post job owes" rewrites one that says
+      # recorded with no record, F5; any other item gets no state label), the review's verdict, the two
       # stops of the fix (will_fix and fix_stop), whether a fix review posted, whether the post job recorded the import
       # check run at the head and its decision on it, the stored draft (its marker <!-- issue-draft <run>-<attempt> -->,
       # waits-on-theorem), the posted reply (its marker <!-- issue-reply-posted <id> -->, waits-on-author), and the text
@@ -4881,13 +4890,18 @@ jobs:
   # (R5). Any other item, as a writer's pull request whose head an outsider pushed and whose screen held it, gets that
   # label comment, with its marker <!-- waits-on-theorem: Sami -->, but no state label. When GitHub did not say whether
   # the author has write access, the state labels and the label comment stay as they are, but review-held and the hold
-  # comment go on, as they are the hold's. Each hold of a pull request also names the head that the run read, in the
+  # comment go on, as they are the hold's. One thing more changes for such an author (OSSV-221's architect, 2026-11-24
+  # 16:19Z, F5): once the post job or this job finished a withdrawal, a label comment that says that the workflow
+  # recorded the check, while no such record stands, becomes one that says that a run withdrew it (rules.py owed and
+  # unrecord). Each hold of a pull request also names the head that the run read, in the
   # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops, and after it the id of the
   # run that wrote it, in the marker <!-- review-held-run <run> -->. A hold of the screen of a pull request names,
   # between those two, the time when the trust job of this run read the item, in the marker
-  # <!-- review-held-read <time> -->: each reader counts the hold from that time, never from when it posts
-  # (.github/review/rules.py word_time; OSSV-221's architect, 2026-11-24 09:43Z, A3). A cancelled screen holds nothing,
-  # nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
+  # <!-- review-held-read <time> -->, and a hold of the screen of an issue names that marker alone: each reader counts
+  # the hold from that time, never from when it posts (.github/review/rules.py word_time; OSSV-221's architect,
+  # 2026-11-24 09:43Z, A3), and a re-run attempt of this job edits it in place (held.sh replaced_hold). A cancelled
+  # screen holds nothing, nor a screened review or answer that a newer run of the same item and task cancelled: that
+  # run decides.
   # Nor a screened review or rescreen of a pull request whose review job failed or was cancelled after a blocking
   # finding or the verdict person (its outputs verdict and head are set): its review is final, and the comment job
   # posts it with no fix (OSSV-221's architect, 2026-11-22 10:46Z). Nor a run that judged nothing of the item, by the
@@ -5019,7 +5033,11 @@ jobs:
       # a run that judged nothing (held.sh try_rule), a newer run, a stale hold, an answer's hold that is tried again,
       # or an error), the line of an item with no label comment is not recorded. For a withdrawal that the post job
       # finished, rules.py gives status 0 for an item with no label comment, and the label step gets no line: the hold
-      # comment gives the reason once it posts.
+      # comment gives the reason once it posts. For an author whose write access GitHub did not give, the label step
+      # changes no label comment. So when the post job finished the withdrawal of the head, rules.py also reads the
+      # label comment here: one that says that the workflow recorded the check on that head, while no such check run
+      # with the conclusion success stands now, becomes the label comment of the state decide, with the text that a run
+      # withdrew it (rules.py unrecord; OSSV-221's architect, 2026-11-24 16:19Z, F5). No state label goes on or off.
       - name: Record a withdrawal that this run owes
         id: owed
         if: >-
@@ -5117,9 +5135,9 @@ jobs:
           # did not write, as the item had no label comment. The label call below gives it to the label comment that
           # it writes.
           OWED_LINE: ${{ steps.owed.outputs.line }}
-          # The time when the trust job of this run read the item, which a hold of the screen of a pull request names
-          # in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in its marker
-          # <!-- review-read <time> -->.
+          # The time when the trust job of this run read the item, which a hold of the screen of a pull request or of
+          # an issue names in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in
+          # its marker <!-- review-read <time> -->.
           STARTED: ${{ needs.trust.outputs.started }}
         run: |
           set -euo pipefail
@@ -5376,22 +5394,24 @@ jobs:
           fi
           # The head of a pull request that the run read, which the rescreen pass reads: a hold that is not tried again
           # stops the work on that head. For a hold of the screen (the fact screen_held), after it, the time when the
-          # trust job of this run read the item (STARTED): each reader of the order of the words on the head counts this
-          # hold from that time, never from when it posts, as it counts a review from its marker
-          # <!-- review-read <time> --> (.github/review/rules.py word_time; OSSV-221's architect, 2026-11-24 09:43Z,
-          # A3). A STARTED that is not a time stops the hold before it posts. Last, the id of this run (GITHUB_RUN_ID,
-          # as the step that owes writes it in the line of a withdrawal): the line of this run's screen goes once this
-          # hold stands (owe, in rules.py).
+          # trust job of this run read the item (STARTED), on a pull request and on an issue: each reader of the order
+          # of the words counts this hold from that time, never from when it posts, as it counts a review from its
+          # marker <!-- review-read <time> --> (.github/review/rules.py word_time; OSSV-221's architect,
+          # 2026-11-24 09:43Z, A3). So the writer of a later hold reads that time too (held.sh replaced_hold): a re-run
+          # attempt of this job, with the same STARTED, edits this hold in place, and a hold of an older read never
+          # does. A STARTED that is not a time stops the hold before it posts. Last, for a pull request, the id of this
+          # run (GITHUB_RUN_ID, as the step that owes writes it in the line of a withdrawal): the line of this run's
+          # screen goes once this hold stands (owe, in rules.py).
+          if [ "$fact" = screen_held ]; then
+            [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+              || { echo "::error::no start time of this run: ${STARTED:-}. Nothing is held."; exit 1; }
+          fi
           if [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]]; then
             [[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}"; exit 1; }
             marker+=$'\n'"<!-- review-held-head $HEAD -->"
-            if [ "$fact" = screen_held ]; then
-              [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-                || { echo "::error::no start time of this run: ${STARTED:-}. Nothing is held."; exit 1; }
-              marker+=$'\n'"<!-- review-held-read $STARTED -->"
-            fi
-            marker+=$'\n'"<!-- review-held-run $GITHUB_RUN_ID -->"
           fi
+          [ "$fact" != screen_held ] || marker+=$'\n'"<!-- review-held-read $STARTED -->"
+          [[ ! ${HEAD:-} =~ ^[0-9a-f]{40}$ ]] || marker+=$'\n'"<!-- review-held-run $GITHUB_RUN_ID -->"
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
           # A hold of a pull request names the head that the trust job read (HEAD). When the pull request is at another
           # head now, as GitHub gives it to .github/review/rules.py hold-head, the hold is stale: this job writes no
@@ -5414,12 +5434,16 @@ jobs:
           # hold that is tried again (review for a marker with no task), else the work of its title, as the trust job's
           # works gives it. A hold of other work stays as it is. A hold of the screen (fact screen_held) replaces a hold
           # of the screen of the same head, or one that is not the screen's. Any other hold never replaces a hold of the
-          # screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws).
+          # screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws). A hold of the
+          # screen also gets STARTED, which the step checked above: it never replaces a hold of a run that read the item
+          # later, one that counts from a time after STARTED (OSSV-221's architect, 2026-11-24 16:19Z, F4). So the hold
+          # of an older answer of an issue, which reads no newer word first, posts a comment of its own beside a newer
+          # one, and a re-run attempt of this job edits the hold of its first attempt, which names the same STARTED.
           work=review
           case $TASK in answer|draft|approve) work=$TASK ;; esac
           screen=false
           [ "$fact" != screen_held ] || screen=true
-          id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head") \
+          id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head" "${STARTED:-}") \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
           if [ -n "$id" ]; then
             gh api --method PATCH "repos/$REPO/issues/comments/$id" -f body="$body" --jq .html_url
@@ -5497,7 +5521,11 @@ jobs:
       # keeps the line while no hold comment of the screen of this run names the head, as when the label step posted no
       # hold comment: a run that judged nothing, a newer run, or a stale hold. GitHub runs this step only when no step
       # before it failed, so a hold comment that GitHub refused to post, or a withdrawal that failed, leaves the line. A
-      # run whose posts were skipped writes nothing on the item, and the line stays.
+      # run whose posts were skipped writes nothing on the item, and the line stays. For an author whose write access
+      # GitHub did not give, rules.py takes no line out. But after the withdrawal of an answer, which comes after the
+      # label step, it rewrites a label comment that says that the workflow recorded the check on the head, when no
+      # such check run stands now: the state decide, with the text that a run withdrew it (rules.py unrecord;
+      # OSSV-221's architect, 2026-11-24 16:19Z, F5). It adds and takes off no state label.
       - name: Take out the line of a withdrawal that the posted hold records
         if: >-
           (steps.owed.outputs.pending != '' || steps.withdraw.outputs.clear != ''

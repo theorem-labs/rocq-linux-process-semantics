@@ -70,28 +70,38 @@ limit_hold() {
   found=$(holds "$1") || return 1
   awk -v w="$2" '$1 == w { sub(/^[^ ]+ /, ""); print }' <<< "$found"
 }
-# replaced_hold <number> <work> <screen> <head>: the one rule of each writer of a hold comment: the hold job of this
-# workflow, and halt (stopped, head_stopped, left_stopped, answer_stopped and draft_stopped), whose stop the comment job
-# writes. The id of the hold comment of github-actions[bot] on <number> that a new hold of <work> (works) replaces, or
-# nothing: then the new hold posts a comment of its own. <screen> is true for a new hold of the screen, and <head> is
-# the head that the new hold names (empty for none). A hold of the screen (its text holds "The automated screen held ",
-# and it has no marker of a hold that is tried again) names the head that the screen held, or none on an issue. A
-# relabel and a review by hand read it (rules.py verdict, relabel_withdraws). So only a new hold of the screen that
-# names the same head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of its
-# own, and so does each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of the
-# holds of <work> that the new hold may replace, it replaces the newest (by when GitHub last changed it, as holds reads
-# them). A hold of other work stays as it is. Before either writer writes, it checks that <head> is still the head of
-# the pull request (rules.py hold-head): a hold of an older head is stale, and writes no hold comment and changes no
-# label.
+# replaced_hold <number> <work> <screen> <head> [<started>]: the one rule of each writer of a hold comment: the hold job
+# of this workflow, and halt (stopped, head_stopped, left_stopped, answer_stopped and draft_stopped), whose stop the
+# comment job writes. The id of the hold comment of github-actions[bot] on <number> that a new hold of <work> (works)
+# replaces, or nothing: then the new hold posts a comment of its own. <screen> is true for a new hold of the screen, and
+# <head> is the head that the new hold names (empty for none). A hold of the screen (its text holds "The automated
+# screen held ", and it has no marker of a hold that is tried again) names the head that the screen held, or none on an
+# issue. A relabel and a review by hand read it (rules.py verdict, relabel_withdraws). So only a new hold of the screen
+# that names the same head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of
+# its own, and so does each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of
+# the holds of <work> that the new hold may replace, it replaces the newest (by when GitHub last changed it, as holds
+# reads them). A hold of other work stays as it is. <started> is the time when the trust job of the run of a new hold of
+# the screen read the item (the hold job gives it; halt gives none). Such a hold never replaces a hold of a run that
+# read the item later (OSSV-221's architect, 2026-11-24 16:19Z, F4, by A3 of 09:43Z): a hold that counts from a time
+# after <started>, the time of its marker <!-- review-held-read <time> --> for a hold of the screen that has one, else
+# when GitHub last changed it (rules.py word_time). So an older answer of an issue, which names no head and reads no
+# newer word first, never takes the place of the hold of a newer answer, and a re-run attempt of the hold job, whose
+# first hold names the same <started> (a hold of the screen names it on a pull request and on an issue), edits that
+# hold in place. On a pull request, the hold job gives way to such a hold of the screen of the head before this
+# (rules.py newer-word). Before either writer writes, it checks that <head> is still the head of the pull request
+# (rules.py hold-head): a hold of an older head is stale, and writes no hold comment and changes no label.
 replaced_hold() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-  comments "$1" | W=$2 SCREEN=$3 SHA=$4 jq -rs "$works"'[.[] | select(.user.login == "github-actions[bot]"
-      and ((.body // "") | startswith("<!-- review-held -->")))
+  comments "$1" | W=$2 SCREEN=$3 SHA=$4 STARTED=${5:-} jq -rs "$works"'[.[]
+    | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->")))
     | {at: (.updated_at // "-"), id, body: (.body // "")} | select((.body | work) == $ENV.W)
     | (.body | contains("The automated screen held ")
         and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+") | not)) as $screen
     | select(($screen | not) or ($ENV.SCREEN == "true"
-        and ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "") == $ENV.SHA))]
+        and ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "") == $ENV.SHA))
+    | select($ENV.SCREEN != "true" or $ENV.STARTED == ""
+        or ((if $screen then (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
+              + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) else null end) // .at) <= $ENV.STARTED)]
     | if length > 0 then max_by(.at) | .id else empty end'
 }
 # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of

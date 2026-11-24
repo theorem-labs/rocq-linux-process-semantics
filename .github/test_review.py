@@ -3315,7 +3315,8 @@ class HoldTest(Holding):
 
     def test_a_held_item_is_labelled_and_told_in_fixed_words(self):
         """b1 and b8: the screen's hold of a pull request or an issue names no maintainer and asks nobody to start a
-        run; the item gets review-held, and waits-on-theorem with the label comment's step for Sami."""
+        run; the item gets review-held, and waits-on-theorem with the label comment's step for Sami. The hold ends with
+        the marker of the time when its run read the item (STARTED; OSSV-221's architect, 2026-11-24 16:19Z, F4)."""
         for kind, words in (("pr", "The automated screen held this pull request, so the automated review did not "
                                    "run. You do not need to do anything."),
                             ("issue", "The automated screen held this issue, so the automated review did not run. You "
@@ -3327,7 +3328,8 @@ class HoldTest(Holding):
                 self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
                                "--jq", ".[].name"], calls)
                 self.assertIn(f"repos/{REPO}/issues/7/comments", post)
-                self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}")
+                self.assertEqual(body, f"<!-- review-held -->\n**Automated review held.**\n\n{words}\n\n"
+                                       f"<!-- review-held-read {self.STARTED} -->")
                 self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
 
     def test_a_writers_pull_request_that_the_screen_of_an_outsiders_push_held_gets_no_state_label(self):
@@ -3744,13 +3746,16 @@ class HoldTest(Holding):
         """Round 12, item 2: the screen's hold of HEAD (5) and a newer hold of the review at the limit (41). A later
         hold of the screen replaces the newest hold of the review, whichever it is. A later hold at the limit, or of a
         review that did not finish, replaces the newest hold of the review that is not the screen's, and posts a new
-        comment when there is none: the screen's hold stays, as a relabel and a review by hand read it."""
+        comment when there is none: the screen's hold stays, as a relabel and a review by hand read it. The held run
+        read #7 after both holds: a hold of the screen never takes the place of the hold of a run that read the item
+        later (F4, as the test of an older answer's hold below says)."""
         screen = {"id": 5, "user": {"login": BOT}, "updated_at": ago(120),
                   "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
                           "request, so the automated review did not run. You do not need to do anything.\n\n"
                           f"<!-- review-held-head {HEAD} -->"}
         limit = limit_hold(41, at=ago(60), tries=0, head=HEAD)
         new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        read = ago(1)
         for route, review, comments, want in (("screen", "skipped", [screen, limit], 41),
                                               ("screen", "skipped", [screen], 5),
                                               ("limit", "skipped", [screen, limit], 41),
@@ -3760,7 +3765,8 @@ class HoldTest(Holding):
                 self.tearDown()
                 self.setUp()
                 self.serve(f"repos/{REPO}/issues/comments/41", {"html_url": "https://github.com/acme/model"})
-                _calls, post, _body = self.hold(route, review=review, comments=comments, origin="50", head=HEAD)
+                _calls, post, _body = self.hold(route, review=review, comments=comments, origin="50", head=HEAD,
+                                                started=read)
                 self.assertEqual(post[:3], new if want is None
                                  else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
 
@@ -3798,7 +3804,8 @@ class HoldTest(Holding):
         writers = {(job, s["name"]) for wf in (WF, RESCREEN, SCREEN_START, CI) for job, value in wf["jobs"].items()
                    for s in value.get("steps", []) if "'<!-- review-held -->'" in s.get("run", "")}
         self.assertEqual(writers, {("hold", self.STEP), ("comment", STOP_STEP)})
-        self.assertIn('id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head")', step("hold", self.STEP)["run"])
+        self.assertIn('id=$(replaced_hold "$NUMBER" "$work" "$screen" "$head" "${STARTED:-}")',
+                      step("hold", self.STEP)["run"])
         stop = step("comment", STOP_STEP)["run"]
         self.assertIn("id=$(field id)", stop)
         self.assertEqual(re.findall(r"--method PATCH \S+", stop), ['--method PATCH "repos/$REPO/issues/comments/$id"'])
@@ -3812,7 +3819,9 @@ class HoldTest(Holding):
         that writes the stop that halt gave the trust job), and each function of held.sh that calls halt. A writer
         that this test does not name fails it. For each work that it writes, each writer keeps the screen's hold of
         that work, and replaces an older hold of that work at the limit (or the last try of an import check or of a
-        catch-up). Only a later hold of the screen of the same head takes the place of the screen's hold."""
+        catch-up). Only a later hold of the screen of the same head takes the place of the screen's hold. The held run
+        of the hold job read #7 after each hold there: a hold of the screen never takes the place of a hold of a run
+        that read the item later (F4, as the test of an older answer's hold below says)."""
         self.assertWriters()
         # The screen's hold of each work, as the hold job writes it: of HEAD on pull request #7, and of issue #7, which
         # names no head, for a draft.
@@ -3836,6 +3845,7 @@ class HoldTest(Holding):
                     "body": f"<!-- review-held -->\n**{title[work]}**\n\nNo try finished.\n\n"
                             f"<!-- review-held-head {HEAD} -->"}
         new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        read = ago(1)
         # The hold job: a hold at the limit, a hold of the screen of the same head, and one of another head.
         for task, kind in kinds.items():
             screen, head = screened[task], HEAD if kind == "pr" else ""
@@ -3851,7 +3861,7 @@ class HoldTest(Holding):
                     for c in (41, 50):
                         self.serve(f"repos/{REPO}/issues/comments/{c}", {"html_url": "https://github.com/acme/model"})
                     _calls, post, _body = self.hold(route, task=task, kind=kind, head=named, comments=comments,
-                                                    comment="901" if task == "answer" else "")
+                                                    comment="901" if task == "answer" else "", started=read)
                     self.assertEqual(post[:3], new if want is None
                                      else ["--method", "PATCH", f"repos/{REPO}/issues/comments/{want}"])
         # halt, for each function of held.sh that calls it: the stop that the comment job writes.
@@ -3988,6 +3998,70 @@ class HoldTest(Holding):
                         self.assertNotIn(["--method", "PATCH", f"repos/{REPO}/issues/comments/50"],
                                          [c[:3] for c in calls])
 
+    def test_an_older_answers_hold_never_takes_the_place_of_a_hold_whose_run_read_the_item_later(self):
+        """OSSV-221's architect, 2026-11-24 16:19Z, F4 (A3 of 09:43Z for every hold job): a hold of the screen never
+        edits in place the hold comment of a run that read the item later (held.sh replaced_hold, with the time when
+        the trust job of the held run read the item, STARTED). The screen of an answer to mallory held #7, and the
+        hold comment of that answer (50) stands: on pull request #7, a hold of the screen of HEAD whose run 110 read
+        the item 10 minutes ago, and on issue #7, which names no head, a hold of the screen whose run read it then. Each
+        names that read in its marker <!-- review-held-read <time> -->. The hold step of an answer whose run read #7 20
+        minutes ago posts a comment of its own and leaves 50 as it is. The hold step of an answer whose run read #7 5
+        minutes ago takes the place of 50, as before. A re-run attempt of the hold job of the run that read #7 20
+        minutes ago, whose first attempt posted 50 (GitHub last changed it 10 minutes ago), edits 50 in place: 50 names
+        the same read. The controls: the step that gives replaced_hold no time edits 50 in place for the older answer
+        too, and a first attempt whose hold names no read, as the hold of an issue named none before, makes the re-run
+        post a second hold comment."""
+        new = ["--method", "POST", f"repos/{REPO}/issues/7/comments"]
+        edit = ["--method", "PATCH", f"repos/{REPO}/issues/comments/50"]
+        older, theirs, later = ago(20), ago(10), ago(5)
+        timed, read = '"$head" "${STARTED:-}")', "marker+=$'\\n'\"<!-- review-held-read $STARTED -->\""
+
+        def hold_of(kind, head, started, run, changed=None):
+            """Comment 50 on #7: the hold of the screen of an answer whose run <run> read #7 at started, as the hold
+            step writes it (with changed, the step with that change), and that GitHub last changed 10 minutes ago."""
+            self.tearDown()
+            self.setUp()
+            kwargs = dict(task="answer", kind=kind, head=head, comment="901", started=started)
+            if changed:
+                rc, out, posts, body = self.changed_hold(*changed, "screen", **kwargs)
+                self.assertEqual((rc, len(posts)), (0, 1), out)
+            else:
+                _calls, _post, body = self.hold("screen", **kwargs)
+            return {"id": 50, "user": {"login": BOT}, "created_at": theirs, "updated_at": theirs,
+                    "body": body.replace("<!-- review-held-run 100 -->", f"<!-- review-held-run {run} -->")}
+
+        def second(kind, head, comments, started, changed=None):
+            """The calls that post or edit the hold comment, of the hold step of the screen of an answer whose run
+            read #7 at started, while #7's comments are comments (with changed, the step with that change)."""
+            self.tearDown()
+            self.setUp()
+            self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": "https://github.com/acme/model"})
+            kwargs = dict(task="answer", kind=kind, head=head, comment="901", comments=comments, started=started)
+            rc, out, posts, mine = (self.changed_hold(*changed, "screen", **kwargs) if changed
+                                    else self.run_hold("screen", **kwargs))
+            self.assertEqual(rc, 0, out)
+            self.assertIn(rules.SCREEN_HELD, mine)
+            return [p[:3] for p in posts]
+
+        for kind, head in (("pr", HEAD), ("issue", "")):
+            newer = hold_of(kind, head, theirs, "110")
+            self.assertTrue(newer["body"].endswith(f"\n<!-- review-held-read {theirs} -->"
+                                                   + ("\n<!-- review-held-run 110 -->" if head else "")),
+                            newer["body"])
+            self.assertEqual(rules.word_time(newer), theirs)
+            for started, want in ((older, new), (later, edit)):
+                with self.subTest(kind=kind, started=started):
+                    self.assertEqual(second(kind, head, [newer], started), [want])
+            with self.subTest(kind=kind, control="no time"):
+                self.assertEqual(second(kind, head, [newer], older, (timed, '"$head")')), [edit])
+            with self.subTest(kind=kind, case="a re-run attempt"):
+                first = hold_of(kind, head, older, "100")
+                self.assertEqual(second(kind, head, [first], older), [edit])
+            with self.subTest(kind=kind, control="a first hold that names no read"):
+                first = hold_of(kind, head, older, "100", (read, ":"))
+                self.assertNotIn("review-held-read", first["body"])
+                self.assertEqual(second(kind, head, [first], older), [new])
+
     def test_an_owed_record_makes_no_label_comment_and_the_label_step_writes_the_line(self):
         """The fresh reader of round 14, finding 1: a record of an owed withdrawal never makes a label
         comment. Before, the hold job's step posted a new label comment in the state working ("The workflow tries
@@ -4024,9 +4098,10 @@ class HoldTest(Holding):
         """A run by hand with -f screen=true has no outsider: the comment says what the screen and the review did, and
         not how the run started, nor that the account lacks write access; it names no maintainer, and nothing tries it
         again. The item waits on Sami: to start the work that the hold comment names, again when the review after the
-        screen did not finish."""
+        screen did not finish. The hold of the screen names the time when its run read the item (STARTED; OSSV-221's
+        architect, 2026-11-24 16:19Z, F4)."""
         held = ("The automated screen held this pull request, so the automated review did not run. You do not need to "
-                "do anything.")
+                f"do anything.\n\n<!-- review-held-read {self.STARTED} -->")
         unfinished = ("The automated review did not finish. The workflow does not try it again. The automated screen "
                       "passed this pull request.")
         for review, step, words in (("skipped", "Sami starts the work that the hold comment names, by hand.", held),
@@ -4217,7 +4292,7 @@ class HoldTest(Holding):
         """screen.py makes a check that answered an error a held verdict: the screen job, whose sign-ins passed, passes
         with it, and the item is held, beside the App's job, which withdraws the import check run of that head (R12).
         So is a screen job that failed after its sign-in, and a review that failed after its own, which counts a
-        try."""
+        try. The hold of the screen names no marker but the time when its run read the item (STARTED)."""
         ran = run_graph(self.OUTSIDER, outputs={"screen": {"verdict": "held"}})
         self.assertEqual(ran_jobs(ran), {"trust", "gather", "screen", "post", "hold"})
         label = ["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held", "--jq", ".[].name"]
@@ -4228,7 +4303,9 @@ class HoldTest(Holding):
                 self.setUp()
                 calls, _post, body = self.hold("screen", jobs=self.gathered() + [screen])
                 self.assertIn(label, calls)
-                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", ""))
+                self.assertNotIn("review-held-", body.replace("<!-- review-held -->", "").replace(
+                    f"<!-- review-held-read {self.STARTED} -->", ""))
+                self.assertTrue(body.endswith(f"\n\n<!-- review-held-read {self.STARTED} -->"), body)
         self.tearDown()
         self.setUp()
         calls, _post, body = self.hold("screen", review="failure", origin="50", tries="1", jobs=self.gathered() + [
@@ -4285,7 +4362,8 @@ class HoldTest(Holding):
         """b1 (R1, D8): an answer held at the limit, at the cap or when it did not finish says so in words of the
         answer, and its marker names the task and the comment, so that it is tried again as the answer of that
         comment; the state label and the label comment stay as they are, since the next step of the item does not wait
-        for the answer. The screen's hold of an answer, and its last try, give waits-on-theorem."""
+        for the answer. The screen's hold of an answer, and its last try, give waits-on-theorem. The screen's hold names
+        the time when its run read the item (STARTED; OSSV-221's architect, 2026-11-24 16:19Z, F4)."""
         label = {"id": 40, "user": {"login": BOT}, "body": rules.label_comment("change")}
         for route, kwargs, words, marker in (
                 ("limit", {}, self.LIMIT_WORDS,
@@ -4312,7 +4390,7 @@ class HoldTest(Holding):
                 _calls, _post, body = self.hold("screen", task="answer", comment="900", kind=kind)
                 self.assertEqual(body, "<!-- review-held -->\n**Automated answer held.**\n\nThe automated screen held "
                                        f"this {where}, so the workflow wrote no answer. You do not need to do "
-                                       "anything.")
+                                       f"anything.\n\n<!-- review-held-read {self.STARTED} -->")
                 self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
         self.tearDown()
         self.setUp()
@@ -4335,7 +4413,8 @@ class HoldTest(Holding):
         and its marker names the task draft, so that it is tried again as a draft, which posts nothing: the trust job
         of a rescreen, which would review the issue and post the review, finds that the hold is the draft's. Such a hold
         gives no state label, as the workflow still works on the issue. The screen's hold of a draft, and its last
-        try, give waits-on-theorem."""
+        try, give waits-on-theorem. The screen's hold names the time when its run read the issue (STARTED; OSSV-221's
+        architect, 2026-11-24 16:19Z, F4)."""
         self.permissions(mallory="read")
         for route, kwargs, words, marker in (
                 ("limit", {}, self.LIMIT_WORDS,
@@ -4365,7 +4444,8 @@ class HoldTest(Holding):
         self.setUp()
         _calls, _post, body = self.hold("screen", task="draft", kind="issue")
         self.assertEqual(body, "<!-- review-held -->\n**Automated reply held.**\n\nThe automated screen held this "
-                               "issue, so the workflow wrote no reply. You do not need to do anything.")
+                               "issue, so the workflow wrote no reply. You do not need to do anything.\n\n"
+                               f"<!-- review-held-read {self.STARTED} -->")
         self.assertWaitsOnSami("Sami starts the work that the hold comment names, by hand.")
         self.tearDown()
         self.setUp()
@@ -4383,7 +4463,7 @@ class HoldTest(Holding):
         that wrote it, <!-- review-held-run <run> --> (OSSV-221's architect, 2026-11-22 16:06Z). A hold of the screen
         names, between those two, the time when the trust job of its run read the item,
         <!-- review-held-read <time> --> (2026-11-24 09:43Z, A3); no other hold does. The hold of an issue names no
-        head, no read and no run."""
+        head and no run, and its hold of the screen ends with that time alone (2026-11-24 16:19Z, F4)."""
         for kwargs, marker, screen in (
                 ({"route": "limit", "origin": "50", "tries": "0"}, "<!-- review-held-limit 50 0 -->\n", False),
                 ({"route": "screen", "review": "failure", "capped": True, "origin": "50", "tries": "0"},
@@ -4413,53 +4493,63 @@ class HoldTest(Holding):
                         self.assertEqual(body.count("<!-- review-held-read "), int(screen), body)
                     else:
                         self.assertNotIn("review-held-head", body)
-                        self.assertNotIn("review-held-read", body)
                         self.assertNotIn("review-held-run", body)
+                        self.assertEqual(body.count("<!-- review-held-read "), int(screen), body)
+                        if screen:
+                            self.assertTrue(body.endswith(f"\n\n<!-- review-held-read {self.STARTED} -->"), body)
 
     def test_a_hold_of_the_screen_names_the_time_when_its_run_read_the_item_and_needs_that_time(self):
         """OSSV-221's architect, 2026-11-24 09:43Z, A3: a hold comment of the screen counts from the time when its run
         read the item, as a review comment counts from its marker <!-- review-read <time> -->. The hold step writes the
         trust job's output started (STARTED) in the marker <!-- review-held-read <time> --> of the hold of the screen
-        of mallory's #7 at HEAD, and rules.py word_time gives the hold that time, though it posted later. A STARTED
-        that is not a time as GitHub gives it stops the step before it labels or posts anything, with an error that
-        names it. A hold at the limit names no read and needs no STARTED, and so does the hold of the screen of an
-        issue, which names no head. The controls: the step with the check of STARTED taken out posts a hold whose
-        marker names no time, and the step that writes no such marker posts a hold that counts from when it posted."""
+        of mallory's #7 at HEAD, and of the hold of the screen of issue #7, which names no head (2026-11-24 16:19Z, F4:
+        so a re-run attempt edits that hold in place). rules.py word_time gives each hold that time, though it posted
+        later. A STARTED that is not a time as GitHub gives it stops the step before it labels or posts anything, with
+        an error that names it. A hold at the limit names no read and needs no STARTED. The controls: the step with the
+        check of STARTED taken out posts a hold whose marker names no time, and the step that writes no such marker
+        posts a hold that counts from when it posted."""
         started = "2026-11-02T09:30:00Z"
-        rc, out, posts, body = self.run_hold("screen", head=HEAD, started=started)
-        self.assertEqual((rc, len(posts)), (0, 1), out)
-        self.assertTrue(body.endswith(f"\n<!-- review-held-head {HEAD} -->\n<!-- review-held-read {started} -->\n"
-                                      "<!-- review-held-run 100 -->"), body)
-        posted = {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body}
-        self.assertEqual(rules.word_time(posted), started)
+        ends = {"pr": f"\n<!-- review-held-head {HEAD} -->\n<!-- review-held-read {started} -->\n"
+                      "<!-- review-held-run 100 -->",
+                "issue": f"You do not need to do anything.\n\n<!-- review-held-read {started} -->"}
+        heads = {"pr": HEAD, "issue": ""}
+        posted = {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0)}
         check = '|| { echo "::error::no start time of this run: ${STARTED:-}. Nothing is held."; exit 1; }'
-        for bad in ("", "2026-11-02 09:30:00", "2026-11-02T09:30:00.5Z", "now"):
-            with self.subTest(started=bad):
+        for kind, head in heads.items():
+            with self.subTest(kind=kind):
                 self.tearDown()
                 self.setUp()
-                rc, out, posts, _body = self.run_hold("screen", head=HEAD, started=bad)
-                self.assertEqual((rc, posts, writes(self.api)), (1, [], []), out)
-                self.assertIn(f"::error::no start time of this run: {bad}. Nothing is held.", out)
-                self.tearDown()
-                self.setUp()
-                rc, out, posts, body = self.changed_hold(check, "|| true", "screen", head=HEAD, started=bad)
+                rc, out, posts, body = self.run_hold("screen", kind=kind, head=head, started=started)
                 self.assertEqual((rc, len(posts)), (0, 1), out)
-                self.assertIn(f"\n<!-- review-held-read {bad} -->\n", body)
-        for case, kwargs in (("a hold at the limit", {"route": "limit", "origin": "50", "tries": "0", "head": HEAD}),
-                             ("the hold of the screen of an issue", {"route": "screen", "kind": "issue"})):
-            with self.subTest(case=case):
+                self.assertTrue(body.endswith(ends[kind]), body)
+                self.assertEqual(rules.word_time(dict(posted, body=body)), started)
+            for bad in ("", "2026-11-02 09:30:00", "2026-11-02T09:30:00.5Z", "now"):
+                with self.subTest(kind=kind, started=bad):
+                    self.tearDown()
+                    self.setUp()
+                    rc, out, posts, _body = self.run_hold("screen", kind=kind, head=head, started=bad)
+                    self.assertEqual((rc, posts, writes(self.api)), (1, [], []), out)
+                    self.assertIn(f"::error::no start time of this run: {bad}. Nothing is held.", out)
+                    self.tearDown()
+                    self.setUp()
+                    rc, out, posts, body = self.changed_hold(check, "|| true", "screen", kind=kind, head=head,
+                                                             started=bad)
+                    self.assertEqual((rc, len(posts)), (0, 1), out)
+                    self.assertIn(f"\n<!-- review-held-read {bad} -->", body)
+            with self.subTest(kind=kind, control="no marker"):
                 self.tearDown()
                 self.setUp()
-                rc, out, posts, body = self.run_hold(started="", **kwargs)
-                self.assertEqual((rc, len(posts)), (0, 1), out)
+                rc, out, _posts, body = self.changed_hold("marker+=$'\\n'\"<!-- review-held-read $STARTED -->\"", ":",
+                                                          "screen", kind=kind, head=head, started=started)
+                self.assertEqual(rc, 0, out)
                 self.assertNotIn("review-held-read", body)
-        self.tearDown()
-        self.setUp()
-        rc, out, _posts, body = self.changed_hold("marker+=$'\\n'\"<!-- review-held-read $STARTED -->\"", ":",
-                                                  "screen", head=HEAD, started=started)
-        self.assertEqual(rc, 0, out)
-        self.assertNotIn("review-held-read", body)
-        self.assertEqual(rules.word_time(dict(posted, body=body)), posted["updated_at"])
+                self.assertEqual(rules.word_time(dict(posted, body=body)), posted["updated_at"])
+        with self.subTest(case="a hold at the limit"):
+            self.tearDown()
+            self.setUp()
+            rc, out, posts, body = self.run_hold("limit", origin="50", tries="0", head=HEAD, started="")
+            self.assertEqual((rc, len(posts)), (0, 1), out)
+            self.assertNotIn("review-held-read", body)
 
 
 def run_post(test, ctx, tokens, mint=True):
@@ -4875,7 +4965,8 @@ class ApproveTest(Holding):
         calls, _post, body = self.hold("screen", task="approve", jobs=[
             attempt_job("trust"), attempt_job("gather"), attempt_job("screen", name="screen mallory")])
         self.assertEqual(body, "<!-- review-held -->\n**Automated start of the checks held.**\n\nThe automated screen "
-                               "held this pull request, so its checks have not run. You do not need to do anything.")
+                               "held this pull request, so its checks have not run. You do not need to do anything."
+                               f"\n\n<!-- review-held-read {self.STARTED} -->")
         self.assertNotIn("maintainer", body.lower())
         self.assertIn(["--method", "POST", f"repos/{REPO}/issues/7/labels", "-f", "labels[]=review-held",
                        "--jq", ".[].name"], calls)
@@ -20953,6 +21044,157 @@ class ImportCheckTest(ReaderRunner):
                                                        lambda: self.successes(no_success(verdict, screen)[1])), [901])
                 self.assertEqual(self.changed_step("post", self.FIND, self.HOLDS_BACK, self.OUTSIDE_ONLY,
                                                    lambda: self.successes(no_success(verdict, screen)[1])), [901])
+
+    def hold_job_as_read(self, got, trust, comments, run):
+        """hold_job_after_post for a run whose trust job gave the outputs outside and kind that trust gives, kind
+        unknown too (hold_job_after_post gives the kind outsider): (outcomes, writes as (method, endpoint))."""
+        trust = dict({"account": "mallory", "origin": "", "tries": "0"}, **trust)
+        event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.gather.result": "success",
+                    "needs.gather.outputs.kind": "pr", "needs.screen.result": "success",
+                    "needs.screen.outputs.verdict": "held", "needs.review.result": "skipped",
+                    "needs.post.result": got["result"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()},
+                    "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                    "github.run_id": run, "github.run_attempt": "1", "github.event_name": event,
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS})
+        self.assertTrue(evaluate(JOBS["hold"]["if"], ctx))
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "pull_request": {}, "user": {"login": "mallory"}})
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": f"https://github.com/{REPO}/pull/7#c50"})
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}})
+        self.serve(f"repos/{REPO}/actions/runs/{run}/attempts/1/jobs",
+                   {"jobs": [attempt_job("trust"), attempt_job("gather"),
+                             attempt_job("screen", name="screen mallory")]})
+        open(self.summary, "w").close()
+        self.env["GITHUB_STEP_SUMMARY"] = self.summary
+        outcomes = run_job(self, "hold", ctx, self.AnyToken(self.TOKENS))
+        return outcomes, [tuple(c[1:3]) for c in writes(self.api)]
+
+    def test_the_hold_job_of_an_older_answer_gives_way_to_the_hold_of_a_newer_answer_and_never_edits_it(self):
+        """OSSV-221's architect, 2026-11-24 16:19Z, F4: A3 applies to the hold job of an answer as to every hold job.
+        The screen of answer run 140 of mallory's #7, which read the item 10 minutes ago, held HEAD, and its hold
+        comment (50) stands. Then the hold job of answer run 130, which read the item 20 minutes ago and whose screen
+        held HEAD too, runs whole: it gives way to the newer hold (the step that skips the posts of this run, with one
+        line in the run's summary), posts no hold comment and leaves 50 as it is. The step that writes the hold would
+        not edit 50 either (held.sh replaced_hold, with the time of the read of run 130). The control, the hold job of
+        round 23, whose step that skips the posts does not run for an answer and whose writer gives replaced_hold no
+        time, edits 50 in place: the newer hold is gone (I4 of test_orders.py)."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        newer = {"id": 50, "user": {"login": BOT}, "created_at": ago(9), "updated_at": ago(9),
+                 "body": "<!-- review-held -->\n**Automated answer held.**\n\nThe automated screen held this pull "
+                         "request, so the workflow wrote no answer. You do not need to do anything.\n\n"
+                         f"<!-- review-held-head {HEAD} -->\n<!-- review-held-read {ago(10)} -->\n"
+                         "<!-- review-held-run 140 -->"}
+        answer = dict(self.REVIEWED, task="answer", started=ago(20), comment="77")
+        skip, writer = step("hold", HoldTest.SKIP), step("hold", HoldTest.STEP)
+        edit = ("PATCH", f"repos/{REPO}/issues/comments/50")
+
+        def held():
+            self.serve_checks([])
+            outcomes, wrote = self.hold_job_after_post({"result": "skipped", "post": {}}, answer, [older, newer], "130")
+            self.assertNotIn("failure", outcomes.values(), self.logs[-4:])
+            return wrote, self.posted("<!-- review-held -->")
+
+        wrote, holds = held()
+        self.assertEqual((holds, edit in wrote), ([], False), wrote)
+        with open(self.summary, encoding="utf-8") as f:
+            self.assertIn("The screen of run 140 held", f.read())
+        kept = (skip["if"], writer["run"])
+        answers, timed = " || needs.trust.outputs.task == 'answer'", '"$head" "${STARTED:-}")'
+        self.assertEqual((kept[0].count(answers), kept[1].count(timed)), (1, 1))
+        skip["if"] = kept[0].replace(answers, "")
+        writer["run"] = kept[1].replace(timed, '"$head")')
+        try:
+            self.tearDown()
+            self.setUp()
+            wrote, holds = held()
+        finally:
+            skip["if"], writer["run"] = kept
+        self.assertEqual((len(holds), edit in wrote), (1, True), wrote)
+
+    def test_a_withdrawal_by_a_run_whose_author_kind_is_unknown_leaves_no_label_comment_that_says_recorded(self):
+        """OSSV-221's architect, 2026-11-24 16:19Z, F5 (I2 binds always): the screened CI review run 100 of mallory's
+        #7 read the item 40 minutes ago and passed HEAD, its post job recorded check run 901, and its label comment
+        (40) says that the workflow recorded the check. Then rescreen run 130 reads #7 20 minutes ago while GitHub does
+        not say whether mallory has write access (kind unknown). Its review passes HEAD or gives a blocking finding, or
+        its screen holds HEAD, and its post job withdraws 901; or the screen of answer run 130 holds HEAD, and its hold
+        job withdraws 901 itself. Then the comment job or the hold job of run 130 writes the label comment of the state
+        decide in the place of 40, with the text that a run withdrew the check (rules.py GONE), as the label step of an
+        outside author's run does for a record that is gone. It adds and takes off no state label, as the author-kind
+        table says for kind unknown. When check run 901 is the record of a run that read #7 10 minutes ago, run 130
+        withdraws nothing (I5), and label comment 40 stays as it is. The control, rules.py whose owed does not read the
+        label comment for that author (unrecord), leaves 40 saying recorded with no success standing."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        recorded = "The workflow recorded the check `repo-pairs/import-approved`"
+        before = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, started=ago(40)),
+                         comments=[older, before])
+        self.assertRecorded(got, self.LPS)
+        (body,) = got["comments"]
+        self.assertIn(recorded, body)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(35), "updated_at": ago(35), "body": body}
+        (_token, request), = got["checks"]
+        listed = dict(request, id=901, app={"id": VERIFY_APP_ID}, completed_at=ago(35))
+        gone = rules.label_comment("decide", body, (), "", (self.LPS, "gone"))
+        self.assertEqual(gone, rules.label_comment("decide", "", [rules.import_marker(HEAD, self.LPS)], "",
+                                                   (self.LPS, "gone")))
+        unknown = dict(self.REVIEWED, task="rescreen", started=ago(20), outside="false", kind="unknown")
+
+        def bodies(labels):
+            """The bodies that label comment 40 got, in order, each with no withdraw-owed line of HEAD: the hold job
+            of a held screen records that line too."""
+            return [rules.without_marker(b, f"withdraw-owed {HEAD}") for _m, e, b in labels
+                    if e == f"repos/{REPO}/issues/comments/40"]
+
+        def run_130(case, checks):
+            """The jobs of run 130 after the post job of run 100: the check runs at the end, and the label comments
+            and the state labels that its comment job or its hold job wrote."""
+            if case == "answer":
+                self.serve_checks(checks)
+                trust = dict(unknown, task="answer", comment="77")
+                outcomes, _wrote = self.hold_job_as_read({"result": "skipped", "post": {}}, trust, [older, label],
+                                                         "130")
+                self.assertNotIn("failure", outcomes.values(), self.logs[-4:])
+                return self.applied_checks(checks), label_comments(self.api), state_labels(self.api)
+            verdict, screen = {"pass": ("pass", "clean"), "blocking": ("blocking", "clean"),
+                               "held": ("pass", "held")}[case]
+            mine, after = self.judged(checks, "130", verdict=verdict, screen=screen, trust=unknown,
+                                      event="workflow_dispatch", comments=[older, label], named=HEAD)
+            self.serve_checks(after)
+            if screen == "held":
+                outcomes, _wrote = self.hold_job_as_read(mine, unknown, [older, label], "130")
+            else:
+                outcomes, *_rest = self.comment_job_after_post(mine, unknown, verdict, [older, label], "130")
+            self.assertNotIn("failure", outcomes.values(), self.logs[-4:])
+            return after, label_comments(self.api), state_labels(self.api)
+
+        for case in ("pass", "blocking", "held", "answer"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                end, labels, states = run_130(case, [listed])
+                self.assertEqual(self.successes(end), [], end)
+                self.assertEqual((bodies(labels)[-1:], len(bodies(labels)), states), ([gone], len(labels), []),
+                                 self.logs[-4:])
+                self.tearDown()
+                self.setUp()
+                unrecord = "    rewritten = unrecord(number, withdrawn) if unchanged else None\n"
+                end, labels, states = self.changed_rules(unrecord, "    rewritten = None\n",
+                                                         lambda: run_130(case, [listed]))
+                self.assertEqual(self.successes(end), [], end)
+                self.assertEqual(([recorded in b for b in bodies(labels)], states), ([True] * len(labels), []))
+        with self.subTest(case="a newer read's record"):
+            self.tearDown()
+            self.setUp()
+            newer = dict(rules.check_run("7", HEAD, self.LPS, False, "140", ago(10)), id=901,
+                         app={"id": VERIFY_APP_ID}, completed_at=ago(5))
+            end, labels, states = run_130("pass", [newer])
+            self.assertEqual((self.successes(end), labels, states), ([901], [], []), self.logs[-4:])
 
     def label_step(self, trust, got, listed, comments, verdict="pass"):
         """The comment job's label step of the run whose trust job gave trust (such as the screened CI review of #7 at

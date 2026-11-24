@@ -40,7 +40,8 @@ task of the run, one of TASKS, and the trust job's outputs outside, outsider and
 The answer label of the author-kind table (answers) tells what this does. For an outside author (outside_author: the
 trust job's outside is true) it gives the item the state label of its state. For an author whose write access GitHub
 did not give (author=unknown) it changes nothing: no state label goes on or off, the label comment stays as it is, and
-a notice says why. For any other author, the item gets no state label and loses each one that it has, but its label
+a notice says why. Only owed rewrites such a label comment, when it says recorded and no record stands (F5). For any
+other author, the item gets no state label and loses each one that it has, but its label
 comment is the one of its state, with the marker of the state's label. The state label is waits-on-author when the
 next step is the author's, waits-on-theorem when it is Sami's, and none while the workflow works on the item. Setting
 one label takes the other off. review-held, the mark of a hold, stays beside them. The label comment is one comment of
@@ -104,7 +105,10 @@ comment of its reason: the review of the comment job, or the hold comment of the
 alone does, but for an item with no label comment the status is 0, and no label step gets the line. The run's task and
 the trust job's outputs outside, outsider and kind are given as for label: when the author-kind table's answer label
 is unchanged, this takes no line out, and a notice says so. A line of owed= goes in all the same, as the post job
-withdraws for every author.
+withdraws for every author. For that answer, withdrawn=<head> also reads the label comment (unrecord; OSSV-221's
+architect, 2026-11-24 16:19Z, F5). When it says that the workflow recorded the check on <head> (the state import),
+this reads the import check runs of <head> again. When no such check run with the conclusion success stands now, the
+label comment becomes the one of the state decide with the decision gone (GONE). No state label goes on or off.
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -1020,7 +1024,10 @@ def unmark(number, kind, what, labels=None):
 #
 # - label: set gives the item the state label of its state. off takes each state label off, and the label comment is
 #   the state's all the same. unchanged writes nothing of the state: no state label goes on or off, and the label
-#   comment stays as it is. review-held belongs to a hold, and no answer of this table names it.
+#   comment stays as it is, but for one case (OSSV-221's architect, 2026-11-24 16:19Z, F5). After a run of such an
+#   author finished a withdrawal of a head, a label comment that says that the workflow recorded the check on that
+#   head becomes the one of the state decide with the decision gone, when no such record stands (owe, unrecord).
+#   review-held belongs to a hold, and no answer of this table names it.
 # - approve: the post job approves the held runs of the head when the screen of this run passed the head (R10).
 # - record: the post job decides on the import check run of the head, and records it when the rules of R12 hold.
 # - withdraw: the post job withdraws the import check runs of the head when this run gives a reason (R12): a review of
@@ -1159,6 +1166,68 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
     apply(number, state, markers, head, imports, labels, labelled=label == "set")
 
 
+# The marker line of R12 (import_marker) in a label comment: the head, and the value of REPO_PAIRS_IMPORT_PATHS as JSON.
+IMPORT_LINE = re.compile(r"<!-- repo-pairs-import-paths ([0-9a-f]{40}): (.*) -->")
+
+
+def record_line(body, head):
+    """(line, value) when body, a label comment of BOT, says that the workflow recorded the import check run on head:
+    its next step and its text are those of the state import, and it holds the marker line of R12 of head
+    (import_marker), line, with value, the text of REPO_PAIRS_IMPORT_PATHS (None for null) on which the record
+    rested. Else None."""
+    _label, step, text = STATES["import"]
+    if not body.startswith(f"{FIRST}\n**Next step:** {step}\n\n{text}"):
+        return None
+    for line in body.split("\n"):
+        m = IMPORT_LINE.fullmatch(line)
+        if m and m.group(1) == head:
+            value = loads(m.group(2))
+            return (line, value) if value is None or isinstance(value, str) else None
+    return None
+
+
+def unrecord(number, head):
+    """For an author whose write access GitHub did not give, after a run of that author finished the withdrawal of the
+    import check runs of head (owe; OSSV-221's architect, 2026-11-24 16:19Z, F5). When the label comment of the item
+    number says that the workflow recorded the check on head (record_line), it must not say so once no such record
+    stands. So this reads the import check runs of head again (filter=all, as the comment job's label step reads
+    them). When none of the OSS Verify App (OSS_VERIFY_APP_ID) for this pull request (external_id <number>:<head>) has
+    the conclusion success and that marker line, this writes the label comment of the state decide with the decision
+    gone (GONE) in its place. It adds and takes off no state label, as the label answer unchanged of the author-kind
+    table says. Else it writes nothing. The result is the item's label comments of BOT, each {id, body}, as they are
+    after that write, so that the caller does not read them again; None when it wrote nothing."""
+    labels = read_labels(number)
+    old = labels[-1] if labels else None
+    found = record_line(old["body"], head) if old else None
+    if found is None:
+        return None
+    line, value = found
+    app = os.environ.get("OSS_VERIFY_APP_ID", "")
+    if not NUMBER.fullmatch(app):
+        raise ValueError(f"not the id of the OSS Verify App: {app!r}")
+    checks = gh_objects("--method", "GET", "--paginate", f"repos/{os.environ['REPO']}/commits/{head}/check-runs",
+                        "-f", f"check_name={CHECK}", "-f", "filter=all", "-F", "per_page=100",
+                        "--jq", ".check_runs[] | @json")
+
+    def record(c):
+        output = c.get("output") if isinstance(c.get("output"), dict) else {}
+        return (c.get("name") == CHECK and c.get("head_sha") == head and c.get("conclusion") == "success"
+                and str((c.get("app") if isinstance(c.get("app"), dict) else {}).get("id")) == app
+                and c.get("external_id") == f"{number}:{head}" and line in str(output.get("text") or "").split("\n"))
+
+    if any(isinstance(c, dict) and record(c) for c in checks):
+        print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and "
+              "that check run stands.")
+        return None
+    body = label_comment("decide", old["body"], (), "", (value, "gone"))
+    write_label(number, old, body)
+    print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. No such "
+          "check run with the conclusion success stands now: a run withdrew it. So this step wrote the label comment "
+          "of the state decide, which says so. GitHub did not say whether the author has write access, so this step "
+          "added and took off no state label.")
+    return [*labels[:-1], dict(old, body=body)]
+
+
 def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     """Records in the label comment of the item number the withdrawal of the import check runs of a head that a run
     owes (OWED). owed, "<head> <why> <run>", is the post job's output owed, "<head> <why>" of a withdrawal that it found
@@ -1184,7 +1253,9 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     ValueError. The state label and the text of the label comment stay as they are. As for set_state, the label answer
     of the author-kind table for run unchanged takes no line out, and gives a notice, but for owed: the line of a
     withdrawal that a run owes goes in for every author, as the post job withdraws for every author (OSSV-221's
-    architect, 2026-11-23 01:47Z). Else the result is ""."""
+    architect, 2026-11-23 01:47Z). For that answer, withdrawn also rewrites a label comment that says that the workflow
+    recorded the check on that head, when no such record stands (unrecord, first; F5): the label step of such a run
+    changes no label comment. Else the result is ""."""
     line = f"<!-- withdraw-owed {owed} -->" if owed else ""
     m = OWED.fullmatch(line) if owed else None
     if owed and not m:
@@ -1195,18 +1266,21 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     if owed and withdrawn and head != withdrawn:
         raise ValueError(f"owed and withdrawn name two heads: {owed!r} {withdrawn!r}")
     sources = sources or {}
-    if (withdrawn and not owed
-            and answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged"):
+    unchanged = bool(withdrawn) and (
+        answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged")
+    # The label comments as unrecord left them, when it wrote one: the later writes of this command start from them.
+    rewritten = unrecord(number, withdrawn) if unchanged else None
+    if unchanged and not owed:
         print(f"::notice::#{number}: GitHub did not say whether its author has write access, so this step removes no "
               f"withdraw-owed line of {withdrawn} from its label comment.")
         return ""
-    comments = labels = None
+    comments, labels = None, rewritten
     if (withdrawn and not owed) or (owed and not own):
         comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
                               f".[] | select(.user.login == {json.dumps(BOT)})"
                               " | {id, user: {login: .user.login}, body, updated_at} | @json")
-        labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
-                  if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
+        labels = rewritten or [{"id": c.get("id"), "body": c["body"]} for c in comments
+                               if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
     if withdrawn and not owed:
         why, wrote = owed_line(comments, withdrawn)
         screened = holds_back(run["outside"], run["author"])
