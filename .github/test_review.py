@@ -19235,6 +19235,38 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((rules.review_verdict(after, HEAD), self.successes(checks)),
                          (("blocking", "screened", "blocking"), []), (checks, self.logs[-6:]))
 
+    def test_no_success_stands_when_an_older_reads_not_approved_check_run_completes_after_a_newer_reads_one(self):
+        """The tester's audit of round 22, A1 (no failure on the path; OSSV-221's architect's contract of 2026-11-24
+        05:23Z (1): every order of the post-7 and label-7 queues ends with no success standing over a newer verdict or
+        hold). Three runs of mallory's #7 at HEAD: the CI review run 110 read the item 40 minutes ago and gave a
+        blocking finding, or its screen held HEAD; the CI review run 120 read it 30 minutes ago and passed HEAD; the
+        rescreen run 130 read it 20 minutes ago and gave a blocking finding. Their post jobs run in post-7 in the order
+        130, 110, 120, and run 130's comment job runs after them. Each job sees the check runs as the jobs before it
+        left them. Run 130 and run 110 each find no success and record a check run that says that HEAD is not approved;
+        run 110's is the newer one by completed_at, but it counts from an older read than run 120's. At the end the
+        newest word on HEAD by read time is run 130's blocking finding, and no success check run stands. At eb9d100d run
+        120 reads only the newest check run, records a success, and it stands."""
+        for case, screen, verdict in (("a blocking verdict", "clean", "blocking"), ("a screen hold", "held", "pass")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                older = review_of(HEAD, at=ago(70), run=60)
+                oldest = dict(self.REVIEWED, started=ago(40))
+                middle = dict(self.REVIEWED, started=ago(30))
+                newest = dict(self.REVIEWED, task="rescreen", started=ago(20))
+                last, checks = self.judged([], "130", verdict="blocking", trust=newest, event="workflow_dispatch",
+                                           comments=[older], named=HEAD)
+                _first, checks = self.judged(checks, "110", verdict=verdict, screen=screen, trust=oldest,
+                                             comments=[older])
+                _second, checks = self.judged(checks, "120", trust=middle, comments=[older])
+                self.serve_checks(checks)
+                _outcomes, _wrote, _labels, theirs = self.comment_job_after_post(last, newest, "blocking", [older],
+                                                                                 "130")
+                checks = self.applied_checks(checks)
+                after = [dict(theirs, id=30)]
+                self.assertEqual((rules.review_verdict(after, HEAD), self.successes(checks)),
+                                 (("blocking", "screened", "blocking"), []), (checks, self.logs[-6:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
