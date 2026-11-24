@@ -19863,9 +19863,9 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job ordered the import check runs of {HEAD} by the time that each one named. When it gave "
-                 "the decision withdrawn, the newest one was not an approval. It counted as newer than each screened "
-                 f"pass of {HEAD}, and its summary named a time at or after {started}, or no time."),
+                 f"Its post job sorted the import check runs of {HEAD} by the times that they named. When it gave the "
+                 "decision withdrawn, the newest one was not an approval. That check run counted as newer than each "
+                 f"screened pass of {HEAD}, and its summary named a time at or after {started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):

@@ -4119,8 +4119,8 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job ordered the import check runs of $HEAD by the time that each one named. When it gave"
-              said+=" the decision withdrawn, the newest one was not an approval. It counted as newer than each"
+              said="Its post job sorted the import check runs of $HEAD by the times that they named. When it gave the"
+              said+=" decision withdrawn, the newest one was not an approval. That check run counted as newer than each"
               said+=" screened pass of $HEAD, and its summary named a time at or after $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
