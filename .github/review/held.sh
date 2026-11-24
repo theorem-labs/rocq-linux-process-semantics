@@ -236,12 +236,14 @@ no_key_of() {
 # <!-- review-read <time> --> in its header just before <!-- review-run <run> -->, never from when it posted. One with
 # no such marker counts from when GitHub last changed it for the verdict blocking or person, and at no time (before
 # each time) for pass. A hold comment counts from when GitHub last changed it. The review comments of <head> are in
-# the order of those times, and two at the same time keep the order in which GitHub lists them. screen when a hold
-# comment of the screen that names <head> (its text holds "The automated screen held ", and it has no marker of a hold
-# that is tried again) is newer than each review comment of <head> whose run screened it (the marker
-# <!-- review-screened <head> --> on the line after the marker of its verdict): the state held. Else the reason of a
-# withdrawal of the import check runs of <head> that a run owes (it found a reason for it and did not finish it, or
-# no comment gives that reason yet), while a label comment holds its marker line
+# the order of those times. Of two at the same time, one with the verdict blocking or person counts as the newer, and
+# else the two keep the order in which GitHub lists them (rules.py head_reviews; OSSV-221's architect, 2026-11-24
+# 05:23Z: a verdict or a hold outranks a pass at a tie). screen when a hold comment of the screen that names <head>
+# (its text holds "The automated screen held ", and it has no marker of a hold that is tried again) is older than no
+# review comment of <head> whose run screened it (the marker <!-- review-screened <head> --> on the line after the
+# marker of its verdict): the state held. Else the reason of a withdrawal of the import check runs of <head>
+# that a run owes (it found a reason for it and did not finish it, or no comment gives that reason yet), while a label
+# comment holds its marker line
 # <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
 # the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
 # the comment of run <run> that gives <why>, or a review of <head> newer than the time of the line: the hold or the
@@ -265,7 +267,7 @@ relabel_withdraws() {
               + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->$")
             | select($l[$r + 1] // "" | test("^<!-- review-run [1-9][0-9]* -->$")) | .t)
           // (if $v == "pass" then "" else $at end)) as $t
-        | {at: $t, verdict: $v, screened: $s}] | sort_by(.at)) as $reviews
+        | {at: $t, verdict: $v, screened: $s}] | sort_by([.at, (.verdict | IN("blocking", "person"))])) as $reviews
     | ([$reviews[] | select(.screened) | .at] | max // "") as $screened
     | ([range(0; $reviews | length) | select($reviews[.].screened)] | last) as $last
     | ([$reviews[(($last // -1) + 1):][] | .verdict | select(IN("blocking", "person"))] | last) as $newer
@@ -278,7 +280,7 @@ relabel_withdraws() {
     | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
         | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) [1-9][0-9]* -->$") | .w] | last)
         as $owed
-    | if $held != "" and $held > $screened then "screen"
+    | if $held != "" and $held >= $screened then "screen"
       elif $owed != null then "\($owed) owed"
       elif $newer != null then $newer
       elif $last != null and ($reviews[$last].verdict | IN("blocking", "person")) then $reviews[$last].verdict
