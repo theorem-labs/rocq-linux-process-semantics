@@ -2879,9 +2879,11 @@ jobs:
       # one rule (rules.py verdict; OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). In that rule a review comment
       # counts from the time when its run read the item, its marker <!-- review-read <time> -->, never from when it
       # posted. One with no such marker counts from when GitHub last changed it for a blocking finding or the verdict
-      # person, and at no time for a pass. A hold comment counts from when GitHub last changed it (rules.py word_time;
-      # 2026-11-24 01:20Z and 01:26Z). "Newest" and "newer" in this comment are in that order. A relabel records a
-      # check run only when the newest review comment of the head is a screened pass: it holds the marker
+      # person, and at no time for a pass. A hold comment of the screen counts from the time when its run read the item
+      # too, its marker <!-- review-held-read <time> -->, and one with no such marker from when GitHub last changed it
+      # (rules.py word_time; 2026-11-24 01:20Z and 01:26Z, and 09:43Z, A3). "Newest" and "newer" in this comment are in
+      # that order. A relabel records a check run only when the newest review comment of the head is a screened pass: it
+      # holds the marker
       # <!-- review-screened <head> -->, and no hold comment of the screen that names the head is newer (screened).
       # It records none either when a withdrawal (conclusion neutral) among the import check runs of the head stands,
       # and no such screened pass is newer than the time from which it counts, which its summary names: for a run's own
@@ -3170,16 +3172,18 @@ jobs:
           # screened_run: for a review or a rescreen on the route screen of an outside author whose review passed the
           # head, whether another run gave a word on the head that counts from a time at or after STARTED, the time
           # when the trust job of this run read the item (OSSV-221's architect, 2026-11-23 18:38Z, and 2026-11-24
-          # 01:20Z and 01:26Z). The pass of this run counts from STARTED. A review comment counts from the time when its
-          # run read the item (its marker <!-- review-read <time> -->), never from when it posted, and a hold comment
-          # from when GitHub last changed it (.github/review/rules.py word_time). Only such a run records a check run:
-          # with any other verdict, the rules of R12 below give the decision that the label comment needs, and this run
-          # withdraws each check run that stands for that verdict. It reads the comments of the item and the import
-          # check runs of the head (import_checks), with the id of this run (rules.py own-record). held: a hold comment
-          # of the screen that names the head is at or after STARTED, so a newer screen held the head. The decision is
-          # held, and nothing is recorded. Nothing is withdrawn either: this writes neither the output owed nor held,
-          # so the step that withdraws finds no cause in this run. The run of the hold withdraws for its own screen, or
-          # owes that withdrawal, and a check run that a newer pass recorded after the hold stays. Else withdrawn: a
+          # 01:20Z and 01:26Z). The pass of this run counts from STARTED. A review comment or a hold comment of the
+          # screen counts from the time when its run read the item (its marker <!-- review-read <time> --> or
+          # <!-- review-held-read <time> -->), never from when it posted, and a hold with no such marker from when
+          # GitHub last changed it (.github/review/rules.py word_time; 2026-11-24 09:43Z, A3). Only such a run records
+          # a check run: with any other verdict, the rules of R12 below give the decision that the label comment needs,
+          # and this run withdraws each check run that stands for that verdict. It reads the comments of the item and
+          # the import check runs of the head (import_checks), with the id of this run (rules.py own-record). held: a
+          # hold comment of the screen that names the head counts from a time at or after STARTED, so the screen of a
+          # run that read the item at or after this run held the head. The decision is held, and nothing is recorded.
+          # Nothing is withdrawn either: this writes neither the output owed nor held, so the step that withdraws finds
+          # no cause in this run. The run of the hold withdraws for its own screen, or owes that withdrawal, and a check
+          # run that a pass of a newer read recorded stays. Else withdrawn: a
           # withdrawal among the import check runs of the head stands (the one of the newest read, by the time that each
           # one names, never by completed_at), and it counts from a time at or after STARTED, so it outranks the pass of
           # this run. A check run that a newer run posted to say that the head is not approved for the import is such a
@@ -3211,7 +3215,8 @@ jobs:
               held|withdrawn|newer) echo "gave_way=$decision" >> "$GITHUB_OUTPUT" ;;
             esac
             if [ "$decision" = held ]; then
-              decided held "a screen held $HEAD at $what, at or after this run read #$NUMBER at $STARTED"
+              said="a hold of the screen of $HEAD counts from $what, at or after this run read #$NUMBER at $STARTED"
+              decided held "$said"
             fi
             if [ "$decision" = withdrawn ]; then
               if [ "$since" != - ]; then
@@ -4077,10 +4082,11 @@ jobs:
       # held, withdrawn or newer of a screened run), or when another run gave a word on the head that counts from a
       # time at or after STARTED, the time when the trust job of this run read the item (.github/review/rules.py
       # newer-word). A word is a review comment of the head, with any verdict, or a hold comment of the screen of the
-      # head. A review counts from the time when its run read the item (its marker <!-- review-read <time> -->), never
-      # from when it posted, and a hold from when GitHub last changed it, also when its run read the item before this
-      # run. A review with no such marker counts from when GitHub last changed it for a blocking finding or the verdict
-      # person, and a pass with none never counts (rules.py word_time). A word at STARTED counts, which fails closed. A
+      # head. A review or a hold counts from the time when its run read the item (its marker <!-- review-read <time> -->
+      # or <!-- review-held-read <time> -->), never from when it posted (OSSV-221's architect, 2026-11-24 09:43Z, A3). A
+      # hold with no such marker counts from when GitHub last changed it. A review with no such marker counts from when
+      # GitHub last changed it for a blocking finding or the verdict person, and a pass with none never counts (rules.py
+      # word_time). A word at STARTED counts, which fails closed. A
       # word of this run (an earlier attempt of it) does not count. A withdrawal skips the posts only through the
       # output gave_way, which only the own record of a screened pass gives: the pass of such a run counts from
       # STARTED. The decisions held and withdrawn of a relabel or of a review by hand set no output gave_way: such a run
@@ -4130,7 +4136,7 @@ jobs:
               [ "$found" != - ] || exit 0
               read -r other kind at <<< "$found"
               if [ "$kind" = hold ] && [ "$other" != - ]; then
-                said="The screen of run $other held $HEAD, and its hold comment is from $at, at or after that time."
+                said="The screen of run $other held $HEAD, and its hold counts from $at, at or after that time."
               elif [ "$kind" = hold ]; then
                 said="A screen held $HEAD, and its hold comment, which names no run, is from $at, at or after that"
                 said+=" time."
@@ -4355,9 +4361,11 @@ jobs:
           echo "id=$id" >> "$GITHUB_OUTPUT"
       # A review settles the hold of the review: a request by hand, or a later push that the screen passed. So does a
       # stored draft, and an approved reply that posted, for the hold of the draft. Not the review of an older head: a
-      # newer push may have been held since. Nor when a hold came after this run started: a newer event of the issue or
-      # the pull request was held. A hold of an answer that is tried again leaves the state as it is, so one that came
-      # after this run started stops the labels of an answer's run alone. An approved reply that posted is recorded
+      # newer push may have been held since. Nor when a hold counts from a time at or after the start of this run: a
+      # newer event of the issue or the pull request was held. A hold of the screen counts from the time when its run
+      # read the item, and any other hold, or one with no marker of that read, from when GitHub last changed it
+      # (rules.py word_time). A hold of an answer that is tried again leaves the state as it is, so one that came after
+      # this run started stops the labels of an answer's run alone. An approved reply that posted is recorded
       # whatever came after it, since the trust job reads its marker. An answer settles only a hold of an answer (its
       # marker names the task answer): it answers each comment that waits, the held one too. Each work (the review, the
       # answer, the draft, the approval) has its own hold comment, and review-held stays on while the newest hold of
@@ -4490,8 +4498,11 @@ jobs:
                  "close and reopen": "catchup"}[.t])
             // "review"; '
           # What the hold comments of github-actions[bot] say, as "<last> <pending> <unsettled> <own> <tried>".
-          # last: when GitHub last changed the newest hold that stops this run's labels, - for none: each hold for an
-          # answer's run, and for any other run each hold but one of an answer that is tried again. pending: true
+          # last: the time from which the newest hold that stops this run's labels counts, - for none: each hold for an
+          # answer's run, and for any other run each hold but one of an answer that is tried again. A hold of the
+          # screen counts from the time when its run read the item (its marker <!-- review-held-read <time> -->), and
+          # any other hold, or one with no such marker, from when GitHub last changed it (.github/review/rules.py
+          # word_time; OSSV-221's architect, 2026-11-24 09:43Z, A3). pending: true
           # when the newest hold of another work than this run's is one that the rescreen pass tries again and that
           # work posted nothing since: no review that names the head of the hold (its marker
           # <!-- review-head <head> --> on the line after <!-- review -->, where the workflow writes it, never in the
@@ -4507,7 +4518,10 @@ jobs:
               | {at: (.updated_at // ""), made: (.created_at // .updated_at // ""), body: (.body // "")}) as $ours
             | [$ours[] | select(.body | startswith("<!-- review-held -->")) | .work = (.body | work)
                 | .tried = (.body | test("\n<!-- review-held-(limit|cap|transient) [0-9]+ "))
-                | .head = ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "")] as $holds
+                | .head = ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "")
+                | .word = (if (.body | contains("The automated screen held ")) and (.tried | not)
+                    then (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                      + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) // .at else .at end)] as $holds
             | def posted: . as $h
                 | if .work == "answer" then any($ours[]; (.body | startswith("<!-- review-answer ")) and .made > $h.at)
                   elif .work == "draft" then any($ours[]; (.body | startswith("<!-- review-label -->"))
@@ -4518,16 +4532,16 @@ jobs:
                   end;
               ($holds | group_by(.work) | map(max_by(.at) | select(.work != $ENV.W))) as $others
               | ($holds | map(select($ENV.W == "answer" or ((.work == "answer" and .tried) | not)))) as $stops
-              | [($stops | map(.at) | max // "-"),
+              | [($stops | map(.word) | max // "-"),
                  any($others[]; .tried and (posted | not)),
                  any($others[]; (.work | IN("review", "answer", "draft", "approve")) and (posted | not)),
                  ($holds | map(select(.work == $ENV.W)) | max_by(.at) | .tried // false),
-                 ($stops | max_by(.at) | .tried // false)]
+                 ($stops | max_by(.word) | .tried // false)]
               | map(tostring) | join(" ")' <<< "$found") \
             || { echo "::error::the hold comments of #$NUMBER could not be read"; exit 1; }
           read -r last pending unsettled own tried <<< "$held"
           if [[ ${TASK:-} != reply && $last != - && ! $last < $STARTED ]]; then
-            echo "#$NUMBER was held at $last, after this run started at $STARTED: the labels stay."
+            echo "#$NUMBER has a hold that counts from $last, after this run started at $STARTED: the labels stay."
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
             # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
             # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
@@ -4798,8 +4812,11 @@ jobs:
   # the author has write access, the state labels and the label comment stay as they are, but review-held and the hold
   # comment go on, as they are the hold's. Each hold of a pull request also names the head that the run read, in the
   # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops, and after it the id of the
-  # run that wrote it, in the marker <!-- review-held-run <run> -->. A cancelled screen holds nothing, nor a screened
-  # review or answer that a newer run of the same item and task cancelled: that run decides.
+  # run that wrote it, in the marker <!-- review-held-run <run> -->. A hold of the screen of a pull request names,
+  # between those two, the time when the trust job of this run read the item, in the marker
+  # <!-- review-held-read <time> -->: each reader counts the hold from that time, never from when it posts
+  # (.github/review/rules.py word_time; OSSV-221's architect, 2026-11-24 09:43Z, A3). A cancelled screen holds nothing,
+  # nor a screened review or answer that a newer run of the same item and task cancelled: that run decides.
   # Nor a screened review or rescreen of a pull request whose review job failed or was cancelled after a blocking
   # finding or the verdict person (its outputs verdict and head are set): its review is final, and the comment job
   # posts it with no fix (OSSV-221's architect, 2026-11-22 10:46Z). Nor a run that judged nothing of the item, by the
@@ -4942,10 +4959,12 @@ jobs:
       # run, as the comment job's step that skips its posts decides it (OSSV-221's architect, 2026-11-24 01:20Z and
       # 01:26Z, (a)), for a review, a rescreen or an approval of a pull request on the route screen, which read a head.
       # Another run gave a word on the head that counts from a time at or after STARTED, the time when the trust job of
-      # this run read the item: a review comment of the head (a review counts from the time when its run read the item,
-      # and a pass with no marker of that read never counts), or a hold comment of the screen of the head (from when
-      # GitHub last changed it, also when its run read the item before this run). A word at STARTED counts, which fails
-      # closed, and a word of this run does not (.github/review/rules.py newer-word). This job reads no withdrawal.
+      # this run read the item: a review comment of the head, or a hold comment of the screen of the head. Each counts
+      # from the time when its run read the item (its marker <!-- review-read <time> --> or
+      # <!-- review-held-read <time> -->), never from when it posted (OSSV-221's architect, 2026-11-24 09:43Z, A3). A
+      # hold with no such marker counts from when GitHub last changed it, and a pass with none never counts. A word at
+      # STARTED counts, which fails closed, and a word of this run does not (.github/review/rules.py newer-word): the
+      # hold of an earlier attempt of this run never makes it give way. This job reads no withdrawal.
       # Then the later steps of this run post nothing on the item: no hold comment, no label and no label comment. The
       # run of that newer word owns them. The step "Record a withdrawal that this run owes" runs before this one, and
       # its line stays. This step writes one line to its log and the run's summary, which names the word and its run
@@ -4973,7 +4992,7 @@ jobs:
           [ "$found" != - ] || exit 0
           read -r other kind at <<< "$found"
           if [ "$kind" = hold ] && [ "$other" != - ]; then
-            said="The screen of run $other held $HEAD, and its hold comment is from $at, at or after that time."
+            said="The screen of run $other held $HEAD, and its hold counts from $at, at or after that time."
           elif [ "$kind" = hold ]; then
             said="A screen held $HEAD, and its hold comment, which names no run, is from $at, at or after that time."
           elif [ "$other" != - ]; then
@@ -4997,6 +5016,10 @@ jobs:
           # did not write, as the item had no label comment. The label call below gives it to the label comment that
           # it writes.
           OWED_LINE: ${{ steps.owed.outputs.line }}
+          # The time when the trust job of this run read the item, which a hold of the screen of a pull request names
+          # in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in its marker
+          # <!-- review-read <time> -->.
+          STARTED: ${{ needs.trust.outputs.started }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -5250,11 +5273,22 @@ jobs:
             marker=$'\n'"<!-- review-held-$kind $ORIGIN $tries$suffix -->"
           fi
           # The head of a pull request that the run read, which the rescreen pass reads: a hold that is not tried again
-          # stops the work on that head. After it, the id of this run (GITHUB_RUN_ID, as the step that owes writes it in
-          # the line of a withdrawal): the line of this run's screen goes once this hold stands (owe, in rules.py).
+          # stops the work on that head. For a hold of the screen (the fact screen_held), after it, the time when the
+          # trust job of this run read the item (STARTED): each reader of the order of the words on the head counts this
+          # hold from that time, never from when it posts, as it counts a review from its marker
+          # <!-- review-read <time> --> (.github/review/rules.py word_time; OSSV-221's architect, 2026-11-24 09:43Z,
+          # A3). A STARTED that is not a time stops the hold before it posts. Last, the id of this run (GITHUB_RUN_ID,
+          # as the step that owes writes it in the line of a withdrawal): the line of this run's screen goes once this
+          # hold stands (owe, in rules.py).
           if [[ ${HEAD:-} =~ ^[0-9a-f]{40}$ ]]; then
             [[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}"; exit 1; }
-            marker+=$'\n'"<!-- review-held-head $HEAD -->"$'\n'"<!-- review-held-run $GITHUB_RUN_ID -->"
+            marker+=$'\n'"<!-- review-held-head $HEAD -->"
+            if [ "$fact" = screen_held ]; then
+              [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+                || { echo "::error::not a time when this run read the item: ${STARTED:-}. Nothing is held."; exit 1; }
+              marker+=$'\n'"<!-- review-held-read $STARTED -->"
+            fi
+            marker+=$'\n'"<!-- review-held-run $GITHUB_RUN_ID -->"
           fi
           body=$(printf '%s\n%s\n\n%s\n%s' '<!-- review-held -->' "**$title**" "$why" "$marker")
           # A hold of a pull request names the head that the trust job read (HEAD). When the pull request is at another

@@ -235,10 +235,12 @@ no_key_of() {
 # and 01:26Z): a review comment of <head> from the time when its run read the item, the marker
 # <!-- review-read <time> --> in its header just before <!-- review-run <run> -->, never from when it posted. One with
 # no such marker counts from when GitHub last changed it for the verdict blocking or person, and at no time (before
-# each time) for pass. A hold comment counts from when GitHub last changed it. The review comments of <head> are in
-# the order of those times. Of two at the same time, one with the verdict blocking or person counts as the newer, and
-# else the two keep the order in which GitHub lists them (rules.py head_reviews; OSSV-221's architect, 2026-11-24
-# 05:23Z: a verdict or a hold outranks a pass at a tie). screen when a hold comment of the screen that names <head>
+# each time) for pass. A hold comment of the screen counts from the time when its run read the item too, the marker
+# <!-- review-held-read <time> --> after the head that it names, and one with no such marker from when GitHub last
+# changed it (OSSV-221's architect, 2026-11-24 09:43Z, A3). The review comments of <head> are in the order of those
+# times. Of two at the same time, one with the verdict blocking or person counts as the newer, and else the two keep
+# the order in which GitHub lists them (rules.py head_reviews; OSSV-221's architect, 2026-11-24 05:23Z: a verdict or a
+# hold outranks a pass at a tie). screen when a hold comment of the screen that names <head>
 # (its text holds "The automated screen held ", and it has no marker of a hold that is tried again) is older than no
 # review comment of <head> whose run screened it (the marker <!-- review-screened <head> --> on the line after the
 # marker of its verdict): the state held. Else the reason of a withdrawal of the import check runs of <head>
@@ -276,7 +278,8 @@ relabel_withdraws() {
           and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+"
             + "( [0-9]+( [a-z]+( [1-9][0-9]*)?)?)? -->(\n|$)") | not)
           and contains("The automated screen held "))
-        | .at] | max // "") as $held
+        | (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
+            + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) // .at] | max // "") as $held
     | ([$ours[] | select(.body | startswith("<!-- review-label -->")) | .body | split("\n")[]
         | capture("^<!-- withdraw-owed " + $ENV.SHA + " (?<w>blocking|person|screen) [1-9][0-9]* -->$") | .w] | last)
         as $owed
