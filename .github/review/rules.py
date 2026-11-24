@@ -1758,8 +1758,8 @@ def not_approved(number, head, why, value, run, at):
     end, first = OWED_WITHDRAWN[why]
     summary = (f"{first} Run {run} of the review workflow read the pull request at {at}. Then it found no import "
                f"check run of head commit {head} for pull request #{number} that was an approval for the import. So "
-               f"this check records that pull request #{number} is not approved for the import at this head commit, "
-               f"for the reason `{why}` of run {run} itself.")
+               f"this check records that pull request #{number} is not approved for the import, for the reason `{why}` "
+               f"of run {run} itself.")
     return {"name": CHECK, "head_sha": head, "external_id": f"{number}:{head}", "status": "completed",
             "conclusion": "neutral",
             "output": {"title": f"Not approved for the import: pull request #{number} at {head[:12]}, {end}",
@@ -1768,13 +1768,14 @@ def not_approved(number, head, why, value, run, at):
 
 # The last sentences of the summary of a check run of not_approved: the run, the time when it read the pull request,
 # the head, the pull request, and the reason of that run. withdrawn_by reads them as those of a withdrawal by that run,
-# for its own reason, that counts from that time. It also reads the form of before the pull request was named, which a
-# check run of an open pull request can still hold.
+# for its own reason, that counts from that time. It also reads the two earlier forms, which a check run of an open
+# pull request can still hold: the one that said "at this head commit" after the pull request, and the one of before
+# the pull request was named.
 NOT_APPROVED = re.compile(
     rf" Run (?P<run>[1-9][0-9]*) of the review workflow read the pull request at (?P<read>{TIME.pattern})\. Then it "
     r"found no import check run of head commit (?P<head>[0-9a-f]{40})(?: for pull request #(?P<number>[1-9][0-9]*) "
     r"that was an approval for the import\. So this check records that pull request #(?P=number) is not approved for "
-    r"the import at this head commit| that was an approval for the import\. So this check records that this head "
+    r"the import(?: at this head commit)?| that was an approval for the import\. So this check records that this head "
     r"commit is not approved for the import), for the reason `(?P<own>blocking|person|screen)` of run (?P=run) "
     r"itself\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).

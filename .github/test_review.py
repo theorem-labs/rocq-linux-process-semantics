@@ -2922,7 +2922,7 @@ class HoldingsTest(unittest.TestCase):
                 ("hold", {"contents": "read", "issues": "write", "pull-requests": "write", "actions": "read",
                           "checks": "read"}),
                 # The App's job writes nothing with its own token: actions: read lists a head's held runs, and checks:
-                # read the check runs of a head that a later review or screen withdraws.
+                # read the check runs of a head that a review or a screen withdraws.
                 ("post", {"contents": "read", "pull-requests": "read", "actions": "read", "checks": "read"})):
             with self.subTest(job=name):
                 job = JOBS[name]
@@ -4421,14 +4421,14 @@ class HoldTest(Holding):
                                       "<!-- review-held-run 100 -->"), body)
         posted = {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body}
         self.assertEqual(rules.word_time(posted), started)
-        check = '|| { echo "::error::not a time when this run read the item: ${STARTED:-}. Nothing is held."; exit 1; }'
+        check = '|| { echo "::error::no start time of this run: ${STARTED:-}. Nothing is held."; exit 1; }'
         for bad in ("", "2026-11-02 09:30:00", "2026-11-02T09:30:00.5Z", "now"):
             with self.subTest(started=bad):
                 self.tearDown()
                 self.setUp()
                 rc, out, posts, _body = self.run_hold("screen", head=HEAD, started=bad)
                 self.assertEqual((rc, posts, writes(self.api)), (1, [], []), out)
-                self.assertIn(f"::error::not a time when this run read the item: {bad}. Nothing is held.", out)
+                self.assertIn(f"::error::no start time of this run: {bad}. Nothing is held.", out)
                 self.tearDown()
                 self.setUp()
                 rc, out, posts, body = self.changed_hold(check, "|| true", "screen", head=HEAD, started=bad)
@@ -18808,10 +18808,10 @@ class ImportCheckTest(ReaderRunner):
                 self.assertNotRecorded(got, "withdrawn")
                 logs = "\n".join(self.logs[start:])
                 since = rescreen["started"]
-                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD} by the time that each one "
-                              "names. It is not an approval, because its conclusion is neutral. It counts from "
-                              f"{since}, the time that its summary names. No screened pass of {HEAD} comes from a run "
-                              f"that read #7 after {since}.\n", logs)
+                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}, in the order of the time "
+                              "that each one names. It is not an approval, because its conclusion is neutral. It "
+                              f"counts from {since}, the time that its summary names. No screened pass of {HEAD} comes "
+                              f"from a run that read #7 after {since}.\n", logs)
                 self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not an "
                               f"approval, and no screened pass of {HEAD} comes from a run that read #7 after "
                               f"{since}.\n", logs)
@@ -18842,9 +18842,9 @@ class ImportCheckTest(ReaderRunner):
                 else:
                     self.assertNotRecorded(got, "withdrawn")
                     logs = "\n".join(self.logs[start:])
-                    self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD} by the time that each "
-                                  "one names. Its summary names no time, so it counts as newer than each other one and "
-                                  f"each screened pass of {HEAD}.\n", logs)
+                    self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}, in the order of the "
+                                  "time that each one names. Its summary names no time, so it counts as newer than "
+                                  f"each other import check run and each screened pass of {HEAD}.\n", logs)
                     self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not "
                                   f"an approval, and it counts as newer than each screened pass of {HEAD}.\n", logs)
 
@@ -18971,10 +18971,10 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[earlier], listed=[withdrawn])
         self.assertNotRecorded(got, "withdrawn")
         logs = "\n".join(self.logs[start:])
-        self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD} by the time that each one names. It "
-                      f"is not an approval, because its conclusion is neutral. It counts from {since}. This run read "
-                      f"#7 at {started}, at or before that time. The pass of this run counts from {started}. No "
-                      f"screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
+        self.assertIn(f"#7: check run 900 is the newest import check run of {HEAD}, in the order of the time that each "
+                      f"one names. It is not an approval, because its conclusion is neutral. It counts from {since}. "
+                      f"This run read #7 at {started}, at or before that time. The pass of this run counts from "
+                      f"{started}. No screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
         self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 900 is not an approval, "
                       f"and no screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
         self.assertEqual(got["post"]["gave_way"], "withdrawn")
@@ -19752,11 +19752,13 @@ class ImportCheckTest(ReaderRunner):
         names the time of the read of run 120. The rescreen run 130, which read the item 20 minutes ago, records its
         check run, and its label step edits the label comment. The controls: the label step that counts the hold from
         when it posted leaves the label comment of run 130 as it is, and the one that counts a hold with the marker from
-        before each time edits it for run 100."""
+        before each time edits it for run 100. A run that read the item when run 120 did leaves the labels too, and its
+        log says that the hold counts from a time at or after this run started (the tester's fresh reader of round 23,
+        F1)."""
         t40, t30, t20, t5 = ago(40), ago(30), ago(20), ago(5)
         labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
         comments = [review_of(HEAD, at=ago(60), run=60), labelled, self.screen_held(120, t5, t30)]
-        stay = f"#7 has a hold that counts from {t30}, after this run started at {t40}: the labels stay.\n"
+        stay = f"#7 has a hold that counts from {t30}, at or after this run started at {t40}: the labels stay.\n"
 
         def judged(trust, event):
             self.tearDown()
@@ -19776,10 +19778,16 @@ class ImportCheckTest(ReaderRunner):
         got = self.changed_step("comment", self.LABEL, *self.HELD_LABEL_POSTED,
                                 lambda: judged(newer, "workflow_dispatch"))
         self.assertEqual(got["comments"], [], got["log"])
-        self.assertIn(f"#7 has a hold that counts from {t5}, after this run started at {t20}: the labels stay.\n",
+        self.assertIn(f"#7 has a hold that counts from {t5}, at or after this run started at {t20}: the labels stay.\n",
                       got["log"])
         got = self.changed_step("comment", self.LABEL, *self.HELD_LABEL_UNTIMED, lambda: judged(older, "workflow_run"))
         self.assertEqual(len(got["comments"]), 1, got["log"])
+        # At a tie, the run of the hold read the item when this run did: the hold stops the labels, and the log says
+        # "at or after" (the tester's fresh reader of round 23, F1).
+        got = judged(dict(self.REVIEWED, started=t30), "workflow_run")
+        self.assertEqual(got["comments"], [], got["log"])
+        self.assertIn(f"#7 has a hold that counts from {t30}, at or after this run started at {t30}: the labels "
+                      "stay.\n", got["log"])
 
     def commented(self, comments, listed=(), trust=None, away=False):
         """Run 100 of mallory's #7 at HEAD (the screened CI review whose trust job read the item 40 minutes ago, or the
@@ -19855,9 +19863,9 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. Then the newest import check run of {HEAD}, by the time "
-                 f"that each one named, was not an approval. It counted as newer than each screened pass of {HEAD}. "
-                 f"Its summary named a time at or after {started}, or no time."),
+                 f"Its post job gave the decision withdrawn. At that time, the newest import check run of {HEAD}, in "
+                 "the order of the time that each one named, was not an approval. It counted as newer than each "
+                 f"screened pass of {HEAD}. Its summary named a time at or after {started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
@@ -20440,7 +20448,7 @@ class ImportCheckTest(ReaderRunner):
         got = blocking("90", older, listed)
         self.assertEqual((got["result"], withdrew(got), got["post"]["withdrawn"], got["post"]["owed"]),
                          ("success", [], HEAD, ""), self.logs)
-        self.assertIn(f"#7: this run leaves each import check run with the conclusion success in 901 of {HEAD}. The "
+        self.assertIn(f"#7: this run leaves these import check runs of {HEAD} with the conclusion success: 901. The "
                       f"run that recorded each one read #7 after {older}, and the withdrawal of this run counts from "
                       f"{older}.\n", "\n".join(self.logs[start:]))
         self.assertNotIn("has no import check run to withdraw", "\n".join(self.logs[start:]))
@@ -20620,9 +20628,9 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(rules.GONE, labels[0])
         self.assertNotIn(recorded, labels[0])
         self.assertIn(f"#7: no import check run of {HEAD} with the conclusion success and the marker of the import's "
-                      "paths stands now. A run withdrew the check run that the post job of this run recorded or found. "
-                      "That run is this run, for its own verdict, or another run. So the label comment gives the "
-                      "decision gone, and it does not say that the workflow recorded the check.\n", out)
+                      "paths stands now. Another run withdrew the check run that the post job of this run recorded or "
+                      "found. So the label comment says that a run withdrew the check (the decision gone), and it does "
+                      "not say that the workflow recorded the check.\n", out)
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
         rc, out, wrote, labels = self.label_step(trust, got, [listed], [labelled])
         self.assertEqual((rc, wrote), (1, []), out)
@@ -20672,23 +20680,24 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(f"{rules.NO_REASON} You do not need to do anything.", labels[0])
 
     def test_a_review_by_hand_whose_own_verdict_withdraws_the_standing_success_reads_no_check_run_again(self):
-        """The tester's fresh reader of round 22, row 19: the label step's log said that another run withdrew the check
-        run of its post job, which is false when this run withdrew it, as a review by hand with the decision hand can
-        for its own verdict. So the log names both runs. The workflow does not reach that log in this case: the post
-        job's output standing is true only when its step that withdraws withdrew nothing (review.yml, the outputs of
-        the post job). The screened review of mallory's #7 at HEAD passed it and recorded check run 901. Then alice
-        reviews #7 by hand with no screen, and her review gives a blocking finding. The decision is hand, the post job
-        withdraws 901 for its own verdict, and its output standing is false. So the label step reads no check run
-        again and logs no withdrawal: it writes the state of the blocking finding. The control, a post job whose
-        output standing leaves out its withdrawal, makes the label step read the check runs again. It finds 901
-        withdrawn by this run, and its log says that the run that withdrew it is this run or another run."""
+        """The tester's fresh reader of round 22, row 19, and of round 23, M1: the label step's log says that another
+        run withdrew the check run of its post job. A review by hand with the decision hand can withdraw that check run
+        for its own verdict, but the label step never reads the check runs again after that: the post job's output
+        standing is true only when its step that withdraws withdrew nothing (review.yml, the outputs of the post job).
+        So the log is true each time it runs. The screened review of mallory's #7 at HEAD passed it and recorded check
+        run 901. Then alice reviews #7 by hand with no screen, and her review gives a blocking finding. The decision is
+        hand, the post job withdraws 901 for its own verdict, and its output standing is false. So the label step reads
+        no check run again and logs no withdrawal: it writes the state of the blocking finding. The control, a post job
+        whose output standing leaves out its withdrawal, makes the label step read the check runs again, find 901
+        withdrawn and log that line, which then names another run where only this run withdrew."""
         listed, _others = self.recorded()
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(90), "updated_at": ago(90),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         comments = [review_of(HEAD, at=ago(90)), old]
         trust = dict(self.BY_HAND, started=ago(1))
-        said = ("A run withdrew the check run that the post job of this run recorded or found. That run is this run, "
-                "for its own verdict, or another run.")
+        said = ("Another run withdrew the check run that the post job of this run recorded or found. So the label "
+                "comment says that a run withdrew the check (the decision gone), and it does not say that the workflow "
+                "recorded the check.")
 
         def by_hand():
             return self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch",
@@ -20766,13 +20775,14 @@ class ImportCheckTest(ReaderRunner):
         one check run repo-pairs/import-approved with token A, as its one write. It has the conclusion neutral, the
         external_id and the marker line of a record, a title that says that #7 at HEAD is not approved for the import
         and why, and a summary that names run 120, the time when it read the item, HEAD, #7 and the reason, which
-        rules.py withdrawn_by reads, as it reads the summary of before the round that named #7 (the tester's fresh
-        reader of round 22, row 3: a check run shows on each pull request of its commit). Its output withdrawn names
-        HEAD, so nothing is owed. Then the post job of run 100, which read the item before run 120, reads that check
-        run as a withdrawal that counts from a time after its own read: its decision is withdrawn, it records nothing,
-        its comment job posts nothing (gave_way), and its log says why. No success stands at the end. A writer's run
-        posts no such check run: no run of a writer records one. The control, the step that makes no such request, lets
-        run 100 record a success over the verdict."""
+        rules.py withdrawn_by reads, as it reads the two earlier forms of that summary: the one of round 23, which said
+        "at this head commit" after #7 (the tester's fresh reader of round 23, S4), and the one of before #7 was named
+        (the tester's fresh reader of round 22, row 3: a check run shows on each pull request of its commit). Its
+        output withdrawn names HEAD, so nothing is owed. Then the post job of run 100, which read the item before run
+        120, reads that check run as a withdrawal that counts from a time after its own read: its decision is withdrawn,
+        it records nothing, its comment job posts nothing (gave_way), and its log says why. No success stands at the
+        end. A writer's run posts no such check run: no run of a writer records one. The control, the step that makes
+        no such request, lets run 100 record a success over the verdict."""
         for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
             with self.subTest(why=why):
                 self.tearDown()
@@ -20793,15 +20803,19 @@ class ImportCheckTest(ReaderRunner):
                                "summary": f"{first} Run 120 of the review workflow read the pull request at "
                                           f"{read}. Then it found no import check run of head commit {HEAD} for pull "
                                           "request #7 that was an approval for the import. So this check records that "
-                                          "pull request #7 is not approved for the import at this head commit, for the "
-                                          f"reason `{why}` of run 120 itself.",
+                                          f"pull request #7 is not approved for the import, for the reason `{why}` of "
+                                          "run 120 itself.",
                                "text": rules.import_marker(HEAD, self.LPS)}}))
-                old = (f"{first} Run 120 of the review workflow read the pull request at {read}. Then it found no "
-                       f"import check run of head commit {HEAD} that was an approval for the import. So this check "
-                       f"records that this head commit is not approved for the import, for the reason `{why}` of run "
-                       "120 itself.")
-                self.assertEqual(rules.withdrawn_by(dict(body, output=dict(body["output"], summary=old)), HEAD),
-                                 (why, "120", read))
+                ran = f"{first} Run 120 of the review workflow read the pull request at {read}. Then it found no "
+                earlier = (f"{ran}import check run of head commit {HEAD} for pull request #7 that was an approval for "
+                           "the import. So this check records that pull request #7 is not approved for the import at "
+                           f"this head commit, for the reason `{why}` of run 120 itself.",
+                           f"{ran}import check run of head commit {HEAD} that was an approval for the import. So this "
+                           f"check records that this head commit is not approved for the import, for the reason "
+                           f"`{why}` of run 120 itself.")
+                for summary in earlier:
+                    self.assertEqual(rules.withdrawn_by(dict(body, output=dict(body["output"], summary=summary)),
+                                                        HEAD), (why, "120", read))
                 log = "\n".join(self.logs[start:])
                 because = {"blocking": "the review of this run asks for a change",
                            "screen": f"the screen of this run held {HEAD}"}
@@ -20812,10 +20826,10 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(rules.withdrawn_by(posted, HEAD), (why, "120", read))
                 self.assertNotRecorded(mine, "withdrawn")
                 self.assertEqual(mine["post"]["gave_way"], "withdrawn")
-                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD} by the time that each one "
-                              f"names. It is not an approval, because its conclusion is neutral. It counts from "
-                              f"{read}. This run read #7 at {older_read}, at or before that time. The pass of this run "
-                              f"counts from {older_read}.", log)
+                self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}, in the order of the time "
+                              f"that each one names. It is not an approval, because its conclusion is neutral. It "
+                              f"counts from {read}. This run read #7 at {older_read}, at or before that time. The pass "
+                              f"of this run counts from {older_read}.", log)
                 self.assertEqual(self.successes(checks), [])
         self.tearDown()
         self.setUp()
@@ -21065,8 +21079,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotRecorded(mine, "withdrawn")
         self.assertNotRecorded(relabelled, "withdrawn")
         logs = "\n".join(self.logs[start:])
-        said = (f"#7: check run 901 is the newest import check run of {HEAD} by the time that each one names. It is "
-                f"not an approval, because its conclusion is neutral. It counts from {newest}")
+        said = (f"#7: check run 901 is the newest import check run of {HEAD}, in the order of the time that each one "
+                f"names. It is not an approval, because its conclusion is neutral. It counts from {newest}")
         self.assertIn(f"{said}. This run read #7 at {started}, at or before that time. The pass of this run counts "
                       f"from {started}. No screened pass of {HEAD} comes from a run that read #7 after {newest}.\n",
                       logs)

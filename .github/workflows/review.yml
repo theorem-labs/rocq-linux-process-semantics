@@ -3105,16 +3105,16 @@ jobs:
               decided screened "$said"
             fi
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
-              said="#$NUMBER: check run $stands is the newest import check run of $HEAD by the time that each one"
-              said+=" names."
+              said="#$NUMBER: check run $stands is the newest import check run of $HEAD, in the order of the time that"
+              said+=" each one names."
               if [ "$since" != - ]; then
                 echo "$said It is not an approval, because its conclusion is neutral. It counts from $since, the time" \
                   "that its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
                 said="check run $stands is not an approval, and no screened pass of $HEAD comes from a run that read"
                 said+=" #$NUMBER after $since"
               else
-                echo "$said Its summary names no time, so it counts as newer than each other one and each" \
-                  "screened pass of $HEAD."
+                echo "$said Its summary names no time, so it counts as newer than each other import check run and" \
+                  "each screened pass of $HEAD."
                 said="check run $stands is not an approval, and it counts as newer than each screened pass of $HEAD"
               fi
               decided withdrawn "$said"
@@ -3220,16 +3220,16 @@ jobs:
             fi
             if [ "$decision" = withdrawn ]; then
               if [ "$since" != - ]; then
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD by the time that each one" \
-                  "names. It is not an approval, because its conclusion is neutral. It counts from $since. This run" \
-                  "read #$NUMBER at $STARTED, at or before that time. The pass of this run counts from $STARTED. No" \
-                  "screened pass of $HEAD comes from a run that read #$NUMBER after $since."
+                echo "#$NUMBER: check run $what is the newest import check run of $HEAD, in the order of the time" \
+                  "that each one names. It is not an approval, because its conclusion is neutral. It counts from" \
+                  "$since. This run read #$NUMBER at $STARTED, at or before that time. The pass of this run counts" \
+                  "from $STARTED. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
                 said="check run $what is not an approval, and no screened pass of $HEAD comes from a run that read"
                 said+=" #$NUMBER after $since"
               else
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD by the time that each one" \
-                  "names. Its summary names no time, so it counts as newer than each other one and each screened" \
-                  "pass of $HEAD."
+                echo "#$NUMBER: check run $what is the newest import check run of $HEAD, in the order of the time" \
+                  "that each one names. Its summary names no time, so it counts as newer than each other import check" \
+                  "run and each screened pass of $HEAD."
                 said="check run $what is not an approval, and it counts as newer than each screened pass of $HEAD"
               fi
               decided withdrawn "$said"
@@ -3282,7 +3282,7 @@ jobs:
             || { echo "::error::the import check of $HEAD could not be decided."; exit 1; }
           files_read=$(grep -c . "$RUNNER_TEMP/files.jsonl" || true)
           decided "$decision" "the step read $files_read of the $count changed files"
-      # The import check run of the head that a later review or screen withdraws (R12): with this job's own token, each
+      # The import check run of the head that a review or a screen withdraws (R12): with this job's own token, each
       # check run repo-pairs/import-approved of the OSS Verify App on the head, with conclusion success, whose
       # external_id is <number>:<head>. A check run belongs to a commit, so one of another pull request of the same
       # commit is not this pull request's. The reasons: this run's review of the head (a review, a rescreen, a review by
@@ -3502,7 +3502,7 @@ jobs:
             "$RUNNER_TEMP/approved.jsonl" | tr '\n' ' ')
           kept=${kept% }
           if [ -n "$kept" ]; then
-            echo "#$NUMBER: this run leaves each import check run with the conclusion success in $kept of $head. The" \
+            echo "#$NUMBER: this run leaves these import check runs of $head with the conclusion success: $kept. The" \
               "run that recorded each one read #$NUMBER after $at, and the withdrawal of this run counts from $at."
           fi
           if [ -z "$ids" ]; then
@@ -3545,7 +3545,7 @@ jobs:
           fi
           echo "#$NUMBER: a later step of this job withdraws the import check runs $ids of $head, because $because."
           { echo "checks=$ids"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
-      # Token A: for the import check run when the decision is to record it or a later review or screen withdraws it,
+      # Token A: for the import check run when the decision is to record it or a review or a screen withdraws it,
       # for the check run that says that the head is not approved for the import, and for the close and reopen of a
       # catch-up. Only while the environment post holds the App's key.
       - name: Sign in as the OSS Verify App
@@ -4118,9 +4118,9 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job gave the decision withdrawn. Then the newest import check run of $HEAD, by the time"
-              said+=" that each one named, was not an approval. It counted as newer than each screened pass of $HEAD."
-              said+=" Its summary named a time at or after $STARTED, or no time." ;;
+              said="Its post job gave the decision withdrawn. At that time, the newest import check run of $HEAD, in"
+              said+=" the order of the time that each one named, was not an approval. It counted as newer than each"
+              said+=" screened pass of $HEAD. Its summary named a time at or after $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
@@ -4537,7 +4537,8 @@ jobs:
             || { echo "::error::the hold comments of #$NUMBER could not be read"; exit 1; }
           read -r last pending unsettled own tried <<< "$held"
           if [[ ${TASK:-} != reply && $last != - && ! $last < $STARTED ]]; then
-            echo "#$NUMBER has a hold that counts from $last, after this run started at $STARTED: the labels stay."
+            echo "#$NUMBER has a hold that counts from $last, at or after this run started at $STARTED: the labels" \
+              "stay."
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
             # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
             # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
@@ -4585,9 +4586,9 @@ jobs:
               || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
             if [ -z "$found" ]; then
               echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
-                "paths stands now. A run withdrew the check run that the post job of this run recorded or found." \
-                "That run is this run, for its own verdict, or another run. So the label comment gives the decision" \
-                "gone, and it does not say that the workflow recorded the check."
+                "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
+                "found. So the label comment says that a run withdrew the check (the decision gone), and it does not" \
+                "say that the workflow recorded the check."
               approved=false decision=gone
             fi
           fi
@@ -5281,7 +5282,7 @@ jobs:
             marker+=$'\n'"<!-- review-held-head $HEAD -->"
             if [ "$fact" = screen_held ]; then
               [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-                || { echo "::error::not a time when this run read the item: ${STARTED:-}. Nothing is held."; exit 1; }
+                || { echo "::error::no start time of this run: ${STARTED:-}. Nothing is held."; exit 1; }
               marker+=$'\n'"<!-- review-held-read $STARTED -->"
             fi
             marker+=$'\n'"<!-- review-held-run $GITHUB_RUN_ID -->"
