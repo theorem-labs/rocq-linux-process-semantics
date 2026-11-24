@@ -19491,6 +19491,31 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((len(posted), bool(final and recorded in final[0] and not self.successes(checks))),
                                  (1, False), (posted, final, self.successes(checks), self.logs[-4:]))
 
+    def test_an_answers_screen_hold_of_the_head_leaves_no_success_of_an_older_read(self):
+        """The tester's audit of round 23, F2, by OSSV-221's architect's ruling of 2026-11-24 14:29Z (no failure on the
+        path): an answer's screen hold keeps naming the head, and its hold job owes the withdrawal of each success of
+        an older or equal read, so the label held and the check runs agree. Rescreen run 100 of mallory's #7 read the
+        item 30 minutes ago, passed HEAD and recorded 901, and its comment job posted. Then mallory comments, and the
+        screen of the answer run 130, which read the item 20 minutes ago, holds the comment. Its hold comment names
+        HEAD and the read of run 130, so each reader takes it as a hold of the screen of HEAD (review_verdict gives
+        held). At the end no success stands under that hold. At ae1d3cd5 an answer has no post job and its hold job owes
+        no withdrawal, so 901 stands until a relabel."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        mine, checks = self.judged([], "100", trust=rescreen, event="workflow_dispatch", comments=[older])
+        self.serve_checks(checks)
+        _outcomes, _wrote, _labels, review = self.comment_job_after_post(mine, rescreen, "pass", [older], "100")
+        after = [dict(review, id=30)]
+        answer = dict(self.REVIEWED, task="answer", started=ago(20), comment="77")
+        self.forget()
+        self.hold_job_after_post({"result": "skipped", "post": {}}, answer, after, "130")
+        holds = self.posted("<!-- review-held -->")
+        checks = self.applied_checks(checks)
+        comments = after + [{"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body}
+                            for body in holds]
+        state = rules.review_verdict(comments, HEAD)[1]
+        self.assertEqual((len(holds), state, self.successes(checks)), (1, "held", []), (holds, self.logs[-4:]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
