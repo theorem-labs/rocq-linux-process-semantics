@@ -11135,16 +11135,16 @@ class ScheduleTest(Scheduled):
             with self.subTest(number=number):
                 rc, out, runs = self.started(number=number)
                 self.assertEqual((rc, runs), (0, []), out)
-                self.assertIn(f"#7: its label comment records that {HEAD} changes a file under .github/, or 3,000 "
-                              "files or more. The workflow does not approve the runs of such a head, so Sami approves "
-                              "them.\n", out)
+                self.assertIn(f"#7: its label comment records that the pull request at {HEAD} changes a file under "
+                              ".github/, or it changes 3,000 files or more. The workflow does not approve the runs of "
+                              f"{HEAD}, so Sami approves them.\n", out)
                 self.assertEqual(label_comments(self.api), [], out)
                 self.assertEqual([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c], [], out)
         rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="approve", head=HEAD, account="mallory")
         self.assertEqual((rc, got.get("route")), (0, None), out)
-        self.assertIn(f"::notice::No approve of #7: its label comment records that {HEAD} changes a file under "
-                      ".github/, or 3,000 files or more. The workflow does not approve the runs of such a head, so "
-                      "Sami approves them.", out)
+        self.assertIn(f"::notice::No approve of #7: its label comment records that the pull request at {HEAD} changes "
+                      "a file under .github/, or it changes 3,000 files or more. The workflow does not approve the "
+                      f"runs of {HEAD}, so Sami approves them.", out)
 
     def test_with_no_key_a_screened_held_head_waits_on_a_person_and_gets_no_second_approve_run(self):
         """R10 (spec v76, and v90 for the second event): until the LPS move of dispatch://OSSV-321, the environment
@@ -16692,7 +16692,7 @@ class ImportCheckTest(ReaderRunner):
         when none stands, it is decide, and the label comment says that the screen and the review passed the pull
         request. When the newest review comment is the screened one, the relabel records the check run. When a hold
         comment of the screen comes between the two review comments, the relabel records no check run (the decision is
-        held), and withdraws the one that is still success, because a later screen held the head. Its label comment
+        held), and withdraws the one that is still success, because an automated screen held the head. Its label comment
         says that a screen held the head after the screened review, not that no screen passed it. OSSV-221's
         architect's ruling of 2026-11-20 22:21Z: when the newest screened review comment gave a blocking finding, or a
         review comment newer than it did, and the withdrawal of that run failed, a pass by hand after it does not stop
@@ -18972,8 +18972,8 @@ class ImportCheckTest(ReaderRunner):
         post job recorded the check run with conclusion success. A later screen held HEAD: its hold comment names HEAD
         and is newer than the review comment, and the withdrawal of its run did not take (GitHub refused it, say). Then
         alice reviews HEAD by hand with no screen, and the review passes it. The decision is held, as for a relabel, and
-        the post job withdraws the check run with token A, to the conclusion neutral, because a later screen held HEAD.
-        The label comment says that a screen held the head after the screened review."""
+        the post job withdraws the check run with token A, to the conclusion neutral, because an automated screen held
+        HEAD. The label comment says that a screen held the head after the screened review."""
         listed, _others = self.recorded()
         hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60),
                 "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
@@ -18992,8 +18992,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual([(token, endpoint, body["conclusion"], body["output"]["title"])
                           for token, endpoint, body in got["withdrawn"]],
                          [("token-A", f"repos/{REPO}/check-runs/901", "neutral", title)])
-        self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because a later "
-                      f"screen held {HEAD}.", logs)
+        self.assertIn(f"#7: a later step of this job withdraws the import check runs 901 of {HEAD}, because an "
+                      f"automated screen held {HEAD}.", logs)
         self.assertWaits(got, self.SOME, rules.SCREEN_HELD_AFTER, value=self.LPS)
 
     def test_a_review_by_hand_of_a_draft_promises_no_retry_of_the_rescreen_pass(self):

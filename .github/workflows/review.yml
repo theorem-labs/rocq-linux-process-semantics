@@ -1299,8 +1299,9 @@ jobs:
                     (( n > 0 )) || stop "GitHub holds no run of $pr_head."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
                     read -r _ _ _ _ steered <<< "$marks"
-                    why="its label comment records that $pr_head changes a file under .github/, or 3,000 files or more."
-                    why+=" The workflow does not approve the runs of such a head, so Sami approves them."
+                    why="its label comment records that the pull request at $pr_head changes a file under .github/, or"
+                    why+=" it changes 3,000 files or more. The workflow does not approve the runs of $pr_head, so Sami"
+                    why+=" approves them."
                     [ "$steered" = false ] || stop "$why"
                     newest approve
                     again approve
