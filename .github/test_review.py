@@ -18911,9 +18911,17 @@ class ImportCheckTest(ReaderRunner):
                          comments=[older], listed=[withdrawn])
         self.assertNotRecorded(got)
 
+    class AnyToken(dict):
+        """The tokens of the App's sign-in steps for run_job: token-A for a step that TOKENS does not name, such as a
+        sign-in of the comment job or of the hold job."""
+
+        def __missing__(self, _name):
+            return "token-A"
+
     def comment_job_after_post(self, got, trust, verdict, comments, run):
         """The comment job of run <run> (trust; its review gave verdict) after its post job gave got, with #7's comments
-        now comments: (outcomes, writes as (method, endpoint), label comment bodies, its review comment)."""
+        now comments: (outcomes, writes as (method, endpoint), label comment bodies, its review comment). The check runs
+        of HEAD are what the test served before (serve_checks)."""
         event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
@@ -18931,134 +18939,220 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
         open(self.summary, "w").close()
-        outcomes = run_job(self, "comment", ctx, self.TOKENS)
+        outcomes = run_job(self, "comment", ctx, self.AnyToken(self.TOKENS))
         return (outcomes, [tuple(c[1:3]) for c in writes(self.api)],
                 [b for _m, _e, b in label_comments(self.api)], mine)
 
+    def hold_job_after_post(self, got, trust, comments, run):
+        """The hold job of run <run> (trust; its screen held HEAD, so it has no review) after its post job gave got,
+        with #7's comments now comments, as GitHub runs it (run_job): (outcomes, writes as (method, endpoint)). The
+        check runs of HEAD are what the test served before (serve_checks)."""
+        trust = dict(trust, account="mallory", kind="outsider", origin="", tries="0")
+        event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.gather.result": "success",
+                    "needs.gather.outputs.kind": "pr", "needs.screen.result": "success",
+                    "needs.screen.outputs.verdict": "held", "needs.review.result": "skipped",
+                    "needs.post.result": got["result"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()},
+                    "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                    "github.run_id": run, "github.run_attempt": "1", "github.event_name": event,
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS})
+        self.assertTrue(evaluate(JOBS["hold"]["if"], ctx))
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "pull_request": {}, "user": {"login": "mallory"}})
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": f"https://github.com/{REPO}/pull/7#c50"})
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}})
+        self.serve(f"repos/{REPO}/actions/runs/{run}/attempts/1/jobs",
+                   {"jobs": [attempt_job("trust"), attempt_job("gather"),
+                             attempt_job("screen", name="screen mallory")]})
+        open(self.summary, "w").close()
+        self.env["GITHUB_STEP_SUMMARY"] = self.summary
+        outcomes = run_job(self, "hold", ctx, self.AnyToken(self.TOKENS))
+        return outcomes, [tuple(c[1:3]) for c in writes(self.api)]
+
+    def serve_checks(self, checks):
+        """GitHub lists checks as the check runs of HEAD, and answers a PATCH of each."""
+        self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": list(checks)})
+        for check in checks:
+            self.serve(f"repos/{REPO}/check-runs/{check['id']}", {"id": check["id"], "conclusion": check["conclusion"]})
+
+    def applied_checks(self, checks):
+        """checks, the check runs of HEAD as GitHub lists them, after the writes of check runs that the stand-in gh saw
+        since it last forgot: each POST of a check run adds one (the next id from 901, of the OSS Verify App, completed
+        at its completed_at or now), and each PATCH changes the one it names."""
+        checks = [dict(c) for c in checks]
+        paired = zip([c for c in gh_calls(self.api) if "--input" in c], gh_inputs(self.api))
+        for call, body in paired:
+            method = call[1] if call[0] == "--method" else "POST"
+            endpoint = next((a for a in call if a.startswith(f"repos/{REPO}/check-runs")), "")
+            if method == "PATCH" and endpoint.startswith(f"repos/{REPO}/check-runs/"):
+                cid = int(endpoint.rsplit("/", 1)[1])
+                checks = [dict(c, **body) if c["id"] == cid else c for c in checks]
+            elif endpoint == f"repos/{REPO}/check-runs":
+                checks.append(dict(body, id=901 + len(checks), app={"id": VERIFY_APP_ID},
+                                   completed_at=body.get("completed_at") or ago(0)))
+        return checks
+
+    def judged(self, checks, run, **kwargs):
+        """judge for run <run> (its GITHUB_RUN_ID) while GitHub lists checks as the check runs of HEAD: (its result,
+        the check runs after its writes)."""
+        self.env["GITHUB_RUN_ID"] = run
+        try:
+            got = self.judge(["README.md"], value=self.LPS, listed=checks, **kwargs)
+        finally:
+            self.env["GITHUB_RUN_ID"] = "100"
+        return got, self.applied_checks(checks)
+
+    @staticmethod
+    def successes(checks):
+        """The check runs among checks with the conclusion success."""
+        return [c["id"] for c in checks if c.get("conclusion") == "success"]
+
+    def newer_word_and_older_record(self, screen, verdict, first):
+        """Rescreen run 120 of mallory's #7 read the item 30 minutes ago: its screen gave screen and its review verdict
+        (blocking, or none when the screen held HEAD). The slow CI review run 100 read the item 40 minutes ago and
+        passed HEAD. Their post jobs run in post-7 in the order first ("newer", run 120's first, or "older"). Then run
+        120's comment job or hold job posts its word, then run 100's comment job runs. Each job sees the check runs of
+        HEAD as the jobs before it left them. (#7's comments at the end, the check runs at the end)."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+        ci = dict(self.REVIEWED, started=ago(40))
+        checks = []
+        for run in (("120", "100") if first == "newer" else ("100", "120")):
+            if run == "120":
+                newer, checks = self.judged(checks, "120", verdict=verdict, trust=rescreen, screen=screen,
+                                            event="workflow_dispatch", comments=[older], named=HEAD)
+            else:
+                mine, checks = self.judged(checks, "100", trust=ci, comments=[older])
+        self.serve_checks(checks)
+        if screen == "held":
+            self.hold_job_after_post(newer, rescreen, [older], "120")
+            word = {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                    "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                            "request, so the automated review did not run. You do not need to do anything.\n\n"
+                            f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
+            after = [older, word]
+        else:
+            _outcomes, _wrote, _labels, theirs = self.comment_job_after_post(newer, rescreen, verdict, [older], "120")
+            after = [dict(theirs, id=30)]
+        checks = self.applied_checks(checks)
+        self.serve_checks(checks)
+        self.comment_job_after_post(mine, ci, "pass", after, "100")
+        return after, self.applied_checks(checks)
 
     def test_no_success_stands_after_a_newer_runs_blocking_verdict_whose_post_job_ran_before_the_older_record(self):
-        """The tester's audit of round 21, F5 (no failure on the path; OSSV-221's architect, 2026-11-23 18:28Z and
-        2026-11-24 01:20Z: a success must not stand after a newer run's verdict). Rescreen run 120 of mallory's #7 read
-        the item 30 minutes ago and gave HEAD a blocking finding; its post job ran first in post-7: no import check run
-        stood, so it withdrew nothing and wrote nothing. The slow CI review run 100 read the item 40 minutes ago and
-        passed HEAD; its post job runs next, before run 120's comment job posts the blocking review, so it records check
-        run 901. Run 120's comment job then posts the blocking review, and run 100's comment job gives way to it. No job
-        is left that withdraws 901: a success stands while the newest word on HEAD is a blocking finding."""
-        older = review_of(HEAD, at=ago(70), run=60)
-        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
-        self.env["GITHUB_RUN_ID"] = "120"
-        try:
-            b = self.judge(["README.md"], verdict="blocking", value=self.LPS, trust=rescreen,
-                           event="workflow_dispatch", comments=[older])
-        finally:
-            self.env["GITHUB_RUN_ID"] = "100"
-        self.assertEqual((b["checks"], b["withdrawn"]), ([], []), self.logs)
-        trust = dict(self.REVIEWED, started=ago(40))
-        a = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[older])
-        outcomes_b, wrote_b, _labels_b, theirs = self.comment_job_after_post(b, rescreen, "blocking", [older], "120")
-        self.assertIn(("PATCH", f"repos/{REPO}/issues/comments/30"), wrote_b, self.logs[-6:])
-        after = [dict(theirs, id=30)]
-        outcomes, wrote, _labels, _mine = self.comment_job_after_post(a, trust, "pass", after, "100")
-        standing = [body for _t, body in a["checks"] if body["conclusion"] == "success"]
-        self.assertEqual((len(standing), rules.review_verdict(after, HEAD), outcomes[self.SKIP],
-                          outcomes[self.REVIEW], wrote),
-                         (0, ("blocking", "screened", "blocking"), "success", "skipped", []), self.logs[-4:])
-
-    def test_the_label_does_not_say_recorded_after_an_older_runs_post_job_withdrew_the_newer_record(self):
-        """The tester's audit of round 21, F6 (no failure on the path; a label text false for the case it posts with).
-        Rescreen run 100 of mallory's #7 read the item 30 minutes ago and passed HEAD; its post job ran first in post-7
-        and recorded check run 901. The slow CI review run 90 read the item 40 minutes ago and gave a blocking finding;
-        its post job runs next and withdraws 901 for its own verdict (kind own, from the time of the withdrawal). Run
-        100's comment job then posts its pass and the label state import ("The workflow recorded the check"), and run
-        90's comment job gives way to run 100's pass, so its blocking review and label never post. The label comment
-        says that the check is recorded while 901 is withdrawn and its withdrawal stands (withdrawal_stands)."""
-        older = review_of(HEAD, at=ago(70), run=60)
-        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
-        b = self.judge(["README.md"], value=self.LPS, trust=rescreen, event="workflow_dispatch", comments=[older])
-        self.assertEqual(b["post"]["recorded"], "true", self.logs)
-        (_t, body), = b["checks"]
-        listed = dict(body, id=901, app={"id": VERIFY_APP_ID})
-        ci = dict(self.REVIEWED, started=ago(40))
-        self.env["GITHUB_RUN_ID"] = "90"
-        try:
-            a = self.judge(["README.md"], verdict="blocking", value=self.LPS, trust=ci, comments=[older],
-                           listed=[listed])
-        finally:
-            self.env["GITHUB_RUN_ID"] = "100"
-        self.assertEqual([e for _t, e, _b in a["withdrawn"]], [f"repos/{REPO}/check-runs/901"], self.logs)
-        withdrawn = self.applied(listed, a)
-        labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
-        outcomes_b, wrote_b, labels_b, mine = self.comment_job_after_post(b, rescreen, "pass", [older, labelled], "100")
-        self.assertEqual((outcomes_b[self.SKIP], outcomes_b[self.REVIEW], outcomes_b[self.LABEL]),
-                         ("success", "success", "success"), self.logs[-6:])
-        after = [dict(mine, id=30), labelled]
-        self.checkout()
-        self.serve(f"repos/{REPO}/issues/7/comments", after)
-        rc, out, outs = self.run_script(step("comment", self.SKIP)["run"], NUMBER="7", HEAD=HEAD,
-                                        STARTED=ci["started"], GAVE_WAY="", GITHUB_RUN_ID="90")
-        self.assertEqual((rc, outs.get("gave_way")), (0, "true"), out)
-        self.assertEqual(len(labels_b), 1, (wrote_b, self.logs[-8:]))
-        (label,) = labels_b
-        self.assertEqual((rules.withdrawal_stands([withdrawn], after, HEAD),
-                          "The workflow recorded the check `repo-pairs/import-approved`" in label),
-                         ("901", False), label)
+        """The tester's audit of round 21, F5, as OSSV-221's architect's contract of 2026-11-24 05:23Z (1) and his
+        rulings of 05:31Z and 05:33Z ask: every order of the post-7 and label-7 queues ends with no success standing
+        over a newer verdict. No failure is on the path. Rescreen run 120 of mallory's #7 (read 30 minutes ago) gave
+        HEAD a blocking finding; the slow CI review run 100 (read 40 minutes ago) passed HEAD
+        (newer_word_and_older_record), in both orders of their post jobs. At the end the newest word on HEAD by read
+        time is run 120's blocking finding, and no success check run stands, whichever job kept it from being recorded
+        or withdrew it. At 1966ff3c, with run 120's post job first, run 100 records a success that nothing withdraws."""
+        for first in ("newer", "older"):
+            with self.subTest(first=first):
+                self.tearDown()
+                self.setUp()
+                after, checks = self.newer_word_and_older_record("clean", "blocking", first)
+                self.assertEqual((rules.review_verdict(after, HEAD), self.successes(checks)),
+                                 (("blocking", "screened", "blocking"), []), (checks, self.logs[-6:]))
 
     def test_no_success_stands_after_a_newer_runs_screen_hold_whose_post_job_ran_before_the_older_record(self):
-        """The tester's audit of round 21, F5 with a hold (no failure on the path; OSSV-221's architect, 2026-11-24
-        05:23Z: each order of the two queues that ends open). The screen of rescreen run 120 of mallory's #7, which read
-        the item 30 minutes ago, held HEAD; its post job ran first in post-7: no import check run stood, so it withdrew
-        nothing. The slow CI review run 100 read the item 40 minutes ago and passed HEAD; its post job runs next, before
-        run 120's hold job posts the hold comment, so it records check run 901. Run 120's hold comment then posts, and
-        run 100's comment job gives way to it. No job is left that withdraws 901: a success stands under a newer hold."""
+        """F5 with a hold, as the contract of 2026-11-24 05:23Z (1) and the rulings of 05:31Z and 05:33Z ask. No failure
+        is on the path. The screen of rescreen run 120 of mallory's #7 (read 30 minutes ago) held HEAD; the slow CI
+        review run 100 (read 40 minutes ago) passed HEAD (newer_word_and_older_record), in both orders of their post
+        jobs. At the end the newest word on HEAD is run 120's hold, and no success check run stands. At 1966ff3c, with
+        run 120's post job first, run 100 records a success that nothing withdraws."""
+        for first in ("newer", "older"):
+            with self.subTest(first=first):
+                self.tearDown()
+                self.setUp()
+                after, checks = self.newer_word_and_older_record("held", "pass", first)
+                self.assertEqual((rules.review_verdict(after, HEAD)[1], self.successes(checks)), ("held", []),
+                                 (checks, self.logs[-6:]))
+
+    def older_after_newer_record(self, screen, verdict):
+        """Rescreen run 100 of mallory's #7 read the item 30 minutes ago and passed HEAD; its post job ran first in
+        post-7 and recorded a check run. The slow CI review run 90 read the item 40 minutes ago: its screen gave screen
+        and its review verdict. Its post job runs next. Then run 100's comment job runs, then run 90's comment job or
+        hold job. Each job sees the check runs as the jobs before it left them. (the check runs after run 100's post
+        job, the writes of run 90's post job, the check runs when run 100's label step wrote, run 100's label comment,
+        the check runs at the end)."""
         older = review_of(HEAD, at=ago(70), run=60)
         rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
-        self.env["GITHUB_RUN_ID"] = "120"
-        try:
-            b = self.judge(["README.md"], value=self.LPS, trust=rescreen, screen="held", event="workflow_dispatch",
-                           comments=[older], named=HEAD)
-        finally:
-            self.env["GITHUB_RUN_ID"] = "100"
-        self.assertEqual((b["checks"], b["withdrawn"]), ([], []), self.logs)
-        trust = dict(self.REVIEWED, started=ago(40))
-        a = self.judge(["README.md"], value=self.LPS, trust=trust, comments=[older])
-        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
-                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
-                        "request, so the automated review did not run. You do not need to do anything.\n\n"
-                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
-        after = [older, hold]
-        outcomes, wrote, _labels, _mine = self.comment_job_after_post(a, trust, "pass", after, "100")
-        standing = [body for _t, body in a["checks"] if body["conclusion"] == "success"]
-        self.assertEqual((len(standing), rules.review_verdict(after, HEAD)[1], outcomes[self.SKIP], wrote),
-                         (0, "held", "success", []), self.logs[-4:])
+        ci = dict(self.REVIEWED, started=ago(40))
+        mine, recorded = self.judged([], "100", trust=rescreen, event="workflow_dispatch", comments=[older])
+        self.assertEqual((mine["post"]["recorded"], len(self.successes(recorded))), ("true", 1), self.logs)
+        theirs, checks = self.judged(recorded, "90", verdict=verdict, screen=screen, trust=ci, comments=[older])
+        labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
+        self.serve_checks(checks)
+        at_label = checks
+        _outcomes, wrote, labels, review = self.comment_job_after_post(mine, rescreen, "pass", [older, labelled], "100")
+        self.assertEqual(len(labels), 1, (wrote, self.logs[-8:]))
+        checks = self.applied_checks(checks)
+        after = [dict(review, id=30), labelled]
+        self.serve_checks(checks)
+        if screen == "held":
+            self.hold_job_after_post(theirs, ci, after, "90")
+        else:
+            self.comment_job_after_post(theirs, ci, verdict, after, "90")
+        return recorded, theirs["withdrawn"], at_label, labels[0], self.applied_checks(checks)
+
+    def test_the_label_does_not_say_recorded_after_an_older_runs_post_job_withdrew_the_newer_record(self):
+        """The tester's audit of round 21, F6, as OSSV-221's architect's contract of 2026-11-24 05:23Z (2) asks: a run
+        withdraws only a success recorded by a run that read the head earlier, so an older read never withdraws a newer
+        read's record (a withdrawal of kind own counts from its run's read time); and the label step writes the state
+        import only while a success stands. No failure is on the path. Run 100 (read 30 minutes ago) recorded a check
+        run; the CI review run 90 (read 40 minutes ago) gave a blocking finding (older_after_newer_record). Run 90's
+        post job withdraws nothing, the check run of run 100 still stands at the end, and run 100's label comment says
+        that the workflow recorded the check only while a success stood when it wrote. At 1966ff3c run 90 withdraws
+        it, and the label says recorded all the same."""
+        recorded, withdrawn, at_label, label, end = self.older_after_newer_record("clean", "blocking")
+        said = "The workflow recorded the check `repo-pairs/import-approved`" in label
+        self.assertEqual((withdrawn, self.successes(end), said),
+                         ([], self.successes(recorded), bool(self.successes(at_label))), (end, label))
 
     def test_the_label_does_not_say_recorded_after_an_older_runs_screen_hold_withdrew_the_newer_record(self):
-        """The tester's audit of round 21, F6 with a hold (no failure on the path; a label text false for the case it
-        posts with; OSSV-221's architect, 2026-11-24 05:23Z). Rescreen run 100 of mallory's #7 read the item 30 minutes
-        ago and passed HEAD; its post job ran first in post-7 and recorded check run 901. The screen of the slow CI
-        review run 90, which read the item 40 minutes ago, held HEAD; its post job runs next and withdraws 901 for its
-        own screen. Run 100's comment job then posts its pass and the label state import, which says that the workflow
-        recorded the check, while 901 is withdrawn and its withdrawal stands."""
-        older = review_of(HEAD, at=ago(70), run=60)
-        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
-        b = self.judge(["README.md"], value=self.LPS, trust=rescreen, event="workflow_dispatch", comments=[older])
-        self.assertEqual(b["post"]["recorded"], "true", self.logs)
-        (_t, body), = b["checks"]
-        listed = dict(body, id=901, app={"id": VERIFY_APP_ID})
-        ci = dict(self.REVIEWED, started=ago(40))
-        self.env["GITHUB_RUN_ID"] = "90"
-        try:
-            a = self.judge(["README.md"], value=self.LPS, trust=ci, screen="held", comments=[older], listed=[listed])
-        finally:
-            self.env["GITHUB_RUN_ID"] = "100"
-        self.assertEqual([e for _t, e, _b in a["withdrawn"]], [f"repos/{REPO}/check-runs/901"], self.logs)
-        withdrawn = self.applied(listed, a)
-        labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60), "body": rules.label_comment("change")}
-        _outcomes, wrote, labels, mine = self.comment_job_after_post(b, rescreen, "pass", [older, labelled], "100")
-        self.assertEqual(len(labels), 1, (wrote, self.logs[-8:]))
-        (label,) = labels
-        self.assertEqual((rules.withdrawal_stands([withdrawn], [dict(mine, id=30), labelled], HEAD),
-                          "The workflow recorded the check `repo-pairs/import-approved`" in label), ("901", False),
-                         label)
+        """F6 with a hold, as the contract of 2026-11-24 05:23Z (2) asks. No failure is on the path. Run 100 (read 30
+        minutes ago) recorded a check run; the screen of the CI review run 90 (read 40 minutes ago) held HEAD
+        (older_after_newer_record). Run 90's post job withdraws nothing, the check run of run 100 still stands at the
+        end, and run 100's label comment says recorded only while a success stood when it wrote. At 1966ff3c run 90
+        withdraws it for its own screen, and the label says recorded all the same."""
+        recorded, withdrawn, at_label, label, end = self.older_after_newer_record("held", "pass")
+        said = "The workflow recorded the check `repo-pairs/import-approved`" in label
+        self.assertEqual((withdrawn, self.successes(end), said),
+                         ([], self.successes(recorded), bool(self.successes(at_label))), (end, label))
+
+    def test_the_label_is_true_for_the_check_runs_as_they_stand_after_a_newer_read_withdrew_the_record(self):
+        """New in round 21's revision, the contract of 2026-11-24 05:23Z (2), its second sentence: the label step reads
+        the check runs again just before it writes the state import, and writes it only while a success stands. No
+        failure is on the path. Rescreen run 100 of mallory's #7 read the item 30 minutes ago and passed HEAD; its post
+        job recorded a check run. The CI review run 120 read the item 20 minutes ago, a newer read, and gave a blocking
+        finding, or its screen held HEAD; its post job withdraws that success, as the contract allows. Run 100's
+        comment job runs before run 120's comment or hold posts, so it finds no newer word and writes its label: the
+        label does not say that the workflow recorded the check, as no success stands. At 1966ff3c it says so."""
+        for case, screen, verdict in (("a blocking verdict", "clean", "blocking"), ("a screen hold", "held", "pass")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                older = review_of(HEAD, at=ago(70), run=60)
+                rescreen = dict(self.REVIEWED, task="rescreen", started=ago(30))
+                mine, checks = self.judged([], "100", trust=rescreen, event="workflow_dispatch", comments=[older])
+                self.assertEqual(len(self.successes(checks)), 1, self.logs)
+                _theirs, checks = self.judged(checks, "120", verdict=verdict, screen=screen,
+                                              trust=dict(self.REVIEWED, started=ago(20)), comments=[older])
+                labelled = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60),
+                            "body": rules.label_comment("change")}
+                self.serve_checks(checks)
+                _outcomes, wrote, labels, _review = self.comment_job_after_post(mine, rescreen, "pass",
+                                                                                [older, labelled], "100")
+                self.assertEqual(len(labels), 1, (wrote, self.logs[-8:]))
+                said = "The workflow recorded the check `repo-pairs/import-approved`" in labels[0]
+                self.assertEqual((self.successes(checks), said), ([], False), (checks, labels[0]))
+
 
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
