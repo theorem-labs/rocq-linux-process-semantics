@@ -1299,9 +1299,9 @@ jobs:
                     (( n > 0 )) || stop "GitHub holds no run of $pr_head."
                     marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
                     read -r _ _ _ _ steered <<< "$marks"
-                    why="its label comment records $pr_head as a head whose runs the workflow does not approve (a file"
-                    why+=" under .github/, or 3,000 files or more)"
-                    [ "$steered" = false ] || stop "$why, so Sami approves its runs."
+                    why="its label comment records that $pr_head changes a file under .github/, or 3,000 files or more."
+                    why+=" The workflow does not approve the runs of such a head, so Sami approves them."
+                    [ "$steered" = false ] || stop "$why"
                     newest approve
                     again approve
                     # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -3298,20 +3298,19 @@ jobs:
               kind=owed
             fi
           fi
-          # because: why the import check runs of the head are withdrawn. For the screen, own and held say a later
-          # screen. For own, it is this run's own screen. Only a relabel and a review by hand reach held (the
-          # decision's held, from rules.py verdict): a run on the route screen whose own record finds a newer hold
-          # withdraws nothing for it (screened_run). There the hold is newer than each screened review comment of the
-          # head. A screened run records its check run before its comment job posts that comment, so the hold is later
-          # than each check run whose screened review comment still stands. The hold of the line can be older than the
-          # check run, so its text does not say later.
+          # because: why the import check runs of the head are withdrawn. For the screen, only own says a later screen:
+          # it is this run's own screen, which held the head in this run. Every other kind says an automated screen,
+          # as the title and the summary of the withdrawal do (rules.py OWED_WITHDRAWN): the hold of another kind can
+          # be older than the check run. Only a relabel and a review by hand reach held (the decision's held, from
+          # rules.py verdict); a run on the route screen whose own record finds a newer hold withdraws nothing for it
+          # (screened_run).
           case $why in
             blocking) because="$who $asks" ;;
             person) because="$who $has" ;;
             screen)
               because="a later screen held $head"
-              [ "$kind" != owed ] || because="an automated screen held $head" ;;
-            *) echo "#$NUMBER: this run found no cause to withdraw an import check run of $head."; exit 0 ;;
+              [ "$kind" = own ] || because="an automated screen held $head" ;;
+            *) echo "#$NUMBER: this run withdraws no import check run of $head."; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the $gave job gave no head commit: $head"; exit 1; }
           echo "owed=$head $why" >> "$GITHUB_OUTPUT"

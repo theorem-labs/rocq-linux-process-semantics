@@ -1151,8 +1151,8 @@ due_approve() {
   [[ $retaken != *" approve"* ]] || return 0
   head_of || return 1
   if [ "$steered" = true ]; then
-    echo "#$number: its label comment records $head as a head whose runs the workflow does not approve (a file" \
-      "under .github/, or 3,000 files or more), so Sami approves its runs."
+    echo "#$number: its label comment records that $head changes a file under .github/, or 3,000 files or more." \
+      "The workflow does not approve the runs of such a head, so Sami approves them."
     return 0
   fi
   keyless=$(no_key_of "$number" "$head") || { echo "::error::the comments of #$number could not be read."; return 1; }

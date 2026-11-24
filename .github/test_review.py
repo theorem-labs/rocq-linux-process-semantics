@@ -4454,10 +4454,11 @@ class ApproveTest(Holding):
                 (method, _endpoint, body), = label_comments(self.api)
                 self.assertEqual((method, body), ("POST", rules.label_comment("steering", head=HEAD)))
                 self.assertEqual(body, "<!-- review-label -->\n**Next step:** Sami, a person at Theorem with write "
-                                       "access, approves the runs of this pull request on GitHub.\n\nThis pull "
-                                       "request changes a file under `.github/`, or it changes 3,000 files or more, "
-                                       "and GitHub lists at most 3,000 files of a pull request. So the workflow does "
-                                       "not approve its runs. You do not need to do anything.\n\n"
+                                       "access, approves the runs of this pull request on GitHub.\n\nThe workflow "
+                                       "does not approve the runs of this pull request, because it changes a file "
+                                       "under `.github/` or it changes 3,000 files or more. GitHub lists at most "
+                                       "3,000 files of a pull request, so a file under `.github/` can be missing from "
+                                       "the list. You do not need to do anything.\n\n"
                                        f"<!-- review-steering {HEAD} -->\n<!-- waits-on-theorem: Sami -->")
                 self.assertNotRegex(body, r"(?i)maintainer|decide|will look")
         # The head moves between the two reads of the pull request, after its files were read: no approval, and no
@@ -11134,15 +11135,16 @@ class ScheduleTest(Scheduled):
             with self.subTest(number=number):
                 rc, out, runs = self.started(number=number)
                 self.assertEqual((rc, runs), (0, []), out)
-                self.assertIn(f"#7: its label comment records {HEAD} as a head whose runs the workflow does not "
-                              "approve (a file under .github/, or 3,000 files or more), so Sami approves its runs.\n",
-                              out)
+                self.assertIn(f"#7: its label comment records that {HEAD} changes a file under .github/, or 3,000 "
+                              "files or more. The workflow does not approve the runs of such a head, so Sami approves "
+                              "them.\n", out)
                 self.assertEqual(label_comments(self.api), [], out)
                 self.assertEqual([c for c in writes(self.api) if f"repos/{REPO}/issues/7/comments" in c], [], out)
         rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="approve", head=HEAD, account="mallory")
         self.assertEqual((rc, got.get("route")), (0, None), out)
-        self.assertIn(f"its label comment records {HEAD} as a head whose runs the workflow does not approve (a file "
-                      "under .github/, or 3,000 files or more), so Sami approves its runs.", out)
+        self.assertIn(f"::notice::No approve of #7: its label comment records that {HEAD} changes a file under "
+                      ".github/, or 3,000 files or more. The workflow does not approve the runs of such a head, so "
+                      "Sami approves them.", out)
 
     def test_with_no_key_a_screened_held_head_waits_on_a_person_and_gets_no_second_approve_run(self):
         """R10 (spec v76, and v90 for the second event): until the LPS move of dispatch://OSSV-321, the environment
@@ -18544,7 +18546,7 @@ class ImportCheckTest(ReaderRunner):
         post job of a newer run. Run 120 held HEAD, and its hold comment posted 10 minutes ago. Run 100 records
         nothing: its decision is held. It withdraws nothing for that hold either: the run of the hold withdraws for its
         own screen, so the decision writes no output owed or held, and the step that withdraws says that this run
-        found no cause to withdraw. Its label step writes no label comment: the hold is newer than the start of this
+        withdraws no import check run. Its label step writes no label comment: the hold is newer than the start of this
         run, so the labels stay as that hold left them. The control, with the check of the decide step taken out,
         records the check run."""
         at, started = ago(10), ago(40)
@@ -18560,7 +18562,7 @@ class ImportCheckTest(ReaderRunner):
                          ("", "", [], []), self.logs)
         self.assertIn(f"#7 at {HEAD}: the decision on the import check is held (a screen held {HEAD} at {at}, at or "
                       f"after this run read #7 at {started}).", "\n".join(self.logs[start:]))
-        self.assertIn(f"#7: this run found no cause to withdraw an import check run of {HEAD}.\n",
+        self.assertIn(f"#7: this run withdraws no import check run of {HEAD}.\n",
                       "\n".join(self.logs[start:]))
         self.assertRecorded(self.changed_decide(self.OWN_RECORD, "", lambda: self.judge(
             ["README.md"], value=self.LPS, trust=trust, comments=[hold])), self.LPS)
@@ -18573,8 +18575,9 @@ class ImportCheckTest(ReaderRunner):
         20 minutes ago, and its review comment posted 15 minutes ago. Now the post job of run 100 runs. Its decision
         is held, as the hold of run 120 is newer than its start, so it records nothing. It also withdraws nothing:
         run 100 has no cause of its own to withdraw, and 901 stands. No PATCH is sent, the step that withdraws says
-        that this run found no cause, and the label step leaves the labels to the hold. The control, whose decide
-        step writes the outputs owed and held for that decision again, withdraws 901 for the hold of run 120."""
+        that this run withdraws no import check run, and the label step leaves the labels to the hold. The control,
+        whose decide step writes the outputs owed and held for that decision again, withdraws 901 for the hold of run
+        120."""
         listed, _others = self.recorded()
         recorded = dict(listed, completed_at=ago(20))
         hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(30), "updated_at": ago(30),
@@ -18588,7 +18591,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotRecorded(got, "held")
         self.assertEqual((got["result"], got["withdrawn"], got["post"]["owed"], got["post"]["withdrawn"]),
                          ("success", [], "", ""), self.logs)
-        self.assertIn(f"#7: this run found no cause to withdraw an import check run of {HEAD}.\n",
+        self.assertIn(f"#7: this run withdraws no import check run of {HEAD}.\n",
                       "\n".join(self.logs[start:]))
         self.assertEqual((got["labels"], got["comments"]), ([], []), got["log"])
         held = 'decided held "a screen held $HEAD at $what'
@@ -19684,7 +19687,7 @@ class KindTableTest(Scheduled, ReaderRunner):
         alice and carol alike, the post job withdraws check run 901, as a relabel of the same comments does."""
         cases = (("blocking", [review_of(HEAD, "blocking", at=ago(90))],
                   f"a review of {HEAD} before this run asks for a change"),
-                 ("held", self.relabelled("held"), f"a later screen held {HEAD}"))
+                 ("held", self.relabelled("held"), f"an automated screen held {HEAD}"))
         for kind in ("outsider", "writer", "unknown"):
             for case, comments, because in cases:
                 with self.subTest(case=case, author=self.AUTHORS[kind]):

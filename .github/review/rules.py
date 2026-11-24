@@ -449,9 +449,9 @@ STATES = {
     # head (steering_line).
     "steering": (
         THEOREM, "Sami, a person at Theorem with write access, approves the runs of this pull request on GitHub.",
-        "This pull request changes a file under `.github/`, or it changes 3,000 files or more, and GitHub lists at "
-        "most 3,000 files of a pull request. So the workflow does not approve its runs. You do not need to do "
-        "anything."),
+        "The workflow does not approve the runs of this pull request, because it changes a file under `.github/` or "
+        "it changes 3,000 files or more. GitHub lists at most 3,000 files of a pull request, so a file under "
+        "`.github/` can be missing from the list. You do not need to do anything."),
     # A held pull request whose head the screen passed, while the environment post held no key of the
     # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. Its
     # next step names Sami, as for the state steering, and the label comment records the head (no_key_line).
