@@ -3097,12 +3097,13 @@ jobs:
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
               said="#$NUMBER: check run $stands is the newest import check run of $HEAD."
               if [ "$since" != - ]; then
-                echo "$said It is not an approval, as its conclusion is neutral. It counts from $since, the time that" \
-                  "its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
+                echo "$said It is not an approval, because its conclusion is neutral. It counts from $since, the time" \
+                  "that its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
               else
-                echo "$said Its summary names no time, so no review lifts it."
+                echo "$said Its summary names no time, so it blocks a record whatever review is newer."
               fi
-              decided withdrawn "check run $stands is not an approval, and no screened pass of a later read lifts it"
+              said="check run $stands is not an approval, and no screened pass of $HEAD counts from a time after it"
+              decided withdrawn "$said"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
               if [ "$why" != - ]; then
@@ -3201,15 +3202,16 @@ jobs:
             fi
             if [ "$decision" = withdrawn ]; then
               if [ "$since" != - ]; then
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD. It is not an approval, as" \
-                  "its conclusion is neutral. It counts from $since, at or after this run read #$NUMBER at" \
-                  "$STARTED. The pass of this run counts from $STARTED. No screened pass of $HEAD comes from a run" \
-                  "that read #$NUMBER after $since."
+                echo "#$NUMBER: check run $what is the newest import check run of $HEAD. It is not an approval," \
+                  "because its conclusion is neutral. It counts from $since. This run read #$NUMBER at $STARTED, at" \
+                  "or before that time. The pass of this run counts from $STARTED. No screened pass of $HEAD comes" \
+                  "from a run that read #$NUMBER after $since."
               else
                 echo "#$NUMBER: check run $what is the newest import check run of $HEAD. Its summary names no time," \
-                  "so no review lifts it."
+                  "so it blocks a record whatever review is newer."
               fi
-              decided withdrawn "check run $what is not an approval, and no screened pass of a later read lifts it"
+              said="check run $what is not an approval, and no screened pass of $HEAD counts from a time after it"
+              decided withdrawn "$said"
             fi
             if [ "$decision" = newer ]; then
               if [ "$what" = - ]; then
@@ -3495,11 +3497,11 @@ jobs:
               # again: the error of this path says what comes next. The rescreen pass's retry is a relabel, which
               # withdraws for the line of this run but records no such check run.
               if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
-                again=" An hour or more after this run ends, the rescreen pass relabels this head. That relabel"
-                again+=" withdraws each import check run with the conclusion success of an older read, for the verdict"
-                again+=" or the screen of this run. It records no check run that says that the head is not approved."
-                again+=" After $REVIEW_TRIES failed tries, this one included, the label comment names the next step for"
-                again+=" Sami."
+                again=" An hour or more after this run ends, the rescreen pass relabels this head. Because $because,"
+                again+=" that relabel withdraws each import check run with the conclusion success. It leaves one only"
+                again+=" when its run read #$NUMBER after that. It records no check run that says that the head is not"
+                again+=" approved. After $REVIEW_TRIES failed tries, this one included, the label comment names the"
+                again+=" next step for Sami."
               fi
               [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
                 || { echo "::error::no start time of this run, so no check run records that $head is not approved" \
@@ -3638,10 +3640,11 @@ jobs:
           # withdraws for the line of this run but records no such check run.
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
-            again=" An hour or more after this run ends, the rescreen pass relabels this head. That relabel withdraws"
-            again+=" each import check run with the conclusion success of an older read, for the verdict or the screen"
-            again+=" of this run. It records no check run that says that the head is not approved. After $REVIEW_TRIES"
-            again+=" failed tries, this one included, the label comment names the next step for Sami."
+            again=" An hour or more after this run ends, the rescreen pass relabels this head. For the verdict or the"
+            again+=" screen of this run, that relabel withdraws each import check run with the conclusion success. It"
+            again+=" leaves one only when its run read #$NUMBER after that verdict or screen. It records no check run"
+            again+=" that says that the head is not approved. After $REVIEW_TRIES failed tries, this one included, the"
+            again+=" label comment names the next step for Sami."
           fi
           request=$RUNNER_TEMP/not-approved.json
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -4092,8 +4095,8 @@ jobs:
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
               said="Its post job gave the decision withdrawn. The newest import check run of $HEAD is not an approval,"
-              said+=" and no screened pass of a later read lifts it. Its summary names a time at or after $STARTED, or"
-              said+=" no time." ;;
+              said+=" and no screened pass of $HEAD counts from a time after it. Its summary names a time at or after"
+              said+=" $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
