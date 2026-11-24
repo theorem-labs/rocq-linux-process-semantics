@@ -3406,12 +3406,15 @@ jobs:
           # older cause (rules.py source): held for a newer hold of the screen, owed for the line
           # <!-- withdraw-owed <head> <why> <run> --> (FROM_OWED), and earlier for a review comment of the head: the
           # newest one, which a relabel reads (a relabel gives no verdict of its own), or EARLIER (rules.py verdict).
-          # who, asks and has: the review whose verdict withdraws, and what it says. For own, it is this run's review, a
-          # review later than the check run. The review of another kind can be older than the check run, so its texts do
-          # not say later. For a relabel's review and for the line, the texts are those of the check run's title
-          # (rules.py OWED_WITHDRAWN): a past verdict, asked and had. For EARLIER, who says that the review came before
-          # this run, and asks and has give the verdict that its comment gives now.
-          who="a later review" asks="asks for a change" has="has questions for Sami" kind=own
+          # who, asks and has: the review whose verdict withdraws, and what it says. For own, it is the review of this
+          # run, and the log names this run: the run that recorded a check run can have read the item at the same time
+          # as this run, and then this review is not a later one (rules.py TIE_WITHDRAWN). The review of another kind
+          # can be older than the check run, so its texts do not say later. For a relabel's review and for the line,
+          # the texts are those of the check run's title (rules.py OWED_WITHDRAWN): a past verdict, asked and had. For
+          # EARLIER, who says that the review came before this run, and asks and has give the verdict that its comment
+          # gives now. after names the review or the hold of this run, for the error of the check run of not-approved.
+          who="the review of this run" asks="asks for a change" has="has questions for Sami" kind=own
+          after="that review"
           if [ "$TASK" = relabel ]; then
             who="an automated review of $head" asks="asked for a change" has="had questions for Sami" kind=earlier
           fi
@@ -3424,8 +3427,8 @@ jobs:
               kind=owed
             fi
           fi
-          # because: why the import check runs of the head are withdrawn. For the screen, only own says a later screen:
-          # it is this run's own screen, which held the head in this run. Every other kind says an automated screen,
+          # because: why the import check runs of the head are withdrawn. For the screen, only own names this run: it is
+          # this run's own screen, which held the head in this run. Every other kind says an automated screen,
           # as the title and the summary of the withdrawal do (rules.py OWED_WITHDRAWN): the hold of another kind can
           # be older than the check run. Only a relabel and a review by hand reach held (the decision's held, from
           # rules.py verdict); a run on the route screen whose own record finds a newer hold withdraws nothing for it
@@ -3434,7 +3437,7 @@ jobs:
             blocking) because="$who $asks" ;;
             person) because="$who $has" ;;
             screen)
-              because="a later screen held $head"
+              because="the screen of this run held $head" after="that hold"
               [ "$kind" = own ] || because="an automated screen held $head" ;;
             *) echo "#$NUMBER: this run withdraws no import check run of $head."; exit 0 ;;
           esac
@@ -3499,19 +3502,10 @@ jobs:
             "$RUNNER_TEMP/approved.jsonl" | tr '\n' ' ')
           kept=${kept% }
           if [ -n "$kept" ]; then
-            echo "#$NUMBER: the import check runs $kept of $head stand. Each one is the record of a run that read" \
-              "#$NUMBER after $at. The withdrawal of this run counts from $at, so it leaves them."
+            echo "#$NUMBER: this run leaves each import check run with the conclusion success in $kept of $head. The" \
+              "run that recorded each one read #$NUMBER after $at, and the withdrawal of this run counts from $at."
           fi
           if [ -z "$ids" ]; then
-            # With no import check run to withdraw, own says what this run's own review or screen gave: no check run
-            # stands for that review or screen to be later than. after names that review or hold.
-            if [ "$kind" = own ]; then
-              case $why in
-                blocking) because="the review of this run asks for a change" after="that review" ;;
-                person) because="the review of this run has questions for Sami" after="that review" ;;
-                screen) because="the screen of this run held $head" after="that hold" ;;
-              esac
-            fi
             # With no import check run of conclusion success at all, a run whose own verdict or screen withdraws makes
             # the request of a check run with the conclusion neutral that says that the head is not approved for the
             # import (rules.py not-approved; OSSV-221's architect, 2026-11-24 05:33Z). It does so when the rules that
@@ -4124,9 +4118,9 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job gave the decision withdrawn. The newest import check run of $HEAD, by the time that"
-              said+=" each one names, is not an approval. It counts as newer than each screened pass of $HEAD. Its"
-              said+=" summary names a time at or after $STARTED, or no time." ;;
+              said="Its post job gave the decision withdrawn. Then the newest import check run of $HEAD, by the time"
+              said+=" that each one named, was not an approval. It counted as newer than each screened pass of $HEAD."
+              said+=" Its summary named a time at or after $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
@@ -4408,11 +4402,13 @@ jobs:
       # recorded: so the state is import while the variable is set, and decide, with Sami's steps, when none stands.
       # Just before it writes the state import (the post job recorded the check run, or one stands for the decision
       # hand, and the variable is set), this step reads the import check runs of the head again (OSSV-221's architect,
-      # 2026-11-24 05:23Z): after the post job of this run, the post job of another run can withdraw that check run. It
-      # writes the state import only while a check run of this pull request on the head with conclusion success stands
-      # with the marker line of that value (rules.py import-marker). Else it writes the state of the decision withdrawn:
-      # its text says that no comment gives the reason for the withdrawal yet. A read that fails fails this step before
-      # it writes anything.
+      # 2026-11-24 05:23Z): the post job of another run can withdraw that check run after the post job of this run read
+      # it. A check run that the post job of this run withdrew for its own verdict never counts: then its output
+      # standing is false (the outputs of the post job). It writes the state import only while a check run of this pull
+      # request on the head with conclusion success stands with the marker line of that value (rules.py import-marker).
+      # Else it gives the decision gone: in the state decide, its text says that a run of the workflow withdrew the
+      # check after the screen and the review passed (rules.py GONE), with Sami's step for a review by hand. A read that
+      # fails fails this step before it writes anything.
       # With the decision screened, the state follows this run's verdict, as for any review. With the decision withdrawn
       # of a relabel, the state decide gets its own text and Sami's step for a review by hand, in the place of the
       # passed text and the steps of the import (rules.py NO_REASON). After a review job that
@@ -4574,7 +4570,7 @@ jobs:
           # state import while the variable is set. So just before that, this reads the import check runs of the head
           # again: with no check run of the OSS Verify App for this pull request (external_id <number>:<head>) with
           # conclusion success and the marker line of the value (rules.py import-marker), approved is false, and the
-          # decision is withdrawn. The read asks for every check run of the head (filter=all).
+          # decision is gone (rules.py GONE). The read asks for every check run of the head (filter=all).
           approved=$RECORDED decision=${DECISION:-}
           [ "$decision" != hand ] || [ "${STANDING:-}" != true ] || approved=true
           if [ "$approved" = true ] && [ -n "$paths" ]; then
@@ -4589,10 +4585,10 @@ jobs:
               || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
             if [ -z "$found" ]; then
               echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
-                "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
-                "found. So the label comment gives the decision withdrawn, and it does not say that the workflow" \
-                "recorded the check."
-              approved=false decision=withdrawn
+                "paths stands now. A run withdrew the check run that the post job of this run recorded or found." \
+                "That run is this run, for its own verdict, or another run. So the label comment gives the decision" \
+                "gone, and it does not say that the workflow recorded the check."
+              approved=false decision=gone
             fi
           fi
           will_fix=false fix_stop=false fix_posted=false verdict=$VERDICT
