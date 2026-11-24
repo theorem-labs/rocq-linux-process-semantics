@@ -18673,7 +18673,7 @@ class ImportCheckTest(ReaderRunner):
                               f"because its conclusion is neutral. It counts from {since}, the time that its summary "
                               f"names. No screened pass of {HEAD} comes from a run that read #7 after {since}.\n", logs)
                 self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not an "
-                              f"approval, and no screened pass of {HEAD} counts from a time after it.\n", logs)
+                              f"approval, and no screened pass of {HEAD} counts from a time after {since}.\n", logs)
                 newer = review_of(HEAD, at=ago(-1), id_=31, run=130)
                 got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
                                  comments=[screened, newer, old], listed=[withdrawn])
@@ -18700,9 +18700,11 @@ class ImportCheckTest(ReaderRunner):
                     self.assertRecorded(got, self.LPS)
                 else:
                     self.assertNotRecorded(got, "withdrawn")
+                    logs = "\n".join(self.logs[start:])
                     self.assertIn(f"#7: check run 901 is the newest import check run of {HEAD}. Its summary names no "
-                                  "time, so it blocks a record whatever review is newer.\n",
-                                  "\n".join(self.logs[start:]))
+                                  f"time, so it counts as newer than each screened pass of {HEAD}.\n", logs)
+                    self.assertIn(f"#7 at {HEAD}: the import check gets the decision withdrawn. Check run 901 is not "
+                                  f"an approval, and it counts as newer than each screened pass of {HEAD}.\n", logs)
 
     def test_a_screened_review_records_nothing_after_a_newer_runs_hold_and_withdrawal_of_its_head(self):
         """OSSV-221's architect, 2026-11-23 18:28Z (the tester's audit of round 19): a screened review's own record
@@ -19490,9 +19492,10 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is not an approval, "
-                 f"and no screened pass of {HEAD} counts from a time after it. Its summary names a time at or after "
-                 f"{started}, or no time."),
+                 f"Its post job gave the decision withdrawn. The newest import check run of {HEAD} is not an approval. "
+                 f"Its summary names a time at or after {started}, and no screened pass of {HEAD} counts from a time "
+                 "after that time. Or its summary names no time, and then it counts as newer than each screened pass "
+                 f"of {HEAD}."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
@@ -20433,20 +20436,22 @@ class ImportCheckTest(ReaderRunner):
         HEAD a blocking finding, or its screen held HEAD, and no import check run of HEAD stands. The step that posts
         it fails, and so does the post job: its output owed names HEAD and the reason, and withdrawn is empty, so the
         comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> -->. The error names HEAD
-        and says what comes next: when the run's name gives HEAD, the rescreen pass's relabel, which withdraws each
-        success for the verdict or the screen of this run, leaves one only when its run read #7 after that, and records
-        no such check run (the fresh readers of round 22, M1, M2 and N4); else a re-run. The withdraw step's own error
-        of that path, for a run with no start time, names the cause, the screen of this run that held HEAD: a run whose
-        screen held HEAD shows it, as its comment job, which needs that time, does not run."""
+        and says what comes next: when the run's name gives HEAD, the relabel that the rescreen pass starts, which
+        withdraws each success for the verdict or the screen of this run, leaves one only when the run that recorded
+        it read #7 after that, and records no such check run (the fresh readers of round 22, M1, M2, N4, S2 and S3);
+        else a re-run. The withdraw step's own error of that path, for a run with no start time, names the cause, the
+        screen of this run that held HEAD: a run whose screen held HEAD shows it, as its comment job, which needs that
+        time, does not run."""
         ending = (" It records no check run that says that the head is not approved. After "
                   f"{WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment names the next "
                   "step for Sami.")
-        retry = (" An hour or more after this run ends, the rescreen pass relabels this head. For the verdict or the "
-                 "screen of this run, that relabel withdraws each import check run with the conclusion success. It "
-                 f"leaves one only when its run read #7 after that verdict or screen.{ending}")
-        held = (" An hour or more after this run ends, the rescreen pass relabels this head. Because the screen of "
-                f"this run held {HEAD}, that relabel withdraws each import check run with the conclusion success. It "
-                f"leaves one only when its run read #7 after that.{ending}")
+        retry = (" An hour or more after this run ends, the rescreen pass starts a relabel of this head. For the "
+                 "verdict or the screen of this run, that relabel withdraws each import check run with the conclusion "
+                 f"success. It leaves one only when the run that recorded it read #7 after that verdict or screen."
+                 f"{ending}")
+        held = (" An hour or more after this run ends, the rescreen pass starts a relabel of this head. Because the "
+                f"screen of this run held {HEAD}, that relabel withdraws each import check run with the conclusion "
+                f"success. It leaves one only when the run that recorded it read #7 after that hold.{ending}")
         self.refuse(f"repos/{REPO}/check-runs", 422)
         for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
             for named, again, own in ((HEAD, retry, held), ("", " Re-run this run.", " Re-run this run.")):
@@ -20646,8 +20651,9 @@ class KindTableTest(Scheduled, ReaderRunner):
         # Stop: the stop of the pass for issue #7, whose review the pass tried REVIEW_TRIES times since its hold.
         ("stop", "hold-review", "writer", want("stopped", held=HELD_REVIEW, owed="starts")),
         ("stop", "hold-review", "outsider", want("stopped", held=HELD_REVIEW, owed="starts")),
-        ("stop", "hold-review", "unknown", want(stop=(1, "::error::a read of the rescreen pass's functions for #7 "
-                                                         "failed. Re-run this run."), owed="fails")),
+        ("stop", "hold-review", "unknown", want(stop=(1, "::error::the rescreen pass's functions could not read from "
+                                                         "GitHub what they need for #7. Re-run this run."),
+                                                owed="fails")),
         # Hold: the hold job at the hourly limit, at the hourly cap, after a review that did not finish, and after the
         # last try of such a review. alice's pull request is held for eve's push, and carol's in a review by hand with
         # the screen.
