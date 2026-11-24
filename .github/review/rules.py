@@ -20,6 +20,7 @@ labels").
     python3 .github/review/rules.py import-marker <head> [<import paths>]
     python3 .github/review/rules.py verdict <number> <head> [<checks.jsonl>]
     python3 .github/review/rules.py own-record <number> <head> <started> <run> <checks.jsonl>
+    python3 .github/review/rules.py newer-word <number> <head> <started> <run>
     python3 .github/review/rules.py sources <head> <checks.jsonl>
     python3 .github/review/rules.py source <number> <head> <why> <kind> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
@@ -233,6 +234,15 @@ a comment that names none), <since> that time and <verdict> that verdict; and - 
 records nothing for held, withdrawn and newer. A hold, a withdrawal or a review older than <started> leaves the record
 of this run, as after a blocking review, a fix and a screen that passed <head> again.
 
+newer-word: "<other> <kind> <time>" on standard output for <head> of the pull request <number>: the newest word on
+<head> of a run that read the item at or after <started>, the time when the trust job of this run read it (newer_word).
+A word is a review comment of github-actions[bot] that names <head> (<kind>: its verdict, pass, blocking or person) or
+a hold comment of the screen that names <head> (<kind>: hold), of another run than <run>, the id of this run. A review
+counts from the time when its run read the item (its marker <!-- review-read <time> -->), a hold from when GitHub last
+changed it, and a pass with no such marker at no time. <other> is the run of that word, or - when it names none. "-"
+alone when no such word stands. A run whose read of <head> is older than such a word posts nothing on the item: the
+comment job and the hold job read this. The status is 1 when GitHub could not give the comments.
+
 sources: the source runs and times that the withdrawals among the import check runs of <checks.jsonl> on <head> name
 (sources_of), as verdict reads them, on one line of standard output: <run>=<time> for each source run, with the latest
 time from which one of its withdrawals holds, and an empty line when none names one. The status is 2 when a line is
@@ -379,7 +389,8 @@ REFUSALS = ("", "review", "answer", "fix")
 # gives. A run on the route screen whose own screen and review passed the head records nothing when another run gave a
 # word on the head that counts from a time at or after its trust job read the item (own_record): held for a hold
 # comment of the screen, withdrawn for a withdrawal that stands, and newer for a review comment that gives a blocking
-# finding or the verdict person. Empty when the job gave none.
+# finding or the verdict person. Each of these three also goes to the post job's output gave_way, and the comment job
+# of such a run posts nothing on the item: no review, no label and no label comment. Empty when the job gave none.
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened", "withdrawn", "newer")
 
@@ -459,15 +470,16 @@ STATES = {
     "person": (THEOREM, "Sami answers the questions of the automated review.", "You do not need to do anything."),
     "screen": (
         THEOREM, "Sami starts the work that the hold comment names, by hand.", "You do not need to do anything."),
-    # A held pull request whose head changes a file under .github/, or that changes 3,000 files or more, so that
-    # GitHub's list of its files can hide such a file (R10): the post job approved none of its runs. Its next step
-    # names Sami, a person at Theorem with write access, who approves them on GitHub, and the label comment records the
-    # head (steering_line).
+    # A held pull request whose head changes a file under .github/, or that changes 3,000 files or more (R10): GitHub
+    # lists at most 3,000 files of a pull request, so the workflow counts such a pull request as one that changes a
+    # file under .github/. The post job approved none of its runs. Its next step names Sami, a person at Theorem with
+    # write access, who approves them on GitHub, and the label comment records the head (steering_line).
     "steering": (
         THEOREM, "Sami, a person at Theorem with write access, approves the runs of this pull request on GitHub.",
         "The workflow does not approve the runs of this pull request, because it changes a file under `.github/` or "
-        "it changes 3,000 files or more. GitHub lists at most 3,000 files of a pull request, so a file under "
-        "`.github/` can be missing from the list. You do not need to do anything."),
+        "it changes 3,000 files or more. GitHub lists at most 3,000 files of a pull request, so the workflow counts "
+        "a pull request of 3,000 files or more as one that changes a file under `.github/`. You do not need to do "
+        "anything."),
     # A held pull request whose head the screen passed, while the environment post held no key of the
     # OSS Verify App (R10, until the LPS move of dispatch://OSSV-321): the post job approved none of its runs. Its
     # next step names Sami, as for the state steering, and the label comment records the head (no_key_line).
@@ -1128,7 +1140,8 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
                 said = f"No hold comment of the screen of run {wrote} names {withdrawn}."
             else:
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}."
-            newer = f"No {'screened ' if screened else ''}review comment of {withdrawn} is newer than"
+            newer = (f"No {'screened ' if screened else ''}review comment of {withdrawn} comes from a run that read "
+                     f"#{number} after")
             if since:
                 newer += (f" {since}. That is the time of the line, from a hold of run {wrote} or from a withdrawal "
                           f"whose summary names a time of run {wrote}.")
@@ -1996,6 +2009,38 @@ def own_record(checks, comments, head, started, run):
     return "", "", "", ""
 
 
+def newer_word(comments, head, started, run):
+    """(run, kind, at) of the newest word on head of a run that read the item at or after started, or None (OSSV-221's
+    architect, 2026-11-24 01:20Z and 01:26Z, (a)): a run whose read of head is older than such a word posts nothing on
+    the item, as the newer run owns its comment and its label. comments are the item's comments as the API lists them,
+    started is the time when the trust job of this run read the item, and run is the id of this run. A word is a
+    review comment of BOT that names head (kind: its verdict, pass, blocking or person), or a hold comment of BOT of
+    the screen that names head (hold_fact screen_held; kind: hold). It counts from its word_time: a review from the
+    time when its run read the item, and a hold from its updated_at. So a pass with no marker of that read counts at no
+    time, and never makes a run give way. A word at started counts, which fails closed. The word of this run (its
+    REVIEW_RUN or HELD_RUN is run) never counts: an earlier attempt of this run can have posted it. The word's run is
+    "" when it names none. Of such words, the newest by word_time, and the later in the list at the same time."""
+    found = None
+    for c in comments:
+        if not of_bot(c):
+            continue
+        body = c.get("body") or ""
+        m = REVIEWED.match(body)
+        if m and m.group(1) == head:
+            r, kind = REVIEW_RUN.match(body, m.end()), m.group(2)
+        elif body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
+            h = HELD_HEAD.search(body)
+            if not (h and h.group(1) == head):
+                continue
+            r, kind = HELD_RUN.search(body), "hold"
+        else:
+            continue
+        gave, at = (r.group(1) if r else ""), word_time(c)
+        if gave != run and at and at >= started and (found is None or at >= found[2]):
+            found = (gave, kind, at)
+    return found
+
+
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
 # uses, code, section and the constants from USES to LISTED are copied from theorem-labs/oss-verify-proofs-internal
 # .github/review/rules.py at 573d0cde18e1, and adapted to this repository: its checks are its CI lanes on stock Rocq,
@@ -2837,6 +2882,14 @@ def main(argv):
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
             found = own_record(check_lines(argv[5]), comments, argv[2], argv[3], argv[4])
             print(" ".join(part or "-" for part in found))
+            return 0
+        if (len(argv) == 5 and argv[0] == "newer-word" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
+                and TIME.fullmatch(argv[3]) and NUMBER.fullmatch(argv[4])):
+            comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
+                                  f".[] | select(.user.login == {json.dumps(BOT)})"
+                                  " | {user: {login: .user.login}, body, updated_at} | @json")
+            found = newer_word(comments, argv[2], argv[3], argv[4])
+            print(" ".join(part or "-" for part in found) if found else "-")
             return 0
         if len(argv) == 3 and argv[0] == "sources" and HEAD.fullmatch(argv[1]):
             print(" ".join(f"{run}={at}" for run, at in sorted(sources_of(check_lines(argv[2]), argv[1]).items())))

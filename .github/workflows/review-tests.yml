@@ -2,18 +2,17 @@ name: Review tests
 
 # The tests of the review workflow (.github/workflows/review.yml) and of its
 # screen. They have a workflow of their own, apart from ci.yml's Rocq lanes, so
-# a change to them changes no file that the lanes' workflow holds. Every job
-# runs on every event: this repository has no merge queue, so a pull request's
-# run is the whole check of its change.
+# a change to them changes no file that the lanes' workflow holds. The workflow
+# runs on pull requests alone, and every job runs on each of them: this
+# repository has no merge queue, so a pull request's run is the whole check of
+# its change. A push to main and a run by hand start no run of it
+# (dispatch://INFRA-4858 R5).
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
 
-# As in ci.yml: one group per branch, so a newer push to main, or a pull
-# request's newer head, cancels the run of the older one. No job reads the
-# previous tip of main, so the newer run checks all the older one would have.
+# One group per pull request (its ref, refs/pull/<n>/merge), so a newer head of
+# a pull request cancels the run of its older head. No job reads an older head,
+# so the newer run checks all the older one would have.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
