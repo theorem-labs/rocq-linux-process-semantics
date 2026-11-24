@@ -553,6 +553,18 @@ class Runner(unittest.TestCase):
             os.remove(link)
             self.checkout()
 
+    def changed_trust(self, change, run):
+        """run() with the trust step changed, as a control: its script holds change[1] in the place of change[0], which
+        it holds once. Its result."""
+        found = step("trust", TRUST)
+        script = found["run"]
+        self.assertEqual(script.count(change[0]), 1, change[0])
+        found["run"] = script.replace(*change)
+        try:
+            return run()
+        finally:
+            found["run"] = script
+
     def refuse(self, endpoint, status, text="Validation Failed"):
         """Every call of endpoint fails with an HTTP status, as gh names it."""
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
@@ -2185,6 +2197,16 @@ class LimitTest(Runner):
         self.assertEqual(rc, 0, out)
         return got.get("route")
 
+    def pass_route(self):
+        """The route of the rescreen pass's draft of mallory's issue #7, with the runs listed now: a run of
+        workflow_dispatch by github-actions[bot], which counts on mallory's limit as an event run does, and which the
+        count stop (crowded) never stops."""
+        self.serve_item(7, "mallory")
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        rc, out, got = self.run_trust("workflow_dispatch", actor=BOT, task="draft", account="mallory")
+        self.assertEqual(rc, 0, out)
+        return got.get("route")
+
     def test_the_limit_holds(self):
         self.assertGreater(self.LIMIT, 1)
         self.runs(*[(10 + i, "mallory", "issues", "success") for i in range(self.LIMIT - 1)])
@@ -2274,6 +2296,154 @@ class LimitTest(Runner):
                 self.assertGreaterEqual(in_group, 1, f"no run of the {case} burst writes in the group")
                 self.assertLessEqual(in_group, 2 * self.LIMIT,
                                      f"{in_group} runs put jobs in the write group for 24 {case} events in a burst")
+
+    # The count stop (crowded) and the rules that it rests on, each as a change of the trust step, for a control: the
+    # call of crowded in earlier taken out; the count of every listed run of the account, not its event runs alone;
+    # crowded for each run, also one of the rescreen pass; and a cut list of the account's runs taken as a list of no
+    # runs.
+    NO_STOP = ('crowded "$1"\n', "")
+    COUNT_ALL = ("$3 == 1 && !seen[$1]++", "!seen[$1]++")
+    STOP_EVERY_RUN = ('[[ $EVENT != workflow_dispatch && $1 == "$ACTOR" ]] || return 0', ":")
+    NO_FLOOD = ('[ "$list" != "actor=$1" ] || flood=1', ":")
+
+    def stop_notice(self, task, account="mallory", number="7"):
+        """The notice of the count stop, which the run's summary shows."""
+        return (f"::notice::No {task} of #{number}: {account} has {2 * self.LIMIT} or more runs of this workflow that "
+                "an event started in the last hour. The rescreen pass takes the item again later.")
+
+    def test_an_event_run_of_an_account_with_2_x_limit_event_runs_listed_in_the_hour_takes_no_task(self):
+        """The count stop (OSSV-221's architect, 2026-11-24 19:48Z): the run of an event of mallory, who has no write
+        access, takes no task when 2 * OUTSIDE_HOURLY_LIMIT event runs of hers are listed in the last hour, in any
+        state (here none has finished), on each route that would put a job in the group write-7: a comment on her pull
+        request (answer), a CI run of her push (review) and her issue (draft). Its notice says so, and no job after the
+        trust job runs. With one run fewer, the run is held at the limit as before: its hold job runs. The control, the
+        trust step with the call of crowded taken out, holds the run at the limit in each case."""
+        every = 2 * self.LIMIT
+        for event, task in (("issue_comment", "answer"), ("workflow_run", "review"), ("issues", "draft")):
+            for listed, want in ((every - 1, "limit"), (every, None)):
+                with self.subTest(event=event, listed=listed):
+                    self.runs(*[(10 + i, "mallory", event, "success") for i in range(listed)])
+                    rc, out, got = self.trust("mallory", "mallory", event=event)
+                    self.assertEqual((rc, got.get("task"), got.get("route")), (0, task if want else None, want), out)
+                    self.assertEqual(out.count(self.stop_notice(task)), 0 if want else 1, out)
+                    self.assertEqual(ran_jobs(run_graph(got, github={"github.event_name": event})) - {"trust"},
+                                     {"hold"} if want else set())
+            with self.subTest(event=event, control="no stop"):
+                self.runs(*[(10 + i, "mallory", event, "success") for i in range(every)])
+                rc, out, got = self.changed_trust(self.NO_STOP, lambda: self.trust("mallory", "mallory", event=event))
+                self.assertEqual((rc, got.get("task"), got.get("route")), (0, task, "limit"), out)
+                self.assertNotIn(self.stop_notice(task), out)
+
+    def test_a_comment_on_a_pull_request_with_a_merge_conflict_takes_the_count_stop_after_one_read(self):
+        """The route of a comment on a pull request with a merge conflict (the task conflict) has no limit, and its
+        comment job writes in the group write-7: each such comment of mallory started a run that put a job in the
+        group. It takes the count stop too, and the stop needs one read of the list of her runs and no read of any
+        job. With 2 * OUTSIDE_HOURLY_LIMIT - 1 event runs listed, it still gets the task conflict; with
+        2 * OUTSIDE_HOURLY_LIMIT, no task, and its notice names the task conflict. The control, the trust step with
+        the call of crowded taken out, gives the task conflict in both."""
+        every = 2 * self.LIMIT
+        runs = f"repos/{REPO}/actions/workflows/review.yml/runs"
+
+        def conflict(listed, control=False):
+            self.runs(*[(10 + i, "mallory", "issue_comment", "success") for i in range(listed)])
+            self.serve_item(7, "mallory", kind="pr", mergeable="dirty")
+            self.forget()
+            run = lambda: self.run_trust("issue_comment", actor="mallory", comment="900")  # noqa: E731
+            return self.changed_trust(self.NO_STOP, run) if control else run()
+        for listed, want in ((every - 1, "review"), (every, None)):
+            with self.subTest(listed=listed):
+                rc, out, got = conflict(listed)
+                self.assertEqual((rc, got.get("task"), got.get("route")), (0, "conflict" if want else None, want), out)
+                self.assertEqual(out.count(self.stop_notice("conflict")), 0 if want else 1, out)
+                self.assertEqual([c for c in self.calls() if c.endswith(("/runs", "/jobs"))], [runs])
+        with self.subTest(control="no stop"):
+            rc, out, got = conflict(every, control=True)
+            self.assertEqual((rc, got.get("task"), got.get("route")), (0, "conflict", "review"), out)
+            self.assertNotIn(self.stop_notice("conflict"), out)
+
+    def test_the_count_stop_counts_the_event_runs_of_the_account_alone_and_stops_no_run_of_the_pass(self):
+        """The count stop counts the runs that mallory's events started (own 1 in earlier), each once, and no other:
+        not the runs of the rescreen pass for her (workflow_dispatch, whose names end with her login), not a run by
+        hand of a writer for her, and not the runs of another account. Her 2 * OUTSIDE_HOURLY_LIMIT - 1 event runs
+        with 2 * OUTSIDE_HOURLY_LIMIT runs of the pass for her, one by hand and 2 * OUTSIDE_HOURLY_LIMIT runs of eve
+        leave her next comment held at the limit, not stopped. And a run of the pass (the draft of #7) is not stopped
+        when 2 * OUTSIDE_HOURLY_LIMIT event runs of hers are listed: it is held at the limit. The controls: the count
+        of every listed run of hers stops the comment, and crowded for each run stops the run of the pass."""
+        every = 2 * self.LIMIT
+        events = [(10 + i, "mallory", "issue_comment", "success") for i in range(every - 1)]
+        others = [(40 + i, BOT, "workflow_dispatch", "success", f"rescreen #{8 + i} of mallory") for i in range(every)]
+        others += [(60, "alice", "workflow_dispatch", "success", "review #7 of mallory")]
+        others += [(70 + i, "eve", "issue_comment", "success") for i in range(every)]
+        self.runs(*events, *others)
+        rc, out, got = self.trust("mallory", "mallory", event="issue_comment")
+        self.assertEqual((rc, got.get("task"), got.get("route")), (0, "answer", "limit"), out)
+        rc, out, got = self.changed_trust(self.COUNT_ALL,
+                                          lambda: self.trust("mallory", "mallory", event="issue_comment"))
+        self.assertEqual((rc, got.get("route"), out.count(self.stop_notice("answer"))), (0, None, 1), out)
+        self.runs(*[(10 + i, "mallory", "issue_comment", "success") for i in range(every)])
+        self.assertEqual(self.pass_route(), "limit")
+        self.assertEqual(self.changed_trust(self.STOP_EVERY_RUN, self.pass_route), None)
+
+    def test_a_push_that_counts_on_the_author_takes_the_count_stop_on_the_account_that_pushed(self):
+        """Bob owns the head repository of eve's pull request #20, and neither has write access: his push counts on
+        eve's limit (her screen job names her), but bob started the CI run, so the count stop counts bob's event runs
+        and not eve's. With 2 * OUTSIDE_HOURLY_LIMIT - 1 of his runs listed his next push is held at eve's limit; with
+        2 * OUTSIDE_HOURLY_LIMIT it takes no task, and its notice names bob and #20. The control, the trust step with
+        the call of crowded taken out, holds the run at eve's limit."""
+        self.permissions(bob="read")
+        self.serve_prs((20, "eve", HEAD))
+
+        def push(listed, control=False):
+            pushes = [(10 + i, "bob", "workflow_run", "success", f"review {HEAD} by bob") for i in range(listed)]
+            self.runs(*pushes, jobs={r[0]: [attempt_job("screen", name="screen eve"),
+                                            attempt_job("review", name="review (screened)")] for r in pushes})
+            run = lambda: self.run_trust("workflow_run", actor="bob", number="", head=HEAD,  # noqa: E731
+                                         head_repository=str(FORK_ID), pulls=[])
+            return self.changed_trust(self.NO_STOP, run) if control else run()
+        every = 2 * self.LIMIT
+        notice = self.stop_notice("review", account="bob", number="20")
+        for listed, want in ((every - 1, "limit"), (every, None)):
+            with self.subTest(listed=listed):
+                rc, out, got = push(listed)
+                self.assertEqual((rc, got.get("number"), got.get("account"), got.get("route")),
+                                 (0, "20" if want else None, "eve" if want else None, want), out)
+                self.assertEqual(out.count(notice), 0 if want else 1, out)
+        with self.subTest(control="no stop"):
+            rc, out, got = push(every, control=True)
+            self.assertEqual((rc, got.get("account"), got.get("route")), (0, "eve", "limit"), out)
+            self.assertNotIn(notice, out)
+
+    def test_a_list_of_the_accounts_own_runs_that_github_cuts_takes_the_count_stop_and_another_cut_list_does_not(self):
+        """GitHub gives at most 1,000 runs for a list with created, and total_count says how many match. A list of
+        mallory's own runs (actor=mallory) that it cuts holds more runs of hers than the count stop allows, so her
+        event run takes no task, as for 2 * OUTSIDE_HOURLY_LIMIT listed runs. A cut list of the workflow_dispatch runs,
+        which no count stop counts, leaves her at her limit as before (uncounted), held with a hold job. The control,
+        the trust step that takes a cut list of her runs as a list of no run, holds her at her limit too."""
+        listed = [{"id": 5000 - i, "actor": {"login": "eve"}, "event": "issue_comment", "status": "completed",
+                   "conclusion": "skipped", "created_at": "2026-11-02T10:00:00Z"} for i in range(1000)]
+        endpoint = f"repos/{REPO}/actions/workflows/review.yml/runs"
+
+        def cut(name):
+            base = os.path.join(self.api, endpoint.replace("/", "_") + f".{name}")
+            for n in range(10):
+                with open(base + (".json" if n == 0 else f".{n + 1}.json"), "w") as f:
+                    json.dump({"total_count": 1000 + self.LIMIT, "workflow_runs": listed[n * 100:(n + 1) * 100]}, f)
+            self.runs()
+        for name, want in (("actor=mallory", None), ("event=workflow_dispatch", "limit")):
+            with self.subTest(cut=name):
+                self.tearDown()
+                self.setUp()
+                cut(name)
+                rc, out, got = self.trust("mallory", "mallory")
+                self.assertEqual((rc, got.get("route"), got.get("uncounted")), (0, want, "true" if want else None), out)
+                self.assertEqual(out.count(self.stop_notice("draft")), 0 if want else 1, out)
+        with self.subTest(control="no flood"):
+            self.tearDown()
+            self.setUp()
+            cut("actor=mallory")
+            rc, out, got = self.changed_trust(self.NO_FLOOD, lambda: self.trust("mallory", "mallory"))
+            self.assertEqual((rc, got.get("route"), got.get("uncounted")), (0, "limit", "true"), out)
+            self.assertNotIn(self.stop_notice("draft"), out)
 
     def test_ci_runs_and_comments_count_toward_the_limit(self):
         """A CI run's workflow_run (its pusher's), an author's comment (issue_comment) and an issue each count, and a
@@ -2397,7 +2567,7 @@ class LimitTest(Runner):
             with self.subTest(case=case):
                 self.runs(*listed, jobs=jobs)
                 self.forget()
-                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual(self.pass_route(), want)
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")], reads)
 
     def test_a_burst_of_runs_that_could_not_sign_in_costs_each_later_run_a_fixed_number_of_reads(self):
@@ -2406,14 +2576,16 @@ class LimitTest(Runner):
         not sign in, the trust job of each one with the runs before it listed: each reads at most
         2 * OUTSIDE_HOURLY_LIMIT jobs, so the 40 read at most 2 * OUTSIDE_HOURLY_LIMIT * 40, where a read of each
         earlier run would be 40 * 39 / 2 = 780. Spec v61 R1: once more than 2 * OUTSIDE_HOURLY_LIMIT such runs came
-        before it, the budget is used up before the count is known, and a run is at the limit."""
+        before it, the budget is used up before the count is known, and a run is at the limit. The trust job is the
+        rescreen pass's (pass_route): the count stop ends an event run of an account with 2 * OUTSIDE_HOURLY_LIMIT
+        event runs listed before it reads any job."""
         signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
         budget, m, total = 2 * self.LIMIT, 40, 0
         for k in range(m):
             earlier = [(99 - i, "mallory", "issue_comment", "success") for i in range(k)]
             self.runs(*earlier, jobs={r[0]: signed_out for r in earlier})
             self.forget()
-            route = self.route("mallory", "mallory")
+            route = self.pass_route()
             reads = [c for c in self.calls() if c.endswith("/jobs")]
             self.assertEqual((len(reads), route), (min(k, budget), "screen" if k <= budget else "limit"),
                              f"run {k + 1}")
@@ -2424,7 +2596,8 @@ class LimitTest(Runner):
     def test_an_account_with_no_more_runs_that_failed_than_the_reads_is_judged_by_their_jobs(self):
         """Under the budget nothing changes: 2 * OUTSIDE_HOURLY_LIMIT runs of mallory that failed are each read, and
         those that could not sign in do not count. With OUTSIDE_HOURLY_LIMIT - 1 of them failed after their sign-in
-        she is under her limit, and with OUTSIDE_HOURLY_LIMIT she is at it."""
+        she is under her limit, and with OUTSIDE_HOURLY_LIMIT she is at it. The trust job is the rescreen pass's
+        (pass_route): 2 * OUTSIDE_HOURLY_LIMIT event runs listed stop an event run of hers (crowded)."""
         signed_out = [attempt_job("screen", "Sign in to Google Cloud", name="screen mallory")]
         failed = [attempt_job("screen", "Screen", name="screen mallory")]
         runs = [(90 - i, "mallory", "issues", "success") for i in range(2 * self.LIMIT)]
@@ -2433,7 +2606,7 @@ class LimitTest(Runner):
                 self.runs(*runs, jobs={r[0]: failed if i >= len(runs) - counted else signed_out
                                        for i, r in enumerate(runs)})
                 self.forget()
-                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual(self.pass_route(), want)
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
                                  [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs])
 
@@ -2870,7 +3043,7 @@ class LimitTest(Runner):
                 for r in runs:
                     self.serve(f"repos/{REPO}/actions/runs/{r[0]}/jobs", {"jobs": stopped})
                 self.forget()
-                self.assertEqual(self.route("mallory", "mallory"), want)
+                self.assertEqual(self.pass_route(), want)
                 self.assertEqual([c for c in self.calls() if c.endswith("/jobs")],
                                  [f"repos/{REPO}/actions/runs/{r[0]}/jobs" for r in runs[:reads]])
 
@@ -3482,6 +3655,34 @@ class HoldTest(Holding):
     LIMIT_WORDS = ("The workflow screens the pull requests, issues, pushes and comments of such an account before it "
                    "reviews or answers them. The limit for one such account is "
                    f"{WF['env']['OUTSIDE_HOURLY_LIMIT']} screens in the last hour.")
+
+    def test_a_run_below_the_count_stop_still_gets_its_hold_comment_with_the_time_of_its_new_try(self):
+        """The count stop (OSSV-221's architect, 2026-11-24 19:48Z) leaves the first runs of the hour as they were: with
+        2 * OUTSIDE_HOURLY_LIMIT - 1 event runs of mallory listed, her comment 900 on #7 still gets the task answer on
+        the route limit, and the hold job writes the hold comment of a hold at the limit: the time after which the
+        rescreen pass tries it again, and the marker that names the run, the task and the comment, by which the pass
+        finds it."""
+        every = 2 * int(WF["env"]["OUTSIDE_HOURLY_LIMIT"])
+        self.permissions(mallory="read")
+        self.serve_item(7, "mallory", kind="pr")
+        listed = {"workflow_runs": [
+            {"id": 10 + i, "actor": {"login": "mallory"}, "event": "issue_comment", "status": "in_progress",
+             "conclusion": None, "created_at": ago(10)} for i in range(every - 1)]}
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", listed)
+        rc, out, got = self.run_trust("issue_comment", actor="mallory", comment="900")
+        self.assertEqual((rc, got.get("task"), got.get("route")), (0, "answer", "limit"), out)
+        _calls, _post, body = self.hold("limit", task="answer", comment=got["comment"], origin=got["origin"],
+                                        tries=got["tries"], head=got["head"])
+        self.assertRegex(body, self.AGAIN_LIMIT)
+        self.assertIn(f"<!-- review-held-limit {got['origin']} 0 answer 900 -->", body)
+        # The control: a count stop at OUTSIDE_HOURLY_LIMIT runs ends the run before it gets a route, so no job writes
+        # the hold comment. (The hold job's step serves the item and the list of runs again: they are served as before.)
+        self.serve_item(7, "mallory", kind="pr")
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs", listed)
+        lower = ("limit=$((2 * OUTSIDE_HOURLY_LIMIT))", "limit=$((OUTSIDE_HOURLY_LIMIT))")
+        rc, out, got = self.changed_trust(
+            lower, lambda: self.run_trust("issue_comment", actor="mallory", comment="900"))
+        self.assertEqual((rc, got.get("route")), (0, None), out)
 
     def test_at_the_limit_it_says_so(self):
         """And that it is screened again with no person, from when, and the run the rescreen job finds it by. A hold
@@ -11106,6 +11307,52 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, want), out)
 
+    def test_the_pass_takes_the_item_of_the_first_runs_of_the_hour_when_the_hour_frees_it(self):
+        """The count stop (OSSV-221's architect, 2026-11-24 19:48Z) ends the event runs of mallory after her
+        2 * OUTSIDE_HOURLY_LIMIT - 1 first ones of the hour: OUTSIDE_HOURLY_LIMIT screened, the next one held at the
+        limit (run 54, the answer to her comment 900 on #7: its hold comment stands, with the time of its new try), and
+        the others stopped. While that hold is under an hour old, the pass starts nothing for #7. Once it is over an
+        hour old, and so are those runs, the pass starts one answer run for 900, and its trust job takes it on the
+        route screen: the count of her runs of the hour is under the limit again. It does so too while
+        2 * OUTSIDE_HOURLY_LIMIT event runs of hers that the count stop ended are listed in the last hour: the count
+        stop counts no run of the pass and stops none, and runs that it ended count toward no limit. The control, the
+        trust step that calls crowded for each run, stops the run of the pass in that case."""
+        every = 2 * self.LIMIT
+        held = [dict(j, conclusion="success") if j["name"] == "hold" else j for j in self.stopped_jobs()]
+        screened = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                    {"name": "comment", "status": "completed", "conclusion": "success"}]
+        for age, burst, want in ((40, 0, []), (65, 0, [("7", "answer", "mallory", "", "900")]),
+                                 (65, every, [("7", "answer", "mallory", "", "900")])):
+            with self.subTest(hold_age=age, stopped_in_the_hour=burst):
+                self.tearDown()
+                self.setUp()
+                self.window(f"repos/{REPO}/actions/workflows/review.yml/runs")
+                self.origin(54, "mallory", event="issue_comment", title="answer #7 for 900 by mallory")
+                self.item(labels=("review-held",), comments=[
+                    self.REPLIED, said(900, age + 5), limit_hold(54, at=ago(age), tries=0, task="answer",
+                                                                  comment="900")])
+                for k in range(self.LIMIT):
+                    self.ran(20 + k, f"answer #8 for {800 + k} by mallory", made=age + 10 - k, event="issue_comment",
+                             jobs=screened)
+                self.ran(54, "answer #7 for 900 by mallory", made=age + 4, ended=age, event="issue_comment", jobs=held)
+                for k in range(every - self.LIMIT - 1):
+                    self.ran(60 + k, f"answer #8 for {900 + k} by mallory", made=age - 1 - k, event="issue_comment",
+                             jobs=self.stopped_jobs())
+                for k in range(burst):
+                    self.ran(80 + k, f"answer #8 for {950 + k} by mallory", made=9 - k // 2, event="issue_comment",
+                             jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if want:
+                    got = self.dispatched("answer", head="", account="mallory", comment="900", number="7")
+                    self.assertEqual((got["task"], got["route"], got["origin"], got["tries"]),
+                                     ("answer", "screen", "54", "0"))
+                if burst:
+                    stopped = self.changed_trust(LimitTest.STOP_EVERY_RUN,
+                                                 lambda: self.dispatched("answer", head="", account="mallory",
+                                                                         comment="900", number="7", want=False))
+                    self.assertEqual(stopped.get("route"), None)
+
     def test_a_comment_that_no_answer_or_review_read_gets_an_answer(self):
         """R1: "When the author of an outside item writes a new comment in its conversation, it answers there within 3
         hours, except while a cap holds it". A text that the workflow posted after the comment, but whose run read the
@@ -18715,8 +18962,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(rules.UNSCREENED, body)
         self.assertNotIn(rules.PASSED, body)
         self.assertNotIn("a screen passed the head in an earlier run", "\n".join(self.logs))
-        self.assertIn(f"#7: an automated review of {HEAD} asked for a change, but {HEAD} has no import check run to "
-                      "withdraw.", "\n".join(self.logs))
+        self.assertIn(f"#7 at {HEAD}: decision clear, cause blocking, read {relabel['started']}\n",
+                      "\n".join(self.logs))
         self.assertEqual(self.owe(got, relabel, [passed, marked]), [])
         self.assertIn(f"#7: its label comment keeps <!-- withdraw-owed {HEAD} blocking 100 -->. No review comment of "
                       f"run 100 gives {HEAD} the verdict blocking. {self.no_time('100')}", self.logs[-1])

@@ -85,6 +85,16 @@
 #   its limit, and the owner of such a head repository can hold the author's items in this way until its runs are an
 #   hour old. The pushes of a collaborator of that fork who is not its owner count on no one, and SCREENED_HOURLY_CAP
 #   bounds their reviews.
+#   The count stop (OSSV-221's architect, 2026-11-24 19:48Z): an event run of an account takes no task when that
+#   account has 2 * OUTSIDE_HOURLY_LIMIT runs of this workflow listed in the last hour that an event started
+#   (workflow_run, issues or issue_comment), in any state. The run's summary says so (crowded, below). The account is
+#   the one that started the run. The stop holds on each route that would put a job in the group write-<n>. These are
+#   the hold at the limit, the screen, and the comment on a pull request with a merge conflict, which has no limit.
+#   The stop reads no hold comment, as a burst of events finds none: the hold job that writes it waits in that group,
+#   behind the jobs of the events before it. So the events of one account put the jobs of at most
+#   2 * OUTSIDE_HOURLY_LIMIT runs in the group in an hour. A group holds 100 pending jobs. The first runs of the hour
+#   keep their hold comment and the time of its new try. The rescreen pass takes each item that a stopped run left,
+#   by its own rules. This rule counts no run of the rescreen pass and no run by hand, and stops none.
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
 #   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
 #   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
@@ -460,7 +470,9 @@ jobs:
   # hand on a ref other than main. A workflow_run is taken only for a CI run of a pull request's event that was not
   # cancelled, skipped or held (GitHub holds a first-time contributor's run, whose approval is the task approve); an
   # issue_comment only for a comment of the item's author that no App wrote. An export pull request gets no task on any
-  # event and for any task (the step's export_stop).
+  # event and for any task (the step's export_stop). An event run of an account without write access that already has
+  # 2 * OUTSIDE_HOURLY_LIMIT event runs of this workflow listed in the last hour gets no task either (the step's
+  # crowded): no job after the trust job runs, and the run's summary says why.
   trust:
     if: >-
       github.repository_id == 1425819621 && github.ref == 'refs/heads/main'
@@ -655,23 +667,29 @@ jobs:
           # no more reads than that, and no padding of runs moves <login> past its limit. The owner of the head
           # repository of a pull request of <login> can hold the items of <login> in this way with CI runs, until those
           # runs are an hour old. The run stops when GitHub could not say what runs there are or what jobs a run has.
+          # events: how many runs of <login>'s events (own 1 below) the lists give. Each run counts once, in any state.
+          # When GitHub cut the list of <login>'s own runs, events is 2 * OUTSIDE_HOURLY_LIMIT. crowded reads it: the
+          # count stop. With a second argument, earlier reads that list alone and ends after the count stop. Two runs
+          # use that: a comment on a pull request with a merge conflict, and the pusher of a CI run that counts on the
+          # author. earlier reads nothing else for them.
           earlier() {
-            local from round list out rows runs id state own actor entry verdict reads=0 cut owners
+            local from round list out rows runs id state own actor entry verdict reads=0 cut owners flood
             local number sha repository ref base draft author owner
             local -a lists unread
             local -A once=()
-            count=0
+            count=0 events=0
             from=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ)
             # Two rounds: the runs of <login>'s events and the workflow_dispatch runs that name it, then the CI runs of
             # other accounts.
             for round in own other; do
               if [ "$round" = own ]; then
                 lists=("actor=$1" event=workflow_dispatch)
+                [ -z "${2:-}" ] || lists=("actor=$1")
               else
                 (( count < OUTSIDE_HOURLY_LIMIT )) || return 0
                 lists=(event=workflow_run)
               fi
-              runs="" unread=() cut=""
+              runs="" unread=() cut="" flood=""
               # Each run of a list on one line: "<id> <state> <own> <actor>", state count for a run that counts with no
               # read of its jobs, else read, own 1 for a run of <login>'s event, 0 for a workflow_dispatch run, 2 for a
               # CI run of another account, and actor the account that started it ("-" for none).
@@ -696,8 +714,15 @@ jobs:
                   runs+=$rows$'\n'
                 else
                   cut=$list
+                  [ "$list" != "actor=$1" ] || flood=1
                 fi
               done
+              if [ "$round" = own ]; then
+                events=$(awk '$3 == 1 && !seen[$1]++ { n++ } END { print n + 0 }' <<< "$runs")
+                [ -z "$flood" ] || events=$((2 * OUTSIDE_HOURLY_LIMIT))
+                crowded "$1"
+                [ -z "${2:-}" ] || return 0
+              fi
               owners=" "
               if [ "$round" = other ]; then
                 # The owners of the head repositories of the open pull requests of <login>, " <owner> " each: only
@@ -763,6 +788,20 @@ jobs:
                 if [[ $verdict == *count* ]]; then count=$((count + 1)); fi
               done
             done
+          }
+          # crowded <login>: the count stop (OSSV-221's architect, 2026-11-24 19:48Z), which earlier calls once it has
+          # counted. A run of an event that <login> started takes no task when events, the runs of <login>'s events
+          # listed in the last hour, are 2 * OUTSIDE_HOURLY_LIMIT or more. A run by hand and a run of the rescreen pass
+          # (workflow_dispatch) are not counted and not stopped: the pass's own count bounds those. The stop needs
+          # nothing that a job of the queue writes, such as a hold comment. The hold job waits in the group write-<n>,
+          # behind the jobs of the events before it. The notice goes to the run's summary.
+          crowded() {
+            [[ $EVENT != workflow_dispatch && $1 == "$ACTOR" ]] || return 0
+            local why limit=$((2 * OUTSIDE_HOURLY_LIMIT))
+            (( events < limit )) || {
+              why="$1 has $limit or more runs of this workflow that an event started in the last hour."
+              stop "$why The rescreen pass takes the item again later."
+            }
           }
           fail() { echo "::error::$1 Re-run this run."; exit 1; }
           # origin: the run whose event this item's hold names, for a hold that is tried again; tries: the screened
@@ -832,8 +871,11 @@ jobs:
           # (<account>, or else <author>); or held at the limit with no screen, when <account> has no write access and
           # the runs of account (the account whose limit the run counts on: <account>, or the author of a CI run's pull
           # request) reached the screen OUTSIDE_HOURLY_LIMIT times in the last hour, or could not all be read (earlier).
-          # A writer's action on an outsider's item has no limit. No <account> is the action of a person or an App that
-          # started a run by hand, which GitHub lets only a writer do: the API is not asked.
+          # A run of an event whose <account> has no write access takes the count stop first (crowded), on the account
+          # that started the run. earlier reads the runs of that account. The CI run of a push that counts on the
+          # author reads the runs of the pusher first. A writer's action on an outsider's item has no limit and no
+          # stop. No <account> is the action of a person or an App that started a run by hand, which GitHub lets only
+          # a writer do: the API is not asked.
           screened() {
             local a=0 b=0 outsider
             known "$1" || a=$?
@@ -844,6 +886,7 @@ jobs:
             [[ $outsider =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || stop "$outsider is not a GitHub login."
             echo "::notice::#$NUMBER is screened first: $outsider has no write access."
             if (( b != 0 )); then
+              if [[ $EVENT != workflow_dispatch && $account != "$ACTOR" ]]; then earlier "$ACTOR" only; fi
               earlier "$account"
               (( count < OUTSIDE_HOURLY_LIMIT )) || route limit "$outsider"
             fi
@@ -1100,7 +1143,8 @@ jobs:
               screened "$AUTHOR" "$ACTOR" ;;
             # A new comment of the item's author (the job's if) is answered when the item is open, its author has no
             # write access and, on an issue, the first reply posted. A pull request with a merge conflict gets the task
-            # conflict instead.
+            # conflict instead. That route has no limit, so it takes the count stop alone (crowded): its comment job
+            # writes in the group write-<n>.
             issue_comment)
               task=answer
               [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -1114,7 +1158,7 @@ jobs:
               known "$AUTHOR" || a=$?
               (( a != 0 )) || stop "its author $AUTHOR has write access."
               [ "$kind" = pr ] || replied || stop "its first reply has not posted."
-              if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
+              if [ "$mergeable" = dirty ]; then task=conflict; earlier "$ACTOR" only; route review ""; fi
               screened "$AUTHOR" "$ACTOR" ;;
             workflow_dispatch)
               task=${TASK:-review}
