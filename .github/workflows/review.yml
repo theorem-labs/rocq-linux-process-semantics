@@ -2916,8 +2916,8 @@ jobs:
       # .github/review/rules.py not-approved) counts as a withdrawal by its run from the time when that run read the
       # item: the post job of a run whose own verdict or screen withdraws posts it when the head has no import check run
       # with conclusion success at all (2026-11-24 05:33Z), for an author whom the rules that hold back treat as outside
-      # (rules.py holds_back: also an author whose write access GitHub did not say; 2026-11-24 09:28Z). The logs call
-      # either form a check run that is not an approval.
+      # (rules.py holds_back: also an author whose write access GitHub did not say; 2026-11-24 09:28Z). The decision
+      # withdrawn has the cause neutral for either form.
       # Each run withdraws each check run of the head that still stands when the newest screened review comment does
       # not pass, or one newer than it gives a blocking finding or the verdict person (output earlier, with that
       # reason). It withdraws also while the label comment holds the line <!-- withdraw-owed <head> <why> <run> --> for
@@ -2991,8 +2991,8 @@ jobs:
           # The time when the trust job of this run read the item: the bound of the own record of a run on the route
           # screen (screened_run).
           STARTED: ${{ needs.trust.outputs.started }}
-          # The trust job's kind: unknown when GitHub did not say whether the author has write access (the log of the
-          # decision writer).
+          # The trust job's kind: unknown when GitHub did not say whether the author has write access (the cause
+          # access of the decision writer).
           AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
           # The import's paths, one glob on each line, while the import is live (R12). An empty value is no variable:
           # GitHub gives an empty value for a variable that is not set.
@@ -3001,11 +3001,12 @@ jobs:
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::no head commit to decide on: $HEAD"; exit 1; }
-          # decided <decision> <what>: the log line of the decision, with <what> as its second sentence (a clause that
-          # reads as a sentence when its first letter is upper case), the outputs decision and imports (the value of
-          # the variable that it read), and the end of this step.
+          # decided <decision> <cause> [<name> <value>]...: the log line of the decision, in the one form of
+          # .github/review/rules.py log (LOG_DECISIONS, LOG_CAUSES, LOG_FIELDS): "#<number> at <head>: decision
+          # <decision>, cause <cause>, read <STARTED>", then the fields. Also the outputs decision and imports (the
+          # value of the variable that it read), and the end of this step.
           decided() {
-            echo "#$NUMBER at $HEAD: the import check gets the decision $1. ${2^}."
+            python3 .github/review/rules.py log "$NUMBER" "$HEAD" "$1" "$2" "$STARTED" "${@:3}" || exit 1
             echo "decision=$1" >> "$GITHUB_OUTPUT"
             echo "imports=$(jq -acn --arg v "$IMPORT_PATHS" 'if $v == "" then null else $v end')" >> "$GITHUB_OUTPUT"
             exit 0
@@ -3048,8 +3049,7 @@ jobs:
           replaced() {
             if [ "$RECORD" = true ] && [ "$2" = unscreened ] && [ "$1" = pass ] && [ "$3" = - ]; then
               standing
-              [ "$stands" != true ] \
-                || decided hand "the newest review of $HEAD passed it with no screen, and its import check run stands"
+              [ "$stands" != true ] || decided hand standing
             fi
           }
           # import_checks: each import check run of the OSS Verify App for this pull request (external_id
@@ -3093,7 +3093,7 @@ jobs:
           # state earlier with the verdict pass gives the decision screened with a why, and hand with none. The state
           # unscreened gives replaced.
           relabeled() {
-            local reviewed state why from posted stands since said
+            local reviewed state why from posted stands since
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
             read -r verdict state why from posted stands since record_run record_read <<< "$reviewed"
@@ -3110,8 +3110,7 @@ jobs:
             if [ "$state" = held ]; then
               write_owed screen
               echo "held=true" >> "$GITHUB_OUTPUT"
-              said="a screen held $HEAD, and no screened review comment of $HEAD comes from a run that read"
-              decided held "$said #$NUMBER after that hold"
+              decided held screen
             fi
             if [ "$why" != - ]; then
               write_owed "$why"
@@ -3119,34 +3118,16 @@ jobs:
             fi
             [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
-              said="the label comment records why an earlier run withdraws the import check runs of $HEAD"
-              [ "$posted" != unposted ] \
-                || decided withdrawn "no review or hold comment gives the cause that the label comment names"
-              decided screened "$said"
+              [ "$posted" != unposted ] || decided withdrawn unposted
+              decided screened "$why"
             fi
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
-              said="#$NUMBER: check run $stands is the newest import check run of $HEAD, in the order of the time that"
-              said+=" each one names."
-              if [ "$since" != - ]; then
-                echo "$said It is not an approval, because its conclusion is neutral. It counts from $since, the time" \
-                  "that its summary names. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
-                said="check run $stands is not an approval, and no screened pass of $HEAD comes from a run that read"
-                said+=" #$NUMBER after $since"
-              else
-                echo "$said Its summary names no time, so it counts as newer than each other import check run and" \
-                  "each screened pass of $HEAD."
-                said="check run $stands is not an approval, and it counts as newer than each screened pass of $HEAD"
-              fi
-              decided withdrawn "$said"
+              decided withdrawn neutral check "$stands" from "$since"
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
-              if [ "$why" != - ]; then
-                said="the newest review of $HEAD gives the verdict $verdict"
-                decided screened "$said, and a screen passed the head in an earlier run"
-              fi
+              [ "$why" = - ] || decided screened "$why"
               standing
-              said="the newest review of $HEAD passed it with no screen, after a screen passed it in an earlier run"
-              decided hand "$said"
+              decided hand earlier
             fi
             replaced "$verdict" "$state" "$why"
           }
@@ -3161,7 +3142,7 @@ jobs:
           # with a why, and hand with none, with the output standing. The state unscreened gives replaced, and else the
           # import check below gives the decision screen.
           by_hand() {
-            local reviewed earlier state why from said
+            local reviewed earlier state why from
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
             read -r earlier state why from _ <<< "$reviewed"
@@ -3169,8 +3150,7 @@ jobs:
               write_owed screen
               echo "held=true" >> "$GITHUB_OUTPUT"
               [ "$RECORD" = true ] || return 0
-              said="a screen held $HEAD, and no screened review comment of $HEAD comes from a run that read"
-              decided held "$said #$NUMBER after that hold"
+              decided held screen
             fi
             if [ "$why" != - ]; then
               write_owed "$why"
@@ -3179,13 +3159,9 @@ jobs:
             [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
             [ "$RECORD" = true ] || return 0
             if [ "$state" = screened ] || [ "$state" = earlier ]; then
-              if [ "$why" != - ]; then
-                said="the newest review of $HEAD gives the verdict $earlier"
-                decided screened "$said, and a screen passed the head in an earlier run"
-              fi
+              [ "$why" = - ] || decided screened "$why"
               standing
-              said="a review by hand records no check run, but a screen passed $HEAD in the run of an earlier review"
-              decided hand "$said"
+              decided hand earlier
             fi
             replaced "$earlier" "$state" "$why"
           }
@@ -3219,7 +3195,7 @@ jobs:
           # check_run), so that a withdrawal by a run that read the item before STARTED leaves it (2026-11-24 05:23Z). A
           # read that fails fails this step.
           screened_run() {
-            local found decision what since given said
+            local found decision what since given
             [ "$verdict" = pass ] || return 0
             [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
               || { echo "::error::no start time of this run, so it records no import check."; exit 1; }
@@ -3234,44 +3210,16 @@ jobs:
             case $decision in
               held|withdrawn|newer) echo "gave_way=$decision" >> "$GITHUB_OUTPUT" ;;
             esac
-            if [ "$decision" = held ]; then
-              said="a hold of the screen of $HEAD counts from $what, at or after this run read #$NUMBER at $STARTED"
-              decided held "$said"
-            fi
-            if [ "$decision" = withdrawn ]; then
-              if [ "$since" != - ]; then
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD, in the order of the time" \
-                  "that each one names. It is not an approval, because its conclusion is neutral. It counts from" \
-                  "$since. This run read #$NUMBER at $STARTED, at or before that time. The pass of this run counts" \
-                  "from $STARTED. No screened pass of $HEAD comes from a run that read #$NUMBER after $since."
-                said="check run $what is not an approval, and no screened pass of $HEAD comes from a run that read"
-                said+=" #$NUMBER after $since"
-              else
-                echo "#$NUMBER: check run $what is the newest import check run of $HEAD, in the order of the time" \
-                  "that each one names. Its summary names no time, so it counts as newer than each other import check" \
-                  "run and each screened pass of $HEAD."
-                said="check run $what is not an approval, and it counts as newer than each screened pass of $HEAD"
-              fi
-              decided withdrawn "$said"
-            fi
-            if [ "$decision" = newer ]; then
-              if [ "$what" = - ]; then
-                echo "#$NUMBER: a review comment of $HEAD that names no run gives the verdict $given. GitHub last" \
-                  "changed it at $since, at or after this run read #$NUMBER at $STARTED."
-                said="a review comment that GitHub changed at or after the time when this run read #$NUMBER gave $HEAD"
-                said+=" the verdict"
-                decided newer "$said $given"
-              fi
-              echo "#$NUMBER: the review of run $what gives $HEAD the verdict $given. Run $what read #$NUMBER at" \
-                "$since, at or after this run read #$NUMBER at $STARTED."
-              said="a run that read #$NUMBER at or after the time when this run read it gave $HEAD the verdict"
-              decided newer "$said $given"
-            fi
+            case $decision in
+              held) decided held screen from "$what" ;;
+              withdrawn) decided withdrawn neutral check "$what" from "$since" ;;
+              newer) decided newer "$given" run "$what" from "$since" ;;
+            esac
           }
           pr=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '"\(.head.sha) \(.changed_files)"') \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
           read -r sha count <<< "$pr"
-          [ "$sha" = "$HEAD" ] || decided moved "the head of the pull request is now $sha"
+          [ "$sha" = "$HEAD" ] || decided moved head now "$sha"
           # The screen of this run passed the head when the route is screen: the review job, which this step needs to
           # have succeeded, runs on that route only after a screen that passed. A review by hand with no screen has the
           # route review (by_hand).
@@ -3280,15 +3228,12 @@ jobs:
           if [ "$RECORD" != true ]; then
             [ "$TASK" != relabel ] || relabeled
             [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
-            said="the author of #$NUMBER is not an outside author: it has write access, or GitHub did not say"
+            cause=writer
             # An author whose write access GitHub did not say (AUTHOR_KIND unknown): the verdict of this run, whatever
             # it is, counts as no approval for the import, and the step that finds the import check runs withdraws
             # them, or records that the head is not approved, for it (OSSV-221's architect, 2026-11-24 14:29Z, F3).
-            if [ "${AUTHOR_KIND:-}" = unknown ] && [ "$TASK" != relabel ] && [ -n "$VERDICT" ]; then
-              said="GitHub did not say whether the author of #$NUMBER has write access, so this run records no check"
-              said+=" run. A later step of this job counts the verdict of this run as no approval for the import"
-            fi
-            decided writer "$said"
+            [ "${AUTHOR_KIND:-}" != unknown ] || cause=access
+            decided writer "$cause"
           fi
           [[ $count =~ ^[0-9]+$ ]] || { echo "::error::#$NUMBER gives no count of changed files."; exit 1; }
           gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" \
@@ -3296,8 +3241,7 @@ jobs:
             || { echo "::error::the files of #$NUMBER could not be read."; exit 1; }
           sha=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) \
             || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }
-          said="the head of the pull request changed to $sha while the step read its files"
-          [ "$sha" = "$HEAD" ] || decided moved "$said"
+          [ "$sha" = "$HEAD" ] || decided moved head now "$sha"
           [ "$TASK" != relabel ] || relabeled
           [ "$TASK" = relabel ] || [ "$screen" = true ] || by_hand
           [ "$TASK" = relabel ] || [ "$screen" != true ] || screened_run
@@ -3309,7 +3253,7 @@ jobs:
             "$RUNNER_TEMP/import-check.json" "${imports[@]}") \
             || { echo "::error::the import check of $HEAD could not be decided."; exit 1; }
           files_read=$(grep -c . "$RUNNER_TEMP/files.jsonl" || true)
-          decided "$decision" "the step read $files_read of the $count changed files"
+          decided "$decision" rule files "$files_read" changed "$count"
       # The import check run of the head that a review or a screen withdraws (R12): with this job's own token, each
       # check run repo-pairs/import-approved of the OSS Verify App on the head, with conclusion success, whose
       # external_id is <number>:<head>. A check run belongs to a commit, so one of another pull request of the same
@@ -3333,8 +3277,8 @@ jobs:
       # can hide an older success under a newer one that was withdrawn. A withdrawal counts from the time of its reason,
       # and withdraws only a check run whose run read the item at or before that time, or that names no such run
       # (OSSV-221's architect, 2026-11-24 05:23Z): an older read never withdraws the record of a newer read. When
-      # each check run with conclusion success is the record of a newer read, nothing is withdrawn, the log says so,
-      # and the output clear names the head, as when no such check run stands.
+      # each check run with conclusion success is the record of a newer read, nothing is withdrawn, the log gives the
+      # decision keep, and the output clear names the head, as when no such check run stands.
       # When the head has no import check run with conclusion success at all, a run whose own verdict or screen gives
       # the reason (kind own) leaves a record of it all the same (2026-11-24 05:33Z). It does so for an author whom the
       # rules that hold back treat as outside (.github/review/rules.py holds_back; 2026-11-24 09:28Z): the trust job's
@@ -3443,13 +3387,12 @@ jobs:
           # older cause (rules.py source): held for a newer hold of the screen, owed for the line
           # <!-- withdraw-owed <head> <why> <run> --> (FROM_OWED), and earlier for a review comment of the head: the
           # newest one, which a relabel reads (a relabel gives no verdict of its own), or EARLIER (rules.py verdict).
-          # who, asks and has: the review whose verdict withdraws, and what it says. For own, it is the review of this
-          # run, and the log names this run: the run that recorded a check run can have read the item at the same time
-          # as this run, and then this review is not a later one (rules.py TIE_WITHDRAWN). The review of another kind
-          # can be older than the check run, so its texts do not say later. For a relabel's review and for the line,
-          # the texts are those of the check run's title (rules.py OWED_WITHDRAWN): a past verdict, asked and had. For
-          # EARLIER, who says that the review came before this run, and asks and has give the verdict that its comment
-          # gives now. after names the review or the hold of this run, for the error of the check run of not-approved.
+          # who, asks and has: the review whose verdict withdraws, and what it says, for the error of the check run of
+          # not-approved (because). For own, it is the review of this run. The review of another kind can be older
+          # than the check run, so its texts do not say later. For a relabel's review and for the line, the texts are
+          # those of the check run's title (rules.py OWED_WITHDRAWN): a past verdict, asked and had. For EARLIER, who
+          # says that the review came before this run, and asks and has give the verdict that its comment gives now.
+          # after names the review or the hold of this run, for the same error.
           who="the review of this run" asks="asks for a change" has="has questions for Sami" kind=own
           after="that review"
           if [ "$TASK" = relabel ]; then
@@ -3467,7 +3410,11 @@ jobs:
           # access: GitHub did not say whether the author has write access, and this run's own review passed the head.
           # That pass is no approval, so it withdraws as a blocking finding does, from the read of this run (F3).
           if [ "$kind" = own ] && [ "$why" = pass ] && [ "${AUTHOR_KIND:-}" = unknown ]; then why=access; fi
-          # because: why the import check runs of the head are withdrawn. For the screen, only own names this run: it is
+          # logged <decision> <cause> [<name> <value>]...: the log line of a decision of this step, in the one form of
+          # .github/review/rules.py log: "#<number> at <head>: decision <decision>, cause <cause>, read <STARTED>",
+          # then the fields.
+          logged() { python3 .github/review/rules.py log "$NUMBER" "$head" "$1" "$2" "${STARTED:-}" "${@:3}"; }
+          # because: why the import check runs of the head are withdrawn, for that error. For the screen, only own names
           # this run's own screen, which held the head in this run. Every other kind says an automated screen,
           # as the title and the summary of the withdrawal do (rules.py OWED_WITHDRAWN): the hold of another kind can
           # be older than the check run. Only a relabel and a review by hand reach held (the decision's held, from
@@ -3482,7 +3429,7 @@ jobs:
             access)
               because="GitHub did not say whether the author of #$NUMBER has write access, so the pass of this run is"
               because+=" no approval" after="the read of this run" ;;
-            *) echo "#$NUMBER: this run withdraws no import check run of $head."; exit 0 ;;
+            *) logged clear none; exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the $gave job gave no head commit: $head"; exit 1; }
           # No line <!-- withdraw-owed --> holds access, so nothing is owed for it (the comment above).
@@ -3536,6 +3483,9 @@ jobs:
                      "$head is withdrawn.$again"; exit 1; }
             read -r source at <<< "$found"
           fi
+          # by: the field run, for a cause of an earlier run whose id the source gives.
+          by=()
+          [ "$source" = - ] || by=(run "$source")
           ids=$(python3 .github/review/rules.py withdrawal "$NUMBER" "$head" "$why" "$kind" "$GITHUB_RUN_ID" "$source" \
             "$at" "$RUNNER_TEMP/approved.jsonl" "$RUNNER_TEMP") \
             || { echo "::error::the requests that withdraw the import check runs could not be made."; exit 1; }
@@ -3546,9 +3496,7 @@ jobs:
             "$RUNNER_TEMP/approved.jsonl" | tr '\n' ' ')
           kept=${kept% }
           if [ -n "$kept" ]; then
-            echo "#$NUMBER: this run leaves each import check run of $head with the conclusion success that this list" \
-              "names: $kept. The run that recorded each one read #$NUMBER after $at, and the withdrawal of this run" \
-              "counts from $at."
+            logged keep "$why" "${by[@]}" check "${kept// /,}" from "$at"
           fi
           if [ -z "$ids" ]; then
             # With no import check run of conclusion success at all, a run whose own verdict or screen withdraws makes
@@ -3578,17 +3526,16 @@ jobs:
                 "$RUNNER_TEMP/not-approved.json" "${values[@]}" \
                 || { echo "::error::the request that records that $head is not approved for the import could not be" \
                        "made."; exit 1; }
-              echo "#$NUMBER: $because, and $head has no import check run with the conclusion success. So a later" \
-                "step of this job records a check run that says that $head is not approved for the import. It counts" \
-                "from $STARTED, when this run read #$NUMBER."
+              logged not-approved "$why"
+              echo "why=$why" >> "$GITHUB_OUTPUT"
               echo "neutral=$head" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            [ -n "$kept" ] || echo "#$NUMBER: $because, but $head has no import check run to withdraw."
+            [ -n "$kept" ] || logged clear "$why"
             echo "clear=$head" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "#$NUMBER: a later step of this job withdraws the import check runs $ids of $head, because $because."
+          logged withdraw "$why" "${by[@]}" check "${ids// /,}" from "$at"
           { echo "checks=$ids"; echo "head=$head"; } >> "$GITHUB_OUTPUT"
       # Token A: for the import check run when the decision is to record it or a review or a screen withdraws it,
       # for the check run that says that the head is not approved for the import, and for the close and reopen of a
@@ -3704,6 +3651,10 @@ jobs:
           RETRY: ${{ steps.answers.outputs.retry }}
           # The head that the name of this run gives (the trust job's named), or empty.
           NAMED: ${{ needs.trust.outputs.named }}
+          # The reason of the check run (the withdraw step's output why), and the time when the trust job of this run
+          # read the item: the cause and the read of the log line.
+          WHY: ${{ steps.withdraw.outputs.why }}
+          STARTED: ${{ needs.trust.outputs.started }}
         # The hold job of an answer runs this script too, with an env of its own (*not-approved).
         run: &not-approved |
           set -euo pipefail
@@ -3726,9 +3677,8 @@ jobs:
           id=$(gh api --method POST "repos/$REPO/check-runs" --input "$request" --jq .id) \
             || { echo "::error::the check run that says that $HEAD is not approved for the import could not be" \
                    "recorded.$again"; exit 1; }
-          echo "Recorded the check run $id, repo-pairs/import-approved, with the conclusion neutral for #$NUMBER on" \
-            "$HEAD. It says that $HEAD is not approved for the import."
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          python3 .github/review/rules.py log "$NUMBER" "$HEAD" not-approved "$WHY" "${STARTED:-}" check "$id"
       # The catch-up, with token A: a pull request that is closed and reopened gets a new CI run of its head (the event
       # pull_request), and the review of that CI run follows. An open pull request is closed, then reopened; one that a
       # catch-up run closed and could not reopen (the trust job took it as such) is only reopened. The pull request's
@@ -4148,8 +4098,9 @@ jobs:
       # The step "Record a withdrawal that the post job owes" runs before this one: its line makes later runs
       # withdraw, and it stays in the label comment.
       # When the item has no label comment, that step writes no line, and a run whose posts are skipped does not record
-      # it. Such a run writes one line to its log and its summary, which names the word and its run, or the decision of
-      # the post job, and says that the line stays. It writes the output gave_way too. Each later step that writes on
+      # it. Such a run writes one line to its log and its summary, in the form of rules.py log: the decision skip, the
+      # cause (the kind of the word, or the decision of the post job), and the run and the time of that word. It
+      # writes the output gave_way too. Each later step that writes on
       # the item reads that output in its if. The step "Keep the review in the run's summary" still runs. A read that
       # fails fails this step, and nothing posts.
       - name: >-
@@ -4183,39 +4134,27 @@ jobs:
           if [ "$TASK" = review ] || [ "$TASK" = rescreen ]; then
             case ${VERDICT:-} in pass|blocking|person) own=$VERDICT ;; esac
           fi
+          # cause: why this run gives way, a cause of rules.py LOG_CAUSES. The post job's decision held is a screen that
+          # held the head, withdrawn a withdrawal that stands, and newer a blocking finding or the verdict person.
+          # Else the kind of the newer word that newer-word finds, with the run that gave it and its time.
+          fields=()
           case ${GAVE_WAY:-} in
-            held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
-            withdrawn)
-              said="Its post job sorted the import check runs of $HEAD by the times that they named. When it gave the"
-              said+=" decision withdrawn, the newest one was not an approval. That check run counted as newer than each"
-              said+=" screened pass of $HEAD, and its summary named a time at or after $STARTED, or no time." ;;
-            newer)
-              said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
-              said+=" time gives $HEAD a blocking finding or the verdict person." ;;
+            held) cause=screen ;;
+            withdrawn) cause=neutral ;;
+            newer) cause=verdict ;;
             "")
               found=$(python3 .github/review/rules.py newer-word "$NUMBER" "$HEAD" "$STARTED" "$GITHUB_RUN_ID" "$own") \
                 || { echo "::error::the comments of #$NUMBER could not be read. Nothing posts."; exit 1; }
               [ "$found" != - ] || exit 0
               read -r other kind at <<< "$found"
-              if [ "$kind" = hold ] && [ "$other" != - ]; then
-                said="The screen of run $other held $HEAD, and its hold counts from $at, at or after that time."
-              elif [ "$kind" = hold ]; then
-                said="A screen held $HEAD, and its hold comment, which names no run, is from $at, at or after that"
-                said+=" time."
-              elif [ "$other" != - ]; then
-                said="Run $other read #$NUMBER at $at, at or after that time, and its review gives $HEAD the verdict"
-                said+=" $kind."
-              else
-                said="A review comment of $HEAD that names no run gives the verdict $kind, and GitHub last changed it"
-                said+=" at $at, at or after that time."
-              fi ;;
+              cause=$kind fields=(run "$other" from "$at")
+              [ "$cause" != hold ] || cause=screen ;;
             *)
               echo "::error::the post job's output gave_way is not held, withdrawn or newer: $GAVE_WAY. Nothing posts."
               exit 1 ;;
           esac
-          line="#$NUMBER: this run read #$NUMBER at $STARTED. $said So the later steps of this run post nothing on"
-          line+=" #$NUMBER: no review, no fix, no label and no label comment. A withdraw-owed line that an earlier step"
-          line+=" of this run wrote in the label comment, if any, stays."
+          line=$(python3 .github/review/rules.py log "$NUMBER" "$HEAD" skip "$cause" "$STARTED" "${fields[@]}") \
+            || exit 1
           echo "$line"
           printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
           echo "gave_way=true" >> "$GITHUB_OUTPUT"
@@ -4620,8 +4559,7 @@ jobs:
             (( rc == 0 || rc == 3 )) || { echo "::error::the hold comments of #$NUMBER could not be ordered"; exit 1; }
           fi
           if (( rc == 0 )); then
-            echo "#$NUMBER has a hold that counts from $last, at or after this run started at $STARTED: the labels" \
-              "stay."
+            python3 .github/review/rules.py log "$NUMBER" "${HEAD:--}" stay hold "$STARTED" from "$last" || exit 1
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
             # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
             # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
@@ -4668,10 +4606,7 @@ jobs:
                          and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id') \
               || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
             if [ -z "$found" ]; then
-              echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
-                "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
-                "found. So this step sets the post job's decision to gone, and the label comment does not say that" \
-                "the workflow recorded the check."
+              python3 .github/review/rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED" || exit 1
               approved=false decision=gone
             fi
           fi
@@ -5083,8 +5018,9 @@ jobs:
       # Then the later steps of this run post nothing on the item: no hold comment, no label and no label comment. The
       # run of that newer word owns them. The step "Record a withdrawal that this run owes" runs before this one, and
       # its line stays. The withdrawal of an answer still runs: it withdraws only a success of a read at or before
-      # STARTED. This step writes one line to its log and the run's summary, which names the word and its run and says
-      # that the line stays, and the output gave_way, which the steps after it read. A draft and an answer of an issue
+      # STARTED. This step writes one line to its log and the run's summary, in the form of rules.py log: the decision
+      # skip, the cause (the kind of the word), and the run and the time of that word. It writes the output gave_way,
+      # which the steps after it read. A draft and an answer of an issue
       # read no head, and a hold at the limit ran no screen: this step does not run for them. A read that fails fails
       # this step, and nothing is held.
       - name: Skip the posts of this run when a review or hold of the head is newer than this run's read
@@ -5110,19 +5046,12 @@ jobs:
             || { echo "::error::the comments of #$NUMBER could not be read. Nothing is held."; exit 1; }
           [ "$found" != - ] || exit 0
           read -r other kind at <<< "$found"
-          if [ "$kind" = hold ] && [ "$other" != - ]; then
-            said="The screen of run $other held $HEAD, and its hold counts from $at, at or after that time."
-          elif [ "$kind" = hold ]; then
-            said="A screen held $HEAD, and its hold comment, which names no run, is from $at, at or after that time."
-          elif [ "$other" != - ]; then
-            said="Run $other read #$NUMBER at $at, at or after that time, and its review gives $HEAD the verdict $kind."
-          else
-            said="A review comment of $HEAD that names no run gives the verdict $kind, and GitHub last changed it at"
-            said+=" $at, at or after that time."
-          fi
-          line="#$NUMBER: this run read #$NUMBER at $STARTED. $said So the later steps of this run post nothing on"
-          line+=" #$NUMBER: no hold comment, no label and no label comment. A withdraw-owed line that an earlier step"
-          line+=" of this run wrote in the label comment, if any, stays."
+          # cause: the kind of the newer word, a cause of rules.py LOG_CAUSES, with the run that gave it and the time
+          # from which it counts.
+          cause=$kind
+          [ "$cause" != hold ] || cause=screen
+          line=$(python3 .github/review/rules.py log "$NUMBER" "$HEAD" skip "$cause" "$STARTED" run "$other" \
+            from "$at") || exit 1
           echo "$line"
           printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
           echo "gave_way=true" >> "$GITHUB_OUTPUT"
@@ -5513,6 +5442,8 @@ jobs:
           HEAD: ${{ steps.withdraw.outputs.neutral }}
           RETRY: "false"
           NAMED: ${{ needs.trust.outputs.named }}
+          WHY: ${{ steps.withdraw.outputs.why }}
+          STARTED: ${{ needs.trust.outputs.started }}
         run: *not-approved
       # The line <head> screen <run> that the step "Record a withdrawal that this run owes" wrote, once the post job
       # finished the withdrawal of the head (its output pending), or the steps of the withdrawal of an answer above did

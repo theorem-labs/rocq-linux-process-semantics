@@ -8,6 +8,7 @@ labels").
     python3 .github/review/rules.py owed <number> owed=<head, why and run> withdrawn=<head> own=<true or false>
         sources=<run>=<time> ... task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
+    python3 .github/review/rules.py log <number> <head> <decision> <cause> <read> [<field> <value> ...]
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
     python3 .github/review/rules.py soundness <the .review directory> <output.json> <hold> <outside> <kind> <section>
@@ -350,6 +351,12 @@ $GITHUB_OUTPUT: label (set, off or unchanged), then approve, record, withdraw an
 The author is outside when <outside> is true, and only then (outside_author). <outsider> is a GitHub login or empty,
 and no answer reads it. The status is 2 when an argument is not one of these.
 
+log: the log line of one decision of the workflow (decision_log) on standard output, in the one form of the decision log
+(LOG_DECISIONS, LOG_CAUSES and LOG_FIELDS): "#<number> at <head>: decision <decision>, cause <cause>, read <read>", then
+each <field> <value> in the order of LOG_FIELDS. <head> is - for an item that has none, <read> is the time when the
+trust job of the run read the item, and a value that is - or empty is none. The status is 2 when a word, a field or a
+value is not one of the tables'.
+
 The standard library of Python 3 alone.
 """
 
@@ -457,6 +464,7 @@ REFUSALS = ("", "review", "answer", "fix")
 # The comment job's label step gives one more, gone, in the place of the post job's decision: that job recorded the
 # check run, or one stood for its decision hand, and when the label step reads the check runs of the head again, none
 # with the conclusion success and the marker line of the value stands (GONE).
+# Each of these words is also a decision of the decision log, with its meaning (LOG_DECISIONS).
 DECISIONS = ("", "record", "screen", "verdict", "steering", "outside", "unread", "person", "markdown", "moved",
              "writer", "held", "hand", "screened", "withdrawn", "newer", "gone")
 
@@ -639,6 +647,101 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # head newer than the time of the line. Until then, each relabel withdraws and records nothing (owe). Each head has a
 # line of its own (marker_kind).
 OWED = re.compile(r"<!-- withdraw-owed ([0-9a-f]{40}) (blocking|person|screen) ([1-9][0-9]*) -->")
+
+# --- the decision log -----------------------------------------------------------------------------------------------
+# The one short fixed form of each log line, and of each line of a job summary, that states a decision of the workflow
+# (OSSV-221's architect, 2026-11-24 14:36Z). Only the readers of the workflow's runs see it. A comment that an outside
+# author reads, and the title and the summary of a check run, keep their plain sentences. decision_log builds the line,
+# and each step that states a decision calls it through the command log, so that the words and their order are the
+# same everywhere:
+#     #<number> at <head>: decision <decision>, cause <cause>, read <time>[, <name> <value>]...
+# An item that has no head (an issue) gets no " at <head>". read is the time when the trust job of the run read the
+# item. The fields come after read, in the order of LOG_FIELDS, and only where the decision needs one. A value that
+# the step does not know is none. Each word of the three tables has one meaning.
+LOG_DECISIONS = {
+    # The decide step of the post job: the decisions of DECISIONS.
+    "record": "The post job records the import check run of the head.",
+    "screen": "No screen passed the head in the run of this review, so no check run is recorded.",
+    "verdict": "The verdict of the review is neither pass nor person, so no check run is recorded.",
+    "steering": "The pull request changes a file under .github/, so no check run is recorded.",
+    "outside": "The pull request changes a path that the import does not take, so no check run is recorded.",
+    "unread": "The step did not read each changed file, so no check run is recorded.",
+    "person": "The verdict is person, so Sami decides, and no check run is recorded.",
+    "markdown": "The soundness hold lasts and a changed path is not a Markdown file, so no check run is recorded.",
+    "moved": "The pull request has another head now, so no check run is recorded for this head.",
+    "writer": "The author is no outside author, so this run records no check run.",
+    "held": "A hold of the screen outranks the pass of this run, so no check run is recorded.",
+    "hand": "This run records no check run, and leaves the record of an earlier screened pass.",
+    "screened": "This run records no check run, and withdraws each one that stands, for the cause.",
+    "withdrawn": "A withdrawal of the import check run stands, so this run records no check run.",
+    "newer": "A newer run gave the head a blocking finding or the verdict person, so no check run is recorded.",
+    # The label step: gone, in the place of the post job's decision, and the hold that keeps the labels.
+    "gone": "No import check run stands now, so the label comment does not say that the workflow recorded the check.",
+    "stay": "The label step leaves the state label and the label comment as they are.",
+    # The step that finds the import check runs to withdraw, and the step that records the check run of not-approved.
+    "withdraw": "A later step of this job withdraws the import check runs that check names.",
+    "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
+             "after the time in from."),
+    "clear": "This job withdraws no import check run of the head.",
+    "not-approved": "A later step of this job records the check run that says that the head is not approved.",
+    # The step of the comment job and of the hold job that gives way to a newer word.
+    "skip": ("The later steps of this run post nothing on the item. A withdraw-owed line that an earlier step wrote "
+             "stays."),
+}
+LOG_CAUSES = {
+    "blocking": "A review of the head gives a blocking finding.",
+    "person": "A review of the head gives the verdict person.",
+    "pass": "A review of the head gives the verdict pass.",
+    "verdict": "A review of the head gives a blocking finding or the verdict person: the post job does not say which.",
+    "screen": "A screen held the head.",
+    "hold": "A hold comment of the workflow counts from a time at or after the read of this run.",
+    "access": "GitHub did not say whether the author has write access.",
+    "writer": "The author has write access, or is an App that the workflow trusts.",
+    "neutral": "An import check run of the head has the conclusion neutral, and it is the newest word on the head.",
+    "missing": ("No import check run of the head with the conclusion success and the marker of the import's paths "
+                "stands."),
+    "unposted": "The label comment holds a withdraw-owed line, and no comment of the workflow gives its reason.",
+    "earlier": "A screen passed the head in the run of an earlier review.",
+    "standing": "An import check run of the head with the conclusion success stands.",
+    "head": "The head of the pull request is not the head that this run read.",
+    "rule": "The rules of R12 (import_decision) decide it, from the changed files that the step read.",
+    "none": "This run has no reason to withdraw an import check run.",
+}
+# The fields after read, in this order: the pattern of the value, and what it says. The check run ids of check are
+# separated by commas.
+LOG_FIELDS = {
+    "run": (re.compile(r"[1-9][0-9]*"),
+            "The id of the run that gave the word that decides, none when its comment names no run."),
+    "check": (re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*"), "The ids of the import check runs that the decision names."),
+    "from": (TIME, "The time from which that word counts, none when it names no time."),
+    "files": (re.compile(r"0|[1-9][0-9]*"), "The number of changed files that the step read."),
+    "changed": (re.compile(r"0|[1-9][0-9]*"), "The number of files that the pull request changes."),
+    "now": (HEAD, "The head that the pull request has now."),
+}
+
+
+def decision_log(number, head, decision, cause, read, fields=None):
+    """The log line of a decision of the workflow, in the form of the section above: item number at head ("" or "-" for
+    an item with no head), a decision of LOG_DECISIONS, its cause of LOG_CAUSES, the time read, and each field of fields
+    ({name: value}, the names of LOG_FIELDS), in the order of LOG_FIELDS. "" and "-" mean none, for read and each value.
+    The line has no line break and no period at its end. A ValueError for a word, a name or a value that the tables and
+    their patterns do not give: no step can write a line that breaks the form."""
+    fields = fields or {}
+
+    def known(pattern, value):
+        value = "none" if value in ("", "-") else value
+        if value != "none" and not pattern.fullmatch(value):
+            raise ValueError(f"not a value of the decision log: {value!r}")
+        return value
+
+    if not NUMBER.fullmatch(number) or (head not in ("", "-") and not HEAD.fullmatch(head)):
+        raise ValueError(f"not a pull request number and a head commit: {number!r} {head!r}")
+    if decision not in LOG_DECISIONS or cause not in LOG_CAUSES or set(fields) - set(LOG_FIELDS):
+        raise ValueError(
+            f"not a decision, a cause and fields of the decision log: {decision!r} {cause!r} {sorted(fields)}")
+    parts = [f"decision {decision}", f"cause {cause}", f"read {known(TIME, read)}"]
+    parts += [f"{name} {known(pattern, fields[name])}" for name, (pattern, _) in LOG_FIELDS.items() if name in fields]
+    return f"#{number}{'' if head in ('', '-') else f' at {head}'}: {', '.join(parts)}"
 
 
 def marker_line(line):
@@ -3174,6 +3277,12 @@ def main(argv):
             return 3
         if len(argv) == 3 and argv[0] == "hold-head" and NUMBER.fullmatch(argv[1]):
             return 0 if held_head(argv[1], argv[2]) else 3
+        if len(argv) >= 6 and argv[0] == "log" and len(argv) % 2 == 0:
+            names = argv[6::2]
+            if len(set(names)) != len(names):
+                raise ValueError(f"a field of the decision log twice: {names}")
+            print(decision_log(*argv[1:6], dict(zip(names, argv[7::2]))))
+            return 0
         if len(argv) in (4, 5) and argv[0] == "answers":
             for name, value in answers(*argv[1:]).items():
                 print(f"{name}={str(value).lower() if isinstance(value, bool) else value}")
