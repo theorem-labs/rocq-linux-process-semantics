@@ -18667,6 +18667,21 @@ class ImportCheckTest(ReaderRunner):
                 self.assertNotRecorded(got)
                 self.assertIn(error, "\n".join(self.logs[start:]))
 
+    def test_a_screened_run_records_nothing_after_a_newer_runs_blocking_review_that_withdrew_nothing(self):
+        """The tester's audit of round 20, F1 (no failure on the path; the decide step's rule: a run on the route
+        screen records its own check run only while its pass is the newest word on the head, OSSV-221's architect,
+        2026-11-23 18:28Z and 18:38Z). The screened CI review of mallory's #7 at HEAD (run 100) read the item 40
+        minutes ago, and its review is slow. Sami's rescreen of HEAD (run 120) read the item 30 minutes ago, its
+        screen passed, and its review gave a blocking finding. Its post job ran first in post-7: no import check run
+        stood, so it withdrew nothing and wrote no withdrawal. Its review comment, blocking, posted 10 minutes ago. Now
+        the post job of run 100 runs. The newest word on HEAD is the blocking review of a newer run, so run 100 records
+        nothing. At 6e19c33f it records repo-pairs/import-approved with conclusion success: own_record reads only holds
+        and withdrawals."""
+        blocking = review_of(HEAD, "blocking", at=ago(10), run=120)
+        got = self.judge(["README.md"], value=self.LPS, trust=dict(self.REVIEWED, started=ago(40)),
+                         comments=[blocking])
+        self.assertNotRecorded(got)
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head newer than the hold or the
