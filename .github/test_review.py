@@ -18721,6 +18721,19 @@ class ImportCheckTest(ReaderRunner):
         blocking = review_of(HEAD, "blocking", at=ago(9), run=120)
         self.assertNotRecorded(self.older_pass_after_newer_word([blocking], [withdrawn]))
 
+    def test_a_relabel_records_nothing_after_an_older_runs_pass_posts_after_a_newer_hold(self):
+        """The tester's audit of round 20, F4 (no failure on the path; OSSV-221's architect, 2026-11-23 18:28Z). Sami's
+        rescreen of HEAD of mallory's #7 (run 120, newer than run 100) held HEAD 10 minutes ago; no import check run
+        stood. Run 100's post job gives way (held) and records nothing, but its comment job then posts run 100's pass
+        review, which is newer than the hold by the time it posted (older_pass_after_newer_word). The next relabel of
+        HEAD records nothing: the newest word on HEAD is still run 120's hold. At 6e19c33f the relabel records
+        repo-pairs/import-approved with conclusion success."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(10), "updated_at": ago(10),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 120 -->"}
+        self.assertNotRecorded(self.older_pass_after_newer_word([hold], []))
+
     def test_a_new_hold_of_the_screen_whose_comment_did_not_post_keeps_its_line_whatever_an_older_hold_says(self):
         """OSSV-221's architect, 2026-11-22 16:06Z, (A): the line of a hold of the screen names the run that wrote it,
         and goes only once the hold comment of that run stands, or a review of the head newer than the hold or the
