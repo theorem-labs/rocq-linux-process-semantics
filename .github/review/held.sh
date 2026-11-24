@@ -231,11 +231,17 @@ no_key_of() {
 }
 # relabel_withdraws <number> <head>: why a relabel of <head> withdraws the import check run of <head>, from the
 # comments of github-actions[bot] on <number>, by the rule that the post job of that relabel reads (rules.py
-# verdict, its why). screen when a hold comment of the screen that names <head> (its text holds "The automated screen
-# held ", and it has no marker of a hold that is tried again) is newer than each review comment of <head> whose run
-# screened it (the marker <!-- review-screened <head> --> on the line after the marker of its verdict): the state
-# held. Else the reason of a withdrawal of the import check runs of <head> that a run owes (it found a reason for it
-# and did not finish it, or no comment gives that reason yet), while a label comment holds its marker line
+# verdict, its why). Each comment counts from one time (rules.py word_time; OSSV-221's architect, 2026-11-24 01:20Z
+# and 01:26Z): a review comment of <head> from the time when its run read the item, the marker
+# <!-- review-read <time> --> in its header just before <!-- review-run <run> -->, never from when it posted. One with
+# no such marker counts from when GitHub last changed it for the verdict blocking or person, and at no time (before
+# each time) for pass. A hold comment counts from when GitHub last changed it. The review comments of <head> are in
+# the order of those times, and two at the same time keep the order in which GitHub lists them. screen when a hold
+# comment of the screen that names <head> (its text holds "The automated screen held ", and it has no marker of a hold
+# that is tried again) is newer than each review comment of <head> whose run screened it (the marker
+# <!-- review-screened <head> --> on the line after the marker of its verdict): the state held. Else the reason of a
+# withdrawal of the import check runs of <head> that a run owes (it found a reason for it and did not finish it, or
+# no comment gives that reason yet), while a label comment holds its marker line
 # <!-- withdraw-owed <head> <why> <run> -->: "<why> owed", whatever the newest review says. Only a run that finished
 # the withdrawal of <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it:
 # the comment of run <run> that gives <why>, or a review of <head> newer than the time of the line: the hold or the
@@ -250,10 +256,16 @@ relabel_withdraws() {
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
   comments "$1" | SHA=$2 jq -rs '[.[] | select(.user.login == "github-actions[bot]")
       | {at: (.updated_at // ""), body: (.body // "")}] as $ours
-    | [$ours[] | select(.body | startswith("<!-- review -->\n<!-- review-head " + $ENV.SHA + " -->\n"))
+    | ([$ours[] | select(.body | startswith("<!-- review -->\n<!-- review-head " + $ENV.SHA + " -->\n"))
         | .at as $at | (.body | split("\n")) as $l
         | ($l[2] // "" | capture("^<!-- review-verdict " + $ENV.SHA + " (?<v>pass|blocking|person)( will-fix)? -->$"))
-        | {at: $at, verdict: .v, screened: ($l[3] == "<!-- review-screened " + $ENV.SHA + " -->")}] as $reviews
+        | .v as $v | ($l[3] == "<!-- review-screened " + $ENV.SHA + " -->") as $s
+        | (if $s then 4 else 3 end) as $r
+        | (($l[$r] // "" | capture("^<!-- review-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
+              + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->$")
+            | select($l[$r + 1] // "" | test("^<!-- review-run [1-9][0-9]* -->$")) | .t)
+          // (if $v == "pass" then "" else $at end)) as $t
+        | {at: $t, verdict: $v, screened: $s}] | sort_by(.at)) as $reviews
     | ([$reviews[] | select(.screened) | .at] | max // "") as $screened
     | ([range(0; $reviews | length) | select($reviews[.].screened)] | last) as $last
     | ([$reviews[(($last // -1) + 1):][] | .verdict | select(IN("blocking", "person"))] | last) as $newer
