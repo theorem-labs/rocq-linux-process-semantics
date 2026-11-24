@@ -2193,6 +2193,88 @@ class LimitTest(Runner):
         self.assertEqual(self.route("mallory", "mallory"), "limit")
         self.assertEqual(self.route("mallory", "mallory", event="workflow_run"), "limit")
 
+    def test_the_events_of_one_outside_account_put_a_bounded_number_of_jobs_in_the_write_group(self):
+        """The tester's audit of round 24, by OSSV-221's architect's request of 2026-11-24 18:52Z (the bound of the
+        write group of a pull request). GitHub cancels a job that arrives at a concurrency group that already holds 100
+        pending jobs (queue: max), and a cancelled job writes nothing: with its post job and its comment job cancelled,
+        an older import check run stands under a newer review that never posted, and the App's retry records another.
+        So no path that an outside author drives may put an unbounded number of jobs in the group write-<n>. The
+        account mallory has LIMIT runs in the last hour, so each next comment on her pull request #7 (the task answer),
+        and each CI run of her next push (the task review), is held at the limit, and the job hold of such a run writes
+        in the group of #7. GitHub lets an account write about 500 comments an hour, and a push has no such limit. At
+        764ef77b each of these runs puts its job in the group, whether or not #7 holds that work at the limit already,
+        so a burst of about 110 events fills it. The jobs that the events of one account in an hour put in the group
+        number at most WRITE_JOBS_AN_HOUR, and the first run at the limit still holds its item: after it #7 has its
+        hold comment, and a run at the limit that finds its work held at the limit takes no task, say, or any other
+        rule that writes nothing for it."""
+        group = {"post", "comment", "hold"}
+        for event, graph, work in (("issue_comment", {"github.event_name": "issue_comment"}, "answer"),
+                                   ("workflow_run", None, "")):
+            with self.subTest(event=event):
+                self.tearDown()
+                self.setUp()
+                listed = [(10 + i, "mallory", event, "success") for i in range(self.LIMIT)]
+                jobs, comments, entered = {}, [], 0
+                for k in range(40):
+                    self.runs(*listed, jobs=jobs)
+                    self.serve(f"repos/{REPO}/issues/7/comments", comments)
+                    rc, out, got = self.trust("mallory", "mallory", event=event)
+                    self.assertEqual(rc, 0, out)
+                    self.assertTrue(k or got.get("route") == "limit", got)
+                    ran = ran_jobs(run_graph(got, github=graph)) - {"trust"}
+                    entered += len(ran & group)
+                    listed.append((20 + k, "mallory", event, "success"))
+                    jobs[20 + k] = [{"name": "hold", "conclusion": "success" if "hold" in ran else "skipped"}]
+                    if "hold" in ran:
+                        comments = [limit_hold(20 + k, at=ago(0), tries=0, task=work, head=HEAD,
+                                               comment="900" if work else "")]
+                self.assertGreaterEqual(entered, 1, f"the first {event} at the limit writes no hold")
+                self.assertLessEqual(entered, self.WRITE_JOBS_AN_HOUR,
+                                     f"{entered} jobs in the write group for 40 {event} events at the limit")
+
+    # The most jobs in the write group of one pull request that the events of one outside account may start in an
+    # hour: its LIMIT screened runs (a post job and a comment job each) and the one hold of the limit, and a margin for
+    # the rescreen pass's runs of the account. It is far below the 100 pending jobs that a group holds.
+    WRITE_JOBS_AN_HOUR = 20
+
+    def test_a_burst_of_events_of_one_account_puts_the_jobs_of_a_bounded_number_of_runs_in_the_write_group(self):
+        """The tester's audit of round 24, by OSSV-221's architect's ruling of 2026-11-24 19:48Z (the contract for the
+        bound of the write group, which replaces a stop that reads the hold comment). The hold job that writes the first
+        hold comment of an account waits in the group write-<n>, behind the jobs of the events that came before, so the
+        events of a burst find no hold comment. The events of one account (mallory, who has no write access) that
+        arrive before the first hold comment is written put the jobs of at most 2 x OUTSIDE_HOURLY_LIMIT runs in the
+        group of #7: the trust job takes no task for an event run of an account that already has that many event runs
+        of this workflow listed in the last hour, and it does so on each route that would put a job in the group: the
+        limit route (a comment on her pull request, a CI run of her push, her issue), and a comment on a pull request
+        with a merge conflict, whose route has no limit. A listed run that has not finished counts. The first runs of
+        the burst still get their jobs. At 764ef77b each event run puts its job in the group."""
+        group = {"post", "comment", "hold"}
+        events = ("issue_comment", "conflict", "workflow_run", "issues", "mixed")
+        mix = ("issue_comment", "workflow_run", "conflict", "issues")
+        for case in events:
+            with self.subTest(events=case):
+                self.tearDown()
+                self.setUp()
+                listed, jobs, in_group = [], {}, 0
+                for k in range(24):
+                    event = mix[k % len(mix)] if case == "mixed" else case
+                    self.runs(*listed, jobs=jobs)
+                    if event == "conflict":
+                        self.serve_item(7, "mallory", kind="pr", mergeable="dirty")
+                        rc, out, got = self.run_trust("issue_comment", actor="mallory", comment="900")
+                    else:
+                        rc, out, got = self.trust("mallory", "mallory", event=event)
+                    self.assertEqual(rc, 0, out)
+                    graph = {"github.event_name": "issue_comment" if event == "conflict" else event}
+                    ran = ran_jobs(run_graph(got, github=graph)) - {"trust"}
+                    in_group += bool(ran & group)
+                    run_event = "issue_comment" if event == "conflict" else event
+                    listed.append((10 + k, "mallory", run_event, "success"))
+                    jobs[10 + k] = [{"name": "hold", "conclusion": None if ran else "skipped"}]
+                self.assertGreaterEqual(in_group, 1, f"no run of the {case} burst writes in the group")
+                self.assertLessEqual(in_group, 2 * self.LIMIT,
+                                     f"{in_group} runs put jobs in the write group for 24 {case} events in a burst")
+
     def test_ci_runs_and_comments_count_toward_the_limit(self):
         """A CI run's workflow_run (its pusher's), an author's comment (issue_comment) and an issue each count, and a
         run of each event is held at the limit."""
