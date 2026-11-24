@@ -19863,9 +19863,9 @@ class ImportCheckTest(ReaderRunner):
                  [], "held", f"Its post job gave the decision held. A screen held {HEAD} at or after that time."),
                 ("(iii) a withdrawal that counts from after this run read the item", [older],
                  [self.withdrawn(dict(listed, id=900), "screen", "120", ago(10))], "withdrawn",
-                 f"Its post job gave the decision withdrawn. At that time, the newest import check run of {HEAD}, in "
-                 "the order of the time that each one named, was not an approval. It counted as newer than each "
-                 f"screened pass of {HEAD}. Its summary named a time at or after {started}, or no time."),
+                 f"Its post job gave the decision withdrawn. When the post job decided, the newest import check run of "
+                 f"{HEAD}, in the order of the time that each one named, was not an approval. It counted as newer than "
+                 f"each screened pass of {HEAD}. Its summary named a time at or after {started}, or no time."),
                 ("(iv) a screened pass of a run that read the item later",
                  [review_of(HEAD, at=ago(10), run=120, read=read)], [], "record",
                  f"Run 120 read #7 at {read}, at or after that time, and its review gives {HEAD} the verdict pass.")):
@@ -20448,9 +20448,9 @@ class ImportCheckTest(ReaderRunner):
         got = blocking("90", older, listed)
         self.assertEqual((got["result"], withdrew(got), got["post"]["withdrawn"], got["post"]["owed"]),
                          ("success", [], HEAD, ""), self.logs)
-        self.assertIn(f"#7: this run leaves these import check runs of {HEAD} with the conclusion success: 901. The "
-                      f"run that recorded each one read #7 after {older}, and the withdrawal of this run counts from "
-                      f"{older}.\n", "\n".join(self.logs[start:]))
+        self.assertIn(f"#7: this run leaves each import check run of {HEAD} with the conclusion success that this list "
+                      f"names: 901. The run that recorded each one read #7 after {older}, and the withdrawal of this "
+                      f"run counts from {older}.\n", "\n".join(self.logs[start:]))
         self.assertNotIn("has no import check run to withdraw", "\n".join(self.logs[start:]))
         for run, started, check in (("110", read, listed), ("120", newer, listed), ("90", older, unread)):
             with self.subTest(run=run, read=bool(rules.recorded_by(check))):
@@ -20629,8 +20629,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotIn(recorded, labels[0])
         self.assertIn(f"#7: no import check run of {HEAD} with the conclusion success and the marker of the import's "
                       "paths stands now. Another run withdrew the check run that the post job of this run recorded or "
-                      "found. So the label comment says that a run withdrew the check (the decision gone), and it does "
-                      "not say that the workflow recorded the check.\n", out)
+                      "found. So the decision is gone, and the label comment does not say that the workflow recorded "
+                      "the check.\n", out)
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
         rc, out, wrote, labels = self.label_step(trust, got, [listed], [labelled])
         self.assertEqual((rc, wrote), (1, []), out)
@@ -20695,9 +20695,8 @@ class ImportCheckTest(ReaderRunner):
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         comments = [review_of(HEAD, at=ago(90)), old]
         trust = dict(self.BY_HAND, started=ago(1))
-        said = ("Another run withdrew the check run that the post job of this run recorded or found. So the label "
-                "comment says that a run withdrew the check (the decision gone), and it does not say that the workflow "
-                "recorded the check.")
+        said = ("Another run withdrew the check run that the post job of this run recorded or found. So the decision "
+                "is gone, and the label comment does not say that the workflow recorded the check.")
 
         def by_hand():
             return self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch",

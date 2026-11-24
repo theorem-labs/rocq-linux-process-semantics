@@ -3502,8 +3502,9 @@ jobs:
             "$RUNNER_TEMP/approved.jsonl" | tr '\n' ' ')
           kept=${kept% }
           if [ -n "$kept" ]; then
-            echo "#$NUMBER: this run leaves these import check runs of $head with the conclusion success: $kept. The" \
-              "run that recorded each one read #$NUMBER after $at, and the withdrawal of this run counts from $at."
+            echo "#$NUMBER: this run leaves each import check run of $head with the conclusion success that this list" \
+              "names: $kept. The run that recorded each one read #$NUMBER after $at, and the withdrawal of this run" \
+              "counts from $at."
           fi
           if [ -z "$ids" ]; then
             # With no import check run of conclusion success at all, a run whose own verdict or screen withdraws makes
@@ -4118,9 +4119,9 @@ jobs:
           case ${GAVE_WAY:-} in
             held) said="Its post job gave the decision held. A screen held $HEAD at or after that time." ;;
             withdrawn)
-              said="Its post job gave the decision withdrawn. At that time, the newest import check run of $HEAD, in"
-              said+=" the order of the time that each one named, was not an approval. It counted as newer than each"
-              said+=" screened pass of $HEAD. Its summary named a time at or after $STARTED, or no time." ;;
+              said="Its post job gave the decision withdrawn. When the post job decided, the newest import check run of"
+              said+=" $HEAD, in the order of the time that each one named, was not an approval. It counted as newer"
+              said+=" than each screened pass of $HEAD. Its summary named a time at or after $STARTED, or no time." ;;
             newer)
               said="Its post job gave the decision newer. A review comment that counts from a time at or after that"
               said+=" time gives $HEAD a blocking finding or the verdict person." ;;
@@ -4587,8 +4588,8 @@ jobs:
             if [ -z "$found" ]; then
               echo "#$NUMBER: no import check run of $HEAD with the conclusion success and the marker of the import's" \
                 "paths stands now. Another run withdrew the check run that the post job of this run recorded or" \
-                "found. So the label comment says that a run withdrew the check (the decision gone), and it does not" \
-                "say that the workflow recorded the check."
+                "found. So the decision is gone, and the label comment does not say that the workflow recorded the" \
+                "check."
               approved=false decision=gone
             fi
           fi
