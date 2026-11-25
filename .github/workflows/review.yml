@@ -4146,10 +4146,10 @@ jobs:
       # The step "Record a withdrawal that the post job owes" runs before this one: its line makes later runs withdraw,
       # and it stays in the label comment. When the item has no label comment, that step writes no line, and a run whose
       # posts are skipped does not record it. Such a run writes one line to its log and its summary, in the form of
-      # rules.py log: the decision skip and a cause. For a word that newer-word finds, the cause is its kind, with the
-      # run that gave it and its time. For the post job's output gave_way, the cause is screen, neutral or verdict, with
-      # no run and no time. It writes the output gave_way too. Each later step that writes on the item reads that output
-      # in its if. A read that fails fails this step, and nothing posts.
+      # rules.py log: the decision skip and a cause. For a word that newer-word finds, the cause is its kind, or screen
+      # for a hold, with the run that gave it and its time. For the post job's output gave_way, the cause is screen,
+      # neutral or verdict, with no run and no time. It writes the output gave_way too. Each later step that writes on
+      # the item reads that output in its if. A read that fails fails this step, and nothing posts.
       - name: >-
           Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
           this run's screened pass
@@ -4183,7 +4183,8 @@ jobs:
           fi
           # cause: why this run gives way, a cause of rules.py LOG_CAUSES. The post job's decision held is a screen that
           # held the head, withdrawn a withdrawal that stands, and newer a blocking finding or the verdict person.
-          # Else the kind of the newer word that newer-word finds, with the run that gave it and its time.
+          # Else the kind of the newer word that newer-word finds, or screen for a hold, with the run that gave it and
+          # its time.
           fields=()
           case ${GAVE_WAY:-} in
             held) cause=screen ;;
