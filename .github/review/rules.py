@@ -692,9 +692,9 @@ LOG_DECISIONS = {
              "run's own review. In a relabel, which gives no verdict of its own, this run withdraws nothing."),
     "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
                  "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
-                 "keep line of that step names that time in the field from. The step also withdraws each one that "
-                 "names no read, and each one when from is none. That step runs while the GitHub environment named "
-                 "post holds the key of the OSS Verify App."),
+                 "keep line of the step that finds those check runs names that time in the field from. The later step "
+                 "also withdraws each one that names no read, and each one when from is none. Both steps run only "
+                 "while the GitHub environment named post holds the key of the OSS Verify App."),
     "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line "
                   "(cause unposted). So this run records no import check run with the conclusion success."),
     "newer": ("A run that read the item at or after this run gave the head a blocking finding or the verdict person. "
