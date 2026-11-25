@@ -22788,6 +22788,34 @@ class ImportCheckTest(ReaderRunner):
             self.assertIn(f"#7 at {HEAD}: {said}\n", logs)
         self.assertEqual(self.successes(end), [])
 
+    def test_an_older_pass_records_nothing_while_the_line_of_a_newer_refused_review_stands(self):
+        """The tester's audit of round 27 (F1): a review that the fresh reader refuses withdraws on any verdict, as a
+        blocking one does (OSSV-221's architect, 2026-11-25 10:21Z), and a failure path that records an approval
+        that the rules withdraw is a failure. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the
+        fresh reader refused its review. HEAD has no success, and GitHub refuses the POST of run 130's check run of
+        not-approved: its post job fails and owes the withdrawal, and its comment job writes the line
+        <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment. Run 130 posts no review, so the line is
+        its one word. Then the post job of the screened CI review run 100, which read #7 40 minutes ago and passed
+        HEAD, runs in write-7: the line is a newer word than run 100's pass, as run 130's blocking review would be,
+        so run 100 records nothing and no success stands on HEAD."""
+        self.refuse(f"repos/{REPO}/check-runs", 502, "Bad Gateway")
+        got, _after, rescreen = self.refused_run("pass", [], [])
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} refused"), self.logs[-4:])
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs.fail"))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
+                 "body": rules.label_comment("working")}
+        _outcomes, _wrote, bodies = self.refused_comment_job(got, rescreen, "130", [label])
+        line = f"<!-- withdraw-owed {HEAD} refused 130 {rescreen['started']} -->"
+        self.assertIn(line, bodies[0].split("\n"))
+        # The stand-in gh serves #7's comments as the test gives them, so the label step read the label comment of
+        # before the owed step: the label comment after both steps is rules.label_comment of the owed step's body.
+        marked = dict(label, body=rules.label_comment("refused-review", bodies[0]), updated_at=ago(15))
+        self.assertIn(line, marked["body"].split("\n"))
+        ci = dict(self.REVIEWED, started=ago(40))
+        mine, end = self.judged([], "100", trust=ci, comments=[marked])
+        self.assertEqual((mine["post"].get("recorded"), self.successes(end)), ("false", []),
+                         (mine["post"], self.logs[-4:]))
+
 
 def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False, rerun=False):
     """What the approved author-kind table gives for one cell of KindTableTest. state: the state of the label call
