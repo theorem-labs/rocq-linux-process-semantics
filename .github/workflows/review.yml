@@ -898,7 +898,7 @@ jobs:
             route screen "$outsider"
           }
           # item: what the API says of #NUMBER now: state, AUTHOR, kind (pr or issue), is_draft, and labelled (with
-          # HELD_LABEL); for a pull request also merged, base, pr_head (its head commit), mergeable (its
+          # HELD_LABEL); for a pull request also merged, base, pull_head (its head commit), mergeable (its
           # mergeable_state: dirty for a merge conflict, unknown while GitHub has not computed it), head_repo (the id
           # of its head repository, 0 when that repository is gone) and head_ref (its head branch). An export pull
           # request, open or closed, gets no task (export_stop), whatever the event or the task.
@@ -909,24 +909,24 @@ jobs:
               (if .pull_request then "pr" else "issue" end), ((.draft // false) | tostring),
               (any(.labels[]?; .name == $ENV.HELD_LABEL) | tostring)] | join(" ")') || fail "#$NUMBER could not be read."
             read -r state AUTHOR kind is_draft labelled <<< "$data"
-            merged=false base="" pr_head="" mergeable="" head_repo=0 head_ref=-
+            merged=false base="" pull_head="" mergeable="" head_repo=0 head_ref=-
             if [ "$kind" = pr ]; then
               data=$(gh api "repos/$REPO/pulls/$NUMBER" --jq '[((.merged // false) | tostring), .base.ref, .head.sha,
                 (.mergeable_state // "unknown"), ((.head.repo.id // 0) | tostring), .head.ref // "-"] | join(" ")') \
                 || fail "pull request #$NUMBER could not be read."
-              read -r merged base pr_head mergeable head_repo head_ref <<< "$data"
+              read -r merged base pull_head mergeable head_repo head_ref <<< "$data"
               export_stop "$head_repo" "$head_ref"
             fi
           }
-          # held_runs: how many runs of the head pr_head from the head repository head_repo and its branch head_ref
+          # held_runs: how many runs of the head pull_head from the head repository head_repo and its branch head_ref
           # GitHub holds for a person's approval, as held_at counts them: the runs that the post job approves, never
           # another run of the same commit, and none when the head repository is gone. GitHub lists a held run with the
           # status action_required, or with the status completed and the conclusion action_required (ci_of).
           held_runs() {
             if ! [[ $head_repo =~ ^[1-9][0-9]*$ ]]; then echo 0; return 0; fi
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            SHA=$pr_head REPOSITORY=$head_repo BRANCH=$head_ref gh api --method GET --paginate \
-              "repos/$REPO/actions/runs" -f head_sha="$pr_head" -f status=action_required -F per_page=100 \
+            SHA=$pull_head REPOSITORY=$head_repo BRANCH=$head_ref gh api --method GET --paginate \
+              "repos/$REPO/actions/runs" -f head_sha="$pull_head" -f status=action_required -F per_page=100 \
               --jq '[.workflow_runs[]
                 | select((.status == "action_required" or .conclusion == "action_required")
                          and .head_sha == $ENV.SHA and .event == "pull_request"
@@ -1043,7 +1043,7 @@ jobs:
             [ "$POST_REVIEW" = true ] || stop "POST_REVIEW is not true, so the rescreen pass decides no stop."
             [[ $REVIEW_TRIES =~ ^[1-9][0-9]*$ ]] || { echo "::error::REVIEW_TRIES is not a number"; exit 1; }
             item
-            want="stop #$NUMBER${pr_head:+ at $pr_head} for $COMMENT"
+            want="stop #$NUMBER${pull_head:+ at $pull_head} for $COMMENT"
             title=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.display_title // ""') \
               || fail "this run could not be read."
             [ "$title" = "$want" ] || stop "its name \"$title\" is not the rescreen pass's for it (\"$want\")."
@@ -1071,7 +1071,7 @@ jobs:
               || fail "the stops of #$NUMBER could not be read."
             [ -n "$found" ] || stop "the rescreen pass's functions, run again now, decide no such stop of it."
             echo "stop=$found" >> "$GITHUB_OUTPUT"
-            head=$pr_head comment=$COMMENT
+            head=$pull_head comment=$COMMENT
             route review ""
           }
           [[ $OUTSIDE_HOURLY_LIMIT =~ ^[1-9][0-9]*$ ]] || { echo "::error::OUTSIDE_HOURLY_LIMIT is not a number"; exit 1; }
@@ -1115,8 +1115,8 @@ jobs:
                 [ "$kind" = pr ] || stop "it is not a pull request."
                 [ "$state" = open ] || stop "it is $state."
                 [ "$base" = main ] || stop "it is into $base, not main."
-                [[ $pr_head == "$HEAD" && $head_repo == "$HEAD_REPOSITORY" && $head_ref == "$HEAD_BRANCH" ]] \
-                  || stop "its head is $pr_head of the branch $head_ref of repository $head_repo, not the CI run's."
+                [[ $pull_head == "$HEAD" && $head_repo == "$HEAD_REPOSITORY" && $head_ref == "$HEAD_BRANCH" ]] \
+                  || stop "its head is $pull_head of the branch $head_ref of repository $head_repo, not the CI run's."
               else
                 # "<number> <base> <draft> <author>" of each open pull request, of any base, whose head commit, head
                 # repository and head branch are the CI run's, from the one read of the open pull requests.
@@ -1156,7 +1156,7 @@ jobs:
               [[ $COMMENT =~ ^[1-9][0-9]*$ ]] || stop "the event names no comment."
               comment=$COMMENT
               item
-              head=$pr_head
+              head=$pull_head
               [ "$state" = open ] || stop "it is $state."
               [ "$AUTHOR" = "$ACTOR" ] || stop "the comment is $ACTOR's, not its author's ($AUTHOR)."
               a=0
@@ -1191,7 +1191,7 @@ jobs:
               [[ -z $COMMENT || $COMMENT =~ ^[1-9][0-9]*$ ]] || stop "$COMMENT is not a comment id."
               comment=$COMMENT
               item
-              head=$pr_head
+              head=$pull_head
               # A reply that cannot post fails the run, so that the person or the App that started it sees why: a run
               # of a pull request, of an issue that is not open, or with no text of a reply.
               if [ "$task" = reply ]; then
@@ -1199,7 +1199,7 @@ jobs:
                 [ "$state" = open ] || { echo "::error::issue #$NUMBER is $state. Nothing posts."; exit 1; }
                 [[ ${REPLY:-} =~ [^[:space:]] ]] || { echo "::error::the run gives no text of a reply. Nothing posts."; exit 1; }
               fi
-              [[ -z $HEAD || $HEAD == "$pr_head" ]] || stop "its head is ${pr_head:-none}, not $HEAD."
+              [[ -z $HEAD || $HEAD == "$pull_head" ]] || stop "its head is ${pull_head:-none}, not $HEAD."
               # A closed item gets no task, but the catch-up of a pull request that a catch-up run closed and could not
               # reopen: that run reopens it, and closes nothing.
               if [ "$state" != open ]; then
@@ -1224,12 +1224,12 @@ jobs:
                 known "$AUTHOR" || a=$?
                 (( a == 0 )) || of=" of $AUTHOR"
                 case $task in
-                  rescreen) want="rescreen #$NUMBER${pr_head:+ at $pr_head} of $ACCOUNT" ;;
-                  review) want="review #$NUMBER at $pr_head${of:-${ACCOUNT:+ of $ACCOUNT}}" ;;
-                  approve) want="approve #$NUMBER at $pr_head$of" ;;
+                  rescreen) want="rescreen #$NUMBER${pull_head:+ at $pull_head} of $ACCOUNT" ;;
+                  review) want="review #$NUMBER at $pull_head${of:-${ACCOUNT:+ of $ACCOUNT}}" ;;
+                  approve) want="approve #$NUMBER at $pull_head$of" ;;
                   answer) want="answer #$NUMBER for $COMMENT$of" ;;
                   draft) want="draft #$NUMBER$of" ;;
-                  *) want="$task #$NUMBER at $pr_head" ;;
+                  *) want="$task #$NUMBER at $pull_head" ;;
                 esac
                 title=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.display_title // ""') \
                   || fail "this run could not be read."
@@ -1276,29 +1276,31 @@ jobs:
                 review)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
-                    [[ $pr_head =~ ^[0-9a-f]{40}$ ]] || stop "it names no head commit."
-                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    [[ $pull_head =~ ^[0-9a-f]{40}$ ]] || stop "it names no head commit."
+                    marks=$(head_marks "$NUMBER" "$pull_head") || fail "the comments of #$NUMBER could not be read."
                     read -r reviewed named conflicted _ <<< "$marks"
-                    [ "$reviewed" != new ] || stop "a review of the workflow names $pr_head."
-                    [ "$named" = false ] || stop "a hold comment names $pr_head."
-                    [ "$conflicted" = false ] \
-                      || stop "its label comment records a merge conflict of $pr_head, which a relabel takes out first."
-                    ci=$(ci_of "$pr_head" "$head_repo" "$head_ref") || fail "the CI runs of $pr_head could not be read."
-                    [ "$ci" != pending ] || stop "a CI run of $pr_head has not finished, and its review comes after it."
+                    [ "$reviewed" != new ] || stop "a review of the workflow names $pull_head."
+                    [ "$named" = false ] || stop "a hold comment names $pull_head."
+                    why="its label comment records a merge conflict of $pull_head, which a relabel takes out first."
+                    [ "$conflicted" = false ] || stop "$why"
+                    ci=$(ci_of "$pull_head" "$head_repo" "$head_ref") \
+                      || fail "the CI runs of $pull_head could not be read."
+                    [ "$ci" != pending ] \
+                      || stop "a CI run of $pull_head has not finished, and its review comes after it."
                     [ -z "$of" ] || screened "$AUTHOR" "$limited"
-                    pushed=$(pusher "$pr_head" "$head_repo" "$head_ref") \
-                      || fail "the CI runs of $pr_head could not be read."
+                    pushed=$(pusher "$pull_head" "$head_repo" "$head_ref") \
+                      || fail "the CI runs of $pull_head could not be read."
                     b=0
                     [ -z "$pushed" ] || known "$pushed" || b=$?
                     (( b != 0 )) || pushed=""
                     starter="${pushed:-no account without write access}${pushed:+, an account without write access,}"
-                    why="$starter started the newest CI run of $pr_head, but this run names ${ACCOUNT:-no account}."
+                    why="$starter started the newest CI run of $pull_head, but this run names ${ACCOUNT:-no account}."
                     [ "$ACCOUNT" = "$pushed" ] || stop "$why"
                     [ -z "$pushed" ] || screened "$AUTHOR" "$pushed"
                     route review ""
                   fi
                   if [ "$kind" = pr ]; then
-                    n=$(held_runs) || fail "the runs of $pr_head could not be read."
+                    n=$(held_runs) || fail "the runs of $pull_head could not be read."
                     if (( n > 0 )); then task=approve; screened "$AUTHOR" "$limited"; fi
                   fi
                   [ "$SCREEN" != true ] || route screen ""
@@ -1358,13 +1360,13 @@ jobs:
                 approve)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
-                    n=$(held_runs) || fail "the runs of $pr_head could not be read."
-                    (( n > 0 )) || stop "GitHub holds no run of $pr_head."
-                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    n=$(held_runs) || fail "the runs of $pull_head could not be read."
+                    (( n > 0 )) || stop "GitHub holds no run of $pull_head."
+                    marks=$(head_marks "$NUMBER" "$pull_head") || fail "the comments of #$NUMBER could not be read."
                     read -r _ _ _ _ steered <<< "$marks"
-                    why="its label comment records that the pull request at $pr_head changes a file under .github/, or"
-                    why+=" it changes 3,000 files or more. The workflow does not approve the runs of $pr_head, so Sami"
-                    why+=" approves them."
+                    why="its label comment records that the pull request at $pull_head changes a file under"
+                    why+=" .github/, or it changes 3,000 files or more. The workflow does not approve the runs of"
+                    why+=" $pull_head, so Sami approves them."
                     [ "$steered" = false ] || stop "$why"
                     newest approve
                     again approve
@@ -1374,7 +1376,7 @@ jobs:
                         and .id < ($ENV.RUN_ID | tonumber) and (.display_title // "") == $ENV.WANT) | .id)') \
                       || fail "the workflow_dispatch runs of review.yml since 00:00 UTC yesterday could not be read."
                     [ -z "$unended" ] \
-                      || stop "approve run ${unended%%$'\n'*} of $pr_head, made before this run, has not finished."
+                      || stop "approve run ${unended%%$'\n'*} of $pull_head, made before this run, has not finished."
                   fi
                   screened "$AUTHOR" "$limited" ;;
                 # The comment that asks the author to resolve a merge conflict, while the conflict is there. The
@@ -1382,9 +1384,10 @@ jobs:
                 conflict)
                   [ "$mergeable" = dirty ] || stop "it has no merge conflict (its mergeable_state is ${mergeable:-unknown})."
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
-                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    marks=$(head_marks "$NUMBER" "$pull_head") || fail "the comments of #$NUMBER could not be read."
                     read -r _ _ conflicted _ <<< "$marks"
-                    [ "$conflicted" = false ] || stop "its label comment records the merge conflict of $pr_head already."
+                    [ "$conflicted" = false ] \
+                      || stop "its label comment records the merge conflict of $pull_head already."
                   fi
                   route review "" ;;
                 # The App's close and reopen, or only the reopen of a pull request that a catch-up run closed (above):
@@ -1398,15 +1401,16 @@ jobs:
                   if [ "$ACTOR" = 'github-actions[bot]' ] && [ "$state" = open ]; then
                     [ -n "$of" ] || stop "its author $AUTHOR has write access."
                     [[ $head_repo =~ ^[1-9][0-9]*$ ]] || stop "its head repository is gone, so it is not closed."
-                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    marks=$(head_marks "$NUMBER" "$pull_head") || fail "the comments of #$NUMBER could not be read."
                     read -r reviewed named _ caught _ <<< "$marks"
-                    [ "$reviewed" = none ] || stop "a review names $pr_head."
-                    [ "$named" = false ] || stop "a hold comment names $pr_head."
-                    [ "$caught" = false ] || stop "its label comment records a catch-up of $pr_head already."
-                    ci=$(ci_of "$pr_head" "$head_repo" "$head_ref") || fail "the CI runs of $pr_head could not be read."
-                    [[ -n $ci && $ci != pending ]] || stop "no CI run of $pr_head ended, or one has not finished."
+                    [ "$reviewed" = none ] || stop "a review names $pull_head."
+                    [ "$named" = false ] || stop "a hold comment names $pull_head."
+                    [ "$caught" = false ] || stop "its label comment records a catch-up of $pull_head already."
+                    ci=$(ci_of "$pull_head" "$head_repo" "$head_ref") \
+                      || fail "the CI runs of $pull_head could not be read."
+                    [[ -n $ci && $ci != pending ]] || stop "no CI run of $pull_head ended, or one has not finished."
                     [[ $ci < $(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ) ]] \
-                      || stop "the CI run of $pr_head ended at $ci, less than an hour ago."
+                      || stop "the CI run of $pull_head ended at $ci, less than an hour ago."
                   fi
                   route review "" ;;
                 # The import check run of R12 and the label of the head, set again from what the workflow wrote of the
@@ -1422,11 +1426,12 @@ jobs:
                 relabel)
                   if [ "$mergeable" = dirty ]; then task=conflict; route review ""; fi
                   if [ "$ACTOR" = 'github-actions[bot]' ]; then
-                    [ "$mergeable" != unknown ] || stop "GitHub does not say yet whether $pr_head has a merge conflict."
-                    marks=$(head_marks "$NUMBER" "$pr_head") || fail "the comments of #$NUMBER could not be read."
+                    [ "$mergeable" != unknown ] \
+                      || stop "GitHub does not say yet whether $pull_head has a merge conflict."
+                    marks=$(head_marks "$NUMBER" "$pull_head") || fail "the comments of #$NUMBER could not be read."
                     read -r reviewed named conflicted _ <<< "$marks"
                     [[ $reviewed == new || $named == true || $conflicted == true ]] \
-                      || stop "no review, hold comment or merge conflict of the workflow names $pr_head."
+                      || stop "no review, hold comment or merge conflict of the workflow names $pull_head."
                   fi
                   kind_of_author
                   [ "$author_kind" = outsider ] || route review ""
@@ -2868,9 +2873,15 @@ jobs:
       # gave it a verdict. The comment job of this run then posts nothing on the item. Empty for any other decision.
       gave_way: ${{ steps.decide.outputs.gave_way }}
     steps:
-      # main's .github/, for .github/review/rules.py; never the pull request.
+      # .github/ at the commit of main whose workflow file runs (github.sha), for .github/review/rules.py, and no file
+      # of the pull request. This job runs only on main. Its if and the trust job check the ref. So a job that waits
+      # in the group write-<n> while main moves runs these files from the commit of its own workflow file.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
-        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
       # The answers of the author-kind table for the task of this run and the trust job's outside alone
       # (.github/review/rules.py answers): approve, record, withdraw and retry, which the steps below read. The step
       # writes and logs only these four. No step of this job reads the answer label: the label steps of the comment and
@@ -3621,7 +3632,11 @@ jobs:
       # Token A: for the import check run when the decision is to record it or a review or a screen withdraws it,
       # for the check run that says that the head is not approved for the import, and for the close and reopen of a
       # catch-up. Only while the environment post holds the App's key. The hold job of an answer signs in with the same
-      # inputs (*app-sign-in), for its withdrawal alone.
+      # inputs (*app-sign-in), for its withdrawal alone. The check runs need checks: write alone. Only the close and
+      # reopen of a catch-up need pull-requests: write, so the token gets it for the task catchup alone. For each other
+      # task, that input is empty. The action skips an empty permission input (its getPermissionsFromInputs), so its
+      # request for the token then names checks: write alone. The hold job never runs for the task catchup, so its
+      # token always gets checks: write alone.
       - name: Sign in as the OSS Verify App
         id: app
         if: >-
@@ -3635,7 +3650,7 @@ jobs:
           owner: theorem-labs
           repositories: rocq-linux-process-semantics
           permission-checks: write
-          permission-pull-requests: write
+          permission-pull-requests: ${{ needs.trust.outputs.task == 'catchup' && 'write' || '' }}
       # The import check run repo-pairs/import-approved, with conclusion success, on the head that the decision judged,
       # recorded with token A. A check run belongs to a commit, and so shows on each pull request of that commit: its
       # external_id, <number>:<head>, and its output title name this pull request, and the import counts the check run
@@ -4070,9 +4085,15 @@ jobs:
       STANDING: ${{ needs.post.result == 'success' && needs.post.outputs.standing || 'false' }}
       IMPORTS: ${{ needs.post.result == 'success' && needs.post.outputs.decision != '' && needs.post.outputs.imports || '' }}
     steps:
-      # main's .github/, for .github/review/rules.py; never the pull request.
+      # .github/ at the commit of main whose workflow file runs (github.sha), for .github/review/rules.py, and no file
+      # of the pull request. This job runs only on main. Its if and the trust job check the ref. So a job that waits
+      # in the group write-<n> while main moves runs these files from the commit of its own workflow file.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
-        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
       # The withdrawal of the import check runs of a head that the post job owes (R12): it found a reason to withdraw
       # them, and GitHub refused the withdrawal, or the job failed before it (the post job's output owed, "<head>
       # <why>"). The label comment records it in the line <!-- withdraw-owed <head> <why> <run> <read> -->
@@ -5019,9 +5040,16 @@ jobs:
       RUN_ID: ${{ github.run_id }}
       RUN_ATTEMPT: ${{ github.run_attempt }}
     steps:
-      # main's .github/, for .github/review/rules.py and .github/review/held.sh; never the pull request.
+      # .github/ at the commit of main whose workflow file runs (github.sha), for .github/review/rules.py and
+      # .github/review/held.sh, and no file of the pull request. This job runs only on main. Its if and the trust job
+      # check the ref. So a job that waits in the group write-<n> while main moves runs these files from the commit of
+      # its own workflow file.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
-        with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+          sparse-checkout-cone-mode: false
       # A gather job or a screen job of this run that failed. No screen judged the item, so no screen held it
       # (OSSV-221's architect, 2026-11-25 01:13Z, G2): the label step holds it as a run that did not finish, with a
       # transient hold that the rescreen pass tries again, never with a hold of the screen. A cancelled gather or screen

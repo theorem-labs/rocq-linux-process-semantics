@@ -3207,24 +3207,26 @@ class HoldingsTest(unittest.TestCase):
                     self.assertNotIn(needle, text)
 
     def test_the_jobs_that_run_rules_py_check_out_mains_github_alone(self):
-        """The post, comment and hold jobs run .github/review/rules.py from main's .github/, never from the pull
-        request, and keep no token in the checkout."""
+        """The post, comment and hold jobs run .github/review/rules.py from main's .github/ at the commit of main whose
+        workflow file runs (github.sha), never from the pull request, and keep no token in the checkout."""
         for name in ("post", "comment", "hold"):
             with self.subTest(job=name):
                 found = [s for s in JOBS[name]["steps"] if s.get("uses", "").startswith("actions/checkout@")]
                 self.assertEqual([s["uses"] for s in found], [CHECKOUT])
-                self.assertEqual(found[0]["with"], {"ref": "main", "persist-credentials": False,
+                self.assertEqual(found[0]["with"], {"ref": "${{ github.sha }}", "persist-credentials": False,
                                                     "sparse-checkout": ".github", "sparse-checkout-cone-mode": False})
                 self.assertEqual(JOBS[name]["permissions"]["contents"], "read")
                 self.assertEqual(JOBS[name]["steps"][0], found[0])
                 self.assertIn("python3 .github/review/rules.py ", "".join(s.get("run", "") for s in JOBS[name]["steps"]))
 
     def test_the_app_signs_in_for_this_repository_alone_and_approves_only_after_a_passed_screen(self):
-        """Token A: checks: write and pull-requests: write; token B: actions: write alone, minted only for the task
-        approve when the screen's verdict is clean, the author-kind table's approve holds (an outside author), and the
-        step before it found held runs of the screened head. Each is minted only while the environment post holds the
-        App's key (APP_KEY_SET is true, R10)."""
-        for name, rights in ((MINT_A, {"permission-checks": "write", "permission-pull-requests": "write"}),
+        """Token A: checks: write, and pull-requests: write for the task catchup alone. For each other task, that input
+        is empty, and actions/create-github-app-token leaves an empty input out of its request. Token B: actions: write
+        alone, minted only for the task approve when the screen's verdict is clean, the author-kind table's approve
+        holds (an outside author), and the step before it found held runs of the screened head. Each is minted only
+        while the environment post holds the App's key (APP_KEY_SET is true, R10)."""
+        catchup = "${{ needs.trust.outputs.task == 'catchup' && 'write' || '' }}"
+        for name, rights in ((MINT_A, {"permission-checks": "write", "permission-pull-requests": catchup}),
                              (MINT_B, {"permission-actions": "write"})):
             with self.subTest(step=name):
                 s = dict(step("post", name)["with"])
@@ -3233,6 +3235,10 @@ class HoldingsTest(unittest.TestCase):
                                  {"client-id": VERIFY_CLIENT_ID, "owner": "theorem-labs",
                                   "repositories": "rocq-linux-process-semantics", "private-key": VERIFY_KEY})
                 self.assertEqual(s, rights)
+        for task in ("catchup", "review", "rescreen", "answer", "draft", "approve", "relabel", "conflict", "stop", ""):
+            with self.subTest(task=task):
+                self.assertEqual(evaluate(catchup, {"needs.trust.outputs.task": task}),
+                                 "write" if task == "catchup" else "")
         b = step("post", MINT_B)["if"]
         for task, verdict, runs, approve, want in (
                 ("approve", "clean", "61 62", "true", True), ("approve", "held", "61 62", "true", False),
@@ -4972,8 +4978,8 @@ def run_job(test, job, ctx, tokens, mint=True):
         if failed or ("if" in s and not evaluate(s["if"], {**started, **ctx})):
             outcome = "skipped"
         elif s.get("uses") == CHECKOUT:
-            test.assertEqual(s["with"], {"ref": "main", "persist-credentials": False, "sparse-checkout": ".github",
-                                         "sparse-checkout-cone-mode": False})
+            test.assertEqual(s["with"], {"ref": "${{ github.sha }}", "persist-credentials": False,
+                                         "sparse-checkout": ".github", "sparse-checkout-cone-mode": False})
             test.checkout()
             outcome = "success"
         elif "uses" in s:
@@ -8599,14 +8605,14 @@ class AnswerFixTest(ReaderRunner):
         self.assertEqual(self.git("rev-parse", "refs/review/head", cwd=self.work), head)
         for path in steering:
             self.assertFalse(os.path.lexists(os.path.join(self.work, path)), path)
-        # Each checkout is of main: the trust job's of trusted.sh and held.sh alone, at the commit of main whose
-        # workflow file runs.
+        # Each checkout is of main: the trust job's of trusted.sh and held.sh alone, and the post, comment and hold
+        # jobs' of .github/, at the commit of main whose workflow file runs.
         for name, job in JOBS.items():
             for s in job["steps"]:
                 if s.get("uses", "").startswith("actions/checkout@"):
                     with self.subTest(job=name):
-                        self.assertEqual(s.get("with", {}).get("ref", "main"),
-                                         "${{ github.sha }}" if name == "trust" else "main")
+                        sha = name in ("trust", "post", "comment", "hold")
+                        self.assertEqual(s.get("with", {}).get("ref", "main"), "${{ github.sha }}" if sha else "main")
                         self.assertNotIn("repository", s.get("with", {}))
         with open(os.path.join(root, "answer-to.json")) as f:
             waiting = json.load(f)
