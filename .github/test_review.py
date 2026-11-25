@@ -22906,6 +22906,32 @@ class ImportCheckTest(ReaderRunner):
         got, end = self.judged(checks, "140", trust=relabel, event="workflow_dispatch", comments=[blocking, marked])
         self.assertEqual(self.successes(end), [], (got["post"], "\n".join(self.logs[start:])))
 
+    def test_a_failed_read_of_the_check_runs_in_the_step_that_skips_posts_leaves_no_label_that_says_recorded(self):
+        """The tester's audit of round 28 (G2): the label says that the workflow recorded the check exactly when a
+        success import check run stands, and a failure path that keeps a label that is false for its case is a failure.
+        The CI review run 100 of mallory's #7 read the item 40 minutes ago, passed HEAD and recorded 901, and the label
+        comment says that the workflow recorded the check. Rescreen run 130 read it 20 minutes ago and gave a blocking
+        finding, and its post job withdrew 901. In run 130's comment job, GitHub refuses the read of the check runs of
+        HEAD (502) that the step which skips posts makes (rules.py newer-word, since round 28). No success stands, so
+        the label comment must not still say that the workflow recorded the check."""
+        ci = dict(self.REVIEWED, started=ago(40))
+        passed = review_of(HEAD, at=ago(35), run=100, read=ci["started"])
+        _first, checks = self.judged([], "100", trust=ci)
+        self.assertEqual(self.successes(checks), [901])
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
+                 "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        self.assertIn("The workflow recorded the check", label["body"])
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
+        got, after = self.judged(checks, "130", verdict="blocking", trust=rescreen, event="workflow_dispatch",
+                                 comments=[passed, label], named=HEAD)
+        self.assertEqual((got["result"], self.successes(after)), ("success", []), self.logs[-4:])
+        self.serve_checks(after)
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        outcomes, wrote, bodies, _mine = self.comment_job_after_post(got, rescreen, "blocking", [passed, label], "130")
+        final = bodies[-1] if bodies else label["body"]
+        self.assertNotIn("The workflow recorded the check", final,
+                         ({k: v for k, v in outcomes.items() if v != "skipped"}, wrote))
+
     # The one line of newer_word that takes the line of OWED and the check runs of a refused review as words of HEAD.
     WORDS = "    words += [owed_run_word(comments, head), *refused_checks(checks, head)]\n"
 
