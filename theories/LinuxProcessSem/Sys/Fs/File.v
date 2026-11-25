@@ -125,9 +125,9 @@ Definition dup_modeled_entry (e : FdEntry) : bool :=
      [FdFileA] does not read [offset] at all -- it lands at
      [i_size_read(inode)] -- so copying the entry would NOT give the
      two fds independent write positions, and the [FdDir] argument
-     ("every syscall that could observe the per-description state is
-     already declined") would carry it if [ReadWrite.lseek_spec]
-     declined this kind.  It does not: lseek repositions and REPORTS
+     ("no modeled arm moves a directory position") would carry it if
+     no modeled arm moved this kind's [f_pos] either.  One does: lseek
+     repositions and REPORTS
      [f_pos] on an append fd exactly as on any other, so
      [fd2 = dup(fd1); lseek(fd1, 0, SEEK_SET); lseek(fd2, 0, SEEK_CUR)]
      answers 0 on Linux, where two copied entries would answer the old

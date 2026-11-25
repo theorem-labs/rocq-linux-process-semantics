@@ -7125,13 +7125,9 @@ Qed.
 (** The pwritev2 (287) acceptor, in [ReadWrite.pwritev2_spec]'s order:
     the flag word and the position of -1 decline, [do_pwritev]'s
     [pos < 0] and empty slot before the kind, then [vfs_writev]'s
-    FMODE_WRITE test, which a read-only file fails, and
-    [check_pwritev2_file] on the three writable file kinds.  On each
-    device, the FMODE_WRITE test and then [check_pwritev2_urandom] or
-    [check_pwritev2_devnull]; a channel's -ESPIPE and a folder's -EBADF.
-    Every kind that reaches the import declines the heap-backed count
-    band ([ReadWrite.readv_heap_iovecb]) first, as [check_readv] does.
-    Every other kind declines. *)
+    FMODE_WRITE test.  Every kind that reaches the import declines the
+    heap-backed count band ([ReadWrite.readv_heap_iovecb]) first, as
+    [check_readv] does. *)
 Definition check_pwritev2 (i : SyscallInput) (fd iov iovcnt pos_l pos_h flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
   let fl := bv_unsigned flags in
@@ -7790,8 +7786,9 @@ Definition check_readv (i : SyscallInput) (fd iov iovcnt : word)
               (* channels 1 and 2: the far end decides; see
                  [ReadWrite.readv_spec] *)
           | _ => check_ret_only eff (errno_ret EBADF) m []
-              (* the read end has a [RdPipe]; only the O_WRONLY write end
-                 reaches this arm, where -EBADF is the kernel's own answer *)
+              (* a kind opened without FMODE_READ: a file opened O_WRONLY,
+                 with or without O_APPEND, a pipe's write end, or a device
+                 opened write-only; -EBADF is the kernel's own answer *)
           end
       | Some r =>
           if readv_heap_iovecb iovcnt then check_readv_gap

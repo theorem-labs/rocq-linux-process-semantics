@@ -416,7 +416,9 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          and RNDCLEARPOOL change nothing ("No longer has any effect",
          drivers/char/random.c:1537-1542) but answer -EPERM without
          CAP_SYS_ADMIN and 0 with it, and the model carries no
-         credentials to tell the two apart; and [do_vfs_ioctl]'s own
+         capability set ([State.creds_privileged] stands in for
+         CAP_SETUID and CAP_SETGID only), so it cannot tell the two
+         apart; and [do_vfs_ioctl]'s own
          requests (FIONBIO, FIOCLEX and their kin) change state this
          model does not carry *)
   | Some (FdDgram _) =>

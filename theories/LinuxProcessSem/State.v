@@ -3113,7 +3113,7 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
       -EBADF.  Stdout's (1) and stderr's (2) may be a pipe's write end
       or an O_RDWR stream socket, which answer a read differently, so a
       read or readv of either DECLINES (see [Fs.ReadWrite.read_spec]);
-      a write answers, as every far end allows.
+      a write is answered or declined as [Fs.ReadWrite.write_spec] says.
     - [FdFile i off]: a file opened O_RDONLY (read-only); write is
       -EBADF.  [i] is the file's INODE NUMBER ([Fs.ino]), not a name:
       the descriptor reads the file's bytes from [Fs.fs_inodes] under

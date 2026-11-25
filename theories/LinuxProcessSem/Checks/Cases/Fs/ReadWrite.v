@@ -731,8 +731,8 @@ Proof. vm_compute. reflexivity. Qed.
     passes the test and answers [read(1, buf, 0)] with the 0 of
     [sock_read_iter]'s empty iterator (net/socket.c:1168-1169).  The
     conjuncts offer both answers, on fd 1 and on fd 2, and the checker
-    declines each; the model before this decline accepted the -EBADF and
-    rejected the 0, and fails every conjunct. *)
+    declines each; a checker that accepted the -EBADF and rejected the 0
+    fails every conjunct. *)
 Example read_stdout_and_stderr_decline :
   check_syscall (mkInput 63 [1; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
@@ -2001,10 +2001,10 @@ Proof. split; [|split]; check_eq. Qed.
     readable at all, so the array import would fault if it ran
     (fs/read_write.c [vfs_readv]'s [FMODE_READ] test precedes its
     [import_iovec] call, v6.18.46; commit b8e1425bae85 hoisted it there,
-    first released in v6.8).  The second conjunct pins the order.  The
-    pin used to be stated on stdout, whose far end SCOPE.md now lets be a
-    socket, where the call declines ([readv_stdout_and_stderr_decline]
-    below).
+    first released in v6.8).  The second conjunct pins the order.  It
+    is stated on a file and not on stdout, whose far end SCOPE.md lets
+    be a socket, where the call declines
+    ([readv_stdout_and_stderr_decline] below).
 
     (qemu-user's lock_iovec locks the descriptor array before it
     dispatches on the fd at all, so under qemu-user this shape answers
@@ -2048,6 +2048,9 @@ Example readv_stdout_and_stderr_decline :
      = CheckUnmodeled
   /\ check_syscall (mkInput 65 [2; 8192; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [2; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
      = CheckUnmodeled.
 Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
@@ -2665,7 +2668,7 @@ Qed.
     one at or past [i_size], and ramfs's [must_set_pos]
     (fs/read_write.c:102-140) refuses an unsigned offset at or past the
     size.  "hi" is two bytes long, so offset 2 is its end and -1 is below
-    its start.  The model declined both before.  Refused: the size that
+    its start.  A spec that declined them would fail this pin.  Refused: the size that
     ramfs's SEEK_HOLE gives inside a file, and -EINVAL. *)
 Example lseek_seek_data_outside_a_file_is_enxio :
   check_syscall (mkInput 62 [3; 2; 3; 0; 0; 0] (fun _ => None) (fun _ => None))
@@ -2686,7 +2689,7 @@ Proof. split_conj; check_eq. Qed.
    lseek ON A FOLDER, from the [f_pos] of 0 every modeled [FdDir] holds
    ([ReadWrite.lseek_dir_einvalb]): [offset_dir_llseek] for tmpfs
    (fs/libfs.c:433-448, Linux v6.18.46) and [dcache_dir_lseek] for ramfs
-   (:146-181).  The model declined every whence up to [SEEK_MAX] here.
+   (:146-181).
    ------------------------------------------------------------------------- *)
 
 (** POSITIVE: musl's [rewinddir] is [lseek(fd, 0, SEEK_SET)], which is
@@ -2713,9 +2716,9 @@ Example lseek_folder_zero_and_einval :
      = CheckOk readv_dir_model [].
 Proof. split_conj; check_eq. Qed.
 
-(** NEGATIVE: the answers the old decline let through are refused --
-    -EINVAL for [rewinddir]'s call, 0 for SEEK_END, and a position other
-    than 0 for [lseek(fd, 0, SEEK_CUR)]. *)
+(** NEGATIVE: wrong answers are refused -- -EINVAL for [rewinddir]'s
+    call, 0 for SEEK_END, and a position other than 0 for
+    [lseek(fd, 0, SEEK_CUR)]. *)
 Example lseek_folder_refuses_wrong_answers :
   check_syscall (mkInput 62 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
     (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
@@ -4264,9 +4267,11 @@ Definition mem_pwv2_nine_zero : word -> option byte :=
   fun a =>
     if bv_leu 8192 a && bv_ltu a (8192 + 9 * 16) then Some 0 else None.
 
-(** An empty regular file open O_WRONLY at fd 3 and O_RDONLY at fd 4. *)
+(** An empty regular file open O_WRONLY at fd 3, O_RDONLY at fd 4 and
+    O_WRONLY|O_APPEND at fd 5. *)
 Definition pwv2_file_model : Model :=
-  mkModel [(3, FdFileW 1 0); (4, FdFile 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+  mkModel [(3, FdFileW 1 0); (4, FdFile 1 0); (5, FdFileA 1 0)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof
     (demo_fs_raw [([102], SFile [])]) None None None.
 
 (** PWRITEV2'S HEAP-BACKED COUNT BAND DECLINES ON A WRITABLE FILE, as
@@ -4277,7 +4282,10 @@ Definition pwv2_file_model : Model :=
     answer -ENOMEM (lib/iov_iter.c:1308-1311) before it reads one, so
     the 0 the nine empty entries would otherwise give
     (fs/read_write.c:1047-1049) and the -ENOMEM are both declined, not
-    judged, at 9 and at 1024.  Eight entries stay on the stack: the 0 is
+    judged, at 9 and at 1024, and so is the -EFAULT the import would
+    answer at 1024, where the descriptors past the ninth are unreadable.
+    The O_APPEND descriptor (fd 5) reaches the same import and declines
+    the band too.  Eight entries stay on the stack: the 0 is
     answered and the -ENOMEM refused.  1025 is still the import's
     -EINVAL (lib/iov_iter.c:1306-1307), and the read-only descriptor is
     still [vfs_writev]'s -EBADF (fs/read_write.c:1037-1038), both before
@@ -4292,6 +4300,17 @@ Example pwritev2_heap_band_declines_on_a_file :
      = CheckUnmodeled
   /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
        (mkEffect 0 [] []) pwv2_file_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pwv2_file_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 1024)
+          (mkEffect (errno_ret EFAULT) [] [])) pwv2_file_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [5; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 9) (mkEffect 0 [] []))
+       pwv2_file_model
      = CheckUnmodeled
   /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 8) (mkEffect 0 [] []))
@@ -4346,6 +4365,12 @@ Example devnull_pwritev2_heap_band_declines :
   = CheckUnmodeled
   /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
        (mkEffect (errno_ret ENOMEM) [] []) pwv2_kinds_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 9; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pwv2_kinds_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect 0 [] []) pwv2_kinds_model
      = CheckUnmodeled
   /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
        (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 8) (mkEffect 0 [] []))

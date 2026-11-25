@@ -2451,8 +2451,9 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
           match e with
           | FdChannel _ => Unmodeled   (* channels 1 and 2: the far end decides *)
           | _ => ret_outcome (errno_ret EBADF) m
-              (* the read end has a [RdPipe]; only the O_WRONLY write end
-                 reaches this arm, where -EBADF is the kernel's own answer *)
+              (* a kind opened without FMODE_READ: a file opened O_WRONLY,
+                 with or without O_APPEND, a pipe's write end, or a device
+                 opened write-only; -EBADF is the kernel's own answer *)
           end
       | Some r =>
           if readv_heap_iovecb iovcnt

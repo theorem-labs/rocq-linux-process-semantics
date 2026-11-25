@@ -1779,7 +1779,8 @@ Proof. split_conj; check_eq. Qed.
 (** On /dev/null: the device's stat is admitted and a stat with
     /dev/urandom's [st_rdev] (1:9) is refused, as [fstat] judges them
     ([device_descriptor_stat_holds_its_node]).  On a folder: the verdict
-    is [fstat]'s, which is a judgement and not a decline.  On a channel:
+    is [fstat]'s, which is a judgement and not a decline: the folder's
+    record is admitted and a regular file's refused.  On a channel:
     declined, as [fstat] declines it (its [st_mode] is the far end's). *)
 Example newfstatat_empty_name_on_a_device_folder_channel :
   let dirm := with_fds [(Z_to_bv 64 3, FdDir Fs.default_cwd)] statat_ns_model in
@@ -1800,6 +1801,11 @@ Example newfstatat_empty_name_on_a_device_folder_channel :
          (mkEffect 0 [(4096, dir_bytes)] []) dirm
   /\ check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) stat_out)
        (mkEffect 0 [(4096, dir_bytes)] []) dirm <> CheckUnmodeled
+  /\ st_ok (check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, dir_bytes)] [])) dirm)
+  /\ check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] [])) dirm
+     = CheckReject
   /\ check_syscall (statat_fd_input 1 AT_EMPTY_PATH)
        (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] []))
        statat_ns_model

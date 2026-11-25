@@ -2638,12 +2638,10 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
                                                     in [ksys_pread64], fs/read_write.c *)
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PREAD ON EVERY FAR END SCOPE.md lets
-                                                    fds 0, 1 and 2 have, so the pipe's write end
-                                                    and an O_RDWR socket AGREE here, where [read]
-                                                    on 1 and 2 cannot tell them apart: [stream_open]
-                                                    (fs/open.c:1658) clears the bit on a pipe end
-                                                    (fs/pipe.c:966-967) and on a socket file
-                                                    (net/socket.c:494), and [ksys_pread64] answers
+                                                    fds 0, 1 and 2 have (A CHANNEL HAS NEITHER,
+                                                    above), so the pipe's write end and an O_RDWR
+                                                    socket AGREE here, where [read] on 1 and 2
+                                                    cannot tell them apart; [ksys_pread64] answers
                                                     -ESPIPE before [vfs_read]'s FMODE_READ test
                                                     (fs/read_write.c:762-765) *)
   | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
@@ -3450,7 +3448,8 @@ Definition readv_heap_iovecb (iovcnt : word) : bool :=
 (** A readv destination-shape gap: the model cannot describe this
     delivery, so it DECLINES.  The input-side analogue of
     [writev_buf_gap].  [Checks.Sys.Fs.ReadWrite.check_readv_gap] is the
-    single checker-side counterpart of this and of [readv_heap_gap]. *)
+    counterpart of this and of [readv_heap_gap] in
+    [Checks.Sys.Fs.ReadWrite.check_readv]. *)
 Definition readv_buf_gap : Sys SyscallEffect := unmodeled.
 
 (** Fail closed on the heap-backed count band ([readv_heap_iovecb]).  A
@@ -3536,10 +3535,7 @@ Definition pwritev2_devnull (mp : word -> option byte) (iov iovcnt pos : word)
     [RWF_NOAPPEND], and falls back to [F_GETFL] plus [pwrite64] only on
     -EOPNOTSUPP or -ENOSYS, which v6.18.46 never answers it.  So a
     program's [pwrite] on the file of a [tmpfile()] reaches the
-    kernel here, not at [pwrite64_spec].  It is answered on a regular
-    file descriptor ([pwritev2_file]), on the two devices
-    ([pwritev2_urandom], [pwritev2_devnull]), on a channel and on a
-    folder, and declined on every other kind.
+    kernel here, not at [pwrite64_spec].
 
     THE ORDER IS LINUX v6.18.46's (fs/read_write.c):
 
@@ -3563,20 +3559,12 @@ Definition pwritev2_devnull (mp : word -> option byte) (iov iovcnt pos : word)
       [rw_verify_area] on [pos] and the aggregate (:1051-1053) -- all of
       which [writev_file_arm] carries for [writev], here at [pos].
     - THE HEAP-BACKED COUNT BAND DECLINES, as [readv_spec]'s does
-      ([readv_heap_iovecb]).  [vfs_writev] hands [import_iovec] eight
-      stack entries (:1031, :1042-1043), and for 9 through [IOV_MAX]
-      descriptors lib/iov_iter.c [iovec_from_user] allocates the array
-      with [kmalloc_array] and may answer -ENOMEM (:1308-1311, Linux
-      v6.18.46) before it reads a descriptor, so before the zero
-      aggregate's 0 (fs/read_write.c:1047-1049) too.  The model does not
-      represent that allocation, so every kind that reaches the import
-      -- the three writable file kinds and the two devices opened for
-      writing -- declines the band after its FMODE_WRITE test; the
-      answers that come before the import (the empty slot's -EBADF, a
-      channel's -ESPIPE, a read-only descriptor's or a folder's -EBADF)
-      stand, and a count over [IOV_MAX] stays the import's -EINVAL
-      (lib/iov_iter.c:1306-1307), which allocates nothing.  [writev_spec]
-      still answers the band, as its header records.
+      ([readv_heap_iovecb]; [UIO_FASTIOV] says why), after the
+      FMODE_WRITE test and before the import, so every answer that comes
+      before the import stands and a count over [IOV_MAX] stays the
+      import's -EINVAL (lib/iov_iter.c:1306-1307), which allocates
+      nothing.  [writev_spec] still answers the band, as its header
+      records.
     - [do_iter_readv_writev]: only now [kiocb_set_rw_flags]
       (include/linux/fs.h).  A flag word with a bit outside
       [RWF_SUPPORTED] is -EOPNOTSUPP there, after everything above;
@@ -3897,8 +3885,8 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
     [k] being [total] or a page multiple below it ([random_page_stopb]),
     scattered over the segments as [State.scatter_iovecs] scatters them
     and the stream advanced past them.  [rw_verify_area] (:1013) cannot
-    fire first: [f_pos] is 0 on this device for good ([read_urandom]'s
-    caller says why), and [total] is under [MAX_RW_COUNT]. *)
+    fire first: [f_pos] is 0 on this device for good ([read_spec]'s
+    [FdUrandom] arm says why), and [total] is under [MAX_RW_COUNT]. *)
 Definition readv_urandom (iovs : list (word * word)) (total : Z)
     (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
   match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
@@ -4276,9 +4264,8 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
     size.  [None] for a whence the model does not interpret — which,
     once [lseek_spec] has rejected everything past [SEEK_MAX], means
     exactly SEEK_DATA (3) and SEEK_HOLE (4): real filesystems answer
-    those (with a filesystem-dependent notion of what a hole is), so
-    they are answered only outside the file ([lseek_nxiob]) and
-    unmodeled inside it, never -EINVAL. *)
+    those, never with -EINVAL, and with a filesystem-dependent notion of
+    what a hole is. *)
 (** [len] is the recorded file's length, which presumes the path names a
     regular file with a length at all: on a character device
     [null_lseek] pins the offset at 0 for every whence, where this
@@ -4350,13 +4337,9 @@ Definition lseek_dir_einvalb (whence off : word) : bool :=
     -EINVAL, not -ESPIPE, and [lseek(<closed fd>, 0, 42)] is -EBADF, not
     -EINVAL.
 
-    Directory fds: a folder's [.llseek] answers -EINVAL for SEEK_END,
-    SEEK_DATA, SEEK_HOLE and a negative result, and returns a result of
-    0 without moving the 0 [f_pos] it holds ([lseek_dir_einvalb]).  A
-    result above 0 is a real success that moves [f_pos], which [FdDir]
-    does not carry and every later [getdents64] would read, so it is
-    [unmodeled], fail closed.  A whence past [SEEK_MAX] is still
-    -EINVAL there, as on Linux.
+    Directory fds: see [lseek_dir_einvalb].  A result above 0 is a real
+    success that moves [f_pos], which [FdDir] does not carry and every
+    later [getdents64] would read, so it is [unmodeled], fail closed.
 
     A zero-LENGTH write at an offset past end-of-file (which only lseek
     can produce) leaves the file untouched, as on Linux; [Fs.file_write]
@@ -4371,12 +4354,9 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
            BEFORE the fd's kind is consulted — so this precedes -ESPIPE *)
       else
       match e with
-      | FdChannel _ => err_ret ESPIPE            (* every far end SCOPE.md allows fds 0, 1 and 2
-                                                    lacks FMODE_LSEEK, so a pipe's write end and
-                                                    a socket agree: [stream_open] clears it
-                                                    (fs/open.c:1658) on a pipe end (fs/pipe.c:966-967)
-                                                    and on a socket file (net/socket.c:494), and
-                                                    [vfs_llseek] answers -ESPIPE without it
+      | FdChannel _ => err_ret ESPIPE            (* no FMODE_LSEEK on any far end SCOPE.md allows,
+                                                    for the [pread64_spec] channel arm's reason,
+                                                    and [vfs_llseek] answers -ESPIPE without it
                                                     (fs/read_write.c:387-388) *)
       | FdSocket _ => err_ret ESPIPE            (* A SOCKET HAS NO OFFSET, EVER.  net/socket.c's
                                                     [socket_file_ops] carries no [.llseek], so
@@ -4452,10 +4432,12 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
       | FdDir _ =>
           if lseek_dir_einvalb whence off then err_ret EINVAL
           else if w_is0 off then ret_only (Z_to_bv 64 0)
-            (* the result is the 0 [f_pos] already holds: [dcache_dir_lseek]
-               skips its cursor move ([if (offset != file->f_pos)],
-               fs/libfs.c:160) and [vfs_setpos] (fs/read_write.c:71-86,
-               through [vfs_setpos_cookie], :55-69) stores the same 0 *)
+            (* the result is the 0 [f_pos] already holds: ramfs's
+               [dcache_dir_lseek] skips its cursor move ([if (offset !=
+               file->f_pos)], fs/libfs.c:160), and tmpfs's
+               [offset_dir_llseek] (fs/libfs.c:433-448) stores the same 0
+               through [vfs_setpos] (fs/read_write.c:71-86, through
+               [vfs_setpos_cookie], :55-69) *)
           else unmodeled
             (* a position above 0, which [FdDir] does not carry: fail
                closed *)
@@ -4464,11 +4446,7 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
               match lseek_base whence cur (len_word data) with
               | None =>
                   if lseek_nxiob off data then err_ret ENXIO
-                    (* SEEK_DATA/SEEK_HOLE outside the file: [lseek_nxiob] *)
-                  else unmodeled
-                    (* SEEK_DATA/SEEK_HOLE inside it: tmpfs answers from the
-                       pages it holds, which the model does not carry --
-                       unmodeled, fail closed *)
+                  else unmodeled  (* inside the file: [lseek_nxiob] says why *)
               | Some base =>
                   match lseek_dest base off with
                   | None => err_ret EINVAL       (* negative/unrepresentable result: real -EINVAL *)

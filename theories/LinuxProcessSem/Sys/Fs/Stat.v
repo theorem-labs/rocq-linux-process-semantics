@@ -1038,10 +1038,10 @@ Definition fstat_urandom_spec (fd statbuf : word) : Sys SyscallEffect :=
     THE OTHER KINDS STILL DECLINE, and they are not equally far from an
     answer:
 
-      - [FdChannel] — the type bits alone are undecidable.  A channel is
-        the model's one name for a pipe, a socket and a terminal (see
-        [FdChannel]'s own note), so S_IFIFO, S_IFSOCK and S_IFCHR are
-        all live and nothing in the model chooses between them.  A
+      - [FdChannel] — the type bits alone are undecidable.  A channel's
+        far end is a pipe end or, on fds 1 and 2, a stream socket (see
+        [FdChannel]'s own note), so S_IFIFO and S_IFSOCK are both live
+        and nothing in the model chooses between them.  A
         [choose] over the type would not fix it: the pin makes two stats
         agree with each other, not with the kernel, and there is nothing
         here for the size obligation to bite on.
@@ -1080,7 +1080,7 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF          (* [vfs_fstat]'s own answer, before [statbuf] is touched *)
-  | Some (FdChannel _) => unmodeled  (* pipe, socket or terminal: even the type bits are undecided *)
+  | Some (FdChannel _) => unmodeled  (* a pipe end or a stream socket: even the type bits are undecided *)
   | Some (FdFile i _)  => fstat_file_spec i statbuf   (* [cp_new_stat] over the file's inode *)
   | Some (FdFileW i _) => fstat_file_spec i statbuf   (* the same inode, opened for writing *)
   | Some (FdFileA i _) => fstat_file_spec i statbuf   (* and again in append mode *)
@@ -1239,11 +1239,11 @@ Definition fstat_spec (fd statbuf : word) : Sys SyscallEffect :=
     AT_FDCWD stats the working folder (fs/stat.c:370-375, Linux
     v6.18.46); [newfstatat_body_spec] answers the working folder's stat
     and, for a dirfd of 0 or more, [fstat_spec]'s ([statat_fstat_fdb]),
-    and declines a negative dirfd.  The fetch's errnos preempt the
+    and declines any other negative dirfd.  The fetch's errnos preempt the
     dirfd, so they are answered before it is looked at, exactly as
     [Open.openat_spec] does.
 
-    Then the dirfd: only AT_FDCWD is modeled, and any other is
+    Then, for a nonempty name, the dirfd: only AT_FDCWD is modeled, and any other is
     [unmodeled] — asserting an errno for a directory the model cannot
     name would reject a conforming trace.  [dirfd] arrives already
     truncated to 32 bits (see [Syscall.fd32]), so

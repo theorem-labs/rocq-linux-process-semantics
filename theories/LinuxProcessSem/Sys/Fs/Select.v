@@ -1096,8 +1096,9 @@ Definition pselect_answer (reads : list (word * nat)) (pa : PselectAnswers)
     two masks, written into the result words ([pselect_core]).  The
     other choice is the remaining time of a deadline the call did not
     run out, written into [*tsp] ([pselect_finish]).  A descriptor whose
-    readiness is a schedule rather than a state -- the stdio channels,
-    a pipe end or a stream socket -- is refused by [select_fd_masks]
+    readiness is a schedule rather than a state -- a stdio channel,
+    whose far end is a pipe end or a stream socket, or a pipe end of the
+    model's own ([FdPipe]) -- is refused by [select_fd_masks]
     instead of guessed at.
     So every choice is visible in the effect and the checker reads each
     one back, as the contract needs.

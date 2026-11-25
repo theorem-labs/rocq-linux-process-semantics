@@ -55,14 +55,13 @@ Open Scope sys_scope.
     -EINVAL FOR A CHANNEL.  [vfs_fsync_range] (Linux v6.10-v6.15,
     fs/sync.c, [vfs_fsync_range]) returns -EINVAL when the file's
     operations table carries no [.fsync] member.  The model's channels
-    are PIPES — the [FdEntry] docstring in State.v fixes that, and the
-    precedent for RELYING on it is [ReadWrite.lseek_spec]'s -ESPIPE, cited just
-    below.  It is NOT the rule that makes stdout write-only: that one
-    survives shell redirection, since `prog > out.txt` really does give
-    an O_WRONLY regular file whose read is -EBADF, whereas pipe-ness
-    does not survive it.  Pipe-ness is the strictly stronger
-    commitment, and -ESPIPE is the only place the model already spends
-    it — and the anonymous-pipe operations carry no
+    are pipe ends or, on fds 1 and 2, stream sockets — the [FdEntry]
+    docstring in State.v fixes that, and the precedent for RELYING on
+    it is [ReadWrite.lseek_spec]'s -ESPIPE, cited just below.  Shell
+    redirection falsifies it: `prog > out.txt` really does give an
+    O_WRONLY regular file, which has an [.fsync].  -ESPIPE is the other
+    place the model spends that commitment — and the anonymous-pipe
+    operations carry no
     [.fsync]: [pipefifo_fops] (Linux v6.10-v6.14, fs/pipe.c), and
     [pipeanon_fops] (Linux v6.15, fs/pipe.c) once that release split the
     anonymous-pipe table out of the FIFO one.  Nor has any other object
