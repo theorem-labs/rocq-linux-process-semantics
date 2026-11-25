@@ -239,7 +239,13 @@ Definition fsync_spec (fd : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before the file is examined *)
-  | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe, socket or terminal *)
+  | Some (FdChannel _) => err_ret EINVAL          (* no [.fsync] on a pipe end or a socket file
+                                                     ([pipeanon_fops], fs/pipe.c:1257-1266;
+                                                     [socket_file_ops], net/socket.c:156-173), so
+                                                     every far end SCOPE.md lets fds 0, 1 and 2
+                                                     have answers [vfs_fsync_range]'s -EINVAL
+                                                     (fs/sync.c:183-184), a pipe's write end and an
+                                                     O_RDWR socket alike *)
   | Some (FdSocket _)  => err_ret EINVAL          (* nor on a socket: [socket_file_ops] carries no
                                                      [.fsync], so [vfs_fsync_range] is -EINVAL *)
   | Some (FdStream _ _ _) => err_ret EINVAL       (* a stream-pair end has [socket_file_ops] too *)

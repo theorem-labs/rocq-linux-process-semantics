@@ -259,13 +259,14 @@ Definition writev_cut (room : Z) (bs : list byte) : list byte :=
     before the [MAX_RW_COUNT] clamp ([rw_pos_einvalb];
     fs/read_write.c:563-567, Linux v6.18.46).
 
-    Nonexistent fd, or an fd not open for reading (stdout/stderr, a
-    write-only file): -EBADF (checked before the buffer and before the
-    [count = 0] shortcut, as Linux checks FMODE_READ first).  That
-    stdout/stderr are not readable is an ASSUMPTION about the stdio the
-    process was handed, not a fact about the fd number — Linux reads the
-    direction off the description's [FMODE_*] bits.  [fd]
-    arrives already truncated to 32 bits (see [Syscall.fd32]).
+    Nonexistent fd, or an fd not open for reading (a write-only file, a
+    pipe's write end): -EBADF (checked before the buffer and before the
+    [count = 0] shortcut, as Linux checks FMODE_READ first).  STDOUT AND
+    STDERR DECLINE instead: Linux reads the direction off the
+    description's [FMODE_*] bits, and the far ends SCOPE.md lets those
+    two descriptors have differ there, a pipe's write end lacking
+    FMODE_READ and a socket holding it (the channel arm says where).
+    [fd] arrives already truncated to 32 bits (see [Syscall.fd32]).
 
     The COUNT is judged as Linux judges it, not through
     [Uaccess.rw_bytes_max].  In
@@ -715,8 +716,24 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
   | Some (FdFileA _ _) => err_ret EBADF          (* and so is an append fd: O_APPEND rides on
                                                     O_WRONLY here, so FMODE_READ is clear *)
   | Some (FdChannel ch) =>
-      if negb (w_is0 ch) then err_ret EBADF      (* channels 1/2 are write-only BY ASSUMPTION
-                                                    (piped stdio), not by the fd number *)
+      if negb (w_is0 ch) then unmodeled
+        (* DECLINED ON CHANNELS 1 AND 2: THE FAR END DECIDES, AND THE
+           MODEL DOES NOT KNOW WHICH IT IS.  SCOPE.md's "Assumptions that
+           the model does not check" lets the far end of descriptors 1
+           and 2 be a pipe, a TCP stream socket or an AF_UNIX stream
+           socket.  A pipe's write end is O_WRONLY ([create_pipe_files],
+           fs/pipe.c:944-946), so [vfs_read]'s FMODE_READ test answers
+           -EBADF (fs/read_write.c:556-557).  A socket's file is O_RDWR
+           ([sock_alloc_file], net/socket.c:483-485, its mode set from
+           those flags by [init_file], fs/file_table.c:198-199), so the
+           test passes and the socket answers: [read(1, buf, 0)] is the
+           0 of [sock_read_iter]'s empty iterator (net/socket.c:1168-1169)
+           and a nonzero count reads what the peer sent.  Every answer
+           of the call turns on which of them it is, the -EBADF included,
+           so the whole call declines, at the test that separates them:
+           after the lookup's -EBADF, which both answer alike.  Linux
+           v6.18.46, commit 1f99e9ab748f.  Channel 0 answers: its far end
+           is a pipe's read end (SCOPE.md) *)
       else
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_read]'s [access_ok(buf, count)] on the count the call
@@ -1949,10 +1966,11 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            [access_ok_zero] is that range test by another name; it is
            not only for a zero count *)
   | Some (FdChannel ch) =>
-      if w_is0 ch then err_ret EBADF             (* channel 0 is read-only BY ASSUMPTION (piped
-                                                    stdio), not by the fd number;
-                                                    ordered before the buffer, as Linux checks
-                                                    FMODE_WRITE first *)
+      if w_is0 ch then err_ret EBADF             (* channel 0's far end is a pipe's READ end
+                                                    (SCOPE.md), O_RDONLY ([create_pipe_files],
+                                                    fs/pipe.c:956): [vfs_write]'s FMODE_WRITE
+                                                    -EBADF (fs/read_write.c:670-671), ordered
+                                                    before the buffer *)
       else
       if negb (modeled_rw_range buf count) then unmodeled
         (* a write above [Uaccess.rw_bytes_max] whose range leaves the
@@ -1960,10 +1978,27 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
            makes first — see [Uaccess.modeled_rw_range] *)
       else
       if w_is0 count
-      then access_ok_zero buf count (ret_only (Z_to_bv 64 0))
+      then access_ok_zero buf count
+             (if m_channel_reader m then ret_only (Z_to_bv 64 0)
+              else unmodeled)
              (* [count = 0] moves no byte and so never touches [buf],
-                which leaves only the range verdict — see
-                [Uaccess.access_ok_zero] *)
+                which leaves the range verdict -- see
+                [Uaccess.access_ok_zero] -- and then the far end.  With
+                a reader every far end SCOPE.md allows answers 0: a pipe
+                at fs/pipe.c:454-456, an AF_UNIX stream socket by
+                skipping [unix_stream_sendmsg]'s copy loop
+                (net/unix/af_unix.c:2444) and returning the 0 it sent
+                (:2533), a TCP socket by skipping [tcp_sendmsg_locked]'s
+                (net/ipv4/tcp.c:1194-1197) and returning 0 (:1385).
+                WITH THE READER GONE THE TWO FAR ENDS OF THAT LAUNCH
+                DIFFER (SCOPE.md: a pipe or an AF_UNIX stream socket), so
+                the call declines: the pipe still answers 0 before its
+                readers test, while [sock_write_iter] has no zero-count
+                shortcut and an AF_UNIX end whose peer closed holds
+                SEND_SHUTDOWN ([unix_release_sock], net/unix/af_unix.c:707),
+                which [unix_stream_sendmsg] answers with SIGPIPE and -EPIPE
+                (:2441-2442, :2537-2540).  Linux v6.18.46, commit
+                1f99e9ab748f *)
       else
       if negb (access_okb buf (bv_unsigned count)) then err_ret EFAULT
         (* [vfs_write]'s [access_ok] on the count the call NAMED
@@ -1982,22 +2017,31 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
       else
       if negb (m_channel_reader m) then
         (* THE FAR END HAS NO READER.  [State.in_channel_reader] says
-           the launch put a pipe or a socket on the other side of this
-           descriptor and its reader has gone -- `prog | head -1` once
-           `head` has had its line.  Linux raises SIGPIPE and sets
-           -EPIPE (fs/pipe.c [anon_pipe_write] :460-465 when the far
-           end is a pipe, net/core/stream.c [sk_stream_error] :190-198
-           when it is a socket), and under the default disposition the
-           process DIES; see [raise_sigpipe], which is where the mask
-           decides between the death and the errno, and
-           [sigpipe_declines], which declines the write instead when the
-           launch did not ask for the death.
+           the launch put a pipe or an AF_UNIX stream socket on the other
+           side of this descriptor and its reader has gone -- `prog |
+           head -1` once `head` has had its line.  Linux raises SIGPIPE
+           and sets -EPIPE (fs/pipe.c [anon_pipe_write] :460-465 when the
+           far end is a pipe; net/unix/af_unix.c [unix_stream_sendmsg]
+           :2441-2442 and :2537-2540 when it is an AF_UNIX stream socket,
+           which its peer's close left SEND_SHUTDOWN, :707), and under
+           the default disposition the process DIES; see
+           [raise_sigpipe], which is where the mask decides between the
+           death and the errno, and [sigpipe_declines], which declines
+           the write instead when the launch did not ask for the death.
+           A TCP far end is NOT this launch (SCOPE.md): after the peer's
+           FIN and before its RST the socket is in CLOSE_WAIT, which
+           [tcp_sendmsg_locked] sends on (net/ipv4/tcp.c:1159), so the
+           write is a count, and after an RST in ESTABLISHED it is a
+           -ECONNRESET with no signal ([FdSocket]'s arm below has the
+           kernel lines).
 
            AFTER THE ZERO-COUNT BRANCH, because fs/pipe.c returns 0 for
            a zero-length write at :454-456, BEFORE the [mutex_lock] at
            :458 and therefore before the [if (!pipe->readers)] test at
            :460: a zero-length write to a pipe whose reader is gone is
-           0, not -EPIPE, and raises no signal.
+           0, not -EPIPE, and raises no signal.  An AF_UNIX end answers
+           it with SIGPIPE, which is why that branch declines on this
+           launch.
 
            AND BEHIND [access_ok], which is the order fs/read_write.c
            fixes: [vfs_write] runs
@@ -2521,11 +2565,13 @@ Definition write_spec (fd buf count : word) : Sys SyscallEffect :=
     - a socket has neither: net/socket.c [sock_alloc_file] runs
       [stream_open] at :494.
 
-    A CHANNEL IS JUDGED AS A PIPE, the assumption [lseek_spec] already
-    answers -ESPIPE on and [Sys/Fs/Sync.v] answers -EINVAL on.  It is an
-    assumption about the stdio the process was handed rather than a fact
-    about the fd number, and a launcher that redirects stdin from a regular file falsifies
-    it: there [pread64(0, …)] transfers bytes where this answers -ESPIPE.
+    A CHANNEL HAS NEITHER, whichever far end SCOPE.md's "Assumptions that
+    the model does not check" puts there: a pipe end and a stream socket
+    are both [stream_open]ed, above, so the -ESPIPE holds for each and
+    the pipe's write end and a socket agree on it, where [read_spec]
+    cannot tell them apart.  A launcher that redirects stdin from a
+    regular file is outside that bullet: there [pread64(0, …)] transfers
+    bytes where this answers -ESPIPE.
 
     O_APPEND IS THE SECOND RULE.  Linux's [pwrite64] ignores [pos] on an
     O_APPEND description: [generic_write_checks_count] (fs/read_write.c)
@@ -2590,8 +2636,15 @@ Definition pread64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
                                                     in [ksys_pread64], fs/read_write.c *)
-  | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PREAD, BY THE PIPED-STDIO
-                                                    ASSUMPTION — see the header *)
+  | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PREAD ON EVERY FAR END SCOPE.md lets
+                                                    fds 0, 1 and 2 have, so the pipe's write end
+                                                    and an O_RDWR socket AGREE here, where [read]
+                                                    on 1 and 2 cannot tell them apart: [stream_open]
+                                                    (fs/open.c:1658) clears the bit on a pipe end
+                                                    (fs/pipe.c:966-967) and on a socket file
+                                                    (net/socket.c:494), and [ksys_pread64] answers
+                                                    -ESPIPE before [vfs_read]'s FMODE_READ test
+                                                    (fs/read_write.c:762-765) *)
   | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
                                                     [create_pipe_files] in fs/pipe.c.
                                                     Decided AHEAD of [vfs_read]'s [FMODE_READ], so
@@ -2762,10 +2815,13 @@ Definition pwrite64_spec (fd buf count pos : word) : Sys SyscallEffect :=
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* empty slot: the [CLASS(fd, f)(fd)] declaration
                                                     in [ksys_pwrite64], fs/read_write.c *)
-  | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE, BY THE PIPED-STDIO
-                                                    ASSUMPTION — see the header.  This is where
-                                                    the channel's short-write over-approximation
-                                                    stops being reachable at all *)
+  | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE on any far end SCOPE.md allows,
+                                                    the pipe and the sockets alike, for the
+                                                    [pread64_spec] channel arm's reason, and
+                                                    [ksys_pwrite64] answers -ESPIPE before
+                                                    [vfs_write] is reached.  This is where the
+                                                    channel's short-write over-approximation stops
+                                                    being reachable at all *)
   | Some (FdPipe _ _) => err_ret ESPIPE          (* [stream_open] on both ends, from
                                                     [create_pipe_files] in fs/pipe.c.
                                                     A pwrite to a pipe whose
@@ -2961,8 +3017,8 @@ Definition writev_buf_gap : Sys SyscallEffect := unmodeled.
 
     1. [do_writev]: [fdget_pos] on the fd truncated to 32 bits
        ([Syscall.fd32]); an empty slot is -EBADF.
-    2. [vfs_writev]: [FMODE_WRITE] clear is -EBADF — stdin BY ASSUMPTION
-       (piped stdio), a
+    2. [vfs_writev]: [FMODE_WRITE] clear is -EBADF — stdin, whose far
+       end is a pipe's read end (SCOPE.md), a
        read-only file, a directory (O_RDONLY), a pipe's READ end.
        [FMODE_CAN_WRITE] clear is -EINVAL and never fires on a modeled fd.
     3. The import, which is [State.import_iovecs] — the same function
@@ -3131,7 +3187,10 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                                                     soundness claim rests on the difference: a
                                                     decline is sound under either *)
   | Some (FdChannel ch) =>
-      if w_is0 ch then err_ret EBADF             (* channel 0 is read-only BY ASSUMPTION *)
+      if w_is0 ch then err_ret EBADF             (* channel 0's far end is a pipe's read end
+                                                    (SCOPE.md): [vfs_writev]'s FMODE_WRITE
+                                                    -EBADF (fs/read_write.c:1037-1038), as in
+                                                    [write_spec] *)
       else
         record_copyins
           (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
@@ -3141,7 +3200,13 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
         | ImpOk iovs0 =>
             let total := iovs_total (cap_iovecs iovs0) in
             let bs := writev_gathered (in_mem i) iovs0 in
-            if Z.eqb total 0 then ret_only (Z_to_bv 64 0)   (* zero aggregate: 0, no buffer inspected *)
+            if Z.eqb total 0 then ret_only (Z_to_bv 64 0)
+              (* zero aggregate: 0, no buffer inspected, ON EVERY FAR END
+                 AND WITH OR WITHOUT A READER: [vfs_writev] returns at
+                 fs/read_write.c:1048-1049, before [f_op->write_iter], so
+                 neither a pipe nor a socket sees the call -- unlike the
+                 scalar write, whose zero count reaches [sock_write_iter]
+                 and declines without a reader ([write_spec]) *)
             else if negb (m_channel_reader m) then sigpipe_write
               (* THE FAR END HAS NO READER, and writev takes the same
                  path write does: fs/read_write.c [do_writev] imports
@@ -3149,14 +3214,16 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
                  its entry on this branch -- then [vfs_writev] reaches
                  [f_op->write_iter], which for a pipe is
                  [anon_pipe_write] and takes [send_sig(SIGPIPE, ...)]
-                 and -EPIPE at fs/pipe.c:460-465, and for a socket is
-                 [sock_write_iter] and reaches net/core/stream.c
-                 [sk_stream_error] :190-198.  AFTER the zero-aggregate
-                 branch for the scalar arm's reason (fs/pipe.c:454-456
-                 returns 0 before the readers test), and with no
-                 [access_ok] test of its own, because [import_iovecs]
-                 above has already made it and answered [ImpFault] if
-                 it failed.  Linux v6.18.46, commit 1f99e9ab748f.
+                 and -EPIPE at fs/pipe.c:460-465, and for an AF_UNIX
+                 stream socket, the other far end this launch allows
+                 (SCOPE.md), is [sock_write_iter] into
+                 [unix_stream_sendmsg], net/unix/af_unix.c:2441-2442 and
+                 :2537-2540.  AFTER the zero-aggregate branch, which
+                 [vfs_writev] answers before either is reached, and with
+                 no [access_ok] test of its own, because
+                 [import_iovecs] above has already made it and answered
+                 [ImpFault] if it failed.  Linux v6.18.46, commit
+                 1f99e9ab748f.
 
                  WITHOUT THIS ARM [writev] WOULD BE UNSOUND WHERE
                  [write] IS NOT: it would answer a byte count and let
@@ -3452,8 +3519,9 @@ Definition pwritev2_devnull (mp : word -> option byte) (iov iovcnt pos : word)
     - [do_pwritev] (fs/read_write.c:1141-1160): [pos < 0] is -EINVAL
       BEFORE the descriptor is looked up (:1146-1147); then an empty
       slot is -EBADF (:1144, :1149); then a file without FMODE_PWRITE is
-      -ESPIPE (:1151-1152): a channel, by [pwrite64_spec]'s piped-stdio
-      premise.  No regular file, device or folder lacks the bit.
+      -ESPIPE (:1151-1152): a channel, on every far end SCOPE.md allows
+      ([pwrite64_spec]'s channel arm).  No regular file, device or folder
+      lacks the bit.
     - [vfs_writev] (:1028-1066): FMODE_WRITE clear is -EBADF (:1037-1038),
       before the iovec array is read; then the import and its two errnos
       (:1042-1045), the zero aggregate's 0 (:1047-1049), and
@@ -3640,10 +3708,11 @@ Inductive ReadableFd : Type :=
 
 (** [FMODE_READ] (fs/read_write.c [vfs_readv]'s first test, v6.18.46):
     an fd not open for reading is [-EBADF], decided BEFORE the iovec
-    array is imported.  Of the channels only stdin is readable — an
-    ASSUMPTION about the stdio the process was handed rather than a fact
-    about the fd number, and the one [readv_spec] shares with
-    [read_spec].
+    array is imported.  Of the channels only stdin passes: its far end
+    is a pipe's read end (SCOPE.md).  Stdout and stderr are [None] here
+    and [readv_spec] DECLINES them rather than answering -EBADF, because
+    their far end may be a pipe's write end or an O_RDWR socket and the
+    gate itself is where those two part ([read_spec]'s channel arm).
     [FdFileW] is the model's O_WRONLY fd, and a pipe's WRITE end is the
     third thing this gate turns away.
 
@@ -4145,13 +4214,26 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
   | None => err_ret EBADF                (* fd not open: real -EBADF, not a modeling gap *)
   | Some e =>
       match readable_fd e with
-      | None => err_ret EBADF            (* FMODE_READ, ahead of the import *)
-          (* EVERY [None] HERE IS A REAL -EBADF, including the pipe end
-             that reaches it.  [readable_fd] hands the read end a
-             [RdPipe] ([create_pipe_files] opens it O_RDONLY), so the
-             only pipe end left in this arm is the WRITE end, which is
-             O_WRONLY and whose -EBADF is the kernel's own answer rather
-             than a modeling gap *)
+      | None =>                          (* FMODE_READ, ahead of the import *)
+          match e with
+          | FdChannel _ => unmodeled
+              (* CHANNELS 1 AND 2, the only channels [readable_fd] turns
+                 away, DECLINE, for [read_spec]'s channel reason: a
+                 pipe's write end answers [vfs_readv]'s FMODE_READ test
+                 with -EBADF (fs/read_write.c:999-1000), and a socket,
+                 open O_RDWR, passes it to the import and the transfer
+                 (:1004-1011), so -EBADF, the import's errnos, the zero
+                 aggregate's 0 and the read itself are each one far end's
+                 answer and not the other's.  Declined at the test that
+                 separates them, after the lookup's -EBADF *)
+          | _ => err_ret EBADF
+              (* EVERY OTHER [None] IS A REAL -EBADF, including the pipe
+                 end that reaches it.  [readable_fd] hands the read end a
+                 [RdPipe] ([create_pipe_files] opens it O_RDONLY), so the
+                 only pipe end left in this arm is the WRITE end, which
+                 is O_WRONLY and whose -EBADF is the kernel's own answer
+                 rather than a modeling gap *)
+          end
       | Some r =>
           if readv_heap_iovecb iovcnt then readv_heap_gap
           else
@@ -4264,7 +4346,13 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
            BEFORE the fd's kind is consulted — so this precedes -ESPIPE *)
       else
       match e with
-      | FdChannel _ => err_ret ESPIPE            (* channels are unseekable streams *)
+      | FdChannel _ => err_ret ESPIPE            (* every far end SCOPE.md allows fds 0, 1 and 2
+                                                    lacks FMODE_LSEEK, so a pipe's write end and
+                                                    a socket agree: [stream_open] clears it
+                                                    (fs/open.c:1658) on a pipe end (fs/pipe.c:966-967)
+                                                    and on a socket file (net/socket.c:494), and
+                                                    [vfs_llseek] answers -ESPIPE without it
+                                                    (fs/read_write.c:387-388) *)
       | FdSocket _ => err_ret ESPIPE            (* A SOCKET HAS NO OFFSET, EVER.  net/socket.c's
                                                     [socket_file_ops] carries no [.llseek], so
                                                     fs/file_table.c [alloc_file] never sets

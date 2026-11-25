@@ -330,9 +330,9 @@ Proof.
       | (* datagram socket: declined, never an [Ok] *)
         discriminate Hspec
       | now destruct (Hro _ _ _ Hspec) ].
-  - (* channel *)
+  - (* channel: channels 1 and 2 decline, so never an [Ok] *)
     destruct (negb (w_is0 ch)); cbv iota in Hspec;
-      [now destruct (Hro _ _ _ Hspec)|].
+      [discriminate Hspec|].
     destruct (negb (access_okb buf (bv_unsigned count))); cbv iota in Hspec;
       [now destruct (Hro _ _ _ Hspec)|].
     destruct (w_is0 count); cbv iota in Hspec;
@@ -721,6 +721,46 @@ Example read_bad_fd_success_rejected :
     (mkEffect 4 [(4096, [1; 2; 3; 4])] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
   = CheckReject.
 Proof. vm_compute. reflexivity. Qed.
+
+(** READ ON STDOUT AND STDERR DECLINES, and gives neither the pipe's
+    answer nor the socket's.  SCOPE.md lets the far end of fds 1 and 2 be
+    a pipe's write end, opened O_WRONLY ([create_pipe_files],
+    fs/pipe.c:944-946), which [vfs_read]'s FMODE_READ test answers -EBADF
+    (fs/read_write.c:556-557, Linux v6.18.46), or a TCP or AF_UNIX stream
+    socket, opened O_RDWR ([sock_alloc_file], net/socket.c:483-485), which
+    passes the test and answers [read(1, buf, 0)] with the 0 of
+    [sock_read_iter]'s empty iterator (net/socket.c:1168-1169).  The
+    conjuncts offer both answers, on fd 1 and on fd 2, and the checker
+    declines each; the model before this decline accepted the -EBADF and
+    rejected the 0, and fails every conjunct. *)
+Example read_stdout_and_stderr_decline :
+  check_syscall (mkInput 63 [1; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 63 [1; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 63 [2; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 63 [2; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
+
+(** READ ON STDIN STILL ANSWERS: its far end is a pipe's read end
+    (SCOPE.md), open for reading, so the decline above does not reach
+    it.  A zero count is 0 (the pipe's "null read", fs/pipe.c:277-279,
+    Linux v6.18.46), and the -EBADF the channels above may not answer is
+    refused here. *)
+Example read_stdin_zero_count_is_zero :
+  check_syscall (mkInput 63 [0; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof)) []
+  /\ check_syscall (mkInput 63 [0; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckReject.
+Proof. split; check_eq. Qed.
 
 (* -------------------------------------------------------------------------
    munmap: length, alignment, and the ledger.  A model with one live
@@ -1957,24 +1997,59 @@ Example readv_over_max_truncates_only :
 Proof. split; [|split]; check_eq. Qed.
 
 (** An fd not open for reading is -EBADF decided BEFORE the iovec array is
-    imported: fd 1 is stdout, and here NO memory is readable at all, so the
-    array import would fault if it ran (fs/read_write.c [vfs_readv]'s
-    [FMODE_READ] test precedes its [import_iovec] call, v6.18.46; commit
-    b8e1425bae85 hoisted it there, first released in v6.8).  The second
-    conjunct pins the order.
+    imported: fd 3 is a file opened O_WRONLY, and here NO memory is
+    readable at all, so the array import would fault if it ran
+    (fs/read_write.c [vfs_readv]'s [FMODE_READ] test precedes its
+    [import_iovec] call, v6.18.46; commit b8e1425bae85 hoisted it there,
+    first released in v6.8).  The second conjunct pins the order.  The
+    pin used to be stated on stdout, whose far end SCOPE.md now lets be a
+    socket, where the call declines ([readv_stdout_and_stderr_decline]
+    below).
 
     (qemu-user's lock_iovec locks the descriptor array before it
     dispatches on the fd at all, so under qemu-user this shape answers
     -EFAULT.) *)
 
 Example readv_write_only_fd_is_ebadf_before_import :
-  check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof)) []
-  /\ check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+  check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EBADF) [] []) readv_write_only_model
+  = CheckOk readv_write_only_model []
+  /\ check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) readv_write_only_model
      = CheckReject.
 Proof. split; check_eq. Qed.
+
+(** READV ON STDOUT AND STDERR DECLINES, and gives neither the pipe's
+    answer nor the socket's.  SCOPE.md lets the far end of fds 1 and 2 be
+    a pipe's write end, which [vfs_readv]'s FMODE_READ test answers -EBADF
+    (fs/read_write.c:999-1000, Linux v6.18.46), or a TCP or AF_UNIX
+    stream socket, which [sock_alloc_file] opens O_RDWR
+    (net/socket.c:483-485) so that the test passes: a count of 0 imports
+    nothing and the empty aggregate is 0 (fs/read_write.c:1004-1011), and
+    an unreadable array is the import's -EFAULT.  Each conjunct offers one
+    of those answers and the checker declines every one: the 0 and the
+    -EFAULT a socket gives, the -EBADF a pipe gives, on fd 1 and on
+    fd 2. *)
+Example readv_stdout_and_stderr_decline :
+  check_syscall (mkInput 65 [1; 8192; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [1; 8192; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [1; 8192; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EFAULT) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [2; 8192; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 65 [2; 8192; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input (demo_fs []) IEof))
+     = CheckUnmodeled.
+Proof. repeat match goal with |- _ /\ _ => split end; check_eq. Qed.
 
 (** A file "abcde" on fd 3 at offset [off], and a directory on fd 3. *)
 Definition readv_abcde_model (off : word) : Model :=
@@ -3398,8 +3473,10 @@ Definition reader_model : Model :=
 
     Linux raises SIGPIPE and sets -EPIPE, in that order and without a
     flag write(2) can suppress: fs/pipe.c [anon_pipe_write] :460-465
-    when the far end is a pipe, net/core/stream.c [sk_stream_error]
-    :190-198 when it is a socket (Linux v6.18.46, commit 1f99e9ab748f).
+    when the far end is a pipe, net/unix/af_unix.c [unix_stream_sendmsg]
+    :2537-2540 when it is an AF_UNIX stream socket, the two far ends the
+    reader-gone launch allows (SCOPE.md; Linux v6.18.46, commit
+    1f99e9ab748f).
     Signal 13's default action is terminate, so the -EPIPE is never
     returned and what the world sees is a death by signal 13.
 
@@ -3459,6 +3536,53 @@ Proof.
   split; [check_eq|].
   split; vm_compute; discriminate.
 Qed.
+
+(** PAIR 2b — WITH THE READER GONE, A ZERO-LENGTH WRITE TO STANDARD
+    OUTPUT DECLINES; WITH A READER IT IS STILL 0.  The reader-gone
+    launch's far end is a pipe or an AF_UNIX stream socket (SCOPE.md),
+    and they part here: a pipe answers a zero-length write 0 before its
+    readers test (fs/pipe.c:454-456, Linux v6.18.46), while an AF_UNIX end
+    whose peer closed holds SEND_SHUTDOWN ([unix_release_sock],
+    net/unix/af_unix.c:707) and [unix_stream_sendmsg] answers SIGPIPE and
+    -EPIPE for it (:2441-2442, :2537-2540), [sock_write_iter] having no
+    zero-count shortcut.  The first two conjuncts offer the pipe's 0 and
+    the socket's -EPIPE and the checker declines both; the third is the
+    launch with a reader, where every far end answers 0. *)
+Example write_channel_no_reader_zero_count_declines :
+  check_syscall (mkInput 64 [1; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect 0 [] []) noreader_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 64 [1; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret EPIPE) [] []) noreader_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 64 [1; 4096; 0; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect 0 [] []) reader_model
+     = CheckOk reader_model [].
+Proof. split; [|split]; check_eq. Qed.
+
+(** PAIR 2c — A NONZERO WRITE TO STANDARD OUTPUT ON THE READER-GONE
+    LAUNCH IS THE SIGPIPE DEATH, AND NOT A TCP SOCKET'S ANSWER.  That
+    launch's far end is a pipe or an AF_UNIX stream socket (SCOPE.md),
+    and both raise SIGPIPE here: fs/pipe.c [anon_pipe_write] :460-465,
+    net/unix/af_unix.c [unix_stream_sendmsg] :2441-2442 and :2537-2540
+    (Linux v6.18.46).  A TCP far end is outside the launch, and the two
+    answers it would add are refused: the count a socket in CLOSE_WAIT
+    still sends ([tcp_sendmsg_locked], net/ipv4/tcp.c:1159, after the
+    peer's FIN and before its RST), and the -ECONNRESET with no signal
+    of an RST in ESTABLISHED ([tcp_reset], net/ipv4/tcp_input.c:4700-4701;
+    [sk_stream_error] raises SIGPIPE for -EPIPE alone,
+    net/core/stream.c:194-195). *)
+Example write_channel_no_reader_is_not_a_tcp_answer :
+  check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+    (mkEffect (errno_ret EPIPE) [] []) noreader_model
+  = CheckOk (with_killed (Z_to_bv 64 13) noreader_model) []
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (with_copyins [(4096, 2%nat)] (mkEffect 2 [] [])) noreader_model
+     = CheckReject
+  /\ check_syscall (mkInput 64 [1; 4096; 2; 0; 0; 0] mem_ab (fun _ => None))
+       (mkEffect (errno_ret ECONNRESET) [] []) noreader_model
+     = CheckReject.
+Proof. split; [|split]; check_eq. Qed.
 
 (** A pipe whose READ END HAS BEEN CLOSED: fd 4 is the write end and no
     descriptor of pipe 0 is open for reading, which is what

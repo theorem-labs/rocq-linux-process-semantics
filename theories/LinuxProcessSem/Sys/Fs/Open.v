@@ -1703,7 +1703,11 @@ Definition ftruncate_spec (fd len : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF *)
-  | Some (FdChannel _) => err_ret EINVAL         (* no channel is a writable regular file: real -EINVAL, not -ESPIPE *)
+  | Some (FdChannel _) => err_ret EINVAL         (* no channel is a writable regular file: real -EINVAL, not -ESPIPE.
+                                                    A pipe end is S_IFIFO and a socket S_IFSOCK, so
+                                                    [do_ftruncate]'s !S_ISREG test (fs/open.c:175-176)
+                                                    answers it on every far end SCOPE.md allows, a
+                                                    pipe's write end and an O_RDWR socket alike *)
   | Some (FdSocket _) => err_ret EINVAL          (* on an fd the model KNOWS is a socket: a socket
                                                     inode is S_ISSOCK, so [do_ftruncate]'s
                                                     !S_ISREG test answers -EINVAL before FMODE_WRITE

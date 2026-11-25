@@ -368,7 +368,7 @@ Definition read_witness (fd buf count : word) (i : SyscallInput) (m : Model)
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdChannel ch) =>
-      if negb (w_is0 ch) then ret_outcome (errno_ret EBADF) m  (* write-only channel *)
+      if negb (w_is0 ch) then Unmodeled  (* channels 1 and 2: the far end decides *)
       else if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m   (* vfs_read's access_ok *)
       else if w_is0 count then ret_outcome (Z_to_bv 64 0) m
@@ -610,9 +610,10 @@ Proof.
       srw Hfd. apply unmodeled_intro. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
-    { eapply bind_step; [apply input_ok|]. cbv beta.
+    { (* channels 1 and 2: declined *)
+      eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
-      cbv beta iota; srw Hfd; srw Hm. apply pure_ok. }
+      cbv beta iota; srw Hfd; srw Hm. apply unmodeled_intro. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
     { eapply bind_step; [apply input_ok|]. cbv beta.
       eapply bind_step; [apply get_model_ok|].
@@ -951,9 +952,11 @@ Definition write_witness (fd buf count : word) (i : SyscallInput) (m : Model)
         (* see [Uaccess.modeled_rw_range] *)
       else
       if w_is0 count then
-        access_ok_zero_witness buf count m (ret_outcome (Z_to_bv 64 0) m)
+        access_ok_zero_witness buf count m
+          (if m_channel_reader m then ret_outcome (Z_to_bv 64 0) m else Unmodeled)
           (* count = 0: return 0, but only once the range passes
-             [access_ok] — see [Uaccess.access_ok_zero] *)
+             [access_ok] — see [Uaccess.access_ok_zero] — and only with a
+             reader; without one the far ends part ([ReadWrite.write_spec]) *)
       else
       if negb (access_okb buf (bv_unsigned count))
       then ret_outcome (errno_ret EFAULT) m    (* [vfs_write]'s [access_ok], named count *)
@@ -1181,7 +1184,9 @@ Proof.
       cbv beta. eapply bind_step; [apply get_model_ok|].
       cbv beta iota zeta; srw Hfd; srw Hm.
       unfold access_ok_zero, access_ok_zero_witness.
-      destruct (access_okb buf (bv_unsigned count)); apply pure_ok. }
+      destruct (access_okb buf (bv_unsigned count)); [|apply pure_ok].
+      (* with the reader gone the far ends part and both sides decline *)
+      destruct (m_channel_reader m); [apply pure_ok | apply unmodeled_intro]. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
     { (* [vfs_write]'s [access_ok] refuses the named range: -EFAULT *)
       eapply bind_step; [apply input_ok|].
@@ -2424,9 +2429,13 @@ Definition readv_witness (fd iov iovcnt : word) (i : SyscallInput) (m : Model)
   | None => ret_outcome (errno_ret EBADF) m
   | Some e =>
       match readable_fd e with
-      | None => ret_outcome (errno_ret EBADF) m
-          (* the read end has a [RdPipe]; only the O_WRONLY write end
-             reaches this arm, where -EBADF is the kernel's own answer *)
+      | None =>
+          match e with
+          | FdChannel _ => Unmodeled   (* channels 1 and 2: the far end decides *)
+          | _ => ret_outcome (errno_ret EBADF) m
+              (* the read end has a [RdPipe]; only the O_WRONLY write end
+                 reaches this arm, where -EBADF is the kernel's own answer *)
+          end
       | Some r =>
           if readv_heap_iovecb iovcnt
           then Unmodeled

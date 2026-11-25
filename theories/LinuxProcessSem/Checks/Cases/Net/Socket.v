@@ -3596,19 +3596,21 @@ Proof. split_conj; check_eq. Qed.
     MSG_MORE (include/linux/socket.h:320) is neither the exact
     MSG_NOSIGNAL word nor in the stream-pair end's MSG_NOSIGNAL and
     MSG_DONTWAIT set, so the first gate declines [sendto(9, 4096, 1,
-    MSG_MORE)] on the closed 9, the same call on stdout, and the same
-    call on 9 from a kernel-half buffer.  net/socket.c [__sys_sendto]
-    answers those -EBADF (:2222-2224), -ENOTSOCK (:2225-2227) and -EFAULT
-    (:2218-2220), and reads [flags] only after all three (:2241-2244);
+    MSG_MORE)] on the closed 9, the same call on the regular file at 3
+    of [socket_call_model], and the same call on 9 from a kernel-half
+    buffer.  net/socket.c [__sys_sendto] answers those -EBADF
+    (:2222-2224), -ENOTSOCK (:2225-2227) and -EFAULT (:2218-2220), and
+    reads [flags] only after all three (:2241-2244);
     [Net.Socket.sendto_spec] gates the flag word before any answer, so
-    it declines them.  MSG_NOSIGNAL|MSG_DONTWAIT, in the union the gate
-    admits, reaches the closed 9 and is -EBADF. *)
+    it declines them.  A launch channel would not show the order: the
+    socket arms decline every channel at the fd.  MSG_NOSIGNAL|MSG_DONTWAIT,
+    in the union the gate admits, reaches the closed 9 and is -EBADF. *)
 Example sendto_flag_outside_both_sets_declines_before_the_buffer_and_the_fd :
   check_syscall (mkInput 206 [9; 4096; 1; 32768; 0; 0] (mem_of send_payload) (fun _ => None))
     (mkEffect (errno_ret EBADF) [] []) fresh_socket_model
   = CheckUnmodeled
-  /\ check_syscall (mkInput 206 [1; 4096; 1; 32768; 0; 0] (mem_of send_payload) (fun _ => None))
-       (mkEffect (errno_ret ENOTSOCK) [] []) fresh_socket_model
+  /\ check_syscall (mkInput 206 [3; 4096; 1; 32768; 0; 0] (mem_of send_payload) (fun _ => None))
+       (mkEffect (errno_ret ENOTSOCK) [] []) socket_call_model
      = CheckUnmodeled
   /\ check_syscall (mkInput 206 [9; Z_to_bv 64 (2 ^ 63); 1; 32768; 0; 0] (mem_of send_payload)
                      (fun _ => None))

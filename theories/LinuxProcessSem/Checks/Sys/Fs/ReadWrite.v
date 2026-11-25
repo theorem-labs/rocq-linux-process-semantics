@@ -2136,7 +2136,8 @@ Definition check_read (i : SyscallInput) (fd buf count : word)
   | Some (FdFileW _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdFileA _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdChannel ch) =>
-      if negb (w_is0 ch) then check_ret_only eff (errno_ret EBADF) m []
+      if negb (w_is0 ch) then CheckUnmodeled
+        (* channels 1 and 2: the far end decides; see [ReadWrite.read_spec] *)
       else
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []   (* vfs_read's access_ok, fs/read_write.c at v6.18.46 *)
@@ -2445,9 +2446,11 @@ Definition check_write (i : SyscallInput) (fd buf count : word)
       else
       if w_is0 count
       then check_access_ok_zero buf count eff m
-             (check_ret_only eff (Z_to_bv 64 0) m [])
+             (if m_channel_reader m then check_ret_only eff (Z_to_bv 64 0) m []
+              else CheckUnmodeled)
              (* [count = 0] moves no byte, so only the range verdict is
-                left — see [Uaccess.access_ok_zero] *)
+                left — see [Uaccess.access_ok_zero] — and then, with the
+                reader gone, the far ends part; see [ReadWrite.write_spec] *)
       else
       if negb (access_okb buf (bv_unsigned count))
       then check_ret_only eff (errno_ret EFAULT) m []
@@ -2726,11 +2729,8 @@ Proof.
   9:{ (* datagram socket: declined *) cbv beta iota in H. discriminate H. }
   - (* channel *)
     destruct (negb (w_is0 ch)) eqn:Hm.
-    { (* write-only channel: -EBADF *)
-      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-      eapply bind_ok0; [apply input_ok|]. cbv beta.
-      eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hm.
-      apply pure_ok. }
+    { (* channels 1 and 2: declined on both sides, so no [Ok] *)
+      cbv beta iota in H. discriminate H. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
     { (* the range is refused: -EFAULT is the only Ok this branch admits *)
       apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
@@ -3160,9 +3160,12 @@ Proof.
       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. apply unmodeled_intro. }
-  - (* channel: no fail-closed error remains *)
+  - (* channel: channels 1 and 2 decline on both sides; on channel 0 no
+       fail-closed error remains *)
     destruct (negb (w_is0 ch)) eqn:Hm.
-    { now apply check_ret_only_no_unmodeled in H. }
+    { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd. srw Hm. apply unmodeled_intro. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn.
     { now apply check_ret_only_no_unmodeled in H. }
     destruct (w_is0 count) eqn:Hc.
@@ -3400,7 +3403,8 @@ Proof.
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok.
-  - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; [reflexivity|].
+  - (* channels 1 and 2 decline, so the spec has no [Ok] there *)
+    destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; try discriminate.
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok.
     { (* the range is refused: -EFAULT *)
       cbn; rewrite bv_eqb_refl; reflexivity. }
@@ -3602,6 +3606,7 @@ Proof.
     hall Hfd; inv_ok;
     try discriminate.
   - destruct (negb (w_is0 ch)) eqn:Hm; hall Hm; inv_ok; try discriminate.
+    { (* channels 1 and 2: declined on both sides *) reflexivity. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hn; hall Hn; inv_ok;
       try discriminate.
     destruct (w_is0 count) eqn:Hc; hall Hc; inv_ok; try discriminate.
@@ -3800,13 +3805,16 @@ Proof.
       apply pure_ok. }
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; [discriminate|].
     destruct (w_is0 count) eqn:Hc.
-    { (* count = 0: return 0 where the range verdict allows it, -EFAULT
-         where it does not *)
+    { (* count = 0: return 0 where the range verdict allows it and a
+         reader is there, -EFAULT where the range is refused; with the
+         reader gone both sides decline, so no [Ok] *)
       eapply bind_ok0; [apply input_ok|]. cbv beta.
       eapply bind_ok0; [apply get_model_ok|]. cbv beta iota. srw Hfd. srw Hm.
       ok_zero_cases H buf count;
-        [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
-          apply pure_ok
+        [ destruct (m_channel_reader m); cbv beta iota in H |- *;
+          [ apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+            apply pure_ok
+          | discriminate H ]
         | apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
           apply pure_ok ]. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
@@ -4195,13 +4203,15 @@ Proof.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. srw Hm. apply unmodeled_intro. }
     destruct (w_is0 count).
-    { (* count = 0: the range verdict answers either way, so no
-         [Unmodeled] is left on this branch *)
+    { (* count = 0: the range verdict answers either way, and past it a
+         reader's 0 answers; with the reader gone both sides decline *)
       eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
       eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
       srw Hfd. srw Hm.
       ok_zero_cases H buf count;
-        [ now apply check_ret_only_no_unmodeled in H
+        [ destruct (m_channel_reader m); cbv beta iota in H |- *;
+          [ now apply check_ret_only_no_unmodeled in H
+          | apply unmodeled_intro ]
         | now apply check_ret_only_no_unmodeled in H ]. }
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak.
     { now apply check_ret_only_no_unmodeled in H. }
@@ -4416,7 +4426,8 @@ Proof.
       [cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity|].
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok.
     destruct (w_is0 count) eqn:Hc; hall Hc; inv_ok;
-      [ok_zero_complete buf count|].
+      [ok_zero_split buf count; destruct (m_channel_reader m); cbv beta iota in *;
+       inv_ok; try discriminate; reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak; inv_ok.
     { cbn; try rewrite bv_eqb_refl; try rewrite Z.eqb_refl; reflexivity. }
     destruct (negb (m_channel_reader m)) eqn:Hrdr; hall Hrdr; inv_ok.
@@ -4628,7 +4639,8 @@ Proof.
     destruct (negb (modeled_rw_range buf count)) eqn:Hn; hall Hn; inv_ok;
       [reflexivity|].
     destruct (w_is0 count) eqn:Hc; hall Hc; inv_ok;
-      [ok_zero_complete buf count|].
+      [ok_zero_split buf count; destruct (m_channel_reader m); cbv beta iota in *;
+       inv_ok; try discriminate; reflexivity|].
     destruct (negb (access_okb buf (bv_unsigned count))) eqn:Hak; hall Hak;
       inv_ok; try discriminate.
     (* the far end has no reader, past [access_ok]: -EPIPE with signal 13,
@@ -7703,9 +7715,15 @@ Definition check_readv (i : SyscallInput) (fd iov iovcnt : word)
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some e =>
       match readable_fd e with
-      | None => check_ret_only eff (errno_ret EBADF) m []
-          (* the read end has a [RdPipe]; only the O_WRONLY write end
-             reaches this arm, where -EBADF is the kernel's own answer *)
+      | None =>
+          match e with
+          | FdChannel _ => CheckUnmodeled
+              (* channels 1 and 2: the far end decides; see
+                 [ReadWrite.readv_spec] *)
+          | _ => check_ret_only eff (errno_ret EBADF) m []
+              (* the read end has a [RdPipe]; only the O_WRONLY write end
+                 reaches this arm, where -EBADF is the kernel's own answer *)
+          end
       | Some r =>
           if readv_heap_iovecb iovcnt then check_readv_gap
           else
@@ -8489,7 +8507,11 @@ Proof.
   2:{ now apply check_ret_only_no_unmodeled in H. }
   destruct (readable_fd e) as [r|] eqn:Hr.
   2:{ destruct e; cbv beta iota in H |- *;
-        try (now apply check_ret_only_no_unmodeled in H). }
+        try (now apply check_ret_only_no_unmodeled in H).
+      (* channels 1 and 2: declined on both sides *)
+      eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
+      eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
+      srw Hfd; srw Hr. apply unmodeled_intro. }
   destruct (readv_heap_iovecb iovcnt) eqn:Hheap.
   { eapply bind_unmodeled2; [apply input_ok|]. cbv beta.
     eapply bind_unmodeled2; [apply get_model_ok|]. cbv beta iota.
@@ -8574,9 +8596,11 @@ Proof.
   sys_unfold. cbv iota zeta in H. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
-  (* the gate's [None] is a real -EBADF for every kind, so the spec
-     cannot decline there and that goal closes by [discriminate] *)
+  (* the gate's [None] is a real -EBADF for every kind but channels 1
+     and 2, so the spec cannot decline there and those goals close by
+     [inv_ok]; channels 1 and 2 decline on both sides *)
   destruct (readable_fd e) as [r|] eqn:Hr; hall Hr; inv_ok; try discriminate.
+  2:{ destruct e; cbv beta iota in *; inv_ok; try discriminate; reflexivity. }
   destruct (readv_heap_iovecb iovcnt) eqn:Hheap.
   { (* the heap-backed band declines whatever the raw count is *)
     hall Hheap. reflexivity. }

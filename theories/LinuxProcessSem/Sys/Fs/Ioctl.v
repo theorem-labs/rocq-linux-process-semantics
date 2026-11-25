@@ -318,7 +318,18 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                        (* fd not open: real -EBADF, before the request is examined *)
-  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _)
+  | Some (FdChannel _)
+  (* A CHANNEL: every far end SCOPE.md lets fds 0, 1 and 2 have answers
+     these requests -ENOTTY, so a pipe's write end and an O_RDWR socket
+     agree here.  A pipe end through [pipe_ioctl]'s default arm
+     (fs/pipe.c:653-654) and [vfs_ioctl]'s rewrite; a socket through
+     [sock_ioctl]'s default arm (net/socket.c:1375-1376) into
+     [sock_do_ioctl], where [inet_ioctl] (net/ipv4/af_inet.c:1000-1005)
+     reaches [tcp_ioctl]'s -ENOIOCTLCMD (net/ipv4/tcp.c:682-683) and
+     [unix_ioctl] its own (net/unix/af_unix.c:3380-3381), and
+     [is_socket_ioctl_cmd] turns either into -ENOTTY
+     (net/socket.c:1261-1265), Linux v6.18.46 *)
+  | Some (FdFile _ _) | Some (FdFileW _ _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDir _)
   | Some (FdSocket _)
   (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
@@ -398,10 +409,15 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
          musl's [__fdopen] issues TIOCGWINSZ on a stream opened for
          writing, so [fopen("/dev/urandom", "w")] reaches this.
          EVERY OTHER REQUEST STAYS DECLINED: RNDGETENTCNT answers the
-         pool's entropy count, which the model does not carry; the
-         RNDADD* and RNDZAPENTCNT/RNDCLEARPOOL/RNDRESEEDCRNG requests
-         test CAP_SYS_ADMIN and change the pool; and [do_vfs_ioctl]'s
-         own requests (FIONBIO, FIOCLEX and their kin) change state this
+         pool's entropy count, which the model does not carry;
+         RNDADDTOENTCNT, RNDADDENTROPY and RNDRESEEDCRNG test
+         CAP_SYS_ADMIN and change the pool ([random_ioctl],
+         drivers/char/random.c:1503-1536 and :1543-1549); RNDZAPENTCNT
+         and RNDCLEARPOOL change nothing ("No longer has any effect",
+         drivers/char/random.c:1537-1542) but answer -EPERM without
+         CAP_SYS_ADMIN and 0 with it, and the model carries no
+         credentials to tell the two apart; and [do_vfs_ioctl]'s own
+         requests (FIONBIO, FIOCLEX and their kin) change state this
          model does not carry *)
   | Some (FdDgram _) =>
       if tty_only_request req then err_ret ENOTTY

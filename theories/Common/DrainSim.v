@@ -147,8 +147,8 @@ Definition drain_from_ch (rch : word) (a : A) (fs : Fs.Fs) (s : InputStream)
      is_prefix tr (reads_ch rch (blocks ++ [bs]) ++ [ExitEv ec (Fs.fs_observe fs)])).
 
 (** The same, reading channel 0 — the only channel a read can name:
-    [ReadWrite.read_spec] answers -EBADF on the rest directly, and
-    [ReadWrite.readv_spec] does so through [ReadWrite.readable_fd].  This is the
+    [ReadWrite.read_spec] declines channels 1 and 2 directly, and
+    [ReadWrite.readv_spec] does so past [ReadWrite.readable_fd].  This is the
     form the realization lemmas below ([star_drain_only],
     [drain_obs_iff]) are stated with. *)
 Definition drain_from (a : A) (fs : Fs.Fs) (s : InputStream)

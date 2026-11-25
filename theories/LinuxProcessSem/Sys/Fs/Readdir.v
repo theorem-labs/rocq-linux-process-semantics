@@ -235,7 +235,12 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                  (* fd not open: [fd_empty], before [iterate_dir] *)
-  | Some (FdChannel _) => err_ret ENOTDIR  (* no [.iterate_shared] on any non-directory *)
+  | Some (FdChannel _) => err_ret ENOTDIR  (* no [.iterate_shared] on any non-directory: a
+                                              pipe end ([pipeanon_fops], fs/pipe.c:1257-1266)
+                                              and a socket file ([socket_file_ops],
+                                              net/socket.c:156-173) both lack it, so every far
+                                              end SCOPE.md allows fds 0, 1 and 2 takes
+                                              [iterate_dir]'s -ENOTDIR (fs/readdir.c:88-91) *)
   | Some (FdFile _ _)  => err_ret ENOTDIR
   | Some (FdFileW _ _) => err_ret ENOTDIR
   | Some (FdFileA _ _) => err_ret ENOTDIR  (* append mode changes where a write

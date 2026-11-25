@@ -3105,13 +3105,15 @@ Definition ef_set_nonblock (ctx : EventfdCtx) (b : bool) : EventfdCtx :=
     enforce -EBADF on wrong-direction I/O, as Linux does:
 
     - [FdChannel chan]: an external channel.  Channel fds only come from
-      [init_model], and their mode is determined by the channel id:
-      stdin (0) is read-only, stdout (1) and stderr (2) are write-only.
-      That is the direction PIPED STDIO has, and it is an ASSUMPTION
-      about the environment rather than a fact about the fd number:
+      [init_model], and the channel id says which of the three it is.
       Linux reads the direction off the description's [FMODE_*] bits,
-      so a process handed a connected socket on fd 0 — every
-      inetd-style server — may write it, and this model answers -EBADF.
+      not the fd number, so what each answers rests on the far ends
+      SCOPE.md's "Assumptions that the model does not check" allows.
+      Stdin's (0) is a pipe's read end, so it is read-only: a write is
+      -EBADF.  Stdout's (1) and stderr's (2) may be a pipe's write end
+      or an O_RDWR stream socket, which answer a read differently, so a
+      read or readv of either DECLINES (see [Fs.ReadWrite.read_spec]);
+      a write answers, as every far end allows.
     - [FdFile i off]: a file opened O_RDONLY (read-only); write is
       -EBADF.  [i] is the file's INODE NUMBER ([Fs.ino]), not a name:
       the descriptor reads the file's bytes from [Fs.fs_inodes] under
@@ -7685,9 +7687,10 @@ Record ProcInput := mkProcInput_full {
        descriptors 1 and 2 still has a reader.  [true]: a write to
        stdout or stderr reaches something that reads it -- a terminal,
        a file, a pipe whose reader is open.  [false]: the far end is a
-       pipe or a socket whose reader has gone, which is the state
-       `prog | head -1` leaves the writer in once `head` has had its
-       line.
+       pipe or an AF_UNIX stream socket whose reader has gone, which is
+       the state `prog | head -1` leaves the writer in once `head` has
+       had its line.  A TCP far end is not this launch: SCOPE.md's
+       far-end bullet says what it answers instead.
 
        WHY IT IS AN INPUT.  A channel descriptor is whatever the
        launcher put there and the model carries no term for it, exactly

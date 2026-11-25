@@ -4900,9 +4900,11 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
     WHAT IT BUYS, WITH [links_off_proc_sysb] BELOW.  An argv operand's
     first lookup is at a folder that is not the root, so [Fs.at_outside]
     cannot fire on it, and a link it meets has no "proc" or "sys"
-    component to look up at the root.  A program's own pathname can
-    still reach [Fs.ROutside] ("/proc/self/status"): that is the
-    program's text, which no launch clause can exclude. *)
+    component to look up at the root.  A pathname the program passes can
+    still reach [Fs.ROutside]: its own ("/proc/self/status"), or one it
+    joins from an operand, to a path of its own ("/" and the operand
+    "proc") or to a name a link leads to the root ("x/proc", with
+    "x -> /").  No launch clause can exclude that. *)
 Definition cwd_off_rootb (k : Fs.path) : bool :=
   negb (Fs.path_eqb k Fs.root).
 
@@ -4920,11 +4922,15 @@ Definition cwd_off_rootb (k : Fs.path) : bool :=
     reads it ([Fs.link_text], [Fs.path_split]), and the clause asks that
     no component of it be "proc" or "sys".  A walk of the starting image
     would not do: a later [mkdirat] or [unlinkat] by the program changes
-    where a body such as "a/../../proc" leads.  A body with no such
-    component cannot make any walk look "proc" or "sys" up at the root:
-    the walk's components come from the pathname and from the bodies it
-    follows, an argv operand is one name looked up at a working folder
-    that is not the root ([cwd_off_rootb]), and no arm makes a link.
+    where a body such as "a/../../proc" leads.  With no such component
+    in any body, a walk looks "proc" or "sys" up at the root only when
+    the pathname it walks names it: the walk's components come from the
+    pathname and from the bodies it follows, and no arm makes a link.
+    So a lone argv operand never does, since it is one name looked up
+    at a working folder that is not the root ([cwd_off_rootb]); a
+    pathname the program builds can, from its own text or from an
+    operand it joins to a path of its own or to a name a link leads to
+    the root ("x/proc", with "x -> /").
 
     IT REFUSES HARMLESS LINKS TOO: "x -> sub/proc" never reaches the
     root, and an image holding it is refused all the same.  It is a
@@ -4981,9 +4987,9 @@ Definition links_off_proc_sysb (fs : Fs.Fs) : bool :=
     every entry it meets is the program's own (a file, an empty folder
     or a folder of the program's files and folders) or absent, and none
     is a device or a link.  A launch walk that ended at a folder outside
-    /dev leaves a device reachable only through a further name the
-    program spells itself ("dev/urandom" after a link to "/"), which is
-    the program asking for the device by name.
+    /dev leaves a device reachable only through further names the walk
+    is given after the link ("dev/urandom" after a link to "/"): the
+    program's own text, or operands it joins there.
 
     IT IS A NARROWING, of images a launch can present; the theorems are
     silent about a run started beside such a link. *)
@@ -5037,21 +5043,19 @@ Qed.
     compress loop that reads the random device for ever), with no link
     on it.  OSSV-551's zlib round-trip agent found it (its finding F7).
 
-    WHAT IT BUYS, WITH THE TWO DEVICE CLAUSES ABOVE.
-    [devices_in_dev_subtreeb] keeps every device under /dev,
-    [links_off_devicesb] leaves no starting link that leads to a device
-    or into /dev, and an operand's child key lies outside /dev when the
-    working folder does and is not the root ([cwd_off_rootb]; the child
-    would have to BE /dev, which needs the root as its parent:
-    [Common.FileSim.operand_is_not_a_device]).  So no plain name a
-    harness takes from its input reaches a device; a device is reached
-    only through a pathname the program spells itself, such as
-    "/dev/urandom".  The test is [Fs.in_dev_subtree], decided component
-    by component, so "/devices" is an ordinary folder.
-
-    IT IS A NARROWING: a process can be started in /dev, and the
-    theorems are silent about such a launch.  Real launches do not start
-    there. *)
+    WHAT IT ASSUMES, AND WHY.  The clause is an assumption on the
+    launch, which nothing checks against a real one: a process can be
+    started in /dev, and the theorems are silent about such a launch.
+    Its one reason is the road above.  Every device sits under /dev
+    ([devices_in_dev_subtreeb]), argv's names hold no "/", and no
+    starting link leads to a device or into /dev ([links_off_devicesb]),
+    so with the working folder outside /dev and not the root
+    ([cwd_off_rootb]; an operand's child key would have to BE /dev,
+    which needs the root as its parent:
+    [Common.FileSim.operand_is_not_a_device]) no plain name a harness
+    takes from its input reaches a device.  The test is
+    [Fs.in_dev_subtree], decided component by component, so "/devices"
+    is an ordinary folder. *)
 Definition cwd_off_devb (k : Fs.path) : bool :=
   negb (Fs.in_dev_subtree k).
 
@@ -5175,16 +5179,20 @@ Definition cwd_off_devb (k : Fs.path) : bool :=
     "proc" and "sys" looked up at "/" are [Fs.ROutside], which every
     arm declines; from such a working directory a walk reaches that
     lookup only through a pathname or a link body that names "proc" or
-    "sys", and [links_off_proc_sysb] leaves the program's own pathnames
-    as the only such text.  A working directory INSIDE /proc or /sys
+    "sys", and [links_off_proc_sysb] leaves the pathname as the only
+    such text.  A lone argv operand is not one ([cwd_off_rootb]), but a
+    pathname the program passes may be its own ("/proc/self/status") or
+    hold an operand it joins to a path of its own or to a name a link
+    leads to the root ("x/proc", with "x -> /"), so a valid input can
+    still reach the decline.  A working directory INSIDE /proc or /sys
     would start its relative walks there, where no lookup at "/"
     declines them, which is why the working-directory clause keeps it
     out.  A device is the same: every device sits under /dev, no
     starting link leads to one or into /dev, and the working directory
-    lies outside /dev, so only the program's own pathnames, such as
-    "/dev/urandom", reach one.  A name under /dev the image does not
-    hold is an ordinary absence, because the image describes /dev
-    completely at launch.
+    lies outside /dev, so no lone operand reaches one; a pathname the
+    program passes does, its own ("/dev/urandom") or one it joins from
+    operands.  A name under /dev the image does not hold is an ordinary
+    absence, because the image describes /dev completely at launch.
 
     THESE ARE CLAUSES ON THE INPUT, NOT INVARIANTS OF THE RUN.
     [State.model_fs_wf] states the reachable-state invariant, and

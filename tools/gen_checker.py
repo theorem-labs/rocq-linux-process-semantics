@@ -173,12 +173,15 @@ End __.
 # finds in the Proof.v and the Checker.v prints.  The reason, the same for
 # both: both programs open argv[1] (O_RDONLY) and argv[2]
 # (O_WRONLY|O_CREAT|O_TRUNC), and the model declines such an open on one
-# walk end that Run.valid_input admits: Fs.ROutside ("proc" or "sys"
-# looked up at the root, by any spelling or link: /proc and /sys are
-# outside the model).  A device entry is answered at any key.  The
-# hypothesis excludes exactly those inputs; each Proof.v proves it
-# equivalent to "the model answers the open of each operand"
-# (operands_inside_model_iff).
+# walk end: Fs.ROutside ("proc" or "sys" looked up at the root, outside
+# the model).  Run.valid_input keeps an operand's walk away from that
+# lookup (the working folder is not the root, Run.cwd_off_rootb, and no
+# link body names "proc" or "sys", Run.links_off_proc_sysb), but a
+# program's own pathname still leads there on a valid input, and so does
+# an operand a program joins to a path of its own.  A device entry is
+# answered at any key.  The hypothesis excludes exactly the inputs whose
+# operand walks end there; each Proof.v proves it equivalent to "the model
+# answers the open of each operand" (operands_inside_model_iff).
 OPERANDS_INSIDE_MODEL = '''\
 Definition operands_inside_model (inp : ProcInput) : Prop :=
   (3 <= length (in_argv inp))%nat ->

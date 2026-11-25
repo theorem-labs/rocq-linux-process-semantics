@@ -767,7 +767,7 @@ them. A proof says nothing about a program in such a case.
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
-| Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
+| Standard input and output | The fds 0, 1 and 2 are external channels (`State.FdChannel`), and the model does not know which far end each has; "Assumptions that the model does not check" lists the far ends a launch may give them. Fd 0 is read-only: the model answers `-EBADF` to a write there. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. A `read` or a `readv` on fd 1 or 2 is `unmodeled`: a pipe's write end answers it `-EBADF`, and a socket, which is open for reading, answers it with the read. A `write` of 0 bytes to fd 1 or 2 is `unmodeled` on the launch whose reader has gone. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
 | Files | The file model is a tree of folders, regular files, symbolic links and the two devices `/dev/null` and `/dev/urandom`, and every pathname is walked by its full path from `/` or from the working folder (`Fs.resolve`). The walk follows symbolic links as Linux v6.18.46 does: 40 follows and then `-ELOOP`, a walk of 21 links or more also admitting `-ELOOP`, `..` taken from the folder the walk stands on, and a trailing `/` forcing the follow; `openat`, `newfstatat`, `faccessat2` and `readlinkat` follow or not as their flags say, and `unlinkat`, `rmdir` and `mkdirat` act on the link itself. A regular file is an inode: two names of the image may hold one, its link count is its names (`Fs.fs_ino_nlink`), and `st_ino` and `st_dev` are chosen at the first stat of a file, a folder or a device node and then kept for it. A component over 255 bytes admits `-ENAMETOOLONG` beside the answer of a file system with a longer limit, which no supported kernel gives ("Known gaps in precision"). The model answers `getcwd`, `mkdirat` and `rmdir` (`unlinkat` with `AT_REMOVEDIR`). It declines: a pathname whose walk reaches `/proc` or `/sys` (except `/proc/self/fd/N`), through a symbolic link too; `rmdir` of the working folder, of an ancestor of it, or of a folder an open descriptor holds; `rename`, `linkat` and `symlinkat`. It has no file modes or permissions, and no FIFOs or sockets in the image. |
@@ -901,10 +901,19 @@ not apply.
   an AF_UNIX stream socket, open in blocking mode; descriptor 0's is a
   pipe, since "Standard input and output" above puts a connected socket
   there outside the model by its direction (a socket is open for both).
-  These are the kinds every arm the model gives an `FdChannel` holds for.
-  The read arms (`Sys/Fs/ReadWrite.v`) admit on descriptor 0 a short read
+  These are the kinds every arm the model gives an `FdChannel` holds for:
+  where a pipe's write end and a socket answer a call on descriptor 1 or
+  2 differently, the call declines there. The read arms
+  (`Sys/Fs/ReadWrite.v`) admit on descriptor 0 a short read
   of any nonempty prefix of the input still to come, and 0 once it has
-  ended, and they never answer `-EAGAIN`. The write arms admit a short
+  ended, and they never answer `-EAGAIN`. On descriptors 1 and 2 `read`
+  and `readv` decline: a pipe's write end is open `O_WRONLY`
+  (`create_pipe_files`, `fs/pipe.c:944-946`), so the `FMODE_READ` test
+  answers `-EBADF` (`vfs_read`, `fs/read_write.c:556-557`; `vfs_readv`,
+  `fs/read_write.c:999-1000`), while a socket is open `O_RDWR`
+  (`sock_alloc_file`, `net/socket.c:483-485`, Linux v6.18.46) and is
+  read: `read(1, buf, 0)` is 0 there (`sock_read_iter`,
+  `net/socket.c:1168-1169`). The write arms admit a short
   write of any nonempty readable
   prefix, and an `-EFAULT` with nothing written only for a fault inside
   `ReadWrite.channel_first_copy_max` (36544 bytes), the largest first copy
@@ -913,9 +922,27 @@ not apply.
   (`stream_open` clears the seek and positioned modes, `fs/open.c:1658`,
   Linux v6.18.46), `fsync` answers `-EINVAL` (none of them has an
   `.fsync`, `fs/sync.c:183-184`), and `ioctl` answers `-ENOTTY` to the
-  terminal requests. The socket calls decline on every channel: on
+  terminal requests, on a pipe's write end and a socket alike. The socket
+  calls decline on every channel: on
   descriptors 1 and 2 `sock_from_file` may find a socket, where Linux
-  runs the call (`Sys/Net/Socket.v`, `bind_spec`). Every other far end is
+  runs the call (`Sys/Net/Socket.v`, `bind_spec`). On the launch whose
+  reader has gone (`Run.valid_input_channel_closed`), the far end of
+  descriptors 1 and 2 is a pipe or an AF_UNIX stream socket, not a TCP
+  one. Both raise `SIGPIPE` at a write of one byte or more: a pipe at
+  `anon_pipe_write` (`fs/pipe.c:460-465`), and an AF_UNIX end because
+  its peer's close left it `SEND_SHUTDOWN` (`unix_release_sock`,
+  `net/unix/af_unix.c:707`), which `unix_stream_sendmsg` answers with the
+  signal and `-EPIPE` (`net/unix/af_unix.c:2441-2442`, `:2537-2540`). A
+  TCP socket whose peer has gone does not: after the peer's FIN and
+  before its RST it is in `CLOSE_WAIT`, where `tcp_sendmsg_locked` still
+  sends (`net/ipv4/tcp.c:1159`) and the write returns a count, and after
+  an RST in `ESTABLISHED` the write is `-ECONNRESET` with no signal
+  (`tcp_reset`, `net/ipv4/tcp_input.c:4700-4701`; `sk_stream_error`,
+  `net/core/stream.c:194-195`), where the model
+  answers the `SIGPIPE` death. A write of 0 bytes on that launch declines
+  even so: the pipe answers it 0 before its readers test
+  (`fs/pipe.c:454-456`) and the AF_UNIX end with the signal. Every other
+  far end is
   outside the model, so a run whose descriptor 0, 1 or 2 is one of them
   is outside what any statement covers:
   - a terminal: `ioctl` answers `TIOCGWINSZ` with 0 there
@@ -1105,17 +1132,15 @@ not apply.
   that leads to no device at launch leads to none later, since no arm makes
   a link or a device.
 - The working folder is not `/dev` nor a folder under it
-  (`Run.cwd_off_devb`, which `Run.valid_input` requires). It is the device
-  link clause's own reason, for the road with no link on it: an argv operand
+  (`Run.cwd_off_devb`, which `Run.valid_input` requires). An argv operand
   is a plain name looked up first at the working folder, so from `/dev` the
-  operand `urandom` is the random device. Every device sits under `/dev`
-  (`Run.devices_in_dev_subtreeb`), no starting link leads to one or into
-  `/dev`, and an operand has no `/`, so from a working folder outside `/dev`
-  no plain name a harness takes from its input reaches a device; a device
-  is reached only by a pathname in the program's own text, such as
-  `/dev/urandom`. OSSV-551's zlib round-trip agent found this road (its
-  finding F7). Real launches do not start inside `/dev`; a process started
-  there is outside the statements
+  operand `urandom` is the random device; OSSV-551's zlib round-trip agent
+  found this road (its finding F7). The reason for the assumption: every
+  device sits under `/dev` (`Run.devices_in_dev_subtreeb`), argv's names
+  hold no `/`, and no starting link leads to a device or into `/dev`, so
+  with the working folder outside `/dev` no plain name a harness takes from
+  its input reaches a device. A process started in `/dev` is outside the
+  statements
   (`bugs/valid-image-refuses-root-cwd-and-links-to-proc-or-devices.md`).
 - The launch file system is one tree, with no bind mount inside it, of a
   folder or of a regular file. So a folder has one name and `..` of a
@@ -1443,7 +1468,9 @@ not apply.
   statement that means both readings asks for
   `Run.valid_input_channel_either`. The model pins the reader, and
   names the reader-gone launch so a proof can ask for it, the shape
-  the abort declaration already has.
+  the abort declaration already has. That launch's far end on
+  descriptors 1 and 2 is a pipe or an AF_UNIX stream socket, not a TCP
+  one (the far-end bullet above says why).
   A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.

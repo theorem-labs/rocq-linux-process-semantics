@@ -667,7 +667,7 @@ Definition iter_ev_ch (rch : word) (bs : list byte) : list event :=
   map (ReadEv rch) bs ++ map (WriteEv (Z_to_bv 64 1)) bs.
 
 (** One loop iteration's events, reading on stdin — the only channel a
-    read can name ([ReadWrite.read_spec] answers -EBADF on the rest). *)
+    read can name ([ReadWrite.read_spec] declines the other two). *)
 Definition iter_ev (bs : list byte) : list event :=
   iter_ev_ch (Z_to_bv 64 0) bs.
 
@@ -694,7 +694,7 @@ Definition stream_traces_ch (rch : word) (cnt : word) (fs : Fs.Fs)
 
 (** The full observable trace set of a streamcat binary with a [cnt]-byte
     buffer on input [s].  Reads name channel 0 because [ReadWrite.read_spec]
-    answers -EBADF on every other.  The exit event appears only in the
+    declines the other two.  The exit event appears only in the
     chunkings that reached the end of the input; an INFINITE input
     contributes only the (unbounded, but each finite) block prefixes,
     which is exactly right — such a run never exits. *)

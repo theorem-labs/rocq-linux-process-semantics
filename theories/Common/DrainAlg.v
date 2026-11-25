@@ -263,9 +263,9 @@ Definition t_read_ch (rch : word) (s : InputStream) (cnt : word)
            t_emit (map (ReadEv rch) (proj1_sig i)) (K (proj1_sig i))).
 
 (** The same node on channel 0, the only channel a read can name:
-    [ReadWrite.read_spec] answers -EBADF on the rest directly, and
-    [ReadWrite.readv_spec] does so through [ReadWrite.readable_fd].  This is the
-    form [rz_read0] realizes. *)
+    [ReadWrite.read_spec] declines channels 1 and 2 directly, and
+    [ReadWrite.readv_spec] does so past [ReadWrite.readable_fd].  This is
+    the form [rz_read0] realizes. *)
 Definition t_read0 (s : InputStream) (cnt : word) (K : list byte -> TSet) : TSet :=
   t_read_ch (Z_to_bv 64 0) s cnt K.
 
