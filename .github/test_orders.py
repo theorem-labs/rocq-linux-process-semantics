@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Every order of the jobs of two and three runs of one head, and the end state that each order must reach (OSSV-221's
-architect, 2026-11-24 14:36Z and 14:42Z, for round 24 of OSSV-613).
+architect, 2026-11-24 14:36Z and 14:42Z, for round 24 of OSSV-613; the relabel after each order of two runs, 2026-11-25
+01:13Z, for round 25).
 
 The jobs of a pull request that write its import check run, its label comment and its review and hold comments share
 one concurrency group (write-<n>), so GitHub runs them one at a time, each whole. A run of the review workflow on HEAD
@@ -24,6 +25,13 @@ waits-on-author, and no import check run. At the end of each order it checks:
   I5  no run withdraws a success that a run of a newer read recorded (a tie withdraws).
   I0  every job that runs succeeds: no order here has a failure of GitHub.
 
+After the last job of each order of two runs, one relabel run of #7 runs (the task relabel, a run of the rescreen pass
+with no screen and no model: its post job, then its comment job), as a change of the variable, a merge conflict that
+went away or a person can start one. It reads the author as its true kind. A relabel gives no word of its own, so I0 to
+I4 must hold after it as before it, each written R:I0 to R:I4 when it breaks only after it; and R:I5: when the order
+broke no invariant before the relabel, the relabel withdraws no success that stood before it (each such success rests
+on the newest word, a pass of an outsider's run).
+
 What it runs. A word is a verdict at a read time: pass, blocking, person, held (the screen held HEAD) or answer (the
 screen of an answer held the author's comment). Run 0 is a CI review (workflow_run), each other run a rescreen
 (workflow_dispatch), and an answer is an answer. Each run reads the author as its true kind or as unknown (GitHub did
@@ -39,8 +47,9 @@ What it does not run (the architect's pruning of 14:42Z): 3 runs with the word p
 unknown reads, or with no pass or only passes; any failure of GitHub; relabels, catch-ups, approvals and runs by hand;
 more than one head; a run's re-run attempt.
 
-That is 747 combinations: 417 of 2 runs (2,112 orders, 6,198 job runs) and 330 of 3 runs (19,458 orders, 58,183 job
-runs; the orders of one combination share their first jobs). Each combination is one test method, which runs every
+That is 747 combinations: 417 of 2 runs (2,112 orders, 6,198 job runs, and a relabel of 2 job runs after each order:
+10,422 job runs) and 330 of 3 runs (19,458 orders, 58,183 job runs; the orders of one combination share their first
+jobs). Each combination is one test method, which runs every
 order of its jobs; ORDERS_SHARD=<k>/<n> (0 <= k < n) keeps the
 methods whose index is k modulo n, for a matrix of review-tests.yml. Run it as python3 .github/parallel_tests.py
 --processes 4 .github/test_orders.py.
@@ -61,6 +70,8 @@ WORDS = ("pass", "blocking", "person", "held", "answer")
 WRITER_WORDS = ("pass", "blocking", "person")
 THREE_WORDS = ("pass", "blocking", "held", "answer")
 RECORDED = "The workflow recorded the check `repo-pairs/import-approved`"
+# The run of the relabel after each order of two runs.
+RELABEL = {"id": "900", "task": "relabel", "kind": "", "word": "", "minutes": 0}
 # The state of a label comment by its next step: each state's own step, and the steps that the state decide takes from
 # the import (rules.import_steps). The states screen and after-hold share a step.
 STEPS = {}
@@ -147,7 +158,8 @@ class OrderTest(T.ReaderRunner):
         return {"comments": [review_of(HEAD, at=ago(70), run=60),
                              {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
                               "body": rules.label_comment("change")}],
-                "labels": ["waits-on-author"], "checks": [], "next": 50, "posts": {}, "withdrawals": [], "failed": []}
+                "labels": ["waits-on-author"], "checks": [], "next": 50, "posts": {}, "withdrawals": [], "failed": [],
+                "jobs": {}}
 
     def serve_world(self, w, run):
         """GitHub's answers while #7 is w, for a job of run."""
@@ -164,6 +176,13 @@ class OrderTest(T.ReaderRunner):
         for check in w["checks"]:
             self.serve(f"repos/{REPO}/check-runs/{check['id']}", {"id": check["id"], "conclusion": check["conclusion"]})
         self.serve(f"repos/{REPO}/check-runs", {"id": 901 + len(w["checks"])})
+        # The jobs of each run as GitHub lists them once they ran, each step ended when its job ran (line_written).
+        for rid, jobs in w["jobs"].items():
+            self.serve(f"repos/{REPO}/actions/runs/{rid}/jobs", {"total_count": len(jobs), "jobs": [
+                {"name": name, "run_id": int(rid), "run_attempt": 1, "status": "completed",
+                 "conclusion": "failure" if "failure" in outcomes.values() else "success",
+                 "steps": [{"name": n, "status": "completed", "conclusion": c, "started_at": at, "completed_at": at}
+                           for n, c in outcomes.items()]} for name, outcomes, at in jobs]})
         self.serve(f"repos/{REPO}/actions/runs/{run['id']}/attempts/1/jobs",
                    {"jobs": [T.attempt_job("trust"), T.attempt_job("gather"),
                              T.attempt_job("screen", name="screen mallory")]})
@@ -176,6 +195,10 @@ class OrderTest(T.ReaderRunner):
     def trust(self, run):
         """The trust job's outputs of run."""
         kind = run["kind"]
+        if run["task"] == "relabel":
+            return {"task": "relabel", "route": "review", "outsider": "" if kind == "writer" else "mallory",
+                    "outside": "true" if kind == "outsider" else "false", "kind": kind, "number": "7", "head": HEAD,
+                    "named": HEAD, "started": self.read(run), "account": "", "origin": "", "tries": "0", "comment": ""}
         return {"task": run["task"], "route": "review" if kind == "writer" else "screen",
                 "outsider": "" if kind == "writer" else "mallory", "outside": "true" if kind == "outsider" else "false",
                 "kind": kind, "number": "7", "head": HEAD, "named": HEAD, "started": self.read(run),
@@ -201,6 +224,12 @@ class OrderTest(T.ReaderRunner):
                     "needs.review.outputs.verdict": "" if held else run["word"],
                     "needs.review.outputs.body": "" if held else review["body"],
                     "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false"})
+        if run["task"] == "relabel":
+            ctx.update({"github.event_name": "workflow_dispatch", "needs.gather.result": "skipped",
+                        "needs.screen.result": "skipped", "needs.review.result": "skipped",
+                        "needs.gather.outputs.kind": "", "needs.screen.outputs.verdict": "",
+                        "needs.review.outputs.verdict": "", "needs.review.outputs.head": "",
+                        "needs.review.outputs.body": ""})
         if post is not None:
             ctx.update({"needs.post.result": post["result"],
                         **{f"needs.post.outputs.{k}": v for k, v in post["post"].items()}})
@@ -227,6 +256,7 @@ class OrderTest(T.ReaderRunner):
             outcomes = run_job(self, name, ctx, tokens)
         finally:
             self.live = None
+        w["jobs"].setdefault(run["id"], []).append((name, outcomes, ago(0)))
         if "failure" in outcomes.values():
             w["failed"].append(f"{name} of run {run['id']}: {[k for k, v in outcomes.items() if v == 'failure']} "
                                f"{self.logs[-1][-300:] if self.logs else ''}")
@@ -346,7 +376,7 @@ class OrderTest(T.ReaderRunner):
         reads = {r["id"]: self.read(r) for r in runs}
         for run_id, cid, check in w["withdrawals"]:
             record = rules.recorded_by(check) if check else None
-            if record and record[1] and reads[run_id] < record[1]:
+            if run_id in reads and record and record[1] and reads[run_id] < record[1]:
                 found.append(("I5", (run_id, cid, record)))
         return found
 
@@ -357,9 +387,21 @@ class OrderTest(T.ReaderRunner):
         by_id = {r["id"]: r for r in runs}
         failures = []
 
+        relabel = dict(RELABEL, kind="writer" if any(r["kind"] == "writer" for r in runs) else "outsider")
+
         def walk(tree, w, order):
             if not tree:
-                failures.extend((order, b) for b in self.broken(runs, w))
+                before = self.broken(runs, w)
+                failures.extend((order, b) for b in before)
+                if len(runs) == 2:
+                    after = self.job("comment", relabel, self.job("post", relabel, w))
+                    names = {b[0] for b in before}
+                    failures.extend((order + ["relabel"], ("R:" + b[0], b[1]))
+                                    for b in self.broken(runs, after) if b[0] not in names)
+                    stood = {c["id"] for c in w["checks"] if c.get("name") == NAME and c.get("conclusion") == "success"}
+                    taken = [cid for rid, cid, _check in after["withdrawals"] if rid == relabel["id"] and cid in stood]
+                    if not before and taken:
+                        failures.append((order + ["relabel"], ("R:I5", taken)))
                 return
             for (name, rid), sub in tree:
                 walk(sub, self.job(name, by_id[rid], w), order + [f"{name} {rid}"])
