@@ -5,7 +5,7 @@ labels").
     python3 .github/review/rules.py label <number> task=<task> outside=<outside> outsider=<outsider> author=<kind>
         [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line> [state=<state>]
-    python3 .github/review/rules.py owed <number> owed=<head, why and run> withdrawn=<head> own=<true or false>
+    python3 .github/review/rules.py owed <number> owed=<head, why, run and read> withdrawn=<head> own=<true or false>
         task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
     python3 .github/review/rules.py log <number> <head> <decision> <cause> <read> [<field> <value> ...]
@@ -85,9 +85,9 @@ job's output owed, <head> <why>, of a withdrawal that it found a reason for and 
 the hold job, for a screen that held the head in a review, a rescreen or an approval of its run; then <run>, the id of
 the run that writes the line, and <read>, the time when that run read the item, its trust job's started) gives the line
 <!-- withdraw-owed <head> <why> <run> <read> --> of KEPT (OWED), as mark does, but it never makes a label comment.
-own=true says that a comment of this run gives <why>: the hold job's line of its own screen, or the comment job's line
-of the verdict of its own review, also refused (its own review that the fresh reader refused, which no comment gives).
-Else (own=false, or empty with no owed=) the line names the run of the comment that
+own=true says that the line names this run and its read. The hold job gives own=true for the line of its own screen.
+The comment job gives it for the line of its own review, whether that review gives the verdict or the fresh reader
+refused it. Else (own=false, or empty with no owed=) the line names the run of the comment that
 gives <why> and the read of that run (owed_run): the run and the read of a line of that head and reason that stands,
 or else the run of the newest such hold or review comment and its time (word_time), and <run> and <read> only when
 none names a run. When the item has no label comment, this writes nothing, a line says so, and the status is 3: it
@@ -657,8 +657,11 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # a newer screened review outranks the line), and only while a comment of BOT gives a reason for it (line_reason): the
 # comment of the line's run that gives why, or a review of the head newer than the time of the line. Until then, each
 # relabel records nothing (owe). The why refused is the reason of a review that the fresh reader refused (OSSV-221's
-# architect, 2026-11-25 10:21Z). No comment of its run gives it, so the line names that run and its read, and only a
-# later review takes it out (line_reason).
+# architect, 2026-11-25 10:21Z). That review never posts, so no comment gives refused. The comment job's line of its
+# own refused review names its own run and read. Any other writer keeps the run and the read of the refused line of
+# that head that stands. With no such line, owed_run gives the writer's own run and read. owe takes the line out only
+# when a later review gives the reason (line_reason). A line of that head with a later read also takes its place
+# (owed_keeps).
 # Each head has a line of its own (marker_kind). A line takes the place of the line of its head only when that line
 # does not outrank it as a word on the head (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z), for each writer:
 # owe, also for the line of its own run, mark, and the label call (apply). So no older read's line takes the place of
@@ -1421,9 +1424,9 @@ def owe(number, run, owed="", withdrawn="", own=False):
     a review, a rescreen or an approval of its run), <run>, the id of the run that writes the line, and <read>, the
     time when that run read the item (its trust job's started). It gives the line
     <!-- withdraw-owed <head> <why> <run> <read> --> (mark), in a label comment that the item has: it never makes one.
-    own is True when a comment of that run gives why: the hold comment of its screen, or its own review with that
-    verdict. It is True also for refused, its own review that the fresh reader refused, which no comment gives. Else the
-    line names the run of the comment that gives why, and the read of that run (owed_run;
+    own is True when the line names <run> and <read> of owed. The hold job gives it for the line of its own screen.
+    The comment job gives it for the line of its own review, whether that review gives the verdict or the fresh reader
+    refused it. Else the line names the run of the comment that gives why, and the read of that run (owed_run;
     OSSV-221's architect, 2026-11-22 17:27Z and 2026-11-25 01:30Z), so that a refused withdrawal of a relabel never
     takes the place of that run and its read. When the item has no label comment, it writes nothing, says so, and the
     result is the line: the step gives it to the label step of its job. withdrawn alone, a head whose withdrawal the
@@ -1473,7 +1476,8 @@ def owe(number, run, owed="", withdrawn="", own=False):
             if why == "screen":
                 said = f"No hold comment of the screen of run {wrote} names {withdrawn}."
             elif why == "refused":
-                said = f"The fresh reader refused the review of run {wrote}, so no comment of that run gives a reason."
+                said = (f"No comment of run {wrote} gives {withdrawn} the reason refused: a review that the fresh "
+                        "reader refuses posts no comment.")
             else:
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}."
             newer = (f"No {'screened ' if screened else ''}review comment of {withdrawn} comes from a run that read "
@@ -2357,8 +2361,9 @@ def owed_run(comments, head, why, run, read):
     if not found:
         return run, read
     if not TIME.fullmatch(at):
-        raise ValueError(f"the comment of run {found.group(1)} that gives {why} on {head} has no time as GitHub gives "
-                         f"it, so the line would have no read: {at!r}")
+        comment = "the hold comment of the screen" if why == "screen" else f"the review comment with the verdict {why}"
+        raise ValueError(f"{comment}, of run {found.group(1)} on {head}, has no time in the form that GitHub gives: "
+                         f"{at!r}. So this step writes no withdraw-owed line.")
     return found.group(1), at
 
 
@@ -3355,7 +3360,8 @@ def main(argv):
         if len(argv) >= 2 and argv[0] == "owed" and NUMBER.fullmatch(argv[1]):
             facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn", "own"))
             if facts or markers or head:
-                raise ValueError("owed takes the run, owed=, withdrawn= and own= alone")
+                raise ValueError("owed takes task=, outside=, outsider=, author=, owed=, withdrawn= and own= alone: "
+                                 "no fact, no head= and no marker=")
             owed, withdrawn, own = given.pop("owed"), given.pop("withdrawn"), given.pop("own")
             if own not in ("", "true", "false"):
                 raise ValueError(f"own is true, false or empty, not {own!r}")
