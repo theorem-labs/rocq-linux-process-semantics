@@ -21755,6 +21755,49 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(self.successes(self.applied_checks(checks)), [901],
                                  (got["post"].get("decision"), [e for _t, e, _b in got["withdrawn"]], self.logs[-3:]))
 
+    def test_a_gather_job_that_fails_leaves_no_success_under_a_hold_of_the_screen(self):
+        """The tester's audit of round 24, G2 (a failure path that fails open; I1 and I2 of the order of the words on
+        a head). The CI review run 100 of mallory's #7 read the item 40 minutes ago, passed HEAD and recorded 901. Then
+        the gather job of rescreen run 130, which read the item 20 minutes ago, fails at its step "Gather the pull
+        request or issue": mallory moved the base of #7 off main between the trust job and that step, or a read failed.
+        So no screen and no review run, and no post job runs. The hold job of run 130 runs. At the end the comments and
+        the check runs agree: when the newest word on HEAD, from the comments that the hold job posted, is a hold of the
+        screen, no success stands. At ce79477a the hold job writes a hold of the screen (screen_held, with the head and
+        the read of run 130), which says that the automated screen held #7 though no screen ran, and nothing withdraws
+        901."""
+        older = review_of(HEAD, at=ago(70), run=60)
+        _got, checks = self.judged([], "100", trust=dict(self.REVIEWED, started=ago(40)), comments=[older])
+        trust = dict(self.REVIEWED, task="rescreen", started=ago(20), account="mallory", kind="outsider", origin="130",
+                     tries="0")
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.gather.result": "failure",
+                    "needs.gather.outputs.kind": "", "needs.screen.result": "skipped",
+                    "needs.screen.outputs.verdict": "", "needs.review.result": "skipped",
+                    "needs.post.result": "skipped", "github.ref": "refs/heads/main", "github.repository": REPO,
+                    "github.token": self.RUN_TOKEN, "github.run_id": "130", "github.run_attempt": "1",
+                    "github.event_name": "workflow_dispatch", "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS})
+        self.assertFalse(evaluate(JOBS["post"]["if"], ctx))
+        self.serve_checks(checks)
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "pull_request": {}, "user": {"login": "mallory"}})
+        self.serve(f"repos/{REPO}/issues/7/comments", [older])
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": f"https://github.com/{REPO}/pull/7#c50"})
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}})
+        self.serve(f"repos/{REPO}/actions/runs/130/attempts/1/jobs",
+                   {"jobs": [attempt_job("trust"), attempt_job("gather", "Gather the pull request or issue")]})
+        open(self.summary, "w").close()
+        self.env["GITHUB_STEP_SUMMARY"] = self.summary
+        if evaluate(JOBS["hold"]["if"], ctx):
+            run_job(self, "hold", ctx, self.AnyToken(self.TOKENS))
+        checks = self.applied_checks(checks)
+        comments = [older] + [{"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1),
+                               "body": body} for body in self.posted("<!-- review-held -->")]
+        state = rules.review_verdict(comments, HEAD)[1]
+        self.assertFalse(state == "held" and self.successes(checks), (state, checks, self.logs[-4:]))
+
     def label_step(self, trust, got, listed, comments, verdict="pass"):
         """The comment job's label step of the run whose trust job gave trust (such as the screened CI review of #7 at
         HEAD), whose review gave verdict (a pass by default) and whose post job gave got (judge), while the variable
