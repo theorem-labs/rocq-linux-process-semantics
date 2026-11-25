@@ -176,10 +176,11 @@ Proof.
   unfold err_ret, ret_only, pure in H. cbv beta in H. discriminate H.
 Qed.
 
-(** ioctl: -EBADF on a closed fd; the eight terminal requests answer
-    -ENOTTY on every open kind but /dev/urandom; SIOCGIFINDEX on a
-    datagram socket is [check_siocgifindex], which reads the third
-    argument out of [i]; everything else is unmodeled. *)
+(** ioctl: -EBADF on a closed fd; the terminal requests answer -ENOTTY
+    on every open kind but /dev/urandom, whose driver answers them
+    -EINVAL; SIOCGIFINDEX on a datagram socket is [check_siocgifindex],
+    which reads the third argument out of [i]; everything else is
+    unmodeled. *)
 Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
@@ -189,7 +190,9 @@ Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else CheckUnmodeled
-  | Some (FdUrandom _ _) => CheckUnmodeled
+  | Some (FdUrandom _ _) =>
+      if tty_only_request req then check_ret_only eff (errno_ret EINVAL) m []
+      else CheckUnmodeled
   | Some (FdDgram _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else if bv_eqb req SIOCGIFINDEX then check_siocgifindex (in_arg i 2) i eff m

@@ -71,7 +71,9 @@ Definition ioctl_witness (fd req : word) (i : SyscallInput) (m : Model)
   | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else Unmodeled
-  | Some (FdUrandom _ _) => Unmodeled
+  | Some (FdUrandom _ _) =>
+      if tty_only_request req then ret_outcome (errno_ret EINVAL) m
+      else Unmodeled
   | Some (FdDgram _) =>
       if tty_only_request req then ret_outcome (errno_ret ENOTTY) m
       else if bv_eqb req SIOCGIFINDEX then siocgifindex_witness (in_arg i 2) i m

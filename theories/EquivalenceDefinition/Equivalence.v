@@ -1474,9 +1474,13 @@ End SPEC_VA_ANY.
     other quantifier and the conclusion are [strong_universal_T]'s.  It
     exists for the inputs on which the model declines and a binary's
     statement can therefore not hold: a walk that ends at "proc" or
-    "sys" looked up at the root, by any spelling or link, is outside
-    the model ([Fs.ROutside]), and [Run.valid_input] admits an argv
-    operand that leads there.  It is never a way to drop an
+    "sys" looked up at the root is outside the model ([Fs.ROutside]).
+    [Run.valid_input] keeps an argv operand's walk away from that
+    lookup (the working folder is not the root, [Run.cwd_off_rootb],
+    and no link body names "proc" or "sys",
+    [Run.links_off_proc_sysb]), but a program's own pathname, such as
+    "/proc/self/status", still leads there on a valid input, and so does
+    an operand a program joins to a path of its own.  It is never a way to drop an
     input a proof finds inconvenient: the generator
     ([tools/gen_checker.py]) lets an example ascribe [SPEC_ON] only from
     an allowlist that names the example, the hypothesis and the reason,

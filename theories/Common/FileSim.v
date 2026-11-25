@@ -375,18 +375,19 @@ Qed.
       and a hypothesis of every lemma below that resolves an operand.
 
     - A SYMBOLIC LINK AT AN OPERAND.  An open that follows it lands
-      wherever its body leads, and a following walk admits -ELOOP
-      beside every answer ([Fs.wr_followed]).  The perimeter's last
-      conjunct excludes it, and the splits below take it as a
-      hypothesis.
+      wherever its body leads, and a walk that counted 21 links or more
+      admits -ELOOP beside every answer ([Fs.wr_follows],
+      [Fs.Namei.eloop_follows]).  The perimeter's last conjunct excludes
+      it, and the splits below take it as a hypothesis.
 
     - A DEVICE AT AN OPERAND.  Every valid input's image HOLDS the two
-      devices, under /dev, and a working directory of "/dev" with an
-      operand of "null" is a valid input.  Opening it mints a device
+      devices, under /dev, and from a working directory of "/dev" an
+      operand of "null" names one.  Opening it mints a device
       descriptor and the copy runs against the device's answer table,
-      which is a different outcome set.  [operand_is_not_a_device]
-      excludes it from a working directory off the root and outside the
-      /dev subtree.
+      which is a different outcome set.  [Run.valid_input] refuses that
+      working directory ([Run.cwd_off_devb]), and
+      [operand_is_not_a_device] excludes the case from a working
+      directory off the root and outside the /dev subtree.
 
     - A DIRECTORY AT THE SOURCE.  [open(dir, O_RDONLY)] succeeds and
       yields a [State.FdDir]; the read that follows is the directory
@@ -394,17 +395,24 @@ Qed.
 
     - A WORKING DIRECTORY AT THE ROOT.  [Fs.resolve] puts a first
       component "proc" or "sys" LOOKED UP AT THE ROOT outside the model
-      ([Fs.ROutside]), every arm declines it, and [Run.valid_input]
-      admits [in_cwd] of "/" beside an argv entry of "proc".  Off the
-      root the guard cannot fire whatever the operand is, because it is
-      a WALK-STATE test and the walk's first lookup is not at the root;
-      so the perimeter's first conjunct is on the working directory, and
-      the lemmas below take it as a hypothesis.
+      ([Fs.ROutside]), and every arm declines it.  [Run.valid_input]
+      refuses an [in_cwd] of "/" ([Run.cwd_off_rootb]), so the
+      perimeter's first conjunct holds of every valid input
+      ([Run.valid_image_cwd_not_root]); it stays a conjunct, and a
+      hypothesis of the lemmas below, because their callers already
+      discharge it and a hypothesis that validity implies costs a caller
+      nothing.  Off the root the guard cannot fire whatever the operand
+      is, because it is a WALK-STATE test and the walk's first lookup is
+      not at the root.
 
     - A WORKING DIRECTORY IN THE "/dev" SUBTREE.  An absent operand
       there is an ordinary [Fs.RMissing], as anywhere else, but a
       PRESENT one may be a device; the second conjunct is what
-      [operand_is_not_a_device] reads.
+      [operand_is_not_a_device] reads.  [Run.valid_input] refuses such
+      a working directory ([Run.cwd_off_devb]), so the conjunct holds of
+      every valid input ([Run.valid_image_cwd_outside_dev]) and stays,
+      as the first does, because a hypothesis that validity implies
+      costs a caller nothing.
 
     THE PREDICATE ITSELF HAS NO CONSUMER.  Its conjuncts are what a
     re-proof SPLITS ON or assumes: [ns_operand_file_or_absent] and
@@ -648,15 +656,15 @@ Qed.
     declared cwd resolves to a directory, which is what the walk needs
     to start a relative pathname.
 
-    THE /proc AND /sys GUARD DOES NOT COME FREE, and it is in the
-    statement rather than buried in the proof.  [Fs.resolve] puts a
-    first component "proc" or "sys" LOOKED UP AT THE ROOT outside the
-    model ([Fs.ROutside]), and nothing in [Run.valid_input] forbids a
-    working directory of "/" together with an argv entry of "proc".  A
-    caller whose working directory is not the root discharges the guard
-    by computation -- [Fs.default_cwd] is "/work" -- and a caller that
-    allows the root has a case to split.  See
-    [resolve_plain_name_valid_offroot] for the first. *)
+    THE /proc AND /sys GUARD is in the statement rather than buried in
+    the proof.  [Fs.resolve] puts a first component "proc" or "sys"
+    LOOKED UP AT THE ROOT outside the model ([Fs.ROutside]), and
+    [Run.valid_input] refuses a working directory of "/"
+    ([Run.cwd_off_rootb]), so every valid input discharges the guard:
+    [Run.valid_image_cwd_not_root] gives it, and a caller standing at
+    [Fs.default_cwd] ("/work") has it by computation as well.  See
+    [resolve_plain_name_valid_offroot] for the lemma that takes it as a
+    hypothesis. *)
 (** NUL-FREEDOM, from the form [Run.valid_argv] states it in.  An
     argv entry carries the clause as a [Prop] over [In]; the walk wants
     the boolean.  One bridge, so no caller writes it twice. *)
@@ -769,10 +777,15 @@ Qed.
     single component, so a child key equal to it would need the ROOT
     as its parent.  A LINK at that key may still lead to a device (the
     walk follows it), which is why [ns_perimeter] excludes a link at
-    either operand.  The two working-directory facts are hypotheses,
-    because [Run.valid_input] admits a working directory of "/" and of
-    "/dev"; a caller standing at [Fs.default_cwd] discharges both by
-    computation. *)
+    either operand; [Run.links_off_devicesb] refuses an image whose
+    starting link leads to one, and the exclusion stays because a
+    link's walk is the case split the callers already make.  The two
+    working-directory facts are hypotheses.  [Run.valid_input] refuses
+    a working directory of "/" ([Run.cwd_off_rootb]) and one in /dev
+    ([Run.cwd_off_devb]), so both follow from validity
+    ([Run.valid_image_cwd_not_root], [Run.valid_image_cwd_outside_dev])
+    and are kept as hypotheses so that no caller changes.  A caller
+    standing at [Fs.default_cwd] discharges both by computation. *)
 Lemma operand_is_not_a_device : forall inp a dk,
   Run.valid_input inp ->
   Fs.path_eqb (in_cwd inp) Fs.root = false ->
@@ -803,7 +816,7 @@ Qed.
     off the root.  Off the root the guard cannot fire whatever the name
     is, because it is a WALK-STATE test and the walk's first lookup is
     not at the root.  [resolve_plain_name_valid] above keeps the guard
-    explicit, for a caller whose working directory may be the root. *)
+    explicit, in the walk's own form. *)
 Lemma resolve_plain_name_valid_offroot : forall md inp a,
   Fs.mode_parent md = false -> Fs.mode_dir md = false ->
   Run.valid_input inp ->
@@ -2394,11 +2407,11 @@ Lemma walk_errnos_enomem : forall lk w, In ENOMEM (walk_errnos lk w).
 Proof. intros [| | |] w; left; reflexivity. Qed.
 
 (** A PLAIN OPEN WALK refuses only with errnos the fresh-descriptor
-    acceptor already takes: a walk that followed no link
-    ([Fs.wr_followed]), handed no over-long name to a lookup
+    acceptor already takes: a walk that counted fewer than 21 links
+    ([Fs.wr_follows]), handed no over-long name to a lookup
     ([Fs.wr_long]) and stayed inside the image admits only -ENOMEM and
-    -EACCES, both in [Fs.Open.openat_errnos].  A walk that followed a
-    link also admits -ELOOP, which an open that returns a descriptor
+    -EACCES, both in [Fs.Open.openat_errnos].  A walk that counted 21
+    or more also admits -ELOOP, which an open that returns a descriptor
     does not otherwise answer, so a success node needs this premise to
     state its outcome set exactly. *)
 Definition open_walk_plain (flags : word) (m : Model) (p : Fs.path) : Prop :=
@@ -2500,8 +2513,8 @@ Qed.
     [check_open_result] with the respective success-model builder, and
     the two deterministic-errno shapes to [check_ret_only].  Each takes
     its arm contract above, and nothing else about the arm; the success
-    shapes also take [open_walk_plain], since a walk that followed a
-    link admits -ELOOP beside the descriptor. *)
+    shapes also take [open_walk_plain], since a walk that counted 21
+    links or more admits -ELOOP beside the descriptor. *)
 Lemma openat_rd_check_ns : forall segs ms x8 model p k i,
   openat_arm_read_found ->
   bv_unsigned x8 = 56%Z ->
@@ -4157,8 +4170,8 @@ Qed.
     the descriptor carries [i], which is what makes two spellings of one
     file share a descriptor's file and a stat pin (#1011 section 2).
     The walk's refusals must be among the fresh-descriptor errnos
-    ([open_walk_plain]): a walk that followed a link admits -ELOOP too,
-    and this node's outcome set would not name it. *)
+    ([open_walk_plain]): a walk that counted 21 links or more admits
+    -ELOOP too, and this node's outcome set would not name it. *)
 Lemma tfo_open_rd_ns_rec : forall regs pc mem model p k i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   openat_arm_read_found ->

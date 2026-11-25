@@ -1035,9 +1035,15 @@ Proof. vm_compute. reflexivity. Qed.
 (** The walk answers [Fs.ROutside] for a first component
     "proc" or "sys" LOOKED UP AT THE ROOT, before any lookup, and every
     path-taking arm declines it ([Cases.Fs.Open.openat_proc_is_outside]).
-    [Run.valid_input] admits a working directory of "/", so a relative
-    "proc" from there reaches the decline; the pins below are the walk's
-    side of that, and the image of the input that reaches it is valid. *)
+    A working directory of "/" made a relative "proc" reach the decline
+    from a valid input, where Linux opens procfs; [Run.valid_input]
+    refuses that working directory ([Run.cwd_off_rootb]).  The pins
+    below are the walk's side of that, the refusal of the input that
+    reached it, and the two link clauses that close the same road
+    through a link body ([Run.links_off_proc_sysb]) and the road to a
+    device through a link ([Run.links_off_devicesb]).  The road to a
+    device through an argv operand, from a working directory of /dev,
+    is closed by the working-folder clause [Run.cwd_off_devb]. *)
 
 (** ONE. At the root the operand is outside the modeled surface. *)
 Example root_cwd_operand_is_outside :
@@ -1058,11 +1064,10 @@ Example proc_below_the_root_is_an_ordinary_name :
   = (Fs.RMissing Fs.default_cwd (rp [112;114;111;99]), Fs.LastNorm, false).
 Proof. vm_compute. reflexivity. Qed.
 
-(** THREE. The image of an input standing at the root is a valid image:
-    the clauses of [Run.valid_image] about the working directory ask for
-    a canonical key the image holds as a directory, short enough for
-    [getcwd], and outside /proc and /sys ([Run.outside_proc_sysb]), and
-    the root is all of these. *)
+(** THREE. The input standing at the root is NOT a valid image: the
+    working-folder clause [Run.cwd_off_rootb] refuses it, so no valid
+    input reaches ONE through an argv operand.  REFUTED, as
+    [Run.valid_image_refuses_a_file_of_2_63_bytes] is. *)
 Definition root_cwd_input : ProcInput :=
   mkProcInput_full [[]; rp [112;114;111;99]] [] ns_image Fs.root IEof
                    demo_uid demo_gid demo_groups net_silent
@@ -1070,26 +1075,82 @@ Definition root_cwd_input : ProcInput :=
                    Sv48 default_urandom default_kernel default_execfn
                    true true false.
 
-Example valid_image_admits_a_root_working_directory :
-  valid_image root_cwd_input.
-Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+Example valid_image_refuses_a_root_working_directory :
+  ~ valid_image root_cwd_input.
+Proof.
+  intros Hv. pose proof (valid_image_cwd_off_root _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
 
-(** ...and the same of a working directory of /dev, which is an
-    ordinary folder of the image. *)
-Definition dev_cwd_input : ProcInput :=
-  mkProcInput_full [[]; rp [110;117;108;108]; rp [117;114;97;110;100;111;109]]
-                   [] (Fs.standard_root Fs.default_cwd) Fs.dev_dir IEof
+(** ...and that clause is the only working-directory clause the root
+    fails: it is a canonical key the image holds as a directory, short
+    enough for [getcwd], and outside /proc and /sys. *)
+Example root_cwd_fails_only_the_off_root_clause :
+  Fs.canonical_key Fs.root = true
+  /\ Fs.fs_lookup ns_image Fs.root = Some Fs.EDir
+  /\ Nat.leb (length Fs.root + 1)%nat path_max = true
+  /\ outside_proc_sysb Fs.root = true
+  /\ cwd_off_rootb Fs.root = false
+  /\ cwd_off_rootb Fs.default_cwd = true.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** A working directory of /dev is NOT a valid input: there the operand
+    "urandom" names the random device (below), the road
+    [Run.cwd_off_devb] closes.  The same argv over the same image at
+    /work is valid.  REFUTED, as THREE is. *)
+Definition urandom_operand_input (cwd : Fs.path) : ProcInput :=
+  mkProcInput_full [[]; rp [117;114;97;110;100;111;109]]
+                   [] (Fs.standard_root Fs.default_cwd) cwd IEof
                    demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false
                    Sv48 default_urandom default_kernel default_execfn
                    true true false.
 
-Example valid_image_admits_a_dev_working_directory :
-  valid_image dev_cwd_input.
-Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+Example valid_input_refuses_a_dev_working_directory :
+  ~ valid_input (urandom_operand_input Fs.dev_dir).
+Proof.
+  intros Hv. pose proof (valid_image_cwd_off_dev _ (valid_input_image _ Hv)) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+Example valid_input_admits_the_urandom_operand_at_work :
+  valid_input (urandom_operand_input Fs.default_cwd).
+Proof.
+  unfold valid_input, urandom_operand_input.
+  cbn [in_argv in_envp in_fs in_cwd in_uid in_gid in_nofile in_sigmask
+       in_hwcap in_abort_terminal in_va_size in_urandom in_execfn
+       in_channel_reader in_sigpipe_terminal in_kernel].
+  split; [| split; [ns_valid_envp | ns_valid_tail]].
+  unfold valid_argv. cbn [tl].
+  split; [cbn; lia|].
+  split; [vm_compute; intro; discriminate|].
+  split; [repeat apply Forall_cons; try apply Forall_nil; cbn; lia|].
+  split; [repeat apply Forall_cons; try apply Forall_nil; argv_no_nul|].
+  repeat apply Forall_cons; try apply Forall_nil.
+  split; vm_compute; reflexivity.
+Qed.
+
+(** ...and that clause is the only working-directory clause /dev fails:
+    it is a canonical key the image holds as a directory, short enough
+    for [getcwd], off the root and outside /proc and /sys.  The clause
+    is decided COMPONENT BY COMPONENT: /dev/pts fails it too, and
+    "/devices" and "/work/dev" pass. *)
+Example dev_cwd_fails_only_the_off_dev_clause :
+  Fs.canonical_key Fs.dev_dir = true
+  /\ Fs.fs_lookup (Fs.standard_root Fs.default_cwd) Fs.dev_dir = Some Fs.EDir
+  /\ Nat.leb (length Fs.dev_dir + 1)%nat path_max = true
+  /\ outside_proc_sysb Fs.dev_dir = true
+  /\ cwd_off_rootb Fs.dev_dir = true
+  /\ cwd_off_devb Fs.dev_dir = false
+  /\ cwd_off_devb (rp [47;100;101;118;47;112;116;115]) = false
+  /\ cwd_off_devb (rp [47;100;101;118;105;99;101;115]) = true
+  /\ cwd_off_devb (rp [47;119;111;114;107;47;100;101;118]) = true
+  /\ cwd_off_devb Fs.default_cwd = true.
+Proof. split_conj; vm_compute; reflexivity. Qed.
 
 (** From /dev the operand "urandom" names the random device, which is
-    the case [Common.FileSim.operand_is_not_a_device] excludes by its
+    the launch [Run.cwd_off_devb] refuses and the case
+    [Common.FileSim.operand_is_not_a_device] excludes by its
     working-directory hypotheses; from the fixture's own working
     directory it does not. *)
 Example the_device_key_needs_the_dev_working_directory :
@@ -1136,13 +1197,17 @@ Example proc_cwd_walk_answers_from_the_image :
   = (Fs.RMissing proc_cwd (rp [115;101;108;102]), Fs.LastNorm, false).
 Proof. vm_compute. reflexivity. Qed.
 
-(** The same image at the ordinary working directory /work, and at the
-    root, is a valid image: folders named /proc and /sys in the image are
-    not what the clause refuses. *)
+(** The same image at the ordinary working directory /work is a valid
+    image: folders named /proc and /sys in the image are not what the
+    clause refuses.  At the root it is not, by [Run.cwd_off_rootb]. *)
 Example valid_image_admits_an_ordinary_cwd_beside_proc_and_sys :
   valid_image (proc_sys_input Fs.default_cwd)
-  /\ valid_image (proc_sys_input Fs.root).
-Proof. split; unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+  /\ ~ valid_image (proc_sys_input Fs.root).
+Proof.
+  split; [unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm|].
+  intros Hv. pose proof (valid_image_cwd_off_root _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
 
 (** The working directory /proc is not valid, and neither is /sys/kernel,
     below /sys. *)
@@ -1178,6 +1243,114 @@ Example proc_and_sys_cwds_fail_only_the_last_clause :
   /\ outside_proc_sysb (rp [47;112;114;111;99;115]) = true
   /\ outside_proc_sysb (rp [47;115;121;115;116;101;109]) = true
   /\ outside_proc_sysb (rp [47;119;111;114;107;47;112;114;111;99]) = true.
+Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(** THE LINK CLAUSES ([Run.links_off_proc_sysb],
+    [Run.links_off_devicesb]).  An open without O_NOFOLLOW that names a
+    starting link follows it, so a link can carry a fixed name, or an
+    argv operand, to /proc or /sys, where the walk declines, or to a
+    device.  [link_image ls] is [ns_image] with the links [ls] (key,
+    body) added; [link_input ls] stands at /work over it. *)
+Definition tmp_x : Fs.path := rp [47;116;109;112;47;120].               (* /tmp/x *)
+Definition tmp_y : Fs.path := rp [47;116;109;112;47;121].               (* /tmp/y *)
+Definition tmp_d : Fs.path := rp [47;116;109;112;47;100].               (* /tmp/d *)
+Definition tmp_u : Fs.path := rp [47;116;109;112;47;117].               (* /tmp/u *)
+
+(* "/tmp/a/../../dev/null" *)
+Definition dotdot_body : Fs.path :=
+  rp [47;116;109;112;47;97;47;46;46;47;46;46;47;100;101;118;47;110;117;108;108].
+
+Definition link_image (ls : list (Fs.path * Fs.path)) : Fs.Fs :=
+  fold_left (fun fs kb => Fs.fs_set fs (fst kb) (Fs.ELink (snd kb))) ls ns_image.
+
+Definition link_input (ls : list (Fs.path * Fs.path)) : ProcInput :=
+  mkProcInput_full [[]] [] (link_image ls) Fs.default_cwd IEof
+                   demo_uid demo_gid demo_groups net_silent
+                   default_nofile (Z_to_bv 64 0) demo_hwcap false
+                   Sv48 default_urandom default_kernel default_execfn
+                   true true false.
+
+(** A link /tmp/x -> /proc/self is not valid: its body names "proc". *)
+Example valid_image_refuses_a_link_into_proc :
+  ~ valid_image (link_input [(tmp_x, rp [47;112;114;111;99;47;115;101;108;102])]).
+Proof.
+  intros Hv. pose proof (valid_image_links_off_proc_sys _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** A link /tmp/x -> /dev/urandom is not valid: its walk ends at the
+    random device. *)
+Example valid_image_refuses_a_link_to_a_device :
+  ~ valid_image (link_input [(tmp_x, Fs.urandom_key)]).
+Proof.
+  intros Hv. pose proof (valid_image_links_off_devices _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** A chain /tmp/y -> /tmp/x -> /dev/null is not valid either, and the
+    head of the chain fails by itself: the walk from /tmp/y follows both
+    links to the device. *)
+Example valid_image_refuses_a_link_chain_to_a_device :
+  link_off_devicesb (link_image [(tmp_x, Fs.devnull_key); (tmp_y, tmp_x)]) tmp_y = false
+  /\ ~ valid_image (link_input [(tmp_x, Fs.devnull_key); (tmp_y, tmp_x)]).
+Proof.
+  split; [vm_compute; reflexivity|].
+  intros Hv. pose proof (valid_image_links_off_devices _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** A link to the FOLDER /dev, /tmp/d -> /dev, is not valid: through it
+    the fixed name /tmp/d/urandom is the random device. *)
+Example valid_image_refuses_a_link_into_dev :
+  link_off_devicesb (link_image [(tmp_d, Fs.dev_dir)]) tmp_d = false
+  /\ Fs.resolve ns_md (link_image [(tmp_d, Fs.dev_dir)]) Fs.root
+       (rp [47;116;109;112;47;100;47;117;114;97;110;100;111;109])
+     = (Fs.RFound Fs.urandom_key (Fs.EDev Fs.DevUrandom), Fs.LastNorm, false)
+  /\ ~ valid_image (link_input [(tmp_d, Fs.dev_dir)]).
+Proof.
+  split; [vm_compute; reflexivity|]. split; [vm_compute; reflexivity|].
+  intros Hv. pose proof (valid_image_links_off_devices _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** A body with ".." is refused although its walk at launch ends at no
+    device: /tmp/u -> /tmp/a/../../dev/null is absent at launch (/tmp/a
+    missing), and once the program makes /tmp/a ([Fs.fs_mkdir], what
+    [mkdirat] does) the same walk ends at /dev/null. *)
+Example valid_image_refuses_a_dotdot_link_body :
+  fst (fst (Fs.resolve ns_md (link_image [(tmp_u, dotdot_body)]) Fs.root tmp_u))
+    = Fs.RAbsent (rp [47;116;109;112;47;97])
+  /\ link_off_devicesb (link_image [(tmp_u, dotdot_body)]) tmp_u = true
+  /\ fst (fst (Fs.resolve ns_md
+                 (Fs.fs_mkdir (link_image [(tmp_u, dotdot_body)]) (rp [47;116;109;112;47;97]))
+                 Fs.root tmp_u))
+     = Fs.RFound Fs.devnull_key (Fs.EDev Fs.DevNull)
+  /\ link_body_off_dotdotb dotdot_body = false
+  /\ ~ valid_image (link_input [(tmp_u, dotdot_body)]).
+Proof.
+  split; [vm_compute; reflexivity|]. split; [vm_compute; reflexivity|].
+  split; [vm_compute; reflexivity|]. split; [vm_compute; reflexivity|].
+  intros Hv. pose proof (valid_image_links_off_devices _ Hv) as H.
+  vm_compute in H. discriminate.
+Qed.
+
+(** A link to an ordinary name is valid: /tmp/x -> /work/a, a name the
+    image does not hold, and /tmp/x -> /work/f, a regular file. *)
+Example valid_image_admits_a_link_to_an_ordinary_name :
+  valid_image (link_input [(tmp_x, rp [47;119;111;114;107;47;97])])
+  /\ valid_image (link_input [(tmp_x, rp [47;119;111;114;107;47;102])]).
+Proof. split; unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed.
+
+(** The two body tests read COMPONENTS, as the walk splits the body:
+    "sub/proc" and "/sys" fail the first, "/procs" passes it; "../a"
+    fails the second and "./a" passes it.  "sub/proc" and "../a" are
+    harmless links the clauses refuse all the same. *)
+Example link_body_tests_read_components :
+  link_body_off_proc_sysb (rp [115;117;98;47;112;114;111;99]) = false
+  /\ link_body_off_proc_sysb (rp [47;115;121;115]) = false
+  /\ link_body_off_proc_sysb (rp [47;112;114;111;99;115]) = true
+  /\ link_body_off_dotdotb (rp [46;46;47;97]) = false
+  /\ link_body_off_dotdotb (rp [46;47;97]) = true.
 Proof. split_conj; vm_compute; reflexivity. Qed.
 
 (** EVERY DEVICE THE IMAGE DECLARES IS INSIDE THE /dev SUBTREE
@@ -1216,7 +1389,7 @@ Example devices_in_dev_subtree_refuses_a_lookalike :
 Proof. vm_compute. reflexivity. Qed.
 
 (** FIVE. EVERY FOLDER ROW HOLDS COUNTS A KERNEL GIVES ([Fs.dir_rows_okb],
-    the last clause of [Run.valid_image]).  The image below is the
+    the tenth clause of [Run.valid_image]).  The image below is the
     standard root with an empty folder /work/d, and [dir_row_image r]
     gives it the folder rows [r].  On tmpfs and ramfs an empty folder
     has the count 2 ([inode_init_always_gfp], fs/inode.c:242, then
@@ -1242,7 +1415,7 @@ Definition dir_row_input (r : list (Fs.path * Fs.DirLinks)) : ProcInput :=
 Example valid_image_refuses_a_folder_row_below_the_tree :
   ~ valid_image (dir_row_input [(work_d, Fs.mkDirLinks 0 0)]).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  intros Hv. pose proof (valid_image_dir_rows _ Hv) as Hrows.
   vm_compute in Hrows. discriminate.
 Qed.
 
@@ -1264,7 +1437,7 @@ Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed
 Example valid_image_refuses_a_folder_row_above_the_tree_below_the_root :
   ~ valid_image (dir_row_input [(work_d, Fs.mkDirLinks 3 1)]).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  intros Hv. pose proof (valid_image_dir_rows _ Hv) as Hrows.
   vm_compute in Hrows. discriminate.
 Qed.
 
@@ -1306,7 +1479,7 @@ Proof. unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm. Qed
 Example valid_image_refuses_a_root_row_above_proc_and_sys :
   ~ valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 8 1)]).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  intros Hv. pose proof (valid_image_dir_rows _ Hv) as Hrows.
   vm_compute in Hrows. discriminate.
 Qed.
 
@@ -1317,7 +1490,7 @@ Qed.
 Example valid_image_refuses_a_root_row_without_proc_and_sys :
   ~ valid_image (dir_row_input [(Fs.root, Fs.mkDirLinks 5 1)]).
 Proof.
-  intros (_ & _ & _ & _ & _ & _ & _ & _ & _ & Hrows).
+  intros Hv. pose proof (valid_image_dir_rows _ Hv) as Hrows.
   vm_compute in Hrows. discriminate.
 Qed.
 
@@ -1639,6 +1812,19 @@ Example proc_self_fd_admits_procfs_enoent :
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
+(** ...AND NO -ELOOP.  The walk counts no link before "proc" at the
+    root, and procfs's own two, "self" ([proc_self_get_link],
+    fs/proc/self.c) and the fd's magic link, make four over the at most
+    two tries of one lookup, short of the 41st count [reserve_stack]
+    refuses (fs/namei.c:1878-1879; [Fs.Namei.walk_errnos]). *)
+Example proc_self_fd_admits_no_eloop :
+  check_syscall
+    (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0]
+       (at_8192 [47;112;114;111;99;47;115;101;108;102;47;102;100;47;51]%Z) (fun _ => None))
+    (with_copyins [(8192, 16%nat)] (mkEffect (errno_ret ELOOP) [] [])) procfd_model
+  = CheckReject.
+Proof. check_eq. Qed.
+
 (** /proc AND /sys AT THE ROOT ARE DECLINED BY THE ARM, whatever the
     answer offered: the walk's [Fs.ROutside], read through [openat]. *)
 Example proc_and_sys_at_the_root_are_unmodeled :
@@ -1710,9 +1896,10 @@ Qed.
 (** A DANGLING LINK AT /etc/localtime IS INSIDE THE CLAUSE: the walk
     follows it ([lookup_last]'s LOOKUP_FOLLOW, fs/namei.c:2647-2652) and
     ends where its body names nothing, so the clause holds and the input
-    is valid; an open of it is -ENOENT, with -ELOOP beside it because a
-    link was followed ([pick_link], :1927-1929).  A link to a FILE there
-    is outside the clause, as the file itself is. *)
+    is valid; an open of it is -ENOENT, and -ELOOP is refused: a walk of
+    one link counts at most two of the 41 [reserve_stack] needs
+    (:1878-1879, [Fs.Namei.walk_errnos]).  A link to a FILE there is
+    outside the clause, as the file itself is. *)
 Definition localtime_link_image (body : list Z) : Fs.Fs :=
   Fs.fs_set (Fs.fs_set (demo_fs []) etc_key Fs.EDir) localtime_path
     (Fs.ELink (rp body)).
@@ -1744,7 +1931,7 @@ Example a_dangling_localtime_link_opens_to_enoent :
        (fun _ => None))
     (with_copyins [(8192, 15%nat)] eff) m in
   open (mkEffect (errno_ret ENOENT) [] []) = CheckOk m []
-  /\ open (mkEffect (errno_ret ELOOP) [] []) = CheckOk m []
+  /\ open (mkEffect (errno_ret ELOOP) [] []) = CheckReject
   /\ open (mkEffect 3 [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
@@ -1789,24 +1976,24 @@ Definition ln_image : Fs.Fs :=
 Example wf_ln_image : Fs.wf_fsb ln_image = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The outcome and the follow flag of a walk over the fixture. *)
+(** The outcome and the follow count of a walk over the fixture. *)
 Definition ln (md : Fs.WalkMode) (p : list Z) : Fs.Resolved :=
   fst (fst (Fs.resolve md ln_image ns_cwd (rp p))).
-Definition ln_followed (p : list Z) : bool :=
-  Fs.wr_followed (Fs.resolve_res ns_md ln_image ns_cwd (rp p)).
+Definition ln_follows (p : list Z) : nat :=
+  Fs.wr_follows (Fs.resolve_res ns_md ln_image ns_cwd (rp p)).
 
 (** A LINK ON THE PATH RESOLVES TO WHAT IT NAMES: "l" to the file, and
-    the walk records that it followed one; unfollowed, "l" is the link
+    the walk counts the one link it followed; unfollowed, "l" is the link
     itself.  A body is read to its first NUL ([vfs_readlink]'s
     [strlen], fs/namei.c:5469), so "ln" names "f" too.  A plain file
     follows nothing. *)
 Example link_on_the_path_resolves_to_a_file :
   ln ns_md [108] = Fs.RFound (rp [47;119;111;114;107;47;102]) (Fs.EFile 1)
-  /\ ln_followed [108] = true
+  /\ ln_follows [108] = 1%nat
   /\ ln (Fs.WalkFull false false) [108]
      = Fs.RFound (rp [47;119;111;114;107;47;108]) (Fs.ELink (rp [102]))
   /\ ln ns_md [108;110] = Fs.RFound (rp [47;119;111;114;107;47;102]) (Fs.EFile 1)
-  /\ ln_followed [102] = false.
+  /\ ln_follows [102] = 0%nat.
 Proof. split_conj; vm_compute; reflexivity. Qed.
 
 (** A LINK TO A FOLDER IN THE MIDDLE is walked through, followed even
@@ -1861,13 +2048,13 @@ Proof. split; vm_compute; reflexivity. Qed.
 (** THE FOLLOW BUDGET.  A link to itself is -ELOOP on the 41st follow.
     A chain of 41 links ends -ELOOP and a chain of exactly 40 resolves:
     [total_link_count++ >= MAXSYMLINKS] refuses the 41st follow and no
-    earlier one.  The 40-chain's success is ADMITTED and not forced: it
-    followed links, so -ELOOP stands beside it (the count is not reset
-    when the kernel retries a walk, :2705-2709), which the arms read off
-    [Fs.wr_followed]. *)
+    earlier one.  The walk counts the refused one too ([Fs.wr_follows]
+    is 41 there), as [reserve_stack] raises the count before its test
+    (:1878). *)
 Definition chain_name (n : nat) : list Z := [99; Z.of_nat n].
 
-(** "cA" (65) -> "cB" -> ... -> "ci" (105) -> "f": 41 links. *)
+(** "cA" (65) -> "cB" -> ... -> "ci" (105) -> "f": 41 links, so the walk
+    from [chain_name n] follows [106 - n] of them. *)
 Definition chain_image : Fs.Fs :=
   fold_left (fun fs n => Fs.fs_set fs (Fs.child_key ns_cwd (rp (chain_name n)))
                               (Fs.ELink (rp (chain_name (S n)))))
@@ -1876,10 +2063,93 @@ Definition chain_image : Fs.Fs :=
 
 Example the_41st_follow_is_eloop :
   ln ns_md [111] = Fs.RLoop
-  (* 41 follows from "cA" *)
-  /\ fst (fst (Fs.resolve ns_md chain_image ns_cwd (rp (chain_name 65)))) = Fs.RLoop
-  (* 40 from "cB": the file, with the follow recorded *)
+  (* 41 follows from "cA", the refused one counted *)
+  /\ Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 65))
+     = Fs.mkWalkRes Fs.RLoop Fs.LastNorm false 41%nat false
+  (* 40 from "cB": the file, with the 40 follows counted *)
   /\ Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 66))
      = Fs.mkWalkRes (Fs.RFound (rp [47;119;111;114;107;47;102]) (Fs.EFile 1))
-         Fs.LastNorm false true false.
+         Fs.LastNorm false 40%nat false.
 Proof. split_conj; vm_compute; reflexivity. Qed.
+
+(* The [check_syscall] pins below read their numerals as words, as the
+   ones above PART 11 do. *)
+Close Scope Z_scope.
+
+(** -ELOOP STANDS BESIDE A WALK OF 21 LINKS AND NOT BESIDE ONE OF 20.
+    The count is set once per lookup ([__set_nameidata], :671), and
+    [do_filp_open] walks the name again on it after an RCU -ECHILD
+    (:4164-4167); on tmpfs and ramfs no -ESTALE third walk runs
+    ([Fs.Namei.walk_errnos]).  So a walk of n links counts at most 2n,
+    and only 2n >= 41 reaches the refusal: "cV" (86) follows 20 links
+    and its open refuses -ELOOP, "cU" (85) follows 21 and admits it
+    beside the file, and "cA" answers -ELOOP itself, with no descriptor
+    beside it. *)
+Definition chain_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input chain_image IEof).
+
+(** [openat(AT_FDCWD, chain_name n, O_RDONLY)] over the chain. *)
+Definition chain_open (n : nat) (eff : SyscallEffect) : check_result :=
+  check_syscall
+    (mkInput 56 [AT_FDCWD; 8192; 0; 0; 0; 0] (at_8192 (chain_name n)) (fun _ => None))
+    (with_copyins [(8192, 3%nat)] eff) chain_model.
+
+Example eloop_needs_a_walk_of_21_links :
+  Fs.wr_follows (Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 86))) = 20%nat
+  /\ walk_errnos Fs.LastNorm (Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 86)))
+     = [ENOMEM; EACCES]
+  /\ Fs.wr_follows (Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 85))) = 21%nat
+  /\ walk_errnos Fs.LastNorm (Fs.resolve_res ns_md chain_image ns_cwd (rp (chain_name 85)))
+     = [ENOMEM; EACCES; ELOOP]
+  /\ chain_open 86 (mkEffect (errno_ret ELOOP) [] []) = CheckReject
+  /\ chain_open 85 (mkEffect (errno_ret ELOOP) [] []) = CheckOk chain_model []
+  /\ chain_open 65 (mkEffect (errno_ret ELOOP) [] []) = CheckOk chain_model []
+  /\ chain_open 65 (mkEffect 3 [] []) = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** ...and the 20-link walk still opens the file the chain ends at. *)
+Example a_walk_of_20_links_opens_the_file :
+  chain_open 86 (mkEffect 3 [] [])
+  = CheckOk (with_fds (fd_insert (m_fds chain_model) 3 (FdFile 1 (Z_to_bv 64 0)))
+               chain_model) [].
+Proof. check_eq. Qed.
+
+(** THE ZLIB SEATS' /tmp (mgz-r9): a starting /tmp that is a link to a
+    folder, "/tmp -> /work/t", with a file "x" there.  [unlinkat] and
+    [openat] of "/tmp/x" follow that one link, not the last component
+    ([WALK_MORE], fs/namei.c:2516), so each counts one follow and
+    admits no -ELOOP, where the rule before OSSV-545 admitted it beside
+    every walk that followed a link: the unlink and the open are
+    answered, and -ELOOP is refused on both. *)
+Definition tmp_link_image : Fs.Fs :=
+  Fs.fs_set
+    (Fs.fs_create_file (Fs.fs_set ns_image (rp [47;119;111;114;107;47;116]%Z) Fs.EDir)
+       (rp [47;119;111;114;107;47;116;47;120]%Z) [Z_to_bv 8 67])
+    (rp [47;116;109;112]%Z) (Fs.ELink (rp [47;119;111;114;107;47;116]%Z)).
+
+Definition tmp_link_model : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input tmp_link_image IEof).
+
+(* "/tmp/x", NUL at 8192 + 6 *)
+Definition tmp_link_call (nr : word) (eff : SyscallEffect) : check_result :=
+  check_syscall
+    (mkInput nr [AT_FDCWD; 8192; 0; 0; 0; 0] (at_8192 [47;116;109;112;47;120]%Z) (fun _ => None))
+    (with_copyins [(8192, 7%nat)] eff) tmp_link_model.
+
+Example a_tmp_link_admits_no_eloop :
+  Fs.wf_fsb tmp_link_image = true
+  /\ Fs.wr_follows (Fs.resolve_res Fs.WalkParent tmp_link_image ns_cwd
+                     (rp [47;116;109;112;47;120]%Z)) = 1%nat
+  /\ Fs.wr_follows (Fs.resolve_res ns_md tmp_link_image ns_cwd
+                     (rp [47;116;109;112;47;120]%Z)) = 1%nat
+  /\ tmp_link_call 35 (mkEffect (errno_ret ELOOP) [] []) = CheckReject
+  /\ tmp_link_call 56 (mkEffect (errno_ret ELOOP) [] []) = CheckReject
+  /\ match tmp_link_call 35 (mkEffect 0 [] []) with
+     | CheckOk m [] =>
+         Fs.fs_lookup (m_fs m) (rp [47;119;111;114;107;47;116;47;120]%Z) = None
+     | _ => False
+     end
+  /\ tmp_link_call 56 (mkEffect 3 [] [])
+     = CheckOk (with_fds (fd_insert (m_fds tmp_link_model) 3 (FdFile 2 (Z_to_bv 64 0)))
+                  tmp_link_model) [].
+Proof. split_conj; [vm_compute; reflexivity .. | check_eq]. Qed.

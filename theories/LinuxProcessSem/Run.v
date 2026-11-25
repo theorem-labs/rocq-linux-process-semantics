@@ -4722,16 +4722,19 @@ Definition standard_root_premise (fs : Fs.Fs) : Prop :=
     question 1, with [standard_root_present]); what it costs is that the
     theorems are silent about an image with a device node outside /dev.
 
-    WHAT IT BUYS, and it is little.  No device entry sits outside /dev,
-    so a walk that ends at a device ends at a key under /dev; but an
-    argv operand resolved from a working directory outside /dev can
-    still REACH a device, through a link: the working folder may hold
-    "n -> /dev/null", both opens the examples make follow a last link
-    ([Sys.Fs.Open.open_walk_mode]), the walk restarts at the link's
-    start ([Fs.resolve]; [pick_link] jumps to the root for an absolute
-    body, fs/namei.c:1962-1970, Linux v6.18.46), and nothing in
-    [valid_image] excludes such a link.  So the clause does not keep a
-    whole-program example's operands away from the device arms.  Nor is
+    WHAT IT BUYS.  No device entry sits outside /dev, so a walk that ends
+    at a device ends at a key under /dev, and, with the working folder
+    outside /dev ([cwd_off_devb] below), only a LINK can put a device at
+    a fixed name or at an argv operand: the working folder may
+    hold "n -> /dev/null", both opens the examples make follow a last
+    link ([Sys.Fs.Open.open_walk_mode]), and the walk restarts at the
+    link's start ([Fs.resolve]; [pick_link] jumps to the root for an
+    absolute body, fs/namei.c:1962-1970, Linux v6.18.46).
+    [links_off_devicesb] below refuses such a starting link, and it
+    rests on this clause: it refuses a link that ends at a device or at
+    a folder of /dev, and a link to any other folder (the root aside)
+    leads to no device below it only because every device sits under
+    /dev.  Nor is
     it what keeps a device from being answered wrongly: a device node at
     any key is answered as at its own name
     ([Sys.Fs.Open.open_devnull], [Sys.Fs.Open.open_urandom]), and a stat
@@ -4872,6 +4875,186 @@ Definition localtime_absent (fs : Fs.Fs) : Prop := localtime_absentb fs = true.
 Definition outside_proc_sysb (k : Fs.path) : bool :=
   negb (Fs.in_proc_sys_subtree k).
 
+(** THE WORKING FOLDER IS NOT THE ROOT.
+
+    WHY THE CLAUSE IS NEEDED.  The walk answers "proc" and "sys" looked
+    up STANDING ON THE ROOT with [Fs.ROutside] ([Fs.at_outside]), and
+    every arm declines it; the one procfs pathname the model answers is
+    /proc/self/fd/N ([Sys.Fs.Open.openat_procfd_spec]).  An argv operand
+    is a plain name ([valid_argv]: no separator, not ".."), and a
+    relative pathname starts at the working folder ([Fs.resolve_start];
+    [path_init], fs/namei.c:2590-2604, Linux v6.18.46).  So with the
+    root as the working folder, argv[1] = "proc" is that lookup, and a
+    valid input reached the decline, where Linux, with procfs mounted
+    at /proc (SCOPE.md), opens procfs ([proc_root_lookup],
+    fs/proc/root.c:409-415, Linux v6.18.46).  An errno there would be a
+    false answer, and a decline an example reaches makes its theorem
+    false, so the launch is excluded instead.
+
+    IT IS A NARROWING: a process really can be started at "/", and the
+    theorems are silent about such a launch.  It states what the model
+    already assumed before the walk existed: that the working folder
+    holds only what the image holds, which "/", where /proc and /sys
+    are mounted, does not.
+
+    WHAT IT BUYS, WITH [links_off_proc_sysb] BELOW.  An argv operand's
+    first lookup is at a folder that is not the root, so [Fs.at_outside]
+    cannot fire on it, and a link it meets has no "proc" or "sys"
+    component to look up at the root.  A program's own pathname can
+    still reach [Fs.ROutside] ("/proc/self/status"): that is the
+    program's text, which no launch clause can exclude. *)
+Definition cwd_off_rootb (k : Fs.path) : bool :=
+  negb (Fs.path_eqb k Fs.root).
+
+(** NO LINK BODY HAS A COMPONENT "proc" OR "sys".
+
+    WHY THE CLAUSE IS NEEDED.  A starting link whose body leads to
+    /proc or /sys -- a file of /tmp linked to "/proc/self/fd/0" -- is
+    followed by an open that names the link ([Fs.resolve]; [pick_link]
+    jumps to the root for an absolute body, fs/namei.c:1962-1970, Linux
+    v6.18.46), and the walk then looks "proc" up at the root and
+    declines, where Linux opens procfs.  An [fopen] of the link's name
+    is such an open.
+
+    IT IS A TEST ON THE TEXT, NOT A WALK.  The body is read as the walk
+    reads it ([Fs.link_text], [Fs.path_split]), and the clause asks that
+    no component of it be "proc" or "sys".  A walk of the starting image
+    would not do: a later [mkdirat] or [unlinkat] by the program changes
+    where a body such as "a/../../proc" leads.  A body with no such
+    component cannot make any walk look "proc" or "sys" up at the root:
+    the walk's components come from the pathname and from the bodies it
+    follows, an argv operand is one name looked up at a working folder
+    that is not the root ([cwd_off_rootb]), and no arm makes a link.
+
+    IT REFUSES HARMLESS LINKS TOO: "x -> sub/proc" never reaches the
+    root, and an image holding it is refused all the same.  It is a
+    narrowing for that reason, and the price of a test that no program
+    action can defeat. *)
+Definition link_body_off_proc_sysb (b : Fs.path) : bool :=
+  forallb (fun c => negb (Fs.path_eqb c Fs.proc_comp || Fs.path_eqb c Fs.sys_comp))
+          (Fs.path_split (Fs.link_text b)).
+
+Definition links_off_proc_sysb (fs : Fs.Fs) : bool :=
+  forallb (fun ke => match snd ke with
+                     | Fs.ELink b => link_body_off_proc_sysb b
+                     | _ => true
+                     end) (Fs.fs_tree fs).
+
+(** NO STARTING LINK LEADS TO A DEVICE, OR INTO /dev.
+
+    WHY THE CLAUSE IS NEEDED.  OSSV-551's zlib seats found two roads.
+    A starting link "/tmp/minigzip_fuzzer.out -> /dev/urandom" makes
+    minigzip's compress loop read the random device forever, a hang
+    Linux shares; and its ".gz" name linked there makes an assert fire,
+    whose abort's [tkill] [valid_input] declines by design
+    ([in_abort_terminal] is [false]).  A link at argv[1]'s input file
+    reaches the same.  [devices_in_dev_subtreeb] keeps every device
+    ENTRY under /dev, so only a link can put a device at a fixed name
+    such as /tmp/minigzip_fuzzer.out.
+
+    WHAT IT ASKS, of every link key [k] of the image:
+    - the walk of [k] from the root, following links as an open without
+      O_NOFOLLOW does ([Fs.WalkFull true false]; [build_open_flags]
+      sets LOOKUP_FOLLOW, fs/open.c:1339-1340, Linux v6.18.46), ends at
+      no device, and at no folder that is /dev or lies under it
+      ([Fs.in_dev_subtree]): a link to a folder of /dev would lead a
+      fixed name such as /tmp/d/urandom to a device;
+    - the body has no ".." component.
+
+    WHY THE WALK OF THE STARTING IMAGE IS NOT ENOUGH ALONE.  No arm makes
+    a link or a device, but [mkdirat] makes folders, and a folder a body
+    passes through may exist only later: "/tmp/a/../../dev/null" is
+    absent at launch (/tmp/a missing) and reaches /dev/null once the
+    program makes /tmp/a.  So a body with ".." is refused outright, and
+    that refuses harmless links such as "x -> ../a" too.
+
+    WHY A BODY WITHOUT ".." THAT ENDS AT NO DEVICE AT LAUNCH ENDS AT NO
+    DEVICE LATER.  The arms that write the name tree are [mkdirat]
+    ([Fs.fs_mkdir]: an empty folder), the creating opens
+    ([Fs.fs_create_file]: a regular file) and [unlinkat]
+    ([Fs.fs_unlink_file], [Fs.fs_remove]: a name goes, and a device's
+    unlink is [unmodeled]); none makes a link or a device, and a folder
+    the program makes starts empty.  Without "..", a later walk of the
+    same text descends name by name and follows links.  Up to the first
+    name whose entry the program has changed it meets the entries the
+    launch walk met, and ends where that walk ended; from that name on,
+    every entry it meets is the program's own (a file, an empty folder
+    or a folder of the program's files and folders) or absent, and none
+    is a device or a link.  A launch walk that ended at a folder outside
+    /dev leaves a device reachable only through a further name the
+    program spells itself ("dev/urandom" after a link to "/"), which is
+    the program asking for the device by name.
+
+    IT IS A NARROWING, of images a launch can present; the theorems are
+    silent about a run started beside such a link. *)
+Definition link_body_off_dotdotb (b : Fs.path) : bool :=
+  forallb (fun c => negb (Fs.path_eqb c Fs.dotdot_comp))
+          (Fs.path_split (Fs.link_text b)).
+
+Definition link_off_devicesb (fs : Fs.Fs) (k : Fs.path) : bool :=
+  match Fs.resolve (Fs.WalkFull true false) fs Fs.root k with
+  | (Fs.RFound _ (Fs.EDev _), _, _) => false
+  | (Fs.RFound k' Fs.EDir, _, _) => negb (Fs.in_dev_subtree k')
+  | _ => true
+  end.
+
+Definition links_off_devicesb (fs : Fs.Fs) : bool :=
+  forallb (fun ke => match snd ke with
+                     | Fs.ELink b => link_body_off_dotdotb b && link_off_devicesb fs (fst ke)
+                     | _ => true
+                     end) (Fs.fs_tree fs).
+
+(** The two link clauses at one link key, from the image's tree. *)
+Lemma links_off_proc_sysb_at : forall fs k b,
+  links_off_proc_sysb fs = true -> Fs.fs_lookup fs k = Some (Fs.ELink b) ->
+  link_body_off_proc_sysb b = true.
+Proof.
+  intros fs k b Hb Hlk. unfold links_off_proc_sysb in Hb.
+  rewrite forallb_forall in Hb.
+  exact (Hb _ (Fs.fs_lookup_in fs k (Fs.ELink b) Hlk)).
+Qed.
+
+Lemma links_off_devicesb_at : forall fs k b,
+  links_off_devicesb fs = true -> Fs.fs_lookup fs k = Some (Fs.ELink b) ->
+  link_body_off_dotdotb b = true /\ link_off_devicesb fs k = true.
+Proof.
+  intros fs k b Hb Hlk. unfold links_off_devicesb in Hb.
+  rewrite forallb_forall in Hb.
+  pose proof (Hb _ (Fs.fs_lookup_in fs k (Fs.ELink b) Hlk)) as H.
+  cbn [fst snd] in H. now apply andb_true_iff in H.
+Qed.
+
+(** THE WORKING FOLDER IS NOT /dev, NOR A FOLDER UNDER IT.
+
+    WHY THE CLAUSE IS NEEDED.  It is [links_off_devicesb]'s own reason,
+    for the one road to a device that needs no link: an argv operand.
+    An operand is a plain name ([valid_argv]: no separator, not ".."),
+    and a relative pathname starts at the working folder
+    ([Fs.resolve_start]; [path_init], fs/namei.c:2590-2604, Linux
+    v6.18.46).  So from /dev the operand "urandom" is the random device,
+    and a harness that reads its input file by that operand reads the
+    device: the road [links_off_devicesb] closes for a starting link (a
+    compress loop that reads the random device for ever), with no link
+    on it.  OSSV-551's zlib round-trip agent found it (its finding F7).
+
+    WHAT IT BUYS, WITH THE TWO DEVICE CLAUSES ABOVE.
+    [devices_in_dev_subtreeb] keeps every device under /dev,
+    [links_off_devicesb] leaves no starting link that leads to a device
+    or into /dev, and an operand's child key lies outside /dev when the
+    working folder does and is not the root ([cwd_off_rootb]; the child
+    would have to BE /dev, which needs the root as its parent:
+    [Common.FileSim.operand_is_not_a_device]).  So no plain name a
+    harness takes from its input reaches a device; a device is reached
+    only through a pathname the program spells itself, such as
+    "/dev/urandom".  The test is [Fs.in_dev_subtree], decided component
+    by component, so "/devices" is an ordinary folder.
+
+    IT IS A NARROWING: a process can be started in /dev, and the
+    theorems are silent about such a launch.  Real launches do not start
+    there. *)
+Definition cwd_off_devb (k : Fs.path) : bool :=
+  negb (Fs.in_dev_subtree k).
+
 (** THE FILE-SYSTEM CLAUSES every validity variant carries, named once
     so the variants below say the same thing and a reader can see that
     they do.
@@ -4963,22 +5146,44 @@ Definition outside_proc_sysb (k : Fs.path) : bool :=
       first), and a row at a key that is no folder ([Fs.fs_mkdir] drops
       it before it makes a folder there).  So it refuses an image with a
       hidden row outside these counts, or with any row at a key that is
-      no folder, although no lookup reaches either.  It is the last
-      clause, after the size clause: a proof that names the first eight
-      clauses by position is unchanged, and one that took the size
-      clause as the last component now gets that clause and this one as
-      a pair.  A proof that wants it uses [valid_image_dir_rows] or
-      [valid_image_dir_links].
+      no folder, although no lookup reaches either.  It follows the
+      size clause: a proof that names the first eight clauses by
+      position is unchanged, and one that took the size clause as the
+      last component now gets that clause and the ones after it.  A
+      proof that wants it uses [valid_image_dir_rows] or
+      [valid_image_dir_links];
+    - the working directory is NOT THE ROOT ([cwd_off_rootb]), read back
+      by [valid_image_cwd_off_root] and [valid_image_cwd_not_root];
+    - no link body of the image has a component "proc" or "sys"
+      ([links_off_proc_sysb]), read back by
+      [valid_image_links_off_proc_sys];
+    - no link of the image leads to a device or into /dev, and no link
+      body has a ".." component ([links_off_devicesb]), read back by
+      [valid_image_links_off_devices];
+    - the working directory is NOT /dev NOR A FOLDER UNDER IT
+      ([cwd_off_devb]), read back by [valid_image_cwd_off_dev] and
+      [valid_image_cwd_outside_dev].
+    The last four follow the folder-row clause, in that order.  A proof
+    that names the first nine clauses by position is unchanged, and one
+    that took the folder-row clause as the last component now gets that
+    clause and the four after it.  Each definition above says why its
+    clause is needed.
 
-    THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER, "/" and /dev
-    included: a process really can be started there, and the walk
-    answers every pathname from it.  "proc" and "sys" looked up at "/"
-    are [Fs.ROutside], which every arm declines, and from a working
-    directory outside /proc and /sys that lookup is the only way a walk
-    enters either; a working directory INSIDE one would start its
-    relative walks there, where no lookup at "/" declines them, which is
-    why the working-directory clause keeps it out.  A name under /dev the image does
-    not hold is an ordinary absence, because the image describes /dev
+    THE WORKING DIRECTORY MAY BE ANY OTHER FOLDER: one that is not the
+    root and lies outside /proc, /sys and /dev.  A process really can
+    be started there, and the walk answers every pathname from it.
+    "proc" and "sys" looked up at "/" are [Fs.ROutside], which every
+    arm declines; from such a working directory a walk reaches that
+    lookup only through a pathname or a link body that names "proc" or
+    "sys", and [links_off_proc_sysb] leaves the program's own pathnames
+    as the only such text.  A working directory INSIDE /proc or /sys
+    would start its relative walks there, where no lookup at "/"
+    declines them, which is why the working-directory clause keeps it
+    out.  A device is the same: every device sits under /dev, no
+    starting link leads to one or into /dev, and the working directory
+    lies outside /dev, so only the program's own pathnames, such as
+    "/dev/urandom", reach one.  A name under /dev the image does not
+    hold is an ordinary absence, because the image describes /dev
     completely at launch.
 
     THESE ARE CLAUSES ON THE INPUT, NOT INVARIANTS OF THE RUN.
@@ -5001,7 +5206,11 @@ Definition valid_image (inp : ProcInput) : Prop :=
   /\ localtime_absent (in_fs inp)
   /\ outside_proc_sysb (in_cwd inp) = true
   /\ Fs.files_cappedb (in_fs inp) = true
-  /\ Fs.dir_rows_okb (in_fs inp) = true.
+  /\ Fs.dir_rows_okb (in_fs inp) = true
+  /\ cwd_off_rootb (in_cwd inp) = true
+  /\ links_off_proc_sysb (in_fs inp) = true
+  /\ links_off_devicesb (in_fs inp) = true
+  /\ cwd_off_devb (in_cwd inp) = true.
 
 (** The size clause, read back by name, and what it gives: every inode
     number's bytes within [Fs.MAX_LFS_FILESIZE]. *)
@@ -5040,6 +5249,62 @@ Lemma valid_image_dir_links : forall inp k,
   /\ Fs.dl_fixed (Fs.fs_dir_links (in_fs inp) k) = 1%nat.
 Proof.
   intros inp k Hv. exact (Fs.dir_rows_okb_links _ k (valid_image_dir_rows _ Hv)).
+Qed.
+
+(** The working-folder clause, read back by name, and what it gives:
+    the working folder is not the root, in the form the walk lemmas of
+    [Common.FileSim] take it. *)
+Lemma valid_image_cwd_off_root : forall inp,
+  valid_image inp -> cwd_off_rootb (in_cwd inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_image_cwd_not_root : forall inp,
+  valid_image inp -> Fs.path_eqb (in_cwd inp) Fs.root = false.
+Proof.
+  intros inp Hv. pose proof (valid_image_cwd_off_root _ Hv) as H.
+  unfold cwd_off_rootb in H.
+  destruct (Fs.path_eqb (in_cwd inp) Fs.root); cbn in H; [discriminate | reflexivity].
+Qed.
+
+(** The /proc and /sys link clause, read back by name. *)
+Lemma valid_image_links_off_proc_sys : forall inp,
+  valid_image inp -> links_off_proc_sysb (in_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The device link clause, read back by name. *)
+Lemma valid_image_links_off_devices : forall inp,
+  valid_image inp -> links_off_devicesb (in_fs inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+(** The /dev working-folder clause, read back by name, and what it
+    gives: the working folder lies outside /dev, in the form
+    [Common.FileSim.operand_is_not_a_device] takes it. *)
+Lemma valid_image_cwd_off_dev : forall inp,
+  valid_image inp -> cwd_off_devb (in_cwd inp) = true.
+Proof.
+  intros inp Hv. unfold valid_image in Hv.
+  repeat match goal with H : _ /\ _ |- _ => destruct H end.
+  assumption.
+Qed.
+
+Lemma valid_image_cwd_outside_dev : forall inp,
+  valid_image inp -> Fs.in_dev_subtree (in_cwd inp) = false.
+Proof.
+  intros inp Hv. pose proof (valid_image_cwd_off_dev _ Hv) as H.
+  unfold cwd_off_devb in H.
+  destruct (Fs.in_dev_subtree (in_cwd inp)); cbn in H; [discriminate | reflexivity].
 Qed.
 
 (** REFUTED: an image holding a file of 2^63 bytes or more.  However the
@@ -5132,10 +5397,11 @@ Definition sstep_preserves_wf : Prop :=
     well-formedness, [Fs.canonical_key] the working directory, a lookup
     the directory clause, [Fs.standard_root_presentb] the premise,
     [localtime_absentb] the /etc/localtime clause, [outside_proc_sysb]
-    the working-directory clause, [Fs.files_cappedb] the size clause and
-    [Fs.dir_rows_okb] the folder-row clause (closed booleans, so
-    [vm_compute] reads back only [true]).  A
-    fixture that is NOT valid fails here loudly. *)
+    the working-directory clause, [Fs.files_cappedb] the size clause,
+    [Fs.dir_rows_okb] the folder-row clause, and [cwd_off_rootb],
+    [links_off_proc_sysb], [links_off_devicesb] and [cwd_off_devb], the
+    four after it (closed booleans, so [vm_compute] reads back only
+    [true]).  A fixture that is NOT valid fails here loudly. *)
 Ltac valid_image_vm :=
   first [ apply Fs.wf_fsb_iff; vm_compute; reflexivity
         | apply Fs.standard_root_presentb_iff; vm_compute; reflexivity

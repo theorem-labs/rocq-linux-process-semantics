@@ -1584,26 +1584,24 @@ Example mkdirat_on_a_link_name_is_eexist :
   /\ ln_namei 34 [100; 97; 110; 103]%Z 493 (mkEffect 0 [] []) = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
-(** A WALK THAT FOLLOWED A LINK ADMITS -ELOOP, AND ONLY SUCH A WALK.
-    "l/x" goes to its parent through "l", which is not the last
-    component, so the walk follows it: [step_into]
-    (fs/namei.c:1984-2022, Linux v6.18.46) hands a link to [pick_link];
-    the body "f" is a file, and the walk stops on it with -ENOTDIR
-    (2529-2535).  [pick_link] answers -ELOOP for every link on a
-    [nosymfollow] mount (1927-1929), and the
-    model does not know the mount's flags, so -ELOOP stands beside the
-    -ENOTDIR, for [unlinkat] and for [mkdirat] alike, as do -ENOMEM and
-    [may_lookup]'s -EACCES (2466-2469).  "f/x" stops on the same file
-    with no link on the way: -ENOTDIR and -ENOMEM stand, and -ELOOP is
-    refused, since [pick_link] and [reserve_stack] (1876-1900) are
-    reached only through a link and the image holds no automount point
-    ([follow_automount] 1456-1457). *)
-Example unlinkat_walk_through_a_link_admits_eloop :
+(** A WALK THROUGH ONE LINK ADMITS NO -ELOOP.  "l/x" goes to its parent
+    through "l", which is not the last component, so the walk follows
+    it: [step_into] (fs/namei.c:1984-2022, Linux v6.18.46) hands a link
+    to [pick_link]; the body "f" is a file, and the walk stops on it
+    with -ENOTDIR (2529-2535), beside which stand -ENOMEM and
+    [may_lookup]'s -EACCES (2466-2469).  [reserve_stack] (1876-1900)
+    refuses only the 41st count of one lookup, and a walk of one link
+    counts at most two, one on each of its RCU and ref-walk tries
+    ([Fs.Namei.walk_errnos]), so -ELOOP is refused, for [unlinkat] and
+    for [mkdirat] alike; [pick_link]'s -ELOOP on a [nosymfollow] mount
+    (1927-1929) is outside SCOPE.md's launch premise.  "f/x" stops on
+    the same file with no link on the way, and refuses -ELOOP too. *)
+Example unlinkat_walk_through_one_link_admits_no_eloop :
   ln_namei 35 [108; 47; 120]%Z 0 (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk ns_links []
-  /\ ln_namei 35 [108; 47; 120]%Z 0 (mkEffect (errno_ret ELOOP) [] []) = CheckOk ns_links []
+  /\ ln_namei 35 [108; 47; 120]%Z 0 (mkEffect (errno_ret ELOOP) [] []) = CheckReject
   /\ ln_namei 35 [108; 47; 120]%Z 0 (mkEffect (errno_ret ENOMEM) [] []) = CheckOk ns_links []
   /\ ln_namei 35 [108; 47; 120]%Z 0 (mkEffect (errno_ret EACCES) [] []) = CheckOk ns_links []
-  /\ ln_namei 34 [108; 47; 120]%Z 493 (mkEffect (errno_ret ELOOP) [] []) = CheckOk ns_links []
+  /\ ln_namei 34 [108; 47; 120]%Z 493 (mkEffect (errno_ret ELOOP) [] []) = CheckReject
   /\ ln_namei 35 [102; 47; 120]%Z 0 (mkEffect (errno_ret ENOTDIR) [] []) = CheckOk ns_links []
   /\ ln_namei 35 [102; 47; 120]%Z 0 (mkEffect (errno_ret ENOMEM) [] []) = CheckOk ns_links []
   /\ ln_namei 35 [102; 47; 120]%Z 0 (mkEffect (errno_ret ELOOP) [] []) = CheckReject.

@@ -645,13 +645,26 @@ Definition bind_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
          [sock_alloc_file] gave it [socket_file_ops].  [unix_bind] and
          [inet6_bind] would parse and claim an address, none of which
          this model carries ([State.FdDgram] has no state).  Declined *)
+  | Some (FdChannel _) => unmodeled
+      (* A LAUNCH CHANNEL MAY BE A SOCKET: SCOPE.md lets the far end of
+         descriptors 1 and 2 be a TCP or an AF_UNIX stream socket,
+         where [sock_from_file] finds one and Linux runs the call, so
+         -ENOTSOCK would be a false answer.  The model does not know
+         which far end it holds.  Descriptor 0's far end is a pipe
+         (SCOPE.md), where -ENOTSOCK would be right; every channel
+         declines alike rather than the arm telling them apart, which
+         costs coverage only.  Declined, after the lookup's -EBADF,
+         the one check [__sys_bind] (net/socket.c:1896-1900, Linux
+         v6.18.46) makes before it looks at the file; every socket arm
+         declines a channel at the point it asks [sock_from_file]
+         ([sock_fd] says it once for the five calls that share it) *)
   | Some _ => err_ret ENOTSOCK
       (* AN OPEN FD THAT IS NOT A SOCKET, whatever kind it is.  This arm
          is a wildcard on purpose: [sock_from_file] is one comparison
          against [socket_file_ops] (step 1 above), so -ENOTSOCK is a
          property of the kernel's DISPATCH rather than of any
          enumeration of file kinds.  It is therefore the right answer for
-         every NON-SOCKET kind this model has — [FdChannel], [FdFile],
+         every NON-SOCKET kind this model has — [FdFile],
          [FdFileW], [FdFileA], [FdFileRW], [FdDir], [FdPipe], [FdDevNull],
          [FdUrandom] and [FdEventfd] — and for any non-socket
          kind a later change adds.  [FdPipe], [FdFileA] and [FdEventfd]
@@ -767,6 +780,10 @@ Definition listen_spec (fd backlog : word) : Sys SyscallEffect :=
          ([unix_dgram_ops], [inet6_dgram_ops]), so Linux answers
          -EOPNOTSUPP after [security_socket_listen]; the model declines
          every call on this kind that it does not need, and this is one *)
+  | Some (FdChannel _) => unmodeled
+      (* a channel may be a socket ([bind_spec]'s channel arm says why);
+         [__sys_listen] (net/socket.c:1938-1942, Linux v6.18.46) checks
+         only the lookup before it asks [sock_from_file] *)
   | Some _ => err_ret ENOTSOCK
   end.
 
@@ -911,6 +928,15 @@ Definition accept4_spec (fd addrp addrlenp flags : word) : Sys SyscallEffect :=
              after the same descriptor reservation and socket allocation
              whose errnos the [FdSocket] arm carries; declined, as every
              call on [State.FdDgram] the model does not need *)
+      | FdChannel _ => unmodeled
+          (* a channel may be a socket ([bind_spec]'s channel arm says
+             why).  [__sys_accept4_file] (net/socket.c:2019-2029, Linux
+             v6.18.46) tests the flags (above) and reserves the new
+             descriptor before it calls [do_accept], and only
+             [do_accept] (net/socket.c:1962-1964) asks [sock_from_file];
+             the reservation's errnos sit beside what a socket's accept
+             answers, which the model cannot tell apart, so the whole
+             call declines past the flags *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then unmodeled
                (* Linux v6.18.46 (commit 1f99e9ab748f), fs/file.c [alloc_fd]
@@ -1232,6 +1258,13 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
                   below: [unix_dgram_connect] and [inet_dgram_connect]
                   would set a peer this model does not carry
                   ([State.FdDgram] has no state).  Declined *)
+           | FdChannel _ => unmodeled
+               (* a channel may be a socket ([bind_spec]'s channel arm
+                  says why); [__sys_connect] (net/socket.c:2115-2122,
+                  Linux v6.18.46) copies the address before it calls
+                  [__sys_connect_file], and only [__sys_connect_file]
+                  (net/socket.c:2092-2096) asks [sock_from_file], so
+                  -EFAULT above stands and the rest declines *)
            | _ => err_ret ENOTSOCK               (* [sock_from_file], AFTER the copy *)
            end)
       end
@@ -1254,7 +1287,8 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     that is NOT a socket the answer still does not depend on the level,
     the optname, the option buffer, the address buffer, or [how].  That
     much is [sock_fd], and it is the whole of these five calls on a
-    channel, a file or a directory fd.
+    file or a directory fd.  A launch channel is not among them: its
+    far end may be a socket (SCOPE.md), so [sock_fd] declines it.
 
     ON A SOCKET THEY SHARE NOTHING, which is why there are five
     definitions below and not one.  The [FdEntry] arms are spelled out
@@ -1264,7 +1298,8 @@ Definition connect_spec (fd addrp addrlen : word) : Sys SyscallEffect :=
     that IS a socket.  [State.FdStream] was the first such constructor,
     and [State.FdDgram] the second; they are why the answer has FOUR
     shapes rather than two: an AF_INET socket's state, a stream-pair
-    end, an inert datagram socket, or the lookup's errno.
+    end, a descriptor every one of the five declines (an inert datagram
+    socket, or a channel), or the lookup's errno.
 
     -ENOTSOCK IS NOT A TOTAL ANSWER.  [socket_spec] (198) and
     [accept4_spec] (202/242) hand out socket fds, so only the [sock_fd]
@@ -1294,15 +1329,24 @@ Inductive SockOf :=
   | SoInet (sk : SockState)                       (* an AF_INET/SOCK_STREAM socket *)
   | SoPair (id : word) (side : bool) (st : StreamEnd)  (* an AF_UNIX stream-pair end *)
   | SoInert (family : Z)
-      (* an unconnected AF_INET6 or AF_UNIX datagram socket ([State.FdDgram]):
-         a socket, so never -ENOTSOCK, and declined by every spec below,
-         since the model carries none of the state these calls read *)
+      (* a descriptor every spec below declines past the lookup: an
+         unconnected AF_INET6 or AF_UNIX datagram socket ([State.FdDgram]),
+         a socket whose state these calls read and the model does not
+         carry, or a launch channel ([State.FdChannel]), whose far end
+         may be a socket; neither is -ENOTSOCK *)
   | SoErr (e : Z).                                (* the lookup's -EBADF or -ENOTSOCK *)
 
 Definition sock_fd (m : Model) (fd : word) : SockOf :=
   match fd_lookup (m_fds m) fd with
   | None                => SoErr EBADF   (* fd not open: real -EBADF, before any argument is examined *)
-  | Some (FdChannel _)  => SoErr ENOTSOCK    (* an external channel is not a socket *)
+  | Some (FdChannel _)  => SoInert 0
+      (* A LAUNCH CHANNEL MAY BE A SOCKET: SCOPE.md lets the far end of
+         descriptors 1 and 2 be a TCP or an AF_UNIX stream socket, and
+         there [sock_from_file] finds it and Linux runs the call, so
+         -ENOTSOCK would be a false answer.  Declined like a datagram
+         socket, past the lookup's -EBADF, on every channel ([bind_spec]'s
+         channel arm says why fd 0 too); family 0, AF_UNSPEC: the model
+         does not know the far end's *)
   | Some (FdFile _ _)   => SoErr ENOTSOCK
   | Some (FdFileW _ _)  => SoErr ENOTSOCK
   | Some (FdFileA _ _)  => SoErr ENOTSOCK
@@ -1589,7 +1633,7 @@ Definition getsockname_spec (fd : word) : Sys SyscallEffect :=
       stream_getname (in_arg i 1) (in_arg i 2) i
       (* an unbound AF_UNIX end: its address is fixed, so the export the
          AF_INET arm lacks is just two bytes and a length here *)
-  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram] or a channel: declined, see [SockOf] *)
   end.
 
 (** [getpeername fd addr addrlen] (205) — THE ONE CALL OF THE FIVE THAT
@@ -1655,7 +1699,7 @@ Definition getpeername_spec (fd : word) : Sys SyscallEffect :=
       stream_getname (in_arg i 1) (in_arg i 2) i
       (* the peer is unbound too, and found even after it closed: see
          [stream_getname] *)
-  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram] or a channel: declined, see [SockOf] *)
   end.
 
 (** [setsockopt fd level optname optval optlen] (208).  Two arms are
@@ -1714,7 +1758,7 @@ Definition setsockopt_spec (fd level optlen : word) : Sys SyscallEffect :=
            on a pair end, set because the address the client resolved is
            AF_INET; such a client may only log the failure and go on *)
       else i <- input ;; stream_setsockopt fd id side st (in_arg i 2) (in_arg i 3) optlen i m
-  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram] or a channel: declined, see [SockOf] *)
   end.
 
 (** [getsockopt fd level optname optval optlen] (209) — the same walk,
@@ -1875,7 +1919,7 @@ Definition getsockopt_spec (fd level optlenp : word) : Sys SyscallEffect :=
               [do_sock_getsockopt] answers -EOPNOTSUPP for every level
               but SOL_SOCKET *)
          else stream_getsockopt st (in_arg i 2) (in_arg i 3) optlenp i)
-  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram] or a channel: declined, see [SockOf] *)
   end.
 
 (** [shutdown fd how] (210).  Two real answers and a decline, and the
@@ -1981,7 +2025,7 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
       else stream_shutdown fd id side st how m
         (* the two bits [State.SockState] lacks are exactly what a
            [State.StreamEnd] carries, so this arm is answered *)
-  | SoInert _ => unmodeled             (* [State.FdDgram]: declined, see [SockOf] *)
+  | SoInert _ => unmodeled             (* [State.FdDgram] or a channel: declined, see [SockOf] *)
   end.
 
 (* =========================================================================
@@ -2047,7 +2091,7 @@ Definition shutdown_spec (fd how : word) : Sys SyscallEffect :=
 
    What it costs is coverage, and the cost is named: a send whose flags
    are 0 is [unmodeled] even for shapes Linux answers safely and without
-   any signal — -EBADF on a closed fd, -ENOTSOCK on stdout, -EFAULT on a
+   any signal — -EBADF on a closed fd, -ENOTSOCK on a regular file, -EFAULT on a
    bad range, and an ordinary successful send on a healthy connection.
    None is a shape a defensive reference program contains, and the last
    is not a real loss: [Equivalence.strong_universal_T] quantifies over
@@ -2585,9 +2629,10 @@ Definition send_on_socket (pre : list (word * nat)) (acc : nat -> list (word * n
     [access_ok] verdict, applied to the whole call rather than only to
     its zero-length case.
 
-    THEN THE FD: not open is -EBADF, open on anything but a socket is
-    -ENOTSOCK ([sock_from_file]).  Neither can carry a signal, so
-    neither needs the flag gate to have run — but it has, so a
+    THEN THE FD: not open is -EBADF, open on anything but a socket or a
+    launch channel is -ENOTSOCK ([sock_from_file]), and a channel, whose
+    far end may be a socket, declines.  Neither answer can carry a
+    signal, so neither needs the flag gate to have run — but it has, so a
     [flags = 0] call never reaches them.
 
     NOTHING IS RECORDED IN THE LEDGER BEFORE THE PAYLOAD, which is why
@@ -2654,6 +2699,9 @@ Definition sendto_spec (fd buf count flags addrp addrlen : word)
             [udpv6_sendmsg] each refuse the send, after flag tests this
             model does not carry; declined, as every call on
             [State.FdDgram] the model does not need *)
+     | Some (FdChannel _) => unmodeled
+         (* a channel may be a socket ([bind_spec]'s channel arm says
+            why); the buffer check above and the lookup's -EBADF stand *)
      | Some _ => err_ret ENOTSOCK                (* not a socket: real -ENOTSOCK *)
      end).
 
@@ -2761,7 +2809,10 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
      changes both answers. *)
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF
-  | Some (FdChannel _) | Some (FdFile _ _)
+  | Some (FdChannel _) => unmodeled
+      (* a channel may be a socket ([bind_spec]'s channel arm says why);
+         the lookup's -EBADF stands *)
+  | Some (FdFile _ _)
   | Some (FdFileW _ _) | Some (FdFileA _ _) | Some (FdFileRW _ _)
   | Some (FdDir _)
   | Some (FdPipe _ _)
@@ -2939,12 +2990,15 @@ Definition sendmsg_spec (fd msgp flags : word) : Sys SyscallEffect :=
     a new [State.FdEntry] constructor must not inherit an answer by
     default, so adding one is a compile error here rather than a silent
     -ENOTSOCK.  A SOCKET is [None]: these two entry points decline it,
-    for the reason [recvfrom_spec] gives. *)
+    for the reason [recvfrom_spec] gives, and so is a launch channel,
+    whose far end may be a socket. *)
 Definition sockfd_lookup_errno (fds : list (word * FdEntry)) (fd : word)
     : option Z :=
   match fd_lookup fds fd with
   | None => Some EBADF
-  | Some (FdChannel _) => Some ENOTSOCK
+  | Some (FdChannel _) => None
+      (* a channel may be a socket ([bind_spec]'s channel arm says why):
+         declined with the sockets *)
   | Some (FdFile _ _) => Some ENOTSOCK
   | Some (FdFileW _ _) => Some ENOTSOCK
   | Some (FdFileA _ _) => Some ENOTSOCK

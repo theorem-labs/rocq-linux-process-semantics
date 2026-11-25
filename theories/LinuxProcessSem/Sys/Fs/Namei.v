@@ -235,6 +235,12 @@ Definition unlinkat_errnos : list Z := [ENOMEM; EACCES; EPERM; EROFS; EOVERFLOW]
     being true when either premise is dropped. *)
 Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EROFS; EOVERFLOW; ENOSPC].
 
+(** THE FEWEST LINKS A WALK COUNTS BEFORE LINUX CAN ANSWER IT -ELOOP, on
+    a launch tree with no [nosymfollow] mount: the kernel walks a name
+    at most twice on one count, so twice the walk's count must pass
+    [Fs.link_max] ([walk_errnos] gives the argument). *)
+Definition eloop_follows : nat := 21%nat.
+
 (** THE REFUSALS THE PATH WALK ITSELF CAN GIVE, ahead of whatever answer
     the walk's outcome leads to.  Linux v6.18.46, fs/namei.c:
 
@@ -271,16 +277,38 @@ Definition mkdirat_errnos : list Z := [ENOMEM; EACCES; EROFS; EOVERFLOW; ENOSPC]
       -ENOMEM is no allocation of Linux's: it is an over-admission this
       list makes on purpose by standing -ENOMEM beside every walk, an
       answer Linux does not give, a priority-2 gap.
-    - -ELOOP beside every walk that followed a link ([Fs.wr_followed]):
-      a [nosymfollow] mount refuses every follow ([pick_link],
-      1927-1929), and the follow count is not reset when the kernel
-      repeats a walk after an RCU -ECHILD ([filename_lookup] 2705-2709,
-      [__filename_parentat] 2747-2751; [path_init] does not reset
-      [total_link_count]), so a chain of fewer than 40 links may still
-      reach [reserve_stack]'s limit (1878-1879).  A walk that ends
-      OUTSIDE the image admits it too: "/proc/self" is a link
-      ([proc_self_get_link], fs/proc/self.c) and an fd entry under it a
-      magic link, both followed through [pick_link].
+    - -ELOOP beside a walk that counted [eloop_follows] links or more
+      ([Fs.wr_follows]).  [reserve_stack] refuses a follow once
+      [nd->total_link_count] has reached MAXSYMLINKS (1878; 40 at
+      include/linux/namei.h:13).  The count is set once per lookup
+      ([__set_nameidata], 671) and [path_init] does not reset it
+      (2540-2560), while [filename_lookup] (2697-2716),
+      [__filename_parentat] (2736-2759) and [do_filp_open] (4157-4171)
+      walk the name again on the same nameidata after -ECHILD, and once
+      more after -ESTALE.  On tmpfs and ramfs that third walk never
+      runs: the walk's only -ESTALE sources are [complete_walk]'s
+      [d_weak_revalidate] (983-996), which needs
+      [DCACHE_OP_WEAK_REVALIDATE], and an open's -EOPENSTALE
+      (4147-4152).  tmpfs installs no dentry operations but
+      [shmem_ci_dentry_ops], [d_hash] and [d_compare] alone, for a
+      casefolded mount (mm/shmem.c:5031-5034, :5081); its folders look
+      up with [simple_lookup] (mm/shmem.c:5285; fs/libfs.c:69-82, which
+      answers NULL or -ENAMETOOLONG), and so do ramfs's
+      (fs/ramfs/inode.c:191-193); and [shmem_get_parent]'s -ESTALE
+      (mm/shmem.c:4447-4449) belongs to the NFS export path, not to a
+      walk.  So at most two walks run, the RCU one and the ref-walk one,
+      and each counts every link it follows: a walk of n links reaches
+      the refused 41st count only when 2n >= 41, that is n >= 21.
+      What the rule leaves out is [pick_link]'s -ELOOP for any follow
+      on a [nosymfollow] mount (1927-1929), one link included: SCOPE.md
+      assumes no mount the walk crosses carries that flag.  A walk that
+      ends OUTSIDE the image takes the same rule.  The one such walk an
+      arm answers, "/proc/self/fd/N" ([Fs.Open.proc_self_fd], read off
+      the raw pathname, so from the root), counts nothing before "proc";
+      procfs then follows "/proc/self" ([proc_self_get_link],
+      fs/proc/self.c) and the fd's magic link, two links on each of at
+      most two walks (the magic link lands on the descriptor's own file,
+      on tmpfs or ramfs), four in all, so it admits no -ELOOP.
     - -ENOENT beside every walk that ends OUTSIDE the image
       ([Fs.ROutside]): procfs answers it for a lookup that cannot
       allocate the inode it would hand back.  [proc_lookupfd_common]
@@ -314,9 +342,7 @@ Definition walk_errnos (lk : Fs.LastKind) (w : Fs.WalkRes) : list Z :=
   | Fs.LastRoot => [ENOMEM]
   | Fs.LastNorm | Fs.LastDot | Fs.LastDotDot => [ENOMEM; EACCES]
   end
-  ++ (if Fs.wr_followed w
-         || match Fs.wr_res w with Fs.ROutside => true | _ => false end
-      then [ELOOP] else [])
+  ++ (if Nat.leb eloop_follows (Fs.wr_follows w) then [ELOOP] else [])
   ++ (match Fs.wr_res w with Fs.ROutside => [ENOENT] | _ => [] end)
   ++ (if Fs.wr_long w then [ENAMETOOLONG] else []).
 

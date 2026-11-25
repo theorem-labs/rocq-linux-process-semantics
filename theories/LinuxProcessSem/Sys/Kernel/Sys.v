@@ -269,7 +269,8 @@ Definition gettid_spec : Sys SyscallEffect := set_tid_address_spec.
     off by default, so that half is usually moot anyway).  It is
     invisible HERE because of two commitments of this model
     — its channels are never terminals
-    ([Ioctl.ioctl_spec] answers TIOCGWINSZ -ENOTTY on every open fd) and
+    ([Ioctl.ioctl_spec] answers TIOCGWINSZ -ENOTTY on every open fd but
+    /dev/urandom, whose driver answers it -EINVAL) and
     it delivers no signals at all — so there is no controlling terminal
     to clear and no SIGTTIN to withhold.  Revisit this if either
     commitment is relaxed. *)

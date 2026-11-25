@@ -1360,8 +1360,10 @@ Definition openat_resolved_spec (p : path) (flags : word) (m : Model)
     What they DO admit beside their answer is the walk's own -EACCES and
     -ENOMEM ([Fs.Namei.walk_refusals], applied in [openat_core_spec];
     a "/proc/self/fd/N" pathname is walked by Linux like any other, so
-    it takes them too, and with them the -ELOOP and -ENOENT of a walk
-    that ends outside the image, [Fs.Namei.walk_errnos]).  The empty
+    it takes them too, and with them the -ENOENT of a walk that ends
+    outside the image, [Fs.Namei.walk_errnos], which admits no -ELOOP
+    there: the walk counts the two links of procfs's path on each of at
+    most two tries, short of the 41 [reserve_stack] refuses).  The empty
     pathname is answered before the walk and takes neither of the
     walk's, like the -ENAMETOOLONG and -EFAULT arms.  Every arm takes
     [getname_flags]' -ENOMEM, with the copy-in

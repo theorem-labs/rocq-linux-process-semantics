@@ -770,7 +770,7 @@ them. A proof says nothing about a program in such a case.
 | Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
-| Files | The file model is a tree of folders, regular files, symbolic links and the two devices `/dev/null` and `/dev/urandom`, and every pathname is walked by its full path from `/` or from the working folder (`Fs.resolve`). The walk follows symbolic links as Linux v6.18.46 does: 40 follows and then `-ELOOP`, every follow also admitting `-ELOOP`, `..` taken from the folder the walk stands on, and a trailing `/` forcing the follow; `openat`, `newfstatat`, `faccessat2` and `readlinkat` follow or not as their flags say, and `unlinkat`, `rmdir` and `mkdirat` act on the link itself. A regular file is an inode: two names of the image may hold one, its link count is its names (`Fs.fs_ino_nlink`), and `st_ino` and `st_dev` are chosen at the first stat of a file, a folder or a device node and then kept for it. A component over 255 bytes admits `-ENAMETOOLONG` beside the answer of a file system with a longer limit, which no supported kernel gives ("Known gaps in precision"). The model answers `getcwd`, `mkdirat` and `rmdir` (`unlinkat` with `AT_REMOVEDIR`). It declines: a pathname whose walk reaches `/proc` or `/sys` (except `/proc/self/fd/N`), through a symbolic link too; `rmdir` of the working folder, of an ancestor of it, or of a folder an open descriptor holds; `rename`, `linkat` and `symlinkat`. It has no file modes or permissions, and no FIFOs or sockets in the image. |
+| Files | The file model is a tree of folders, regular files, symbolic links and the two devices `/dev/null` and `/dev/urandom`, and every pathname is walked by its full path from `/` or from the working folder (`Fs.resolve`). The walk follows symbolic links as Linux v6.18.46 does: 40 follows and then `-ELOOP`, a walk of 21 links or more also admitting `-ELOOP`, `..` taken from the folder the walk stands on, and a trailing `/` forcing the follow; `openat`, `newfstatat`, `faccessat2` and `readlinkat` follow or not as their flags say, and `unlinkat`, `rmdir` and `mkdirat` act on the link itself. A regular file is an inode: two names of the image may hold one, its link count is its names (`Fs.fs_ino_nlink`), and `st_ino` and `st_dev` are chosen at the first stat of a file, a folder or a device node and then kept for it. A component over 255 bytes admits `-ENAMETOOLONG` beside the answer of a file system with a longer limit, which no supported kernel gives ("Known gaps in precision"). The model answers `getcwd`, `mkdirat` and `rmdir` (`unlinkat` with `AT_REMOVEDIR`). It declines: a pathname whose walk reaches `/proc` or `/sys` (except `/proc/self/fd/N`), through a symbolic link too; `rmdir` of the working folder, of an ancestor of it, or of a folder an open descriptor holds; `rename`, `linkat` and `symlinkat`. It has no file modes or permissions, and no FIFOs or sockets in the image. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 | The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |
 | Datagram sockets and eventfds | `socket(AF_INET6 or AF_UNIX, SOCK_DGRAM, 0)` gives a socket (`State.FdDgram`) on which the model answers `close`, `F_GETFL`, an empty `F_SETFL`, the terminal ioctls, `SIOCGIFINDEX` for `lo`, and the errnos of calls that stop before the socket (`-ESPIPE` from `pread64`, `pwrite64` and `lseek`, `-EINVAL` from `fsync` and `ftruncate`, `-ENOTDIR` from `getdents64`); every call that would read or change socket state, and every other protocol or flag of these two families, is `unmodeled`. An eventfd answers `read`, `write`, `select`/`poll`, `fcntl`, the terminal ioctls, `lseek` and `close`; a nonempty `readv` or `writev` on it is `unmodeled`. |
@@ -888,10 +888,24 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
-- The far end of descriptors 1 and 2 is a pipe, a TCP stream socket or
-  an AF_UNIX stream socket, open in blocking mode. These are the kinds
-  every arm the model gives an `FdChannel` holds for. The write arms
-  (`Sys/Fs/ReadWrite.v`) admit a short write of any nonempty readable
+- No mount of the launch tree carries `nosymfollow`, and neither does the
+  procfs at `/proc`. On such a mount `pick_link` refuses every follow with
+  `-ELOOP` (`fs/namei.c:1927-1929`, Linux v6.18.46), a single link
+  included, and the model admits `-ELOOP` only beside a walk that counted
+  21 links or more (`Sys.Fs.Namei.eloop_follows`): the kernel walks a name
+  at most twice on one `total_link_count` on tmpfs and ramfs, and refuses
+  only the 41st count (`reserve_stack`, `fs/namei.c:1878-1879`). The case
+  this excludes is a walk through one link (or up to 20) on a
+  `nosymfollow` mount, which Linux answers `-ELOOP` and the model refuses.
+- The far end of descriptors 0, 1 and 2 is a pipe, a TCP stream socket or
+  an AF_UNIX stream socket, open in blocking mode; descriptor 0's is a
+  pipe, since "Standard input and output" above puts a connected socket
+  there outside the model by its direction (a socket is open for both).
+  These are the kinds every arm the model gives an `FdChannel` holds for.
+  The read arms (`Sys/Fs/ReadWrite.v`) admit on descriptor 0 a short read
+  of any nonempty prefix of the input still to come, and 0 once it has
+  ended, and they never answer `-EAGAIN`. The write arms admit a short
+  write of any nonempty readable
   prefix, and an `-EFAULT` with nothing written only for a fault inside
   `ReadWrite.channel_first_copy_max` (36544 bytes), the largest first copy
   of those kinds ("Short writes to a channel" below), and they never
@@ -899,13 +913,16 @@ not apply.
   (`stream_open` clears the seek and positioned modes, `fs/open.c:1658`,
   Linux v6.18.46), `fsync` answers `-EINVAL` (none of them has an
   `.fsync`, `fs/sync.c:183-184`), and `ioctl` answers `-ENOTTY` to the
-  terminal requests. Every other far end is outside the model, so a run
-  whose descriptor 1 or 2 is one of them is outside what any statement
-  covers:
+  terminal requests. The socket calls decline on every channel: on
+  descriptors 1 and 2 `sock_from_file` may find a socket, where Linux
+  runs the call (`Sys/Net/Socket.v`, `bind_spec`). Every other far end is
+  outside the model, so a run whose descriptor 0, 1 or 2 is one of them
+  is outside what any statement covers:
   - a terminal: `ioctl` answers `TIOCGWINSZ` with 0 there
     (`drivers/tty/tty_io.c:2707-2708`), and `TCGETS` too, where the model
     answers `-ENOTTY` (`Sys/Fs/Ioctl.v` says so in its header);
-  - a regular file: it is opened seekable (`fs/open.c:961`), so `lseek`,
+  - a regular file (a shell's `< in` on descriptor 0, `> out` on 1): it
+    is opened seekable (`fs/open.c:961`), so `lseek`,
     `pread64` and `pwrite64` answer there, and tmpfs and ramfs give
     `fsync` a `noop_fsync` that answers 0 (`mm/shmem.c:5263`,
     `fs/ramfs/file-mmu.c:45`), where the model answers `-ESPIPE` and
@@ -920,9 +937,12 @@ not apply.
     (`net/unix/af_unix.c:2564`);
   - any other character device: its `write` may copy the whole count at
     once, or return it without reading a byte, as `/dev/null`'s
-    `write_null` does (`drivers/char/mem.c:418-422`);
-  - a far end in non-blocking mode: a full pipe, socket buffer or
-    terminal then answers `-EAGAIN`, which the write arms never give.
+    `write_null` does (`drivers/char/mem.c:418-422`), and on descriptor 0
+    `/dev/null` answers `lseek` through `null_lseek`
+    (`drivers/char/mem.c:561`, `:645`), where the model answers `-ESPIPE`;
+  - a far end in non-blocking mode: an empty pipe then answers a read
+    `-EAGAIN` (`pipe_read`, `fs/pipe.c:374-376`), and a full pipe, socket
+    buffer or terminal a write, which the read and write arms never give.
 - The launch leaves `RLIMIT_FSIZE` at `RLIM_INFINITY`, its initial value
   (`INIT_RLIMITS`, `include/asm-generic/resource.h:14`, Linux v6.18.46),
   and a run cannot lower it: the model answers `prlimit64` for
@@ -1055,6 +1075,48 @@ not apply.
   `fs/namei.c:2590-2604`), so from a working folder inside `/proc` the image
   would answer for procfs (`proc_root_lookup`, `fs/proc/root.c:409-415`). A
   process started in `/proc` or `/sys` is outside the statements.
+- The working folder is not `/` (`Run.cwd_off_rootb`, which `Run.valid_input`
+  requires). An argv operand is a plain name looked up first at the working
+  folder, and at `/` the operand `proc` or `sys` is the lookup the model
+  declines (`Fs.ROutside`), where Linux opens procfs. On main at e469081d a
+  run at `/` already broke the model's premise that "the working directory
+  holds only what the input's map holds" (`docs/faithfulness-audit.md:545`
+  at that commit) and got a wrong `-ENOENT`; the clause makes that
+  assumption formal. A process started at `/` is outside the statements
+  (`bugs/valid-image-refuses-root-cwd-and-links-to-proc-or-devices.md`).
+- No symbolic link of the image has a body with a component `proc` or `sys`
+  (`Run.links_off_proc_sysb`). A starting link such as `/tmp/x ->
+  /proc/self/fd/0` is followed by an open that names it, and the walk then
+  declines at `proc`, where Linux opens procfs. The test reads the body's
+  text, not a walk, because a folder the program makes or removes later
+  can change where a body such as `a/../../proc` leads; so it also refuses
+  a harmless `x -> sub/proc`.
+- No symbolic link of the image leads to a device or into `/dev`, and no
+  link body has a `..` component (`Run.links_off_devicesb`). OSSV-551's zlib
+  seats found that a starting `/tmp/minigzip_fuzzer.out -> /dev/urandom`
+  makes minigzip's compress loop run forever, as on Linux, and that its
+  `.gz` name linked there makes an assert fire, whose abort `Run.valid_input`
+  declines (`State.in_abort_terminal` is pinned off); a link at argv[1]'s
+  input file reaches the same. A link to a folder of `/dev` would lead a
+  fixed name such as `/tmp/d/urandom` to a device. A body with `..` is
+  refused, harmless ones such as `x -> ../a` included, because a folder the
+  program makes later can change where it leads (`/tmp/a/../../dev/null`
+  reaches `/dev/null` once the program makes `/tmp/a`); a body without `..`
+  that leads to no device at launch leads to none later, since no arm makes
+  a link or a device.
+- The working folder is not `/dev` nor a folder under it
+  (`Run.cwd_off_devb`, which `Run.valid_input` requires). It is the device
+  link clause's own reason, for the road with no link on it: an argv operand
+  is a plain name looked up first at the working folder, so from `/dev` the
+  operand `urandom` is the random device. Every device sits under `/dev`
+  (`Run.devices_in_dev_subtreeb`), no starting link leads to one or into
+  `/dev`, and an operand has no `/`, so from a working folder outside `/dev`
+  no plain name a harness takes from its input reaches a device; a device
+  is reached only by a pathname in the program's own text, such as
+  `/dev/urandom`. OSSV-551's zlib round-trip agent found this road (its
+  finding F7). Real launches do not start inside `/dev`; a process started
+  there is outside the statements
+  (`bugs/valid-image-refuses-root-cwd-and-links-to-proc-or-devices.md`).
 - The launch file system is one tree, with no bind mount inside it, of a
   folder or of a regular file. So a folder has one name and `..` of a
   folder is the folder whose key is its key's parent, after a symbolic

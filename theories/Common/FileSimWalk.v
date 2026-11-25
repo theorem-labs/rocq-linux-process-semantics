@@ -5,10 +5,11 @@
     Image-INDEPENDENT.
 
     [FileSim]'s open nodes each take one resolution of the pathname and,
-    for a descriptor, a walk that followed no link and handed no name over
-    [Fs.name_max] to a lookup ([FileSim.open_walk_plain]).  A program that
-    opens a name it was handed meets every resolution: a symbolic link at
-    the name (-ELOOP beside the answer, [Namei.walk_errnos]), a name over
+    for a descriptor, a walk that counted fewer than 21 links and handed
+    no name over [Fs.name_max] to a lookup ([FileSim.open_walk_plain]).
+    A program that opens a name it was handed meets every resolution: a
+    symbolic link at the name (-ELOOP beside the answer once the walk
+    has counted 21 links, [Namei.walk_errnos]), a name over
     [Fs.name_max] (-ENAMETOOLONG beside it), a folder, /dev/null and
     /dev/urandom.  This file gives:
 
@@ -469,8 +470,8 @@ Qed.
     ([open_answered]).  Then every outcome is an error-encoded return
     with the model unchanged -- [open_arm]'s own errno, one of
     [Open.openat_errnos] beside a descriptor, or one of the walk's
-    refusals ([Namei.walk_errnos]: -ELOOP after a followed link,
-    -ENAMETOOLONG after a long name) -- or, when [open_arm] gives an
+    refusals ([Namei.walk_errnos]: -ELOOP after a walk of 21 links or
+    more, -ENAMETOOLONG after a long name) -- or, when [open_arm] gives an
     entry, the lowest free descriptor on it. *)
 Lemma tfo_open_signed_rec : forall regs pc mem model p (rd : bool)
     (Uf Us U : (word * Fs.Fs) -> Prop),

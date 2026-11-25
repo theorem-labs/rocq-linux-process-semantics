@@ -1087,9 +1087,10 @@ Definition st_links : Model :=
     with [st_size] the body's length ([generic_fillattr]'s mode and size,
     fs/stat.c:90 and :95, on the link's own inode, whose [i_size] tmpfs
     sets to the body's length, mm/shmem.c:4140, :4158).  Without the
-    flag it is the file the link names, and -ELOOP stands beside that
-    answer because a link was followed ([pick_link], fs/namei.c:1927-1929);
-    beside the unfollowed one it is refused. *)
+    flag it is the file the link names; -ELOOP is refused beside that
+    answer, since a walk of one link counts at most two of the 41
+    [reserve_stack] needs (fs/namei.c:1878-1879;
+    [Fs.Namei.walk_errnos]), and beside the unfollowed one too. *)
 Example newfstatat_nofollow_on_a_link_is_the_link :
   st_ok (st_seq [st_stat [108]%Z AT_SYMLINK_NOFOLLOW
                    (stat_of_nl 4800 (S_IFLNK + 511)%Z 1 1 0 1700000000)] st_links)
@@ -1103,7 +1104,7 @@ Example newfstatat_nofollow_on_a_link_is_the_link :
   /\ st_seq [st_stat [108]%Z 0 (stat_of_nl 4800 (S_IFLNK + 511)%Z 1 1 0 1700000000)] st_links
      = CheckReject
   /\ st_seq [st_stat_eff [108]%Z 0 (mkEffect (errno_ret ELOOP) [] [])] st_links
-     = CheckOk st_links [].
+     = CheckReject.
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
 
 (** "f" (inode 1) and "g", a second name of the same inode. *)

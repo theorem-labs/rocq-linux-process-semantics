@@ -2158,15 +2158,13 @@ Definition mode_dir (md : WalkMode) : bool :=
     the last component it walked (a followed body's last name included),
     and two facts the arms turn into ADMITTED errnos beside the outcome:
 
-    - [wr_followed]: a link was followed.  Every follow also admits
-      -ELOOP: a [nosymfollow] mount refuses it ([pick_link],
-      fs/namei.c:1927-1929), and the link count is not reset when the
-      kernel repeats a walk after an RCU -ECHILD ([filename_lookup]
-      :2705-2709, [__filename_parentat] :2747-2751; [path_init] does not
-      reset [total_link_count]: [__set_nameidata] sets it before the
-      first try (:671), and [restore_nameidata] hands a nested walk's
-      count back to the walk around it (:693), after both tries), so a
-      chain of 40 or fewer may still meet the limit.
+    - [wr_follows]: the links the walk counted, as one pass of the
+      kernel's walk counts them in [nd->total_link_count]
+      ([reserve_stack], fs/namei.c:1878): one for each link followed,
+      and for [RLoop] the refused one too, since the count is raised
+      before the test.  The arms admit -ELOOP beside a walk that
+      counted 21 or more, because the kernel can walk a name twice on
+      one count ([Fs.Namei.walk_errnos] gives the argument).
     - [wr_long]: a component over [name_max] was handed to a file
       system's [->lookup] (see [comp_too_long]): -ENAMETOOLONG is
       admitted beside the answer a larger limit would give, which no
@@ -2175,7 +2173,7 @@ Record WalkRes := mkWalkRes {
   wr_res : Resolved;
   wr_kind : LastKind;
   wr_slash : bool;
-  wr_followed : bool;
+  wr_follows : nat;
   wr_long : bool
 }.
 
@@ -2202,13 +2200,14 @@ Definition FollowK : Type :=
     still to walk, a followed body's spliced in front ([nd->stack],
     :2515, :2525-2526); [f] and [d] are [LOOKUP_FOLLOW] and
     [LOOKUP_DIRECTORY], which stay set once set (:2650, :3831); [lk] and
-    [ts] the last component's type and separator so far; [fd] and [lg]
-    the two admitted facts of [WalkRes].
+    [ts] the last component's type and separator so far; [fd] the links
+    counted so far and [lg] the -ENAMETOOLONG fact, the two admitted
+    facts of [WalkRes].
 
     The rules, each in the order the kernel applies them, are stated
     once more as the relations [walk_step] and [walk_end] below, and
     [walk_from_spec] proves the two agree. *)
-Fixpoint walk_comps (fs : Fs) (md : WalkMode) (fd : bool) (next : option FollowK)
+Fixpoint walk_comps (fs : Fs) (md : WalkMode) (fd : nat) (next : option FollowK)
     (f d : bool) (k : path) (e : Entry) (cs : list path)
     (lk : LastKind) (ts lg : bool) : WalkRes :=
   match cs with
@@ -2261,7 +2260,7 @@ Fixpoint walk_comps (fs : Fs) (md : WalkMode) (fd : bool) (next : option FollowK
                         if negb (comps_done r) || (f || last_slash r) then
                           match next with
                           | None =>
-                              mkWalkRes RLoop (upd_kind r c lk) (upd_slash r ts) true
+                              mkWalkRes RLoop (upd_kind r c lk) (upd_slash r ts) (S fd)
                                 (lg || comp_too_long c)
                           | Some go =>
                               match fs_lookup fs (link_start k b) with
@@ -2271,7 +2270,7 @@ Fixpoint walk_comps (fs : Fs) (md : WalkMode) (fd : bool) (next : option FollowK
                                     (upd_kind r c lk) (upd_slash r ts) (lg || comp_too_long c)
                               | None =>
                                   mkWalkRes (RAbsent (link_start k b)) (upd_kind r c lk)
-                                    (upd_slash r ts) true (lg || comp_too_long c)
+                                    (upd_slash r ts) (S fd) (lg || comp_too_long c)
                               end
                           end
                         else
@@ -2290,16 +2289,16 @@ Fixpoint walk_comps (fs : Fs) (md : WalkMode) (fd : bool) (next : option FollowK
 
 (** THE ONE WALK.  Structural on the follow budget [n]; between two
     follows, structural on the pieces ([walk_comps]).  A followed link
-    spends one unit of [n] and continues with [fd] set; with [n] spent,
+    spends one unit of [n] and adds one to [fd]; with [n] spent,
     the next link to follow is [RLoop].  [vm_compute] evaluates it on a
     concrete image. *)
 Fixpoint walk (fs : Fs) (md : WalkMode) (n : nat) (f d : bool)
     (k : path) (e : Entry) (cs : list path) (lk : LastKind)
-    (ts fd lg : bool) {struct n} : WalkRes :=
+    (ts : bool) (fd : nat) (lg : bool) {struct n} : WalkRes :=
   walk_comps fs md fd
     (match n with
      | O => None
-     | S n' => Some (fun f d k e cs lk ts lg => walk fs md n' f d k e cs lk ts true lg)
+     | S n' => Some (fun f d k e cs lk ts lg => walk fs md n' f d k e cs lk ts (S fd) lg)
      end)
     f d k e cs lk ts lg.
 
@@ -2311,8 +2310,8 @@ Definition walk_from (fs : Fs) (md : WalkMode) (n : nat) (s p : path) : WalkRes 
   match fs_lookup fs s with
   | Some e =>
       walk fs md n (mode_follow md) (mode_dir md) s e (path_split p)
-        LastRoot false false false
-  | None => mkWalkRes (RAbsent s) LastRoot false false false
+        LastRoot false 0 false
+  | None => mkWalkRes (RAbsent s) LastRoot false 0 false
   end.
 
 (** Where a pathname starts: the root if it is absolute ([path_init]
@@ -2478,7 +2477,8 @@ Qed.
     ([MAXSYMLINKS] minus [nd->total_link_count], :1878), the
     [LOOKUP_FOLLOW] and [LOOKUP_DIRECTORY] bits (set at :2650 and :3831
     and never cleared during a walk), the type and separator of the last
-    component walked, and the two admitted facts of [WalkRes]. *)
+    component walked, the links counted so far and the -ENAMETOOLONG
+    fact of [WalkRes]. *)
 Record WSt := mkWSt {
   st_cur : path;
   st_rest : list path;
@@ -2487,13 +2487,13 @@ Record WSt := mkWSt {
   st_dir : bool;
   st_kind : LastKind;
   st_slash : bool;
-  st_followed : bool;
+  st_follows : nat;
   st_long : bool
 }.
 
 (** The walk of [p] from [s] before its first step. *)
 Definition walk_init (md : WalkMode) (n : nat) (s p : path) : WSt :=
-  mkWSt s (path_split p) n (mode_follow md) (mode_dir md) LastRoot false false false.
+  mkWSt s (path_split p) n (mode_follow md) (mode_dir md) LastRoot false 0 false.
 
 (** ONE STEP of [link_path_walk] or [lookup_last] that leaves the walk
     going.  Linux v6.18.46, fs/namei.c. *)
@@ -2561,7 +2561,7 @@ Inductive walk_step (fs : Fs) (md : WalkMode) : WSt -> WSt -> Prop :=
       walk_step fs md (mkWSt k (c :: r) (S n) f d lk ts fd lg)
         (mkWSt (link_start k b) (path_split (link_text b) ++ r) n
            (f || last_slash r) (d || last_slash r)
-           (upd_kind r c lk) (upd_slash r ts) true (lg || comp_too_long c)).
+           (upd_kind r c lk) (upd_slash r ts) (S fd) (lg || comp_too_long c)).
 
 (** HOW A WALK ENDS.  Linux v6.18.46, fs/namei.c. *)
 Inductive walk_end (fs : Fs) (md : WalkMode) : WSt -> WalkRes -> Prop :=
@@ -2653,7 +2653,7 @@ Inductive walk_end (fs : Fs) (md : WalkMode) : WSt -> WalkRes -> Prop :=
       fs_lookup fs (child_key k c) = Some (ELink b) ->
       (negb (comps_done r) || (f || last_slash r)) = true ->
       walk_end fs md (mkWSt k (c :: r) 0 f d lk ts fd lg)
-        (mkWalkRes RLoop (upd_kind r c lk) (upd_slash r ts) true (lg || comp_too_long c)).
+        (mkWalkRes RLoop (upd_kind r c lk) (upd_slash r ts) (S fd) (lg || comp_too_long c)).
 
 (** A WALK FROM A STATE TO ITS ANSWER: steps, then an end. *)
 Inductive walk_runs (fs : Fs) (md : WalkMode) : WSt -> WalkRes -> Prop :=
@@ -2669,36 +2669,36 @@ Proof.
   destruct (path_eqb c dotdot_comp); discriminate.
 Qed.
 
-(** The follow continuation of budget [n], named so a proof can carry
-    it. *)
-Definition walk_next (fs : Fs) (md : WalkMode) (n : nat) : option FollowK :=
+(** The follow continuation of budget [n] after [fd] counted links,
+    named so a proof can carry it. *)
+Definition walk_next (fs : Fs) (md : WalkMode) (n fd : nat) : option FollowK :=
   match n with
   | O => None
-  | S n' => Some (fun f d k e cs lk ts lg => walk fs md n' f d k e cs lk ts true lg)
+  | S n' => Some (fun f d k e cs lk ts lg => walk fs md n' f d k e cs lk ts (S fd) lg)
   end.
 
 Lemma walk_unfold : forall fs md n f d k e cs lk ts fd lg,
   walk fs md n f d k e cs lk ts fd lg
-  = walk_comps fs md fd (walk_next fs md n) f d k e cs lk ts lg.
+  = walk_comps fs md fd (walk_next fs md n fd) f d k e cs lk ts lg.
 Proof. intros. destruct n; reflexivity. Qed.
 
 (** What the function answers from a state, given the entry under it. *)
 Definition run_fn (fs : Fs) (md : WalkMode) (s : WSt) (e : Entry) : WalkRes :=
-  walk_comps fs md (st_followed s) (walk_next fs md (st_budget s)) (st_follow s)
+  walk_comps fs md (st_follows s) (walk_next fs md (st_budget s) (st_follows s)) (st_follow s)
     (st_dir s) (st_cur s) e (st_rest s) (st_kind s) (st_slash s) (st_long s).
 
 (** The continuation's contract, as the soundness induction carries it. *)
-Definition next_runs (fs : Fs) (md : WalkMode) (n : nat) (next : option FollowK) : Prop :=
+Definition next_runs (fs : Fs) (md : WalkMode) (n fd : nat) (next : option FollowK) : Prop :=
   match n with
   | O => next = None
   | S n' => exists go, next = Some go /\
       forall f d k e cs lk ts lg, fs_lookup fs k = Some e ->
-        walk_runs fs md (mkWSt k cs n' f d lk ts true lg) (go f d k e cs lk ts lg)
+        walk_runs fs md (mkWSt k cs n' f d lk ts (S fd) lg) (go f d k e cs lk ts lg)
   end.
 
 (** SOUNDNESS, one string of pieces: every answer of [walk_comps] is
     derived by the rules. *)
-Lemma walk_comps_runs : forall fs md fd n next, next_runs fs md n next ->
+Lemma walk_comps_runs : forall fs md fd n next, next_runs fs md n fd next ->
   forall cs f d k e lk ts lg, fs_lookup fs k = Some e ->
   walk_runs fs md (mkWSt k cs n f d lk ts fd lg)
     (walk_comps fs md fd next f d k e cs lk ts lg).
@@ -2774,10 +2774,10 @@ Qed.
 (** A walk standing on a key the image does not hold ends there. *)
 Lemma walk_runs_absent : forall fs md s w,
   fs_lookup fs (st_cur s) = None -> walk_runs fs md s w ->
-  w = mkWalkRes (RAbsent (st_cur s)) (st_kind s) (st_slash s) (st_followed s) (st_long s).
+  w = mkWalkRes (RAbsent (st_cur s)) (st_kind s) (st_slash s) (st_follows s) (st_long s).
 Proof.
   intros fs md s w Hs H. destruct H as [s w He | s s' w Hst _].
-  - destruct He; cbn [st_cur st_kind st_slash st_followed st_long] in *;
+  - destruct He; cbn [st_cur st_kind st_slash st_follows st_long] in *;
       congruence.
   - exfalso. destruct Hst; cbn [st_cur] in Hs; congruence.
 Qed.
@@ -2789,12 +2789,12 @@ Lemma walk_step_fn : forall fs md s s', walk_step fs md s s' ->
   = match fs_lookup fs (st_cur s') with
     | Some e' => run_fn fs md s' e'
     | None => mkWalkRes (RAbsent (st_cur s')) (st_kind s') (st_slash s')
-                (st_followed s') (st_long s')
+                (st_follows s') (st_long s')
     end.
 Proof.
   intros fs md s s' H. destruct H; intros e0 Hk; unfold run_fn;
     cbn [st_budget st_follow st_dir st_cur st_rest st_kind st_slash
-         st_followed st_long] in *;
+         st_follows st_long] in *;
     cbn [walk_comps].
   - rewrite H, H0. cbn [negb]. assert (e0 = e) by congruence. subst. reflexivity.
   - assert (e0 = EDir) by congruence. subst e0.
@@ -2819,7 +2819,7 @@ Proof.
   intros fs md s w H. induction H as [s w He | s s' w Hst Hrun IH]; intros e0 Hk.
   - destruct He; unfold run_fn;
       cbn [st_budget st_follow st_dir st_cur st_rest st_kind st_slash
-           st_followed st_long] in *;
+           st_follows st_long] in *;
       cbn [walk_comps].
     + congruence.
     + assert (e0 = e) by congruence. subst e0. rewrite H0.
@@ -3632,7 +3632,7 @@ Lemma resolve_devnull : forall md fs cwd,
 Proof.
   intros md fs cwd Hp Hd Hr Hdev Hn.
   rewrite (resolve_of_runs md fs cwd devnull_key
-             (mkWalkRes (RFound devnull_key (EDev DevNull)) LastNorm false false false));
+             (mkWalkRes (RFound devnull_key (EDev DevNull)) LastNorm false 0 false));
     [reflexivity|].
   change (resolve_start cwd devnull_key) with root. unfold walk_init.
   rewrite split_devnull.
@@ -3660,7 +3660,7 @@ Lemma resolve_urandom : forall md fs cwd,
 Proof.
   intros md fs cwd Hp Hd Hr Hdev Hn.
   rewrite (resolve_of_runs md fs cwd urandom_key
-             (mkWalkRes (RFound urandom_key (EDev DevUrandom)) LastNorm false false false));
+             (mkWalkRes (RFound urandom_key (EDev DevUrandom)) LastNorm false 0 false));
     [reflexivity|].
   change (resolve_start cwd urandom_key) with root. unfold walk_init.
   rewrite split_urandom.
@@ -4262,11 +4262,11 @@ Lemma walk_runs_create_set : forall fs f s w, walk_runs fs (WalkCreate f) s w ->
   entry_is_link e = false ->
   walk_runs (fs_set fs (child_key par nm) e) (WalkCreate f) s
     (mkWalkRes (RFound (child_key par nm) e) (wr_kind w) (wr_slash w)
-       (wr_followed w) (wr_long w)).
+       (wr_follows w) (wr_long w)).
 Proof.
   intros fs f s w H. induction H as [s w He | s s' w Hst Hrun IH];
     intros Hd par nm e Hw Hl.
-  - destruct He; cbn [wr_res wr_kind wr_slash wr_followed wr_long st_dir] in *;
+  - destruct He; cbn [wr_res wr_kind wr_slash wr_follows wr_long st_dir] in *;
       try discriminate.
     destruct (comps_done r) eqn:Hdone; [|discriminate]. injection Hw as <- <-.
     assert (Hls : last_slash r = false) by (cbn [mode_create andb] in H4; exact H4).

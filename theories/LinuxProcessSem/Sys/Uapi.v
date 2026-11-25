@@ -438,17 +438,27 @@ Definition GRND_RANDOM   : Z := 2%Z.
     controlling-terminal pair [TIOCSCTTY]/[TIOCNOTTY], and the two
     requests musl's [openpty] issues on /dev/ptmx.  Every one of them is
     on the path a Dropbear SSH server takes to hand a session a
-    terminal.
+    terminal.  Five more are what musl's other termios calls issue:
+    [tcsetattr] with TCSADRAIN or TCSAFLUSH asks TCSETS+1 (TCSETSW) or
+    TCSETS+2 (TCSETSF), [tcdrain] TCSBRK, [tcflush] TCFLSH and
+    [tcgetpgrp] TIOCGPGRP.
 
     Values are the asm-generic ones, which riscv64 uses unchanged: riscv
     has no arch/riscv/include/uapi/asm/ioctls.h, and
     include/uapi/asm-generic/Kbuild lists ioctls.h as mandatory, so the
-    port gets the generic header verbatim.  It is byte-identical for all
-    eight across Linux v5.10-v6.14
-    (include/uapi/asm-generic/ioctls.h). *)
+    port gets the generic header verbatim.  It is byte-identical for the
+    first eight across Linux v5.10-v6.14
+    (include/uapi/asm-generic/ioctls.h); the five musl termios requests
+    were read at v6.18.46 (include/uapi/asm-generic/ioctls.h:22-23, :28,
+    :30, :34). *)
 Definition TCGETS      : word := Z_to_bv 64 21505.  (* 0x5401 *)
 Definition TCSETS      : word := Z_to_bv 64 21506.  (* 0x5402 *)
+Definition TCSETSW     : word := Z_to_bv 64 21507.  (* 0x5403 *)
+Definition TCSETSF     : word := Z_to_bv 64 21508.  (* 0x5404 *)
+Definition TCSBRK      : word := Z_to_bv 64 21513.  (* 0x5409 *)
+Definition TCFLSH      : word := Z_to_bv 64 21515.  (* 0x540B *)
 Definition TIOCSCTTY   : word := Z_to_bv 64 21518.  (* 0x540E *)
+Definition TIOCGPGRP   : word := Z_to_bv 64 21519.  (* 0x540F *)
 Definition TIOCGWINSZ  : word := Z_to_bv 64 21523.  (* 0x5413 *)
 Definition TIOCSWINSZ  : word := Z_to_bv 64 21524.  (* 0x5414 *)
 Definition TIOCNOTTY   : word := Z_to_bv 64 21538.  (* 0x5422 *)

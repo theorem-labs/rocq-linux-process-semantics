@@ -283,7 +283,9 @@ Proof. split; [|split]; check_eq. Qed.
 
 (** The arms AROUND the accepted state, in the kernel's order.  The
     socket accept just handed over is not TCP_LISTEN, so accepting it is
-    -EINVAL; a channel fd is -ENOTSOCK; an unknown fd is -EBADF, decided
+    -EINVAL; a channel fd is declined, -ENOTSOCK included, since SCOPE.md
+    lets its far end be a socket, where Linux runs the accept; an unknown
+    fd is -EBADF, decided
     by [fdget] BEFORE the flags are looked at (fd 9 here carries a flag
     bit that would otherwise be -EINVAL); an unknown flag bit is
     -EINVAL; and [SOCK_CLOEXEC] is accepted and ignored, so it lands on
@@ -294,7 +296,7 @@ Example accept_arms_around_the_accepted_state :
     = CheckOk accepted_socket_model []
   /\ check_syscall (mkInput 242 [1; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
-     = CheckOk listening_socket_model []
+     = CheckUnmodeled
   /\ check_syscall (mkInput 242 [9; 0; 0; 1; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) listening_socket_model
      = CheckOk listening_socket_model []
@@ -1226,6 +1228,17 @@ Example connect_is_eisconn_whatever_the_peer_has_left_to_say :
      = CheckOk (connected_socket_model (NCons (Z_to_bv 8 65) NFin)) [].
 Proof. split_conj; check_eq. Qed.
 
+(** The listening model with a regular file at fd 5: a descriptor that is
+    open and certainly not a socket.  A launch channel does not serve for
+    that: SCOPE.md lets its far end be a socket, so every socket call
+    declines it ([connect_on_a_channel_fd_declines]). *)
+Definition listening_file_model : Model :=
+  with_creds demo_creds
+    (mkModel
+       [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+         (3, FdSocket SkListening); (5, FdFile 1 0) ]
+       (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
+
 (** THE ORDERING THAT IS NOT BIND'S.  [__sys_connect] copies the address
     BEFORE [__sys_connect_file] resolves the file to a socket, so an
     unreadable address on a NON-SOCKET descriptor is -EFAULT.  The same
@@ -1234,26 +1247,49 @@ Proof. split_conj; check_eq. Qed.
     exactly the mistake this case exists to catch.  The -EFAULT carries
     no ledger, because that arm IS the copy failing. *)
 Example connect_faults_before_it_reaches_enotsock :
-  connect_answering (fun _ => None) listening_socket_model 1 8192 16
-    (errno_ret EFAULT) = CheckOk listening_socket_model []
-  /\ connect_answering (fun _ => None) listening_socket_model 1 8192 16
+  connect_answering (fun _ => None) listening_file_model 5 8192 16
+    (errno_ret EFAULT) = CheckOk listening_file_model []
+  /\ connect_answering (fun _ => None) listening_file_model 5 8192 16
        (errno_ret ENOTSOCK) = CheckReject
-  /\ check_syscall (mkInput 200 [1; 8192; 16; 0; 0; 0]
+  /\ check_syscall (mkInput 200 [5; 8192; 16; 0; 0; 0]
                      (fun _ => None) (fun _ => None))
-       (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
-     = CheckOk listening_socket_model [].
+       (mkEffect (errno_ret ENOTSOCK) [] []) listening_file_model
+     = CheckOk listening_file_model [].
 Proof. split_conj; check_eq. Qed.
 
 (** -ENOTSOCK still wins when the address IS readable, so the case above
     is about the order and not about -ENOTSOCK being unreachable.  And
     it carries the ledger, because the copy already happened — the one
     place connect's ledger differs from bind's. *)
-Example connect_on_a_channel_fd_is_enotsock :
-  connect_answering_c connect_addr_mem listening_socket_model 1 8192 16 16
-    (errno_ret ENOTSOCK) = CheckOk listening_socket_model []
-  /\ connect_answering connect_addr_mem listening_socket_model 1 8192 16
+Example connect_on_a_file_fd_is_enotsock :
+  connect_answering_c connect_addr_mem listening_file_model 5 8192 16 16
+    (errno_ret ENOTSOCK) = CheckOk listening_file_model []
+  /\ connect_answering connect_addr_mem listening_file_model 5 8192 16
        (errno_ret ENOTSOCK) = CheckReject.
 Proof. split; check_eq. Qed.
+
+(** A LAUNCH CHANNEL IS DECLINED PAST THE COPY.  SCOPE.md lets the far
+    end of descriptors 1 and 2 be a TCP or an AF_UNIX stream socket;
+    there [sock_from_file] finds a socket and Linux runs the connect, so
+    -ENOTSOCK, with its ledger or without, is not an answer the model may
+    give.  The copy's -EFAULT stands, since [__sys_connect] faults before
+    it asks what the file is (net/socket.c:2115-2122, Linux v6.18.46), and
+    a -ENOTSOCK there is still refused.  [bind] declines the same channel
+    at once: it resolves the socket before it copies. *)
+Example connect_on_a_channel_fd_declines :
+  connect_answering_c connect_addr_mem listening_socket_model 1 8192 16 16
+    (errno_ret ENOTSOCK) = CheckUnmodeled
+  /\ connect_answering connect_addr_mem listening_socket_model 1 8192 16
+       (errno_ret ENOTSOCK) = CheckUnmodeled
+  /\ connect_answering (fun _ => None) listening_socket_model 1 8192 16
+       (errno_ret EFAULT) = CheckOk listening_socket_model []
+  /\ connect_answering (fun _ => None) listening_socket_model 1 8192 16
+       (errno_ret ENOTSOCK) = CheckReject
+  /\ check_syscall (mkInput 200 [1; 8192; 16; 0; 0; 0]
+                     (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model
+     = CheckUnmodeled.
+Proof. split_conj; check_eq. Qed.
 
 (** -EBADF comes first of all, before the address is touched: an
     unreadable address on a closed descriptor is still -EBADF, and it
@@ -1391,11 +1427,14 @@ Definition socket_call_model : Model :=
 
 (** NO NON-SOCKET FD KIND IS A SOCKET, on all five calls.
     [sock_from_file] tests the file's [f_op] for [socket_file_ops]
-    and nothing else, so a channel, a readable file, a writable file, an
+    and nothing else, so a readable file, a writable file, an
     append file, a READ-WRITE file, a directory and a pipe end all answer
-    -ENOTSOCK alike; the model says so in [Net.Socket.sock_fd]'s seven
-    non-socket arms.
-    (The fixture below exercises the first three and the directory; the
+    -ENOTSOCK alike; the model says so in [Net.Socket.sock_fd]'s
+    non-socket arms.  A launch channel is not among them: SCOPE.md lets
+    its far end be a socket, so [sock_fd] declines it
+    ([channel_declines_on_every_socket_call]), and the channel at fd 0 of
+    the fixture is left out here.
+    (The fixture below exercises the files and the directory; the
     pipe end's is pinned in [Checks.Cases.Fs.Pipe], where the model that
     can hold one lives.  The append fd's is pinned by neither, and does
     not need to be: [Net.Socket.sock_fd]'s arms are one -ENOTSOCK per
@@ -1422,7 +1461,7 @@ Example socket_calls_decline_every_non_socket_fd_kind :
            (mkEffect (Z_to_bv 64 0) [] []) socket_call_model
          = CheckReject)
       [204; 205; 208; 209; 210])
-    [0; 3; 4; 5].
+    [3; 4; 5].
 Proof. split_forall; split_conj; check_eq. Qed.
 
 (** Nothing past the descriptor changes the answer.  On 208 and 209 the
@@ -1534,6 +1573,36 @@ Example datagram_declines_and_eventfd_is_not_a_socket :
     (202, [0; 0; 0; 0; 0]); (203, [4096; 0; 0; 0; 0]);
     (204, [4096; 4100; 0; 0; 0]); (205, [4096; 4100; 0; 0; 0]);
     (206, [4096; 1; 0; 0; 0]); (207, [4096; 1; 0; 0; 0]);
+    (208, [1; 2; 4096; 4; 0]); (209, [1; 2; 4096; 4100; 0]);
+    (210, [2; 0; 0; 0; 0]); (211, [4096; 16384; 0; 0; 0]);
+    (212, [4096; 0; 0; 0; 0]); (242, [0; 0; 0; 0; 0]) ].
+Proof. repeat constructor; check_eq. Qed.
+
+(** A LAUNCH CHANNEL ON EVERY SOCKET CALL.  SCOPE.md lets the far end of
+    descriptors 1 and 2 be a TCP or an AF_UNIX stream socket; there
+    [sock_from_file] finds a socket and Linux runs the call, so the
+    -ENOTSOCK a pipe would earn is not an answer the model may give.
+    Every call declines the channel at the point it asks
+    [sock_from_file], past what Linux checks before it (the lookup's
+    -EBADF, accept4's flags, connect's copy, the send buffer's range):
+    [Net.Socket.SoInert] in the five option and address calls,
+    [Net.Socket.sockfd_lookup_errno]'s [None] in the two receives, and an
+    explicit arm in the rest.  Each call is offered -ENOTSOCK, the
+    answer a pipe would earn, on stdout, the channel at fd 1 of
+    [listening_socket_model].  The arguments are the datagram case's,
+    but sendto carries MSG_NOSIGNAL (16384), so its flag gate passes and
+    the channel is what declines.
+    ADMISSION REASON: model-internal, as above. *)
+Definition channel_call (no : word) (args : list word) : check_result :=
+  check_syscall (mkInput no (1 :: args) (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOTSOCK) [] []) listening_socket_model.
+
+Example channel_declines_on_every_socket_call :
+  Forall (fun c => channel_call (fst c) (snd c) = CheckUnmodeled)
+  [ (200, [4096; 16; 0; 0; 0]); (201, [1; 0; 0; 0; 0]);
+    (202, [0; 0; 0; 0; 0]); (203, [4096; 0; 0; 0; 0]);
+    (204, [4096; 4100; 0; 0; 0]); (205, [4096; 4100; 0; 0; 0]);
+    (206, [4096; 1; 16384; 0; 0]); (207, [4096; 1; 0; 0; 0]);
     (208, [1; 2; 4096; 4; 0]); (209, [1; 2; 4096; 4100; 0]);
     (210, [2; 0; 0; 0; 0]); (211, [4096; 16384; 0; 0; 0]);
     (212, [4096; 0; 0; 0; 0]); (242, [0; 0; 0; 0; 0]) ].
@@ -2005,17 +2074,24 @@ Proof. split; check_eq. Qed.
     other and are not, and the nesting is the claim: a refactor that
     hoisted the header read out to share it with [sendto] would change
     both answers and this case would stop compiling.  Both answers
-    precede any copy, so both ledgers are empty. *)
+    precede any copy, so both ledgers are empty.  The open non-socket is
+    the regular file at fd 3 of [socket_states_model]; a launch channel
+    is no such descriptor (its far end may be a socket), and the third
+    conjunct pins that sendmsg declines it past the lookup. *)
 Example sendmsg_resolves_the_fd_before_the_header :
   check_syscall (mkInput 211 [9; 8192; 16384; 0; 0; 0] (fun _ => None)
                    (fun _ => None)) (mkEffect (errno_ret EBADF) [] [])
     accepted_socket_model
   = CheckOk accepted_socket_model []
+  /\ check_syscall (mkInput 211 [3; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
+                     (fun _ => None)) (mkEffect (errno_ret ENOTSOCK) [] [])
+       socket_states_model
+     = CheckOk socket_states_model []
   /\ check_syscall (mkInput 211 [1; 8192; 16384; 0; 0; 0] (send_msghdr_mem 0)
                      (fun _ => None)) (mkEffect (errno_ret ENOTSOCK) [] [])
        accepted_socket_model
-     = CheckOk accepted_socket_model [].
-Proof. split; check_eq. Qed.
+     = CheckUnmodeled.
+Proof. split; [|split]; check_eq. Qed.
 
 (** THE qemu DIVERGENCE ON THE SEND PATH.  An unmapped but
     in-range buffer is a RANGE that [import_ubuf]'s [access_ok] passes,
@@ -2065,32 +2141,34 @@ Definition wmem_open : word -> option byte := fun _ => Some 0.
 
 (** An OPEN descriptor that is not a socket is -ENOTSOCK, never -EBADF,
     on both — and neither call delivers a byte, so any write at all is
-    refused.  The MSG_CMSG_COMPAT bit is fail-closed: every supported
+    refused.  The descriptor is the regular file at fd 3: a launch
+    channel declines instead ([recv_declines_a_socket_descriptor]).  The
+    MSG_CMSG_COMPAT bit is fail-closed: every supported
     kernel answers it -EINVAL before the descriptor (the configuration
     of record sets CONFIG_COMPAT, SCOPE.md), and the model declines the
     call instead, a priority-3 gap. *)
 Example recv_on_a_non_socket_descriptor :
-  check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
-    (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
-  /\ check_syscall (mkInput 207 [1; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
+  check_syscall (mkInput 207 [3; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
+    (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
+  = CheckOk socket_states_model []
+  /\ check_syscall (mkInput 207 [3; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [(4096, [97])] [])
-       (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+       socket_states_model
      = CheckReject
-  /\ check_syscall (mkInput 212 [1; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
-     = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) []
-  /\ check_syscall (mkInput 212 [1; 4096; Z_to_bv 64 (2 ^ 31); 0; 0; 0]
+  /\ check_syscall (mkInput 212 [3; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
+       (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
+     = CheckOk socket_states_model []
+  /\ check_syscall (mkInput 212 [3; 4096; Z_to_bv 64 (2 ^ 31); 0; 0; 0]
                      (fun _ => None) wmem_open)
-       (mkEffect (errno_ret ENOTSOCK) [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+       (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
      = CheckUnmodeled.
 Proof. split; [|split; [|split]]; check_eq. Qed.
 
 (** THE ARM THIS SECTION ARGUES ABOUT MOST, AND THE ONLY CASE THAT
-    REACHES IT.  Everything above runs on a channel or an absent
+    REACHES IT.  Everything above runs on a file or an absent
     descriptor.  [sockfd_lookup_errno] answers [None] for an [FdSocket],
     which [recv_fd_answer] turns into [unmodeled] -- a DECLINE, and not
-    the -ENOTSOCK every other open fd kind takes.
+    the -ENOTSOCK a file, a directory or a pipe end takes.
 
     THE OFFERED EFFECT IS -ENOTSOCK ON PURPOSE.  Both halves demand
     [CheckUnmodeled] while being handed exactly the answer the arm would
@@ -2113,21 +2191,29 @@ Example recv_declines_a_socket_descriptor :
   /\ check_syscall (mkInput 212 [9; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
      = CheckUnmodeled
-  (* AND THE OTHER FD KINDS, STILL ANSWERING -ENOTSOCK, on the same
-     model.  Both declines above are [CheckUnmodeled], so on their own
-     they stay green if [sockfd_lookup_errno] answers [None] for EVERY
-     open fd -- the wildcard collapsing the other way, which is as
-     plausible a wrong fix as the one the paragraph above rules out and
-     is invisible to the two conjuncts that only name sockets.  The
-     channel at fd 0 and the regular file at fd 3 are the boundary: not
-     a socket, so not declined. *)
-  /\ check_syscall (mkInput 207 [0; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
+  (* AND THE OTHER FD KINDS, on the same model.  Both declines above are
+     [CheckUnmodeled], so on their own they stay green if
+     [sockfd_lookup_errno] answers [None] for EVERY open fd -- the
+     wildcard collapsing the other way, which is as plausible a wrong fix
+     as the one the paragraph above rules out and is invisible to the two
+     conjuncts that only name sockets.  The regular file at fd 3 is the
+     boundary: not a socket, so -ENOTSOCK on both.  The channel at fd 0
+     declines on both, as every launch channel does: the far end of
+     descriptors 1 and 2 may be a socket (SCOPE.md), and the arms do not
+     tell the channels apart ([Net.Socket.bind_spec]'s channel arm). *)
+  /\ check_syscall (mkInput 207 [3; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
      = CheckOk socket_states_model []
   /\ check_syscall (mkInput 212 [3; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
        (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
-     = CheckOk socket_states_model [].
-Proof. split; [|split; [|split]]; check_eq. Qed.
+     = CheckOk socket_states_model []
+  /\ check_syscall (mkInput 207 [0; 4096; 8; 0; 0; 0] (fun _ => None) wmem_open)
+       (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 212 [0; 4096; 0; 0; 0; 0] (fun _ => None) wmem_open)
+       (mkEffect (errno_ret ENOTSOCK) [] []) socket_states_model
+     = CheckUnmodeled.
+Proof. split_conj; check_eq. Qed.
 
 (** THE ORDER, both ways.  The same closed descriptor and the same
     unreachable pointer get -EFAULT from recvfrom, which imports the
@@ -2640,7 +2726,7 @@ Proof. split; check_eq. Qed.
     guard itself introduced.  [Net.Socket.move_addr_bytes] is the fix.
 
     THE PAIR.  The first two conjuncts are the case the model used to
-    get wrong, on a socket and on a channel fd — the two different
+    get wrong, on a socket and on a regular file — the two different
     answers a zero length has, which is why connect cannot borrow
     [bind_spec]'s single -EINVAL arm — and each refuses -EFAULT beside
     it.  The last two are the CONTROL at the SAME pointer with ONE byte
@@ -2670,10 +2756,10 @@ Example connect_zero_length_never_faults :
     3 connect_wrap_addrp 0 (errno_ret EINVAL) = CheckOk listening_socket_model []
   /\ connect_answering (fun _ => None) listening_socket_model
        3 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
-  /\ connect_answering (fun _ => None) listening_socket_model
-       1 connect_wrap_addrp 0 (errno_ret ENOTSOCK) = CheckOk listening_socket_model []
-  /\ connect_answering (fun _ => None) listening_socket_model
-       1 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
+  /\ connect_answering (fun _ => None) listening_file_model
+       5 connect_wrap_addrp 0 (errno_ret ENOTSOCK) = CheckOk listening_file_model []
+  /\ connect_answering (fun _ => None) listening_file_model
+       5 connect_wrap_addrp 0 (errno_ret EFAULT) = CheckReject
   /\ connect_answering (fun _ => None) listening_socket_model
        3 connect_wrap_addrp 1 (errno_ret EFAULT) = CheckOk listening_socket_model []
   /\ connect_answering (fun _ => None) listening_socket_model
@@ -3275,10 +3361,10 @@ Definition file_kinds_send_model : Model :=
 
 (** AN APPEND OR READ-WRITE FILE IS NOT A SOCKET EITHER, ON [sendmsg].
     [Net.Socket.sendmsg_spec] answers both kinds in the arm it shares with
-    [FdChannel], [FdFile] and [FdFileW]: -ENOTSOCK where qemu-user's path
+    [FdFile] and [FdFileW]: -ENOTSOCK where qemu-user's path
     to the host's fd is quiet, before any copy, so the ledger is empty.
     [sendmsg_resolves_the_fd_before_the_header] shows that arm on a
-    channel; this shows it on the two kinds, each with the half that
+    read-only file; this shows it on the two kinds, each with the half that
     refuses: a ledger claiming the header was copied, and the -EBADF of an
     unopened fd.  The Lean twin's [a17_rdwr_sendmsg_is_enotsock] and
     [a17_append_sendmsg_is_enotsock] state the same answers.
@@ -3310,21 +3396,25 @@ Proof. split; [|split; [|split]]; check_eq. Qed.
    is still pending.  Every kernel line was read at Linux v6.18.46.
    ------------------------------------------------------------------------ *)
 
-(** Sixty-four channels, 0 to 63: the lowest free descriptor is 64, and
-    fd 3 is not a socket. *)
+(** Sixty-four descriptors, 0 to 63: the lowest free descriptor is 64,
+    and fd 3 is a regular file, so not a socket.  The rest are channels;
+    fd 3 is not one, because a channel may be a socket and accept4
+    declines it ([channel_declines_on_every_socket_call]). *)
 Definition accept4_full_table_model : Model :=
   with_creds demo_creds
     (mkModel
-       (map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
-            (seq 0 64))
+       ((3, FdFile 1 0)
+        :: map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
+               (seq 0 3 ++ seq 4 60))
        (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
-(** The same channels without 63: the lowest free descriptor is 63. *)
+(** The same table without 63: the lowest free descriptor is 63. *)
 Definition accept4_last_slot_model : Model :=
   with_creds demo_creds
     (mkModel
-       (map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
-            (seq 0 63))
+       ((3, FdFile 1 0)
+        :: map (fun n => (Z_to_bv 64 (Z.of_nat n), FdChannel (Z_to_bv 64 (Z.of_nat n))))
+               (seq 0 3 ++ seq 4 59))
        (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None).
 
 (** ACCEPT4 ON A NON-SOCKET DECLINES ONCE THE LOWEST FREE DESCRIPTOR IS

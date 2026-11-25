@@ -2044,11 +2044,11 @@ Example urandom_open_at_any_node :
        12%nat (mkEffect (errno_ret ENOENT) [] []) = CheckOk (base (demo_fs [])) [].
 Proof. vm_compute. split_conj; check_eq. Qed.
 
-(** THE LAUNCH THAT USED TO DECLINE: working folder /dev, the standard
+(** A LAUNCH [Run.valid_input] REFUSES: working folder /dev, the standard
     root plus /dev/x as a second node of one device kind, and a relative
-    open of "x".  [Run.valid_input] admits it (devices stay under /dev,
-    and an argv operand may be a relative name), so the open must
-    answer: it mints the device's descriptor at the lowest free fd, as
+    open of "x".  [Run.cwd_off_devb] refuses a working folder in /dev;
+    the open still answers, as at any image: it mints the device's
+    descriptor at the lowest free fd, as
     at the device's own name ([Fs.Open.open_devnull],
     [Fs.Open.open_urandom]; [chrdev_open], fs/char_dev.c:373-424, Linux
     v6.18.46, opens by the inode's device number). *)
@@ -2260,9 +2260,10 @@ Qed.
     front of the stream exactly as [read] does; [pwrite64] and
     [writev] are -EBADF; [fsync] and [ftruncate] are -EINVAL;
     [getdents64] is -ENOTDIR; [dup] copies the entry; [fcntl] F_SETFD
-    is 0 and F_GETFL declines; [ioctl] RNDGETENTCNT and [flock] fail
-    closed; [fstat] into an unbacked destination declines, and its
-    delivering example follows. *)
+    is 0 and F_GETFL declines; [ioctl] TCGETS is -EINVAL
+    ([random_ioctl]'s default arm, drivers/char/random.c:1550-1551,
+    Linux v6.18.46), not -ENOTTY; [flock] fails closed; [fstat] into an
+    unbacked destination declines, and its delivering example follows. *)
 Example urandom_dispatch_sites :
   let call no args eff := check_syscall
         (mkInput no args (fun _ => None) urandom_wmem) eff urandom_model in
@@ -2286,8 +2287,10 @@ Example urandom_dispatch_sites :
   /\ call 25 [3; F_GETFL; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled
   /\ check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) urandom_model = CheckUnmodeled
+  /\ call 29 [3; TCGETS; 4096; 0; 0; 0] (mkEffect (errno_ret EINVAL) [] [])
+     = CheckOk urandom_model []
   /\ call 29 [3; TCGETS; 4096; 0; 0; 0] (mkEffect (errno_ret ENOTTY) [] [])
-     = CheckUnmodeled
+     = CheckReject
   /\ call 32 [3; 2; 0; 0; 0; 0] (mkEffect 0 [] []) = CheckUnmodeled.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
@@ -3305,7 +3308,7 @@ Qed.
 Lemma r1_resolve_head : forall md fs cwd d f, r1_name_ok d -> r1_name_ok f ->
   fs_lookup fs Fs.root = Some EDir ->
   Fs.resolve_res md fs cwd (r1_path d f)
-  = Fs.walk_comps fs md false (Fs.walk_next fs md Fs.link_max) (Fs.mode_follow md)
+  = Fs.walk_comps fs md 0 (Fs.walk_next fs md Fs.link_max 0) (Fs.mode_follow md)
       (Fs.mode_dir md) Fs.root EDir [r1_usr; r1_local; d; f] Fs.LastRoot false false.
 Proof.
   intros md fs cwd d f Hd Hf Hroot. unfold Fs.resolve_res, Fs.walk_from.
@@ -3392,7 +3395,8 @@ Proof. intros fl [-> | ->]; split; reflexivity. Qed.
 Lemma r1_walk_errnos_ok : forall lk w, errnos_ok (walk_errnos lk w) = true.
 Proof.
   intros lk w. unfold walk_errnos.
-  destruct lk, (Fs.wr_followed w), (Fs.wr_res w), (Fs.wr_long w); reflexivity.
+  destruct lk, (Nat.leb eloop_follows (Fs.wr_follows w)), (Fs.wr_res w), (Fs.wr_long w);
+    reflexivity.
 Qed.
 
 Lemma r1_walk_reached : forall mem wmem pathp fl a3 a4 a5 m d f,
@@ -3812,10 +3816,11 @@ Proof. vm_compute. split_conj; reflexivity. Qed.
 (** /usr is a link whose body is "/opt", and /opt/local is a folder
     holding no "etc": the image is in N, read through the link.  Beside
     it the same image with /opt/local/etc/app.conf there, which the
-    open reaches through the same link.  A followed link also admits
-    -ELOOP ([pick_link]'s nosymfollow refusal, fs/namei.c:1927-1929, and
-    a count not reset on a retried walk, :2705-2709), so that errno
-    stands beside both answers. *)
+    open reaches through the same link.  The walk follows that one link,
+    so it counts at most two of the 41 [reserve_stack] needs
+    (fs/namei.c:1878-1879, one on each of the two tries
+    [Fs.Namei.walk_errnos] allows), and -ELOOP is refused beside both
+    answers. *)
 Definition r1_opt : Fs.path := map (Z_to_bv 8) [111; 112; 116]%Z.          (* "opt" *)
 
 Definition r1_ln_fs : Fs.Fs :=
@@ -3836,10 +3841,10 @@ Example r1_usr_link_is_walked_through :
   r1_image_n r1_ln_fs r1_etc r1_app
   /\ open ln (errno_ret ENOENT) = CheckOk ln []
   /\ open ln 3 = CheckReject
-  /\ open ln (errno_ret ELOOP) = CheckOk ln []
+  /\ open ln (errno_ret ELOOP) = CheckReject
   (* through the same link the file opens, on its inode *)
   /\ open ls 3 = CheckOk (with_fds (fd_insert (m_fds ls) 3 (FdFile 1 (Z_to_bv 64 0))) ls) []
-  /\ open ls (errno_ret ELOOP) = CheckOk ls []
+  /\ open ls (errno_ret ELOOP) = CheckReject
   /\ open ls (errno_ret ENOENT) = CheckReject.
 Proof.
   cbv zeta. split.
@@ -4157,7 +4162,7 @@ Proof.
   split_conj; check_eq.
 Qed.
 
-(* ---- a file on the way, and a link to the null device at the last name ----
+(* ---- a file on the way, and a link at the last name ----
 
    Image F: /usr/local/etc is a regular file.  The walk meets it with
    "app.conf" still to go and stops: [link_path_walk] answers -ENOTDIR
@@ -4172,7 +4177,17 @@ Qed.
    character device through for a read (fs/namei.c:3546-3556).  Its
    [struct stat] is the device's,
    S_IFCHR with [st_rdev] 1:3 ([generic_fillattr], fs/stat.c:90 and
-   :94; [cp_new_stat], fs/stat.c:494).
+   :94; [cp_new_stat], fs/stat.c:494).  L IS NOT A VALID IMAGE: its link
+   leads to a device, which [Run.links_off_devicesb] refuses, so what the
+   open answers over L is the model's answer on a launch the theorems
+   say nothing about.
+
+   Image K, the valid image nearest L: the same link at app.conf, its
+   body "/usr/local/app.conf", an empty regular file one folder up.  The
+   open follows the link as over L and opens the file: [may_open]
+   refuses a regular file only for an exec open on a noexec mount
+   (fs/namei.c:3557-3560, Linux v6.18.46), and its [struct stat] is a
+   regular file's, as over S.
 
    A FIFO at the last name has no image here: [Fs.Entry] holds a
    regular file, a folder, the two character devices and a link, and
@@ -4212,11 +4227,14 @@ Definition r1_chr_stat (mode rdev : Z) : list byte :=
   ++ Z_to_le_bytes 8 rdev ++ Z_to_le_bytes 16 0 ++ Z_to_le_bytes 4 4096
   ++ Z_to_le_bytes 68 0.
 
-(** OVER L, under 0x8800: open gives 3 on the null device, read-only;
-    fstat of 3 admits the null device's [struct stat] and pins it, and
-    refuses a regular file's; close answers 0. *)
+(** OVER L, under 0x8800: L is not a valid image, and the device clause
+    refuses it ([link_off_devicesb] of the link's key is [false]); over
+    its model open gives 3 on the null device, read-only; fstat of 3
+    admits the null device's [struct stat] and pins it, and refuses a
+    regular file's; close answers 0. *)
 Example r1_link_to_the_null_device :
-  valid_image (demo_input r1_l_fs IEof)
+  link_off_devicesb r1_l_fs (r1_path r1_etc r1_app) = false
+  /\ ~ valid_image (demo_input r1_l_fs IEof)
   /\ r1_call (r1_open_step r1_rdnb 3) r1_l_m0 = CheckOk r1_l_m3 []
   /\ r1_ok_pin (r1_call (r1_fstat_step (r1_chr_stat (S_IFCHR + 438) DEVNULL_RDEV)) r1_l_m3)
        (IdDev devnull_path)
@@ -4224,6 +4242,40 @@ Example r1_link_to_the_null_device :
   /\ r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 0)) r1_l_m3 = CheckReject
   /\ r1_call r1_close_step r1_l_m3
      = CheckOk (with_fds (fd_remove (m_fds r1_l_m3) 3) r1_l_m3) [].
+Proof.
+  split; [vm_compute; reflexivity|].
+  split; [intros Hv; pose proof (valid_image_links_off_devices _ Hv) as H;
+          vm_compute in H; discriminate|].
+  split_conj; check_eq.
+Qed.
+
+(** K: app.conf a link to "/usr/local/app.conf", an empty regular file,
+    inode 1. *)
+Definition r1_k_target : Fs.path := Fs.path_join [r1_usr; r1_local; r1_app].
+
+Definition r1_k_fs : Fs.Fs :=
+  Fs.fs_set (Fs.fs_set (Fs.fs_create_file r1_n_fs r1_k_target []) (r1_dir_key r1_etc) EDir)
+    (r1_path r1_etc r1_app) (ELink r1_k_target).
+
+Definition r1_k_m0 : Model :=
+  init_model [] 0 0 demo_sp demo_limit (demo_input r1_k_fs IEof).
+
+Definition r1_k_m3 : Model :=
+  with_fds (fd_insert (m_fds r1_k_m0) 3 (FdFile 1 (Z_to_bv 64 0))) r1_k_m0.
+
+(** OVER K, under 0x8800: the image is valid; open follows the link and
+    gives 3 on the file's inode; fstat of 3 admits a regular file's
+    [struct stat] (one link, no bytes) and pins it, and refuses the null
+    device's; close answers 0.  It is L's open with a regular file where
+    L has the device. *)
+Example r1_link_to_a_regular_file :
+  valid_image (demo_input r1_k_fs IEof)
+  /\ r1_call (r1_open_step r1_rdnb 3) r1_k_m0 = CheckOk r1_k_m3 []
+  /\ r1_ok_pin (r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 0)) r1_k_m3) (IdIno 1)
+     = Some (mkStatPin (file_stat (S_IFREG + 420) 1 0) None false)
+  /\ r1_call (r1_fstat_step (r1_chr_stat (S_IFCHR + 438) DEVNULL_RDEV)) r1_k_m3 = CheckReject
+  /\ r1_call r1_close_step r1_k_m3
+     = CheckOk (with_fds (fd_remove (m_fds r1_k_m3) 3) r1_k_m3) [].
 Proof.
   split; [unfold valid_image; cbn [in_fs in_cwd]; repeat split; valid_image_vm|].
   split_conj; check_eq.
@@ -4289,8 +4341,9 @@ Qed.
    trailing separator forces the follow whatever the flags
    ([lookup_last], :2647-2652).  O_CREAT through a link to nothing
    creates the name the body ends in ([lookup_open], :3787-3799), and
-   O_CREAT|O_EXCL on a link is -EEXIST ([do_open], :3949-3950).  Every
-   follow also admits -ELOOP ([pick_link], :1927-1929). *)
+   O_CREAT|O_EXCL on a link is -EEXIST ([do_open], :3949-3950).  A walk
+   of one link admits no -ELOOP: it counts at most two of the 41
+   [reserve_stack] needs (:1878-1879; [Fs.Namei.walk_errnos]). *)
 
 (** "f" a file (inode 1), "d" a folder, "l" -> "f", "ld" -> "d",
     "dang" -> "new". *)
@@ -4307,12 +4360,13 @@ Definition ln_open (bs : list Z) (fl : Z) (eff : SyscallEffect) : check_result :
     (with_copyins [(8192, S (length bs))] eff) ln_open_m0.
 
 (** A LINK ON THE PATH IS FOLLOWED: "l" opens the file, on its inode,
-    and -ELOOP stands beside the descriptor. *)
+    and -ELOOP is refused beside the descriptor, as for a file reached
+    by no link. *)
 Example openat_follows_a_link :
   ln_open [108]%Z 0%Z (mkEffect 3 [] [])
   = CheckOk (with_fds (fd_insert (m_fds ln_open_m0) 3 (FdFile 1 (Z_to_bv 64 0)))
                ln_open_m0) []
-  /\ ln_open [108]%Z 0%Z (mkEffect (errno_ret ELOOP) [] []) = CheckOk ln_open_m0 []
+  /\ ln_open [108]%Z 0%Z (mkEffect (errno_ret ELOOP) [] []) = CheckReject
   /\ ln_open [108]%Z 0%Z (mkEffect (errno_ret ENOENT) [] []) = CheckReject
   (* a file reached by no link admits no -ELOOP *)
   /\ ln_open [102]%Z 0%Z (mkEffect (errno_ret ELOOP) [] []) = CheckReject.
@@ -4321,7 +4375,7 @@ Proof. split_conj; check_eq. Qed.
 (** O_NOFOLLOW ON A LINK IS -ELOOP, and with O_DIRECTORY it is -ENOTDIR,
     where -ELOOP is refused: nothing was followed.  A trailing separator
     still forces the follow: "l/" under O_NOFOLLOW is the file's
-    -ENOTDIR. *)
+    -ENOTDIR, and its one follow admits no -ELOOP. *)
 Example openat_nofollow_on_a_link :
   ln_open [108]%Z O_NOFOLLOW (mkEffect (errno_ret ELOOP) [] []) = CheckOk ln_open_m0 []
   /\ ln_open [108]%Z O_NOFOLLOW (mkEffect 3 [] []) = CheckReject
@@ -4331,7 +4385,7 @@ Example openat_nofollow_on_a_link :
      = CheckReject
   /\ ln_open [108; 47]%Z O_NOFOLLOW (mkEffect (errno_ret ENOTDIR) [] [])
      = CheckOk ln_open_m0 []
-  /\ ln_open [108; 47]%Z O_NOFOLLOW (mkEffect (errno_ret ELOOP) [] []) = CheckOk ln_open_m0 []
+  /\ ln_open [108; 47]%Z O_NOFOLLOW (mkEffect (errno_ret ELOOP) [] []) = CheckReject
   (* "ld/" under O_NOFOLLOW is the folder *)
   /\ ln_open [108; 100; 47]%Z O_NOFOLLOW (mkEffect 3 [] [])
      = CheckOk (with_fds (fd_insert (m_fds ln_open_m0) 3 (FdDir (wk [100])))
@@ -4340,15 +4394,16 @@ Proof. split_conj; check_eq. Qed.
 
 (** O_CREAT THROUGH A LINK TO NOTHING CREATES THE TARGET: "dang" makes
     "new" in the folder holding the link, a fresh inode 2; the link
-    stays.  O_CREAT|O_EXCL on the same link, and on a link to a file,
-    is -EEXIST, and creates nothing. *)
+    stays, and its one follow admits no -ELOOP.  O_CREAT|O_EXCL on the
+    same link, and on a link to a file, is -EEXIST, and creates
+    nothing. *)
 Example openat_creat_through_a_dangling_link :
   ln_open [100; 97; 110; 103]%Z wr_create_flags (mkEffect 3 [] [])
   = CheckOk (with_fds (fd_insert (m_fds ln_open_m0) 3 (FdFileW 2 (Z_to_bv 64 0)))
                (with_fs (Fs.fs_create_file (m_fs ln_open_m0) (wk [110; 101; 119]) [])
                   ln_open_m0)) []
   /\ ln_open [100; 97; 110; 103]%Z wr_create_flags (mkEffect (errno_ret ELOOP) [] [])
-     = CheckOk ln_open_m0 []
+     = CheckReject
   /\ ln_open [100; 97; 110; 103]%Z excl_create_flags (mkEffect (errno_ret EEXIST) [] [])
      = CheckOk ln_open_m0 []
   /\ ln_open [100; 97; 110; 103]%Z excl_create_flags (mkEffect 3 [] []) = CheckReject

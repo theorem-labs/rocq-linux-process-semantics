@@ -1237,10 +1237,11 @@ Definition read_spec (fd buf count : word) : Sys SyscallEffect :=
     at or past one of those limits fails, with -EFBIG (:1716-1718,
     :1726-1727).  An ordinary catchable signal does not truncate it.
 
-    The model cannot tell these cases apart — it classifies fds 1 and 2
-    as [FdChannel] unconditionally, without knowing which of the far
-    ends SCOPE.md's "Assumptions that the model does not check" allows
-    is on them — so it admits the short return everywhere.  This is a
+    The model cannot tell these cases apart — it classifies fds 0, 1 and
+    2 as [FdChannel] unconditionally, and a write reaches 1 and 2,
+    without knowing which of the far ends SCOPE.md's "Assumptions that
+    the model does not check" allows is on them — so it admits the short
+    return everywhere.  This is a
     known soundness gap against the syscall-modeling priority: for a
     blocking pipe write of at most PIPE_BUF, the model admits a positive
     short return Linux cannot produce.  Giving BOTH binaries the same

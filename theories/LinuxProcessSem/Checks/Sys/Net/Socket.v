@@ -332,6 +332,8 @@ Definition check_bind (i : SyscallInput) (fd addrp addrlen : word)
   | Some (FdDgram _) => CheckUnmodeled
       (* a datagram socket is a socket too: [unix_bind] / [inet6_bind]
          claim an address [State.FdDgram] does not carry *)
+  | Some (FdChannel _) => CheckUnmodeled
+      (* a channel may be a socket: see [Specs.bind_spec] *)
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -361,6 +363,7 @@ Definition check_listen (fd backlog : word) (eff : SyscallEffect) (m : Model)
   | Some (FdStream _ _ _) => check_ret_only eff (errno_ret EINVAL) m []
       (* [unix_listen] on an unbound pair end *)
   | Some (FdDgram _) => CheckUnmodeled   (* a socket: [sock_no_listen], declined *)
+  | Some (FdChannel _) => CheckUnmodeled   (* a channel may be a socket *)
   | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
   end.
 
@@ -402,6 +405,7 @@ Definition check_accept4 (fd addrp addrlenp flags : word)
           end
       | FdStream _ _ _ => CheckUnmodeled   (* a socket: [unix_accept]'s allocations *)
       | FdDgram _ => CheckUnmodeled        (* a socket: [sock_no_accept], declined *)
+      | FdChannel _ => CheckUnmodeled      (* a channel may be a socket *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then CheckUnmodeled
              else check_errno_or_list ENOTSOCK accept_notsock_errnos eff m
@@ -451,6 +455,7 @@ Definition check_connect (i : SyscallInput) (fd addrp addrlen : word)
                 end
           | FdStream _ _ _ => CheckUnmodeled   (* [unix_stream_connect]: a name lookup *)
           | FdDgram _ => CheckUnmodeled        (* a peer [State.FdDgram] does not carry *)
+          | FdChannel _ => CheckUnmodeled      (* a channel may be a socket *)
           | _ => check_ret_only_copyins copied eff (errno_ret ENOTSOCK) m []
           end
       end
@@ -1317,14 +1322,15 @@ Proof.
      costs gigabytes.  Select the arms that need it instead. *)
   destruct e as [ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam];
     cbv beta iota zeta in *; inv_ok.
-  (* every non-socket kind, the pipe end (8), /dev/null (9) and the
-     eventfd (12) included, takes -ENOTSOCK; the stream-pair end (11) and
-     the datagram socket (13) decline, so [inv_ok] has already closed
-     them, and the eventfd is the eleventh goal left.
+  (* every non-socket kind but the channel, the pipe end (8), /dev/null
+     (9) and the eventfd (12) included, takes -ENOTSOCK; the channel (1),
+     whose far end may be a socket, the stream-pair end (11) and the
+     datagram socket (13) decline, so [inv_ok] has already closed them,
+     and the eventfd is the tenth goal left.
      THE INDICES MOVE WITH [State.FdEntry]: a constructor added ahead of
      [FdSocket] shifts every number here, and a stale selector silently
      addresses a different arm. *)
-  1-6,8-11: (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
+  1-5,7-10: (destruct (negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT))
                eqn:Ecap; hall Ecap; inv_ok;
              [ apply check_errno_or_list_e0
              | apply check_errno_or_list_in; cbn; auto ]).
@@ -1406,7 +1412,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try connect_ret_c H.
-  (* the stream-pair end and the datagram socket decline once past the copy *)
+  (* the channel, the stream-pair end and the datagram socket decline once
+     past the copy *)
   all: try discriminate.
   (* the socket arm, both ledger shapes *)
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
@@ -1444,8 +1451,8 @@ Proof.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez;
        cbv beta iota zeta in H |- *.
   all: try (now apply check_ret_only_copyins_no_unmodeled in H).
-  (* the stream-pair end and the datagram socket: declined past the copy,
-     the ledger kept *)
+  (* the channel, the stream-pair end and the datagram socket: declined
+     past the copy, the ledger kept *)
   all: try (apply record_copyins_unmodeled; apply unmodeled_intro).
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3;
        cbv beta iota zeta in H |- *;
@@ -1473,25 +1480,20 @@ Proof.
   unfold connect_spec in H. unfold check_connect. sys_unfold.
   cbv iota zeta in H. cbv zeta. inv_ok.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|] eqn:Hfd;
-    hall Hfd; inv_ok;
-    [ | | | | | | | | | |
-      (* the stream-pair end: past the copy the spec declines, so [inv_ok]
-         closes that branch and only the two answers before it remain *)
-      destruct (orb (Z.ltb (sint32 addrlen) 0)
-                    (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
-      hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ];
-      destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
-        as [bs|] eqn:Hrb; hall Hrb; inv_ok;
-      cbn; try rewrite bv_eqb_refl; reflexivity
-    |
-    | (* the datagram socket: the same two answers, for the same reason *)
-      destruct (orb (Z.ltb (sint32 addrlen) 0)
-                    (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
-      hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ];
-      destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
-        as [bs|] eqn:Hrb; hall Hrb; inv_ok;
-      cbn; try rewrite bv_eqb_refl; reflexivity
-    | cbn; try rewrite bv_eqb_refl; reflexivity ].
+    hall Hfd; inv_ok.
+  (* the channel (1), the stream-pair end (11) and the datagram socket
+     (13): past the copy the spec declines, so [inv_ok] closes that
+     branch and only the two answers before it remain.
+     THE INDICES MOVE WITH [State.FdEntry], as in
+     [check_accept4_complete_ok]. *)
+  1,11,13: (destruct (orb (Z.ltb (sint32 addrlen) 0)
+                          (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
+            hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ];
+            destruct (move_addr_bytes (in_mem i) addrp (sint32 addrlen))
+              as [bs|] eqn:Hrb; hall Hrb; inv_ok;
+            cbn; try rewrite bv_eqb_refl; reflexivity).
+  (* the closed fd, the last of the eleven goals left: -EBADF *)
+  11: (cbn; try rewrite bv_eqb_refl; reflexivity).
   all: destruct (orb (Z.ltb (sint32 addrlen) 0)
                      (Z.ltb SOCKADDR_STORAGE_SIZE (sint32 addrlen))) eqn:E1;
        hall E1; inv_ok; [ cbn; try rewrite bv_eqb_refl; reflexivity | ].
@@ -1528,7 +1530,8 @@ Proof.
          as [bs|] eqn:Hrb; hall Hrb; inv_ok; try discriminate.
   all: destruct (Z.eqb (sint32 addrlen) 0) eqn:Ez; hall Ez; inv_ok;
        try discriminate.
-  (* the stream-pair end's and the datagram socket's decline, on both sides *)
+  (* the channel's, the stream-pair end's and the datagram socket's
+     decline, on both sides *)
   all: try unm_refl.
   all: destruct (Z.ltb (sint32 addrlen) SA_FAMILY_SIZE) eqn:E3; hall E3; inv_ok;
        try discriminate.
@@ -1953,15 +1956,16 @@ Qed.
 (** getsockname (204), getpeername (205), setsockopt (208), getsockopt
     (209), shutdown (210).  [Net.Socket.sock_fd] answers every fd kind but
     a socket, identically for all five and before any other argument is
-    examined: -EBADF on a closed fd, -ENOTSOCK on a channel, a file or a
-    directory.  ON A SOCKET they share nothing, which is why there are
+    examined: -EBADF on a closed fd, -ENOTSOCK on a file or a directory,
+    and a decline on a channel, whose far end may be a socket.  ON A
+    SOCKET they share nothing, which is why there are
     five acceptors here and not one — see [Net.Socket.getsockname_spec]
     and its four neighbours for the kernel argument behind each arm, and
     for what each of them declines and why.  A stream-pair end
     ([Net.Socket.SoPair]) takes the [check_stream_*] acceptors above,
-    and a datagram socket ([Net.Socket.SoInert]) declines in all five:
-    it is a socket, so never -ENOTSOCK, and the model carries none of
-    the state these calls read. *)
+    and [Net.Socket.SoInert] declines in all five: a datagram socket is
+    a socket, so never -ENOTSOCK, and the model carries none of the
+    state these calls read; a channel may be a socket. *)
 Definition check_getsockname (i : SyscallInput) (fd : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   match sock_fd m fd with
@@ -2057,7 +2061,7 @@ Definition check_shutdown (fd how : word) (eff : SyscallEffect) (m : Model)
 
 (** All five follow one shape: split on [sock_fd] into its four answers
     -- the errno, the AF_INET socket, the stream-pair end, the declined
-    datagram socket -- then on whatever that call's own arm branches
+    datagram socket or channel -- then on whatever that call's own arm branches
     on.  The leaves below are the errno and decline shapes every one of
     them reaches. *)
 Local Ltac sock_leaf_ok H :=
@@ -2602,6 +2606,7 @@ Definition check_sendto (i : SyscallInput) (fd buf count flags addrp : word)
                   (se_nonblock st || send_flag flags MSG_DONTWAIT)%bool
                   (send_flag flags MSG_NOSIGNAL) buf count i eff m
        | Some (FdDgram _) => CheckUnmodeled  (* a socket with no peer: declined *)
+       | Some (FdChannel _) => CheckUnmodeled  (* a channel may be a socket *)
        | Some _ => check_ret_only eff (errno_ret ENOTSOCK) m []
        end).
 
@@ -2616,7 +2621,8 @@ Definition check_sendmsg (i : SyscallInput) (fd msgp flags : word)
   else
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
-  | Some (FdChannel _) | Some (FdFile _ _)
+  | Some (FdChannel _) => CheckUnmodeled   (* a channel may be a socket *)
+  | Some (FdFile _ _)
   | Some (FdFileW _ _) | Some (FdDir _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some (FdUrandom _ _)
@@ -3103,6 +3109,7 @@ Proof.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|] eqn:Hfd;
     cbv beta iota zeta in H |- *;
     try (now apply check_ret_only_no_unmodeled in H).
+  - apply unmodeled_intro.          (* the channel *)
   - destruct (negb (send_flags_modeled flags)) eqn:Hs; cbv beta iota in H |- *;
       [apply unmodeled_intro|].
     eapply check_send_on_socket_sound_unmodeled; exact H.
@@ -3157,6 +3164,7 @@ Proof.
   ok_zero_split buf count.
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate.
+  - reflexivity.                    (* the channel *)
   - destruct (negb (send_flags_modeled flags)) eqn:Hs; hall Hs; inv_ok;
       [reflexivity|].
     eapply check_send_on_socket_complete_unmodeled with (i := i). eassumption.

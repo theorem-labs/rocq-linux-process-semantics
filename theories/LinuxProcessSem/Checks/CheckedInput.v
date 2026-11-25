@@ -843,7 +843,9 @@ Qed.
     [Fs.canonical_key], a lookup, [Run.devices_in_dev_subtreeb], a
     length test, [Fs.standard_root_presentb] behind
     [Run.valid_input_requires_standard_root], [Run.localtime_absentb],
-    [Run.outside_proc_sysb], [Fs.files_cappedb], [Fs.dir_rows_okb]), and
+    [Run.outside_proc_sysb], [Fs.files_cappedb], [Fs.dir_rows_okb],
+    [Run.cwd_off_rootb], [Run.links_off_proc_sysb],
+    [Run.links_off_devicesb], [Run.cwd_off_devb]), and
     [valid_imageb_sound] below is the bridge. *)
 Definition valid_imageb (fs : Fs.Fs) (cwd : Fs.path) : bool :=
   Fs.wf_fsb fs && Fs.canonical_key cwd
@@ -855,16 +857,22 @@ Definition valid_imageb (fs : Fs.Fs) (cwd : Fs.path) : bool :=
   && localtime_absentb fs
   && outside_proc_sysb cwd
   && Fs.files_cappedb fs
-  && Fs.dir_rows_okb fs.
+  && Fs.dir_rows_okb fs
+  && cwd_off_rootb cwd
+  && links_off_proc_sysb fs
+  && links_off_devicesb fs
+  && cwd_off_devb cwd.
 
 Lemma valid_imageb_sound : forall inp,
   valid_imageb (in_fs inp) (in_cwd inp) = true -> valid_image inp.
 Proof.
   intros inp H. unfold valid_imageb in H.
   repeat rewrite andb_true_iff in H.
-  destruct H as [[[[[[[[[Hwf Hc] Hd] Hdev] Hlen] Hroot] Hlt] Hout] Hcap] Hdirs].
+  destruct H as [[[[[[[[[[[[[Hwf Hc] Hd] Hdev] Hlen] Hroot] Hlt] Hout] Hcap] Hdirs]
+                    Hnr] Hlp] Hld] Hcd].
   unfold valid_image.
-  refine (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ _))))))))).
+  refine (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _
+           (conj _ (conj _ (conj _ (conj _ _))))))))))))).
   - apply Fs.wf_fsb_iff. exact Hwf.
   - exact Hc.
   - destruct (Fs.fs_lookup (in_fs inp) (in_cwd inp)) as [[d| |dk|lb]|];
@@ -878,6 +886,10 @@ Proof.
   - exact Hout.
   - exact Hcap.
   - exact Hdirs.
+  - exact Hnr.
+  - exact Hlp.
+  - exact Hld.
+  - exact Hcd.
 Qed.
 
 (** THE IMAGE DESCRIBES A FILE SYSTEM AND THE WORKING DIRECTORY IS ONE

@@ -55,7 +55,8 @@ Open Scope sys_scope.
     FIONBIO is NOT -ENOTTY and is left unmodeled below: it is handled
     right here, for every file type.
 
-    So all eight fall to [vfs_ioctl], byte-identical across the window:
+    So every request of [tty_only_request] falls to [vfs_ioctl],
+    byte-identical across the window:
 
       int error = -ENOTTY;
       if (!filp->f_op->unlocked_ioctl)
@@ -114,11 +115,12 @@ Open Scope sys_scope.
     TIOCSCTTY, which a program branches on.  So this arm assumes the
     run's standard descriptors are not terminals -- an obligation on the
     environment, which SCOPE.md's "Assumptions that the model does not
-    check" states for fds 1 and 2 with the far ends a launch may put
+    check" states for fds 0, 1 and 2 with the far ends a launch may put
     there.
 
     OUT-OF-TREE MEASUREMENT (not a checked fact; nothing in this
-    repository re-derives it).  Corpus: the eight requests below, issued
+    repository re-derives it).  Corpus: the first eight requests below,
+    without the five musl termios requests after them, issued
     on a regular file, a directory, both ends of a pipe, a unix stream
     socket and a unix datagram socket, over tmpfs, overlayfs, procfs and
     devtmpfs.  Kernel: Linux 7.0.14 aarch64 (past the
@@ -142,7 +144,20 @@ Open Scope sys_scope.
 Definition tty_only_request (req : word) : bool :=
   bv_eqb req TCGETS     || bv_eqb req TCSETS    || bv_eqb req TIOCSCTTY ||
   bv_eqb req TIOCGWINSZ || bv_eqb req TIOCSWINSZ || bv_eqb req TIOCNOTTY ||
-  bv_eqb req TIOCGPTN   || bv_eqb req TIOCSPTLCK.
+  bv_eqb req TIOCGPTN   || bv_eqb req TIOCSPTLCK ||
+  (* musl's [tcsetattr] (TCSADRAIN, TCSAFLUSH), [tcdrain], [tcflush] and
+     [tcgetpgrp].  Read at v6.18.46 like the eight: [do_vfs_ioctl]
+     (fs/ioctl.c:492-580) names none of them, the tmpfs and ramfs file
+     and folder tables and [null_fops] have no [unlocked_ioctl],
+     [pipe_ioctl] (fs/pipe.c:619-656) knows FIONREAD and the watch-queue
+     requests only, and on a socket [sock_ioctl]'s own cases are SIOC and
+     FIO requests of type 0x89 (net/socket.c:1282-1380, its FIOGETOWN and
+     SIOCGPGRP are 0x8903 and 0x8904, not TIOCGPGRP), [unix_ioctl],
+     [tcp_ioctl] and [udp_ioctl] know SIOCINQ, SIOCOUTQ and their kin,
+     and [sock_do_ioctl] answers -ENOTTY for type 0x54
+     (net/socket.c:1264-1265) *)
+  bv_eqb req TCSETSW    || bv_eqb req TCSETSF   || bv_eqb req TCSBRK ||
+  bv_eqb req TCFLSH     || bv_eqb req TIOCGPGRP.
 
 (** THE INTERFACE NAME [dev_ioctl] LOOKS UP IS "lo", read off the 40
     bytes [ifr] that [get_user_ifreq] copied in.  [dev_ioctl]
@@ -240,7 +255,8 @@ Definition siocgifindex_spec (argp : word) (i : SyscallInput) : Sys SyscallEffec
 
 (** [ioctl fd req ...]: modeled for the terminal-only requests of
     [tty_only_request], every one of them answered with -ENOTTY — the
-    model's channels and files are never terminals.  The answer is a
+    model's channels and files are never terminals — but on
+    /dev/urandom, whose driver answers them -EINVAL.  The answer is a
     constant because the kernel's is: a request no file implements is
     refused the same way whatever the file is.  One more request is
     modeled on one kind: SIOCGIFINDEX on an unconnected datagram socket
@@ -308,14 +324,14 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
   (* A STREAM-PAIR END IS A SOCKET FILE TOO, and reaches the same
      [sock_ioctl] default arm: [sock_do_ioctl] calls [unix_ioctl]
      (net/unix/af_unix.c, v6.18.46), whose switch knows SIOCOUTQ,
-     SIOCINQ, SIOCUNIXFILE and SIOCATMARK -- none of them among the eight
-     of [tty_only_request] -- and answers the rest -ENOIOCTLCMD, which
+     SIOCINQ, SIOCUNIXFILE and SIOCATMARK -- none of them in
+     [tty_only_request] -- and answers the rest -ENOIOCTLCMD, which
      [is_socket_ioctl_cmd] then turns into -ENOTTY exactly as for TCP *)
   | Some (FdStream _ _ _)
   (* AN EVENTFD TAKES THE SAME ANSWER by [vfs_ioctl]'s first branch, as
      /dev/null does below: [eventfd_fops] (fs/eventfd.c, v6.18.46) has no
      [.unlocked_ioctl], so [error = -ENOTTY] stands.  [do_vfs_ioctl]
-     (fs/ioctl.c) claims none of the eight, and its default arm hands a
+     (fs/ioctl.c) claims none of [tty_only_request], and its default arm hands a
      request to [file_ioctl] only for [S_ISREG] inodes that are not
      [IS_ANON_FILE] -- and [alloc_anon_inode] (fs/libfs.c) gives the
      shared anonymous inode no type bits at all *)
@@ -325,14 +341,14 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
      (fs/pipe.c:619) answers -ENOIOCTLCMD from its default arm (:653-654),
      which [vfs_ioctl] maps to -ENOTTY.  Re-checked at v6.18.46 rather
      than inherited: none of
-     the eight requests in [tty_only_request] is FIONREAD or an
-     IOC_WATCH_QUEUE command, so all eight take that default arm; and
+     the requests in [tty_only_request] is FIONREAD or an
+     IOC_WATCH_QUEUE command, so all of them take that default arm; and
      none of them appears in [do_vfs_ioctl]'s switch (fs/ioctl.c), so
      the fd-generic half does not claim them first -- its FIONREAD arm,
-     the one case that could reach a pipe, is not in the eight.  This
+     the one case that could reach a pipe, is not among them.  This
      arm is pattern-conformance, not a new claim: it is the same
      -ENOTTY the four other open-fd kinds get, for the same reason the
-     header gives, and every request outside the eight stays
+     header gives, and every request outside [tty_only_request] stays
      [unmodeled] here as everywhere else. *)
   | Some (FdPipe _ _)
   (* THE NULL DEVICE TAKES THE SAME ANSWER, and it is the one open-fd
@@ -342,10 +358,10 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
      (fs/ioctl.c) takes its [goto out] with the initialiser
      [error = -ENOTTY] never overwritten.  What has to be checked
      before that is the fd-generic half, and it does not claim these
-     requests: none of the eight of [tty_only_request] appears in
+     requests: none of [tty_only_request] appears in
      [do_vfs_ioctl]'s switch, and the null device's inode is a
      character device rather than [S_ISREG], so the default arm does
-     not hand them to [file_ioctl] either — all eight fall out at
+     not hand them to [file_ioctl] either — all of them fall out at
      -ENOIOCTLCMD and are answered by [vfs_ioctl].  The requests
      [do_vfs_ioctl] DOES claim on this kind (FIONBIO, FIOCLEX and
      their kin) change state this model does not carry and stay
@@ -358,27 +374,40 @@ Definition ioctl_spec (fd req : word) : Sys SyscallEffect :=
      leave the modeled surface one syscall after the open.
 
      This is pattern-conformance with the other open-fd kinds, not a
-     new claim: the same -ENOTTY for the same eight requests, resting
+     new claim: the same -ENOTTY for the same requests, resting
      on the same premise about the image that the rest of the kind
      rests on (the node at that path is the null device, so the table
      installed is [null_fops]). *)
   | Some (FdDevNull _ _) =>
       if tty_only_request req then err_ret ENOTTY else unmodeled
-  | Some (FdUrandom _ _) => unmodeled
-      (* FAIL-CLOSED, on every request.  Unlike /dev/null this table
-         HAS an [.unlocked_ioctl]: [random_ioctl] (drivers/char/random.c,
-         v6.18.46) answers RNDGETENTCNT with the pool's entropy count,
-         the RNDADD* and RNDCLEARPOOL requests need CAP_SYS_ADMIN, and
-         everything else is -EINVAL — none of which reaches the tty
-         -ENOTTY, since [do_vfs_ioctl] hands the tty requests to the
-         driver, which answers -EINVAL for them.  A real answer would
-         be derived from that switch over a request word and a
-         capability set; neither is written, so declined. *)
+  | Some (FdUrandom _ _) =>
+      if tty_only_request req then err_ret EINVAL else unmodeled
+      (* THE TERMINAL REQUESTS ARE -EINVAL HERE, NOT -ENOTTY.  Unlike
+         /dev/null this table HAS an [.unlocked_ioctl]: [urandom_fops]
+         (drivers/char/random.c:1572-1581, Linux v6.18.46) installs
+         [random_ioctl] at :1575.  [do_vfs_ioctl] (fs/ioctl.c:492-580)
+         names no request of [tty_only_request] and the inode is a
+         character device, not [S_ISREG], so it answers -ENOIOCTLCMD, and
+         on that answer the syscall body (fs/ioctl.c:595-597) hands the
+         request to [vfs_ioctl] (fs/ioctl.c:44-56), which calls the
+         table's [unlocked_ioctl] (:51).  The switch of [random_ioctl]
+         (drivers/char/random.c:1492-1553) names only the RND* requests,
+         and its default arm answers -EINVAL (:1550-1551), which
+         [vfs_ioctl] passes through: it rewrites -ENOIOCTLCMD alone
+         (:52-53).  No memory is read or written.
+         musl's [__fdopen] issues TIOCGWINSZ on a stream opened for
+         writing, so [fopen("/dev/urandom", "w")] reaches this.
+         EVERY OTHER REQUEST STAYS DECLINED: RNDGETENTCNT answers the
+         pool's entropy count, which the model does not carry; the
+         RNDADD* and RNDZAPENTCNT/RNDCLEARPOOL/RNDRESEEDCRNG requests
+         test CAP_SYS_ADMIN and change the pool; and [do_vfs_ioctl]'s
+         own requests (FIONBIO, FIOCLEX and their kin) change state this
+         model does not carry *)
   | Some (FdDgram _) =>
       if tty_only_request req then err_ret ENOTTY
         (* the socket answer above, reached through [unix_ioctl] (AF_UNIX)
            or [inet6_ioctl] -> [sk_ioctl] -> [udp_ioctl] (AF_INET6), each
-           -ENOIOCTLCMD for the eight, which [is_socket_ioctl_cmd] turns
+           -ENOIOCTLCMD for all of them, which [is_socket_ioctl_cmd] turns
            into -ENOTTY: see [siocgifindex_spec] for the path *)
       else if bv_eqb req SIOCGIFINDEX then
         (i <- input ;; siocgifindex_spec (in_arg i 2) i)

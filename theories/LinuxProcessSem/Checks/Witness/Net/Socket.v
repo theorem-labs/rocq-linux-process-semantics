@@ -174,6 +174,7 @@ Definition bind_witness (fd addrp addrlen : word) (i : SyscallInput) (m : Model)
            else Unmodeled)
       end
   | Some (FdDgram _) => Unmodeled               (* a socket: an address it lacks *)
+  | Some (FdChannel _) => Unmodeled             (* a channel may be a socket *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -243,6 +244,7 @@ Definition listen_witness (fd : word) (m : Model) : outcome SyscallEffect :=
       end
   | Some (FdStream _ _ _) => ret_outcome (errno_ret EINVAL) m   (* unbound pair end *)
   | Some (FdDgram _) => Unmodeled                              (* a socket: declined *)
+  | Some (FdChannel _) => Unmodeled                            (* a channel may be a socket *)
   | Some _ => ret_outcome (errno_ret ENOTSOCK) m
   end.
 
@@ -289,6 +291,7 @@ Definition accept4_witness (fd addrp flags : word) (m : Model)
           end
       | FdStream _ _ _ => Unmodeled              (* a socket: see [accept4_spec] *)
       | FdDgram _ => Unmodeled                   (* a socket: see [accept4_spec] *)
+      | FdChannel _ => Unmodeled                 (* a channel may be a socket *)
       | _ => if negb (Z.ltb (bv_unsigned (alloc_fd (m_fds m))) NR_OPEN_DEFAULT)
              then Unmodeled
              else ret_outcome (errno_ret ENOTSOCK) m
@@ -359,6 +362,7 @@ Definition connect_witness (fd addrp addrlen : word) (i : SyscallInput)
                  end
            | FdStream _ _ _ => Unmodeled        (* [unix_stream_connect]: a name lookup *)
            | FdDgram _ => Unmodeled             (* a peer [State.FdDgram] lacks *)
+           | FdChannel _ => Unmodeled           (* a channel may be a socket *)
            | _ => ret_outcome (errno_ret ENOTSOCK) m
            end)
       end
@@ -379,7 +383,7 @@ Proof.
          as [bs|]; cbv beta iota zeta; [ | apply pure_ok ].
   all: apply record_copyins_outcome; cbv beta iota zeta.
   (* every non-socket entry answers -ENOTSOCK below the copy, and the
-     stream-pair end and the datagram socket decline there *)
+     channel, the stream-pair end and the datagram socket decline there *)
   all: try apply pure_ok.
   all: try apply unmodeled_intro.
   (* the socket arm *)
@@ -552,7 +556,7 @@ Definition getsockname_witness (fd : word) (i : SyscallInput) (m : Model)
   | SoErr e => ret_outcome (errno_ret e) m
   | SoInet _ => Unmodeled
   | SoPair _ _ _ => stream_getname_witness (in_arg i 1) (in_arg i 2) i m
-  | SoInert _ => Unmodeled                 (* [State.FdDgram]: declined *)
+  | SoInert _ => Unmodeled                 (* [State.FdDgram] or a channel: declined *)
   end.
 
 Lemma getsockname_witness_ok : forall fd i m,
@@ -828,6 +832,7 @@ Definition sendto_witness (fd buf count flags addrp : word)
                   (se_nonblock st || send_flag flags MSG_DONTWAIT)%bool
                   (send_flag flags MSG_NOSIGNAL) buf count i m
        | Some (FdDgram _) => Unmodeled        (* a socket with no peer: declined *)
+       | Some (FdChannel _) => Unmodeled      (* a channel may be a socket *)
        | Some _ => ret_outcome (errno_ret ENOTSOCK) m
        end).
 
@@ -846,6 +851,7 @@ Proof.
   destruct (access_okb buf (bv_unsigned count)); [|apply pure_ok].
   destruct (fd_lookup (m_fds m) fd) as [[ch|p off|p off|p off|p off| |sk|pid pw|rd wr| |id side st|ctx|fam]|];
     cbv beta iota zeta; try apply pure_ok.
+  - apply unmodeled_intro.                   (* the channel *)
   - destruct (negb (send_flags_modeled flags)); [apply unmodeled_intro|].
     apply send_on_socket_witness_ok.
   - destruct (negb (stream_send_flags_ok flags)); [apply unmodeled_intro|].
@@ -862,7 +868,8 @@ Definition sendmsg_witness (fd msgp flags : word)
   else
   match fd_lookup (m_fds m) fd with
   | None => ret_outcome (errno_ret EBADF) m
-  | Some (FdChannel _) | Some (FdFile _ _)
+  | Some (FdChannel _) => Unmodeled             (* a channel may be a socket *)
+  | Some (FdFile _ _)
   | Some (FdFileW _ _) | Some (FdDir _)
   | Some (FdFileA _ _) | Some (FdFileRW _ _)
   | Some (FdPipe _ _) | Some (FdDevNull _ _) | Some (FdUrandom _ _)

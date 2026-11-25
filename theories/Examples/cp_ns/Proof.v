@@ -32,9 +32,9 @@
       ([FileSimLoop.floop_omni_strong_equiv]).
 
     The walk of an operand may follow symbolic links, read names over
-    [Fs.name_max] and stand in any folder; -ELOOP and -ENAMETOOLONG
-    are admitted beside its answer, which both binaries take as the
-    same open-failed branch.
+    [Fs.name_max] and stand in any folder; -ELOOP (once the walk has
+    counted 21 links) and -ENAMETOOLONG are admitted beside its answer,
+    which both binaries take as the same open-failed branch.
 
     Ported in part from theorem-labs/linux-process-semantics
     r22/namespace-core at 6ff3d045 (issue #1011). *)
@@ -64,14 +64,21 @@ Open Scope bv_scope.
     walk end: [Fs.ROutside] -- the name proc or sys looked up at the
     root, by any spelling or link, because /proc and /sys are outside
     the model.  A device entry is answered at any key.
-    [Run.valid_input] admits such an input: the root as working folder
-    beside an operand proc, or a link whose body leads there.  On such
-    an input the source run is declined and no equivalence can be
-    stated of it.
+    The two roads there that a launch could take are not valid inputs:
+    the root as working folder beside an operand proc
+    ([Run.cwd_off_rootb] refuses that folder, and an operand is one
+    plain name, [Run.valid_argv], so its walk starts below the root),
+    and a link at an operand whose body leads there
+    ([Run.links_off_proc_sysb] refuses every body with a component proc
+    or sys).  So, by that argument and not by a proof, the hypothesis
+    excludes no valid input.  It stays: the theorem is stated over it,
+    tools/gen_checker.py pins its text, and a program whose own
+    pathname leads to /proc or /sys still reaches [Fs.ROutside] on a
+    valid input ([Equivalence.strong_universal_T_on]).
 
-    The hypothesis excludes those inputs and nothing else: an operand
-    that is empty or does not fit in PATH_MAX is answered before any
-    walk, so it is not constrained, and [operands_inside_model_iff]
+    An operand that is empty or does not fit in PATH_MAX is answered
+    before any walk, so it is not constrained, and
+    [operands_inside_model_iff]
     proves the hypothesis EQUIVALENT to the model answering the open of
     each operand.  Its text is pinned by tools/gen_checker.py, and the
     generated Checker.v prints it. *)
