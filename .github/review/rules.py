@@ -713,16 +713,17 @@ LOG_DECISIONS = {
                  "keep line of the step that finds those check runs names that time in the field from. The later step "
                  "also withdraws each one that names no read, and each one when from is none. Both steps run only "
                  "while the GitHub environment named post holds the key of the OSS Verify App."),
-    "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line "
-                  "(cause unposted). So this run records no import check run with the conclusion success."),
+    "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line whose "
+                  "reason no workflow comment gives (cause unposted). So this run records no import check run with "
+                  "the conclusion success."),
     "newer": ("A run that read the item at or after this run gave the head a blocking finding or the verdict person. "
               "So this run records no import check run with the conclusion success."),
     # The label step: gone, in the place of the post job's decision, and the hold that keeps the labels.
     "gone": ("No import check run of the head with the conclusion success and the marker of the import's paths "
              "stands now. So the label comment does not say that the workflow recorded the check."),
     "stay": ("The label step leaves the state label and the text of the label comment as they are. When the item has "
-             "no label comment and this run owes a withdraw-owed line, the label step posts a label comment with "
-             "that line. That label comment has the state working or after-hold."),
+             "no label comment and this run owes a withdrawal, the label step posts a label comment with the "
+             "withdraw-owed line. That label comment has the state working or after-hold."),
     # The step that finds the import check runs to withdraw, and the step that records the check run of not-approved.
     "withdraw": "A later step of this job withdraws the import check runs that check names.",
     "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
@@ -748,8 +749,8 @@ LOG_CAUSES = {
     "missing": ("No import check run of the head with the conclusion success and the marker of the import's paths "
                 "stands."),
     "unposted": "The label comment holds a withdraw-owed line, and no comment of the workflow gives its reason.",
-    "outranked": ("A screened review of a newer read outranks the withdraw-owed line of the label comment, so that "
-                  "line gives no reason."),
+    "outranked": ("The run of a screened review read the item after the run that the withdraw-owed line names. That "
+                  "review outranks the line, so the line gives no reason to withdraw an import check run."),
     "earlier": "A screen passed the head in the run of an earlier review.",
     "standing": "An import check run of the head with the conclusion success stands.",
     "head": "The head of the pull request is not the head that this run read.",

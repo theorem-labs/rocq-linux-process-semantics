@@ -4910,8 +4910,11 @@ jobs:
   # its screen, whose hold says that the checks of the pull request have not run, or when its gather or screen job
   # failed. A gather or screen job that failed judged nothing of the item, so no screen held it: its hold is
   # transient, or its last try, and never a hold of the screen. It names no read, and no reader counts it as a word on
-  # the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A cancelled gather or screen job gets no hold, as a newer
-  # run of the item decides. A hold that is not tried again (the screen's, or
+  # the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A gather or screen job is cancelled when it runs out of
+  # time, and a screen job also when a newer run of the same item and task cancels it (the screen job's concurrency).
+  # A cancelled gather or screen job gets no hold, and no later job of its run writes on the item. The item waits for
+  # its next event or the rescreen pass (held.sh due_unreviewed, due_answer, due_draft, due_approve and held_work).
+  # A hold that is not tried again (the screen's, or
   # the last try of a review, an answer, a draft or a run whose gather or screen job failed) gives waits-on-theorem
   # and a label comment that names Sami's next step (.github/review/rules.py, from main's checkout of .github/). The
   # label call gives the trust job's
@@ -5019,7 +5022,8 @@ jobs:
       # A gather job or a screen job of this run that failed. No screen judged the item, so no screen held it
       # (OSSV-221's architect, 2026-11-25 01:13Z, G2): the label step holds it as a run that did not finish, with a
       # transient hold that the rescreen pass tries again, never with a hold of the screen. A cancelled gather or screen
-      # job gets no hold, as a newer run of the item decides: the if of this job admits no such job. As in the two
+      # job gets no hold: the if of this job admits no such job. Such a job ran out of time, or a newer run of the same
+      # item and task cancelled the screen, and the item waits for its next event or the rescreen pass. As in the two
       # steps after this one, the if alone reads those jobs, and the step writes only the literal output failed=true.
       - name: Whether the gather or the screen job of this run failed
         id: unscreened
@@ -5390,7 +5394,7 @@ jobs:
             elif [ "${UNSCREENED:-}" = true ]; then
               fact=tries_used_up
               why="The automated screen of $what did not finish, so the workflow skipped $work_of."
-              why+=" The workflow does not try it again."
+              why+=" The workflow does not try the screen again."
             else
               fact=screen_held
               why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
@@ -5409,7 +5413,7 @@ jobs:
             else
               fact=tries_used_up
               why="The automated screen of $what did not finish, so the workflow skipped $work_of."
-              why+=" This was try $tries of $REVIEW_TRIES. The workflow does not try it again. $from"
+              why+=" This was try $tries of $REVIEW_TRIES. The workflow does not try the screen again. $from"
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             # Stopped at SCREENED_HOURLY_CAP: tried (read above) gives cap, as the review job's step "Hold at the hourly
