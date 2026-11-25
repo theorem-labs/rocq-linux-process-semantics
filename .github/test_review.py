@@ -4369,8 +4369,8 @@ class HoldTest(Holding):
         rc, out, got = self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})
         self.assertEqual((rc, label_comments(self.api), got), (0, [], {"line": line}), out)
         self.assertIn(f"#7: it has no label comment, and this command writes none. If a later command of this job "
-                      f"writes a label comment, that comment gets {line}. If no later command writes one, the workflow "
-                      f"does not record {line}.\n", out)
+                      f"writes a label comment, that comment gets {line}, unless a line of {HEAD} that outranks it "
+                      f"stands there. If no later command writes one, the workflow does not record {line}.\n", out)
         rc, out, _posts, _body = self.run_hold("screen", head=HEAD, owed_line=got["line"])
         self.assertEqual(rc, 0, out)
         state = rules.label_state(outsider=True, screen_held=True)

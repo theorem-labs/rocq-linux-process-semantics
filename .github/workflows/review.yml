@@ -4113,7 +4113,8 @@ jobs:
       # A record of an owed withdrawal never makes a label comment: for an item with none, rules.py writes
       # nothing (status 3) and gives the line as this step's output line, which the label step gives to the label
       # comment that it writes (marker=<line>). The label step writes the line also when it stops for a hold made after
-      # the run started (rules.py mark). Else, when the label step writes no label comment, the line of an item with no
+      # the run started (rules.py mark). In both cases, a line of the head that outranks that line stays (rules.py
+      # owed_keeps). Else, when the label step writes no label comment, the line of an item with no
       # label comment is not recorded. That is so when the step is skipped, stops before its label call, or leaves the
       # labels of a relabel whose post job failed, or of an author whose write access GitHub did not give. For a line
       # of this run's own review, rules.py gives status 0 for an item with no label comment, and the label step gets no
@@ -4488,7 +4489,8 @@ jobs:
       # the rescreen pass's retry of the App's writes takes the head again (held.sh, due_retry). When that step found
       # no label comment (its output line), this step gives the line as marker=<line> to its label call, which writes a
       # label comment with the line in any state. When a hold made after this run started stops this step, it still
-      # writes the line (rules.py mark). When this step writes no label comment otherwise, as for such a relabel, the
+      # writes the line (rules.py mark). In both cases, a line of the head that outranks that line stays (rules.py
+      # owed_keeps). When this step writes no label comment otherwise, as for such a relabel, the
       # line of an item with no label comment is not recorded.
       # For the post job's decision hand (a review by hand, or a relabel, whose newest review of the head passed it with
       # no screen, after a screen passed the head in the run of an earlier review), that job recorded no check run. An
@@ -4647,7 +4649,8 @@ jobs:
           if (( rc == 0 )); then
             python3 .github/review/rules.py log "$NUMBER" "${HEAD:--}" stay hold "$STARTED" from "$last" || exit 1
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
-            # owes" did not write it. mark leaves the state label and the text of a label comment as they are. An item
+            # owes" did not write it. A line of the head that outranks OWED_LINE stays (rules.py owed_keeps). mark
+            # leaves the state label and the text of a label comment as they are. An item
             # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
             # For a hold that the rescreen pass tries again, it is working: that hold comment gives the time from which
             # the workflow tries again. For any other hold (a hold of the screen, or a stop), it is after-hold, which
@@ -5072,7 +5075,8 @@ jobs:
       # step, which can fail. A
       # record of an owed withdrawal never makes a label comment: for an item with none, rules.py writes nothing (status
       # 3) and gives the line as this step's output line, which the label step gives to the label comment that its
-      # label call writes (marker=<line>). When the label step writes no label comment (it stops before its label call:
+      # label call writes (marker=<line>). A line of the head that outranks that line stays (rules.py owed_keeps). When
+      # the label step writes no label comment (it stops before its label call:
       # a run that judged nothing (held.sh try_rule), a newer run, a stale hold, an answer's hold that is tried again,
       # or an error), the line of an item with no label comment is not recorded. For a withdrawal that the post job
       # finished, rules.py gives status 0 for an item with no label comment, and the label step gets no line: the hold
@@ -5172,7 +5176,7 @@ jobs:
         env:
           # The line <!-- withdraw-owed <head> <why> <run> <read> --> that the step "Record a withdrawal that this run
           # owes" did not write, as the item had no label comment. The label call below gives it to the label comment
-          # that it writes.
+          # that it writes. A line of the head that outranks that line stays (rules.py owed_keeps).
           OWED_LINE: ${{ steps.owed.outputs.line }}
           # The time when the trust job of this run read the item, which a hold of the screen of a pull request or of
           # an issue names in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in

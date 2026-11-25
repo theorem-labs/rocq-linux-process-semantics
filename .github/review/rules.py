@@ -1512,8 +1512,8 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
                   f"{comment}. If that step fails or posts no such comment, the workflow does not record {line}.")
             return ""
         print(f"#{number}: it has no label comment, and this command writes none. If a later command of this job "
-              f"writes a label comment, that comment gets {line}. If no later command writes one, the workflow does "
-              f"not record {line}.")
+              f"writes a label comment, that comment gets {line}, unless a line of {head} that outranks it stands "
+              f"there. If no later command writes one, the workflow does not record {line}.")
         return line
     return ""
 
@@ -2310,11 +2310,12 @@ def owed_keeps(number, comments, body, line):
     if not outranks((at, kind), (other, rank)):
         return ""
     if at == other:
-        why = (f"Both lines count {'after each time' if at is NEWEST else f'from {at}'}, and a hold of the screen "
-               "outranks a blocking finding or the verdict person.")
+        why = (f"Both lines count {'as later than any time' if at is NEWEST else f'from {at}'}. The line that stands "
+               "is for a hold of the screen, which outranks "
+               f"{'a blocking finding' if new.group(2) == 'blocking' else 'the verdict person'} at the same time.")
     elif at is NEWEST:
         why = (f"The line that stands names no read, and no hold of run {kept.group(3)} gives it a time. So it counts "
-               "after each time, and it outranks the other line.")
+               "as later than any time, and it outranks the other line.")
     else:
         why = f"The line that stands counts from {at}, later than {other}, so it outranks the other line."
     return f"#{number}: its label comment keeps {kept.group(0)}. This step does not write {line}. {why}"
