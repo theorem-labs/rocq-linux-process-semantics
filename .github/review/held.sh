@@ -1633,6 +1633,7 @@ consider() {
         screen) because="a screen held $head" ;;
         blocking) because="a review of $head asks for a change" ;;
         person) because="a review of $head has questions for Sami" ;;
+        refused) because="the fresh reader refused a review of $head" ;;
       esac
       if [ -n "$because" ]; then
         said="#$number: a hold that is not tried again names $head, and $because."

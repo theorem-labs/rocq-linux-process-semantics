@@ -86,7 +86,8 @@ the hold job, for a screen that held the head in a review, a rescreen or an appr
 the run that writes the line, and <read>, the time when that run read the item, its trust job's started) gives the line
 <!-- withdraw-owed <head> <why> <run> <read> --> of KEPT (OWED), as mark does, but it never makes a label comment.
 own=true says that a comment of this run gives <why>: the hold job's line of its own screen, or the comment job's line
-of the verdict of its own review. Else (own=false, or empty with no owed=) the line names the run of the comment that
+of the verdict of its own review, also refused (its own review that the fresh reader refused, which no comment gives).
+Else (own=false, or empty with no owed=) the line names the run of the comment that
 gives <why> and the read of that run (owed_run): the run and the read of a line of that head and reason that stands,
 or else the run of the newest such hold or review comment and its time (word_time), and <run> and <read> only when
 none names a run. When the item has no label comment, this writes nothing, a line says so, and the status is 3: it
@@ -287,7 +288,7 @@ the time of each hold comment from it.
 outranks: the status is 0 when the word (<time>, <kind>) outranks the word of the next two arguments in the order of
 the words on a head (outranks: by time, then by the rank of the kind, RANKS), and 3 when it does not. A <time> is a
 time as GitHub gives it, or empty for no time, which is before each time. A <kind> is one of RANKS: read, pass,
-success, blocking, person, neutral or hold. The status is 2 when an argument is not one of these.
+success, blocking, person, refused, neutral or hold. The status is 2 when an argument is not one of these.
 
 source: "<source> <time>" on standard output for a withdrawal of the import check runs of <head> of the pull request
 <number> for <why> that the withdrawing run did not give itself (reason_source), by <kind>: held, the run of the newest
@@ -299,10 +300,11 @@ that gives <why>), of its hold of the screen, or of its withdrawal (source_time,
 closed. It reads the comments of github-actions[bot] on <number>.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
-<number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, screen, a screen that held
-it (R12), or access, a run in which GitHub did not say whether the author has write access (its verdict is no
-approval; OSSV-221's architect, 2026-11-24 14:29Z, F3). <kind> is own when <why> is the verdict, the screen or the
-access of <run>, the id of the run that withdraws them, and else held, owed or earlier, as for source. For own, the
+<number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, refused, a review of <head>
+that the fresh reader refused (OSSV-221's architect, 2026-11-25 10:21Z), screen, a screen that held it (R12), or
+access, a run in which GitHub did not say whether the author has write access (its verdict is no approval;
+2026-11-24 14:29Z, F3). <kind> is own when <why> is the verdict, the screen or the access of <run>, the id of the run
+that withdraws them, and else held, owed or earlier, as for source. For own, the
 texts say later when the run that recorded the check run read the pull request before <at>, or names no such run
 (recorded_by: it counts as read at no time; WITHDRAWN). When that run read it at <at>, the same time as <run>, they
 name <run> (TIE_WITHDRAWN). For each other kind, the review
@@ -318,8 +320,9 @@ standard output, one on each line. The status is 2 when an argument or a line is
 
 not-approved: the request that records the check run repo-pairs/import-approved with the conclusion neutral on <head>
 of the pull request <number> (not_approved), for POST repos/<repo>/check-runs, in <request.json>. <why> is the reason
-of <run> itself: blocking or person, the verdict of its review, screen, its screen that held <head>, or access (F3,
-above). <read> is the time when <run> read the pull request. The post job of <run> makes it when no import check run
+of <run> itself: blocking or person, the verdict of its review, refused, its review that the fresh reader refused,
+screen, its screen that held <head>, or access (F3, above). <read> is the time when <run> read the pull request. The
+post job of <run> makes it when no import check run
 of <head> for <number> has the conclusion success, as it then has no success to withdraw (OSSV-221's architect,
 2026-11-24 05:33Z), for an author whom holds_back treats as outside (2026-11-24 09:28Z). The write jobs of an item
 run one at a time (the group write-<n>), and the post job of a run that read the item before <read> can come after
@@ -628,7 +631,7 @@ TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (issue-draft) [0-9]+-[0-9]+ -->"
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
                   r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->"
-                  r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|screen) [1-9][0-9]*"
+                  r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|refused|screen) [1-9][0-9]*"
                   rf" {TIME.pattern} -->")
 # The marker line of a withdrawal of the import check runs of a head (R12) that a run found a reason for and did not
 # finish (GitHub refused it, or the job failed or stopped before it), or whose reason no comment of the item gives yet.
@@ -653,12 +656,15 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew each one, or
 # a newer screened review outranks the line), and only while a comment of BOT gives a reason for it (line_reason): the
 # comment of the line's run that gives why, or a review of the head newer than the time of the line. Until then, each
-# relabel records nothing (owe).
+# relabel records nothing (owe). The why refused is the reason of a review that the fresh reader refused (OSSV-221's
+# architect, 2026-11-25 10:21Z). No comment of its run gives it, so the line names that run and its read, and only a
+# later review takes it out (line_reason).
 # Each head has a line of its own (marker_kind). A line takes the place of the line of its head only when that line
 # does not outrank it as a word on the head (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z), for each writer:
 # owe, also for the line of its own run, mark, and the label call (apply). So no older read's line takes the place of
 # a newer read's line whose comment never posted.
-OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|screen) ([1-9][0-9]*) ({TIME.pattern}) -->")
+OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|refused|screen) ([1-9][0-9]*)"
+                  rf" ({TIME.pattern}) -->")
 
 # --- the decision log -----------------------------------------------------------------------------------------------
 # The one short fixed form of each log line, and of each line of a job summary, that states a decision of the workflow
@@ -732,6 +738,8 @@ LOG_DECISIONS = {
 LOG_CAUSES = {
     "blocking": "A review of the head, or the withdraw-owed line of the label comment, gives a blocking finding.",
     "person": "A review of the head, or the withdraw-owed line of the label comment, gives the verdict person.",
+    "refused": ("The fresh reader refused a review of the head, whatever verdict the model gave, or the withdraw-owed "
+                "line of the label comment gives that refusal."),
     "pass": "A review of the head gives the verdict pass.",
     "verdict": "A review of the head gives a blocking finding or the verdict person: the post job does not say which.",
     "screen": "A screen held the head.",
@@ -1414,7 +1422,8 @@ def owe(number, run, owed="", withdrawn="", own=False):
     time when that run read the item (its trust job's started). It gives the line
     <!-- withdraw-owed <head> <why> <run> <read> --> (mark), in a label comment that the item has: it never makes one.
     own is True when a comment of that run gives why: the hold comment of its screen, or its own review with that
-    verdict. Else the line names the run of the comment that gives why, and the read of that run (owed_run;
+    verdict. It is True also for refused, its own review that the fresh reader refused, which no comment gives. Else the
+    line names the run of the comment that gives why, and the read of that run (owed_run;
     OSSV-221's architect, 2026-11-22 17:27Z and 2026-11-25 01:30Z), so that a refused withdrawal of a relabel never
     takes the place of that run and its read. When the item has no label comment, it writes nothing, says so, and the
     result is the line: the step gives it to the label step of its job. withdrawn alone, a head whose withdrawal the
@@ -1463,6 +1472,8 @@ def owe(number, run, owed="", withdrawn="", own=False):
             kept = owed_marker(withdrawn, why, wrote, read)
             if why == "screen":
                 said = f"No hold comment of the screen of run {wrote} names {withdrawn}."
+            elif why == "refused":
+                said = f"The fresh reader refused the review of run {wrote}, so no comment of that run gives a reason."
             else:
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}."
             newer = (f"No {'screened ' if screened else ''}review comment of {withdrawn} comes from a run that read "
@@ -1901,14 +1912,19 @@ def withdraws(check, at):
 # Why a later run of a head withdraws the import check run that the workflow recorded on it (R12), for the kind own
 # (CAUSES) alone: its own review gave a blocking finding or the verdict person, or its own screen held the head, or
 # GitHub did not say in that run whether the author has write access (access: its pass is no approval; OSSV-221's
-# architect, 2026-11-24 14:29Z, F3). Each is (the end of the output title, the summary's first sentence). They say
-# later: the run that recorded the check run read the pull request before the run that withdraws it, or names no such
-# run, and then counts as read at no time (recorded_by).
+# architect, 2026-11-24 14:29Z, F3). The reason refused is a review of that run that the fresh reader refused, whatever
+# verdict the model gave (2026-11-25 10:21Z). Each is (the end of the output title, the summary's first sentence). They
+# say later: the run that recorded the check run read the pull request before the run that withdraws it, or names no
+# such run, and then counts as read at no time (recorded_by). The texts of refused say that the workflow stopped the
+# review, as the label comment of its state does (STATES, refused-review). An outside author reads them on the pull
+# request.
 WITHDRAWN = {
     "blocking": ("because a later review asks for a change",
                  "A later automated review of this head commit asks for a change."),
     "person": ("because a later review has questions for Sami",
                "A later automated review of this head commit has questions for Sami."),
+    "refused": ("because the workflow stopped a later review",
+                "The workflow stopped a later automated review of this head commit and did not post it."),
     "screen": ("because a later screen held it", "A later automated screen held this head commit."),
     "access": ("because GitHub did not say in a later run whether the author has write access",
                "GitHub did not say in a later run of the review workflow whether the author of this pull request has "
@@ -1921,6 +1937,8 @@ TIE_WITHDRAWN = {
                  "The automated review in run {run} asks for a change."),
     "person": ("because the review of run {run} has questions for Sami",
                "The automated review in run {run} has questions for Sami."),
+    "refused": ("because the workflow stopped the review of run {run}",
+                "The workflow stopped the automated review in run {run} and did not post it."),
     "screen": ("because the screen of run {run} held it", "The automated screen in run {run} held this head commit."),
     "access": ("because GitHub did not say in run {run} whether the author has write access",
                "GitHub did not say in run {run} of the review workflow whether the author of this pull request has "
@@ -1936,6 +1954,8 @@ OWED_WITHDRAWN = {
                  "An automated review of this head commit asked for a change."),
     "person": ("because an automated review of this head commit had questions for Sami",
                "An automated review of this head commit had questions for Sami."),
+    "refused": ("because the workflow stopped an automated review of this head commit",
+                "The workflow stopped an automated review of this head commit and did not post it."),
     "screen": ("because an automated screen held this head commit", "An automated screen held this head commit."),
     "access": ("because GitHub did not say in a run whether the author has write access",
                "GitHub did not say in a run of the review workflow whether the author of this pull request has write "
@@ -1992,25 +2012,29 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at="", read=
                        "summary": summary, "text": text}}
 
 
+# The reasons that the summary of a withdrawal (WITHDREW) or of a check run of not_approved (NOT_APPROVED) names, as one
+# pattern: each reason of WITHDRAWN.
+WITHDRAWN_WHY = "|".join(WITHDRAWN)
 # The last sentences of the summary of a withdrawal (withdrawal), in each of its three forms: the run that withdrew it,
 # the head, the reason, and the time from which the withdrawal counts (for own, the time when that run read the pull
 # request), with the run that gave the reason when the summary names one.
 WITHDREW = re.compile(
     r" Run (?P<run>[1-9][0-9]*) of the review workflow withdrew it from head commit (?P<head>[0-9a-f]{40})"
-    r"(?:, for the reason `(?P<own>blocking|person|screen|access)` of run (?P=run) itself\. The withdrawal counts "
+    rf"(?:, for the reason `(?P<own>{WITHDRAWN_WHY})` of run (?P=run) itself\. The withdrawal counts "
     rf"from (?P<read>{TIME.pattern}), the time when run (?P=run) read the pull request"
-    rf"| at (?P<at>{TIME.pattern}), for the reason `(?P<earlier>blocking|person|screen|access)` of an earlier run\. "
+    rf"| at (?P<at>{TIME.pattern}), for the reason `(?P<earlier>{WITHDRAWN_WHY})` of an earlier run\. "
     r"The workflow knows no time of that run, so the withdrawal counts from this time"
-    r"|, for the reason `(?P<why>blocking|person|screen|access)` of run (?P<source>[1-9][0-9]*)\. The withdrawal "
+    rf"|, for the reason `(?P<why>{WITHDRAWN_WHY})` of run (?P<source>[1-9][0-9]*)\. The withdrawal "
     rf"counts from (?P<since>{TIME.pattern}), a time of run (?P=source)\. It is the time when run (?P=source) read the "
     r"pull request, or the time of a hold or a withdrawal by run (?P=source))\.$")
 
 
 def not_approved(number, head, why, value, run, at):
     """The body of the request that records a check run with the conclusion neutral on head of pull request number
-    (POST repos/<repo>/check-runs) for why, the verdict blocking or person of the review of run, screen, the screen
-    of run that held head, or access, a run in which GitHub did not say whether the author has write access, so that
-    its verdict is no approval whatever it is (OSSV-221's architect, 2026-11-24 14:29Z, F3): the reason of run itself.
+    (POST repos/<repo>/check-runs) for why, the verdict blocking or person of the review of run, refused, the review
+    of run that the fresh reader refused (OSSV-221's architect, 2026-11-25 10:21Z), screen, the screen of run that held
+    head, or access, a run in which GitHub did not say whether the author has write access, so that its verdict is no
+    approval whatever it is (2026-11-24 14:29Z, F3): the reason of run itself.
     The post job of run makes it when no import check run of head for number has the conclusion success, as it then
     has no success to withdraw (OSSV-221's architect, 2026-11-24 05:33Z; spec R12), for an author whom holds_back
     treats as outside (2026-11-24 09:28Z). The write jobs of an item run one at a time (the group write-<n>), and the
@@ -2046,7 +2070,7 @@ NOT_APPROVED = re.compile(
     rf" Run (?P<run>[1-9][0-9]*) of the review workflow read the pull request at (?P<read>{TIME.pattern})\. Then it "
     r"found no import check run of head commit (?P<head>[0-9a-f]{40}) for pull request #(?P<number>[1-9][0-9]*) that "
     r"was an approval for the import\. So this check records that pull request #(?P=number) is not approved for the "
-    r"import, for the reason `(?P<own>blocking|person|screen|access)` of run (?P=run) itself\.$")
+    rf"import, for the reason `(?P<own>{WITHDRAWN_WHY})` of run (?P=run) itself\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
 WITHDRAWING = ("blocking", "person")
 
@@ -2064,10 +2088,10 @@ WITHDRAWING = ("blocking", "person")
 #   read the pull request (recorded_by), and at no time when its summary names none.
 # - An import check run of the head with the conclusion neutral, a withdrawal or a check run of not_approved: neutral,
 #   from the time that its summary names (blocks_from), and after each time (NEWEST) when it names none.
-# - The line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking or person as a
-#   verdict, and hold for screen, from <read>, the time when its run read the item, never from when its step wrote the
-#   line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). It gives only a reason to withdraw, never a state or
-#   a comment.
+# - The line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking, person or
+#   refused as a verdict, and hold for screen, from <read>, the time when its run read the item, never from when its
+#   step wrote the line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). It gives only a reason to withdraw,
+#   never a state or a comment.
 # - The read of a run that gives no word of its own, such as a relabel or an approval: read, from the time when its
 #   trust job read the item.
 # The order is by time. At the same time, a kind of a higher rank outranks a kind of a lower one: a verdict or a hold
@@ -2075,7 +2099,9 @@ WITHDRAWING = ("blocking", "person")
 # the time of a screened review as held), and each word outranks a read. Two words of the same rank at the same time
 # do not outrank each other. A run whose author's write access GitHub did not say gives no approval, whatever its
 # verdict: its post job records a neutral check run, or withdraws, for the reason access at its own read, which its
-# pass does not outrank (F3).
+# pass does not outrank (F3). A review that the fresh reader refused posts no comment, so it is no word of a comment.
+# Its post job records a neutral check run, or withdraws, for the reason refused at its own read (2026-11-25 10:21Z).
+# That neutral check run outranks each pass of an earlier read. The kind refused of a line of OWED ranks as a verdict.
 # Each writer applies the order before it writes. So at the end of each order of the post, comment and hold jobs of
 # the runs of a head: (I1) a success stands only while the newest word is a pass of a run of an outside author;
 # (I2) the label says that the workflow recorded the check exactly while a success stands; (I3) the label's state is
@@ -2087,7 +2113,7 @@ WITHDRAWING = ("blocking", "person")
 # (review_verdict, relabel_facts, and held.sh relabel_withdraws through the command relabel-withdraws). The line gives
 # its reason only while the newest screened review comment does not outrank it (owed_reason): so an older read's line
 # never withdraws a newer read's record, and never takes the place of the state of a newer pass.
-RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "neutral": 2, "hold": 3}
+RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "refused": 2, "neutral": 2, "hold": 3}
 # The time of a word that counts after each time: a neutral check run whose summary names no time (check_word).
 NEWEST = None
 
@@ -2250,7 +2276,7 @@ def owed_word(comments, head):
 def line_word(why, read):
     """(read, kind, why) of the line of OWED for why that names read (owed_marker) as a word on its head. read is the
     read of the line, the time when its run read the item, never the time when a step wrote the line. kind is the rank
-    of why (RANKS): blocking or person as a verdict, and hold for screen."""
+    of why (RANKS): blocking, person or refused as a verdict, and hold for screen."""
     return read, "hold" if why == "screen" else why, why
 
 
@@ -2271,8 +2297,9 @@ def owed_keeps(number, body, line):
     if not outranks((at, kind), (other, rank)):
         return ""
     if at == other:
+        said = {"blocking": "a blocking finding", "person": "the verdict person", "refused": "a refused review"}
         why = (f"Both lines count from {at}. The line that stands is for a hold of the screen, which outranks "
-               f"{'a blocking finding' if new.group(2) == 'blocking' else 'the verdict person'} at the same time.")
+               f"{said[new.group(2)]} at the same time.")
     else:
         why = f"The line that stands counts from {at}, later than {other}, so it outranks the other line."
     return f"#{number}: its label comment keeps {kept.group(0)}. This step does not write {line}. {why}"
@@ -2306,10 +2333,11 @@ def owed_run(comments, head, why, run, read):
     that stands (owed_line), so that the line keeps naming the run of its reason. Else, the run of the comment of BOT
     that gives why, the newest by word_time, the time when its run read the item, with that time: for screen, a hold
     comment of the screen that names head (or its updated_at with no marker of that read); for blocking or person, a
-    review comment of head with that verdict. Else run and read, the writer's own run and the time when it read the
-    item, also when that comment names no run: then no comment of an earlier run can take the line out (line_reason),
-    and it fails closed. A ValueError when the time of that comment is not one of TIME, as owe gives for an owed value
-    with no read: no line goes without a read."""
+    review comment of head with that verdict. No comment gives refused: the fresh reader refused that review, so it
+    never posted. Else run and read, the writer's own run and the time when it read the item, also when that comment
+    names no run: then no comment of an earlier run can take the line out (line_reason), and it fails closed. A
+    ValueError when the time of that comment is not one of TIME, as owe gives for an owed value with no read: no line
+    goes without a read."""
     standing, wrote, at = owed_line(comments, head)
     if standing == why:
         return wrote, at
@@ -2339,10 +2367,11 @@ def reason_posted(comments, head, why, run, screened, since):
     line <!-- withdraw-owed <head> <why> <run> <read> --> of OWED to go (owe; OSSV-221's architect, 2026-11-22 16:06Z
     and 16:08Z). (a) The comment of run that gives why: for screen, a hold comment of the screen (hold_fact screen_held)
     that names head and run (HELD_HEAD, HELD_RUN); for blocking or person, a review comment of head of run
-    (REVIEW_RUN) with that verdict. (b) A review comment of head that is newer than the line: its word_time is after
-    since, the time of the line (line_reason). That is the time when its run read the item, never the time when it
-    posted (OSSV-221's architect, 2026-11-24 01:20Z): a review whose run read the head before the line gave no verdict
-    after it. A review with no marker of that time counts from when GitHub last changed it for a blocking finding or
+    (REVIEW_RUN) with that verdict; for refused, none, as that review never posted. (b) A review comment of head that is
+    newer than the line: its word_time is after since, the time of the line (line_reason). That is the time when its
+    run read the item, never the time when it posted (OSSV-221's architect, 2026-11-24 01:20Z): a review whose run
+    read the head before the line gave no verdict after it. A review with no marker of that time counts from when
+    GitHub last changed it for a blocking finding or
     the verdict person, and never for a pass (01:26Z). A run's id gives when it started, not when it gave its verdict,
     so it is no such time (2026-11-23 01:47Z and 03:06Z). With since empty, no review comment gives a reason by (b).
     When screened is True, the review comment of (b) must hold the marker <!-- review-screened <head> -->: the decide
