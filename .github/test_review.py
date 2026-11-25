@@ -22837,6 +22837,29 @@ class ImportCheckTest(ReaderRunner):
         _outcomes, wrote, labels, _review = self.comment_job_after_post(mine, ci, "pass", [label], "100")
         self.assertEqual((wrote, [b.split("\n")[1] for b in labels]), ([], []), self.logs[-6:])
 
+    def test_a_refused_review_at_the_read_of_a_pass_outranks_it_and_keeps_its_label(self):
+        """The tester's audit of round 27 (F3), by OSSV-221's architect's ruling of 2026-11-25 19:29Z: at a tie of
+        read a verdict outranks a pass, and a refused review has the rank of a verdict (rules.py RANKS), so it gives
+        way only as a blocking review does. The CI review run 100 and rescreen run 130 of #7 both read the item at
+        T. Run 100's post job records 901 for its pass; run 130's post job withdraws it for its refused review; run
+        100's comment job posts its pass; then run 130's comment job runs: its refusal outranks that pass at T, so
+        its label step writes the state refused-review."""
+        at = ago(30)
+        ci = dict(self.REVIEWED, started=at)
+        mine, checks = self.judged([], "100", trust=ci)
+        self.assertEqual(self.successes(checks), [901], self.logs[-3:])
+        rescreen = dict(self.REVIEWED, task="rescreen", started=at)
+        review = self.refused_review("pass", rescreen)
+        got, after = self.judged(checks, "130", verdict=review["verdict"], refused=review["refused"], trust=rescreen,
+                                 event="workflow_dispatch", comments=[], named=HEAD)
+        self.assertEqual(self.successes(after), [], self.logs[-4:])
+        self.serve_checks(after)
+        _o, _w, _l, passed = self.comment_job_after_post(mine, ci, "pass", [], "100")
+        self.serve_checks(after)
+        _outcomes, _wrote, labels = self.refused_comment_job(got, rescreen, "130", [dict(passed, id=30)])
+        self.assertEqual([b.split("\n")[1] for b in labels],
+                         [f"**Next step:** {rules.STATES['refused-review'][1]}"], self.logs[-6:])
+
 
 def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False, rerun=False):
     """What the approved author-kind table gives for one cell of KindTableTest. state: the state of the label call
