@@ -21698,6 +21698,63 @@ class ImportCheckTest(ReaderRunner):
             end, labels, states = run_130("pass", [newer])
             self.assertEqual((self.successes(end), labels, states), ([901], [], []), self.logs[-4:])
 
+    def steps_ended(self, run, job, ended):
+        """GitHub lists the one job of run <run>, job, with each of its steps ended at ended."""
+        listed = dict(attempt_job(job), run_id=int(run), run_attempt=1, status="completed")
+        listed["steps"] = [dict(s, started_at=f"{ended[:-1]}.000Z", completed_at=f"{ended[:-1]}.000Z")
+                           for s in listed["steps"]]
+        self.serve(f"repos/{REPO}/actions/runs/{run}/jobs", {"total_count": 1, "jobs": [listed]})
+
+    def test_no_relabel_withdraws_a_newer_reads_success_for_the_line_of_a_run_that_gave_way(self):
+        """The tester's audit of round 24, G1 (no failure on the path; I5 of the order of the words on a head: no run
+        withdraws a success of a newer read). Rescreen run 140 of mallory's #7 read the item 10 minutes ago, passed
+        HEAD and recorded 901, and its comment job posted its pass and the label comment that says recorded. Then a
+        run that read the item 20 minutes ago runs its last job, in the group write-7: (i) the hold job of the answer
+        run 130, whose screen held HEAD, or (ii) the post job and then the comment job of rescreen run 120, whose review
+        gave HEAD a blocking finding. That run gives way to run 140's newer pass and keeps 901. A later relabel of #7
+        (a change of the variable, a conflict that went away, or a run by hand) reads the comments and the label comment
+        as that run left them. At the end 901 stands. At ce79477a the run that gave way leaves its line
+        <!-- withdraw-owed HEAD <why> <run> --> in the label comment, the line counts from the time when its step wrote
+        it, after run 140's read, and the relabel withdraws 901 for it."""
+        for case in ("(i) an answer's screen hold", "(ii) a blocking review"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                older = review_of(HEAD, at=ago(70), run=60)
+                before = {"id": 40, "user": {"login": BOT}, "updated_at": ago(60),
+                          "body": rules.label_comment("change")}
+                newer = ago(10)
+                got, checks = self.judged([], "140", trust=dict(self.REVIEWED, task="rescreen", started=newer),
+                                          event="workflow_dispatch", comments=[older, before])
+                label = dict(before, created_at=ago(9), updated_at=ago(9), body=got["comments"][-1])
+                review = review_of(HEAD, at=ago(9), run=140, read=newer)
+                if case.startswith("(i)"):
+                    run, job = "130", "hold"
+                    answer = dict(self.REVIEWED, task="answer", started=ago(20), comment="77")
+                    self.serve_checks(checks)
+                    self.forget()
+                    self.hold_job_after_post({"result": "skipped", "post": {}}, answer, [older, review, label], run)
+                else:
+                    run, job = "120", "comment"
+                    blocking = dict(self.REVIEWED, task="rescreen", started=ago(20))
+                    theirs, checks = self.judged(checks, run, verdict="blocking", trust=blocking,
+                                                 event="workflow_dispatch", comments=[older, review, label])
+                    self.serve_checks(checks)
+                    self.forget()
+                    self.comment_job_after_post(theirs, blocking, "blocking", [older, review, label], run)
+                checks = self.applied_checks(checks)
+                bodies = [b for _m, e, b in label_comments(self.api) if e == f"repos/{REPO}/issues/comments/40"]
+                label = dict(label, updated_at=ago(1), body=bodies[-1]) if bodies else label
+                comments = [older, review, label] + [
+                    {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body}
+                    for body in self.posted("<!-- review-held -->")]
+                self.steps_ended(run, job, ago(2))
+                relabel = dict(self.RELABEL, started=ago(-1))
+                got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                 comments=comments, listed=checks)
+                self.assertEqual(self.successes(self.applied_checks(checks)), [901],
+                                 (got["post"].get("decision"), [e for _t, e, _b in got["withdrawn"]], self.logs[-3:]))
+
     def label_step(self, trust, got, listed, comments, verdict="pass"):
         """The comment job's label step of the run whose trust job gave trust (such as the screened CI review of #7 at
         HEAD), whose review gave verdict (a pass by default) and whose post job gave got (judge), while the variable
