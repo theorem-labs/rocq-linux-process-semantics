@@ -47,7 +47,7 @@ works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0
 # <run> <tries> <kind> <task> <comment> <id> <head>". For a hold that the rescreen pass tries again (its
 # marker <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit
 # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that
-# failed or ran out of time, or a run whose gather or screen job failed or was cancelled), <run> the run of
+# failed or ran out of time, or a run whose gather or screen job failed), <run> the run of
 # the event this hold comes from (a run that takes the hold
 # again keeps it), <tries> the screened reviews of it that failed so far, <task> the task that takes it again
 # (answer, draft or approve as the marker names it, and rescreen for a marker with no task), and <comment>
@@ -249,14 +249,15 @@ no_key_of() {
 # a hold comment of the screen that names <head> outranks each review comment of <head> whose run screened it: the
 # state held. Else "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> <read> -->
 # of a withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason
-# yet), whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out, and
-# only while a comment of github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or
-# person, of the
-# newest review comment of <head> newer than the newest screened one (of any, when none is screened) that gives one, or
-# of the newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws nothing. It
+# yet), and the newest review comment of <head> whose run screened it does not outrank that line: the line is a word
+# from <read> (rules.py owed_reason; OSSV-221's architect, 2026-11-25 01:13Z, G1), whatever the newest review says
+# else. Only a run that finished the withdrawal of <head> takes that line out, and only while a comment of
+# github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or person, of the newest review
+# comment of <head> newer than the newest screened one (of any, when none is screened) that gives one, or of the
+# newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws nothing. It
 # records an import check run only when the newest review comment of <head> holds the marker
-# <!-- review-screened <head> --> and passes, with no such line, and no withdrawal of the newest read among the import
-# check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands).
+# <!-- review-screened <head> --> and passes, with no withdraw-owed line of <head>, and no withdrawal of the newest
+# read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands).
 relabel_withdraws() {
   comments "$1" > /dev/null || return 1
   python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$2" "$seen/comments-$1"
@@ -1616,8 +1617,8 @@ consider() {
   # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
   # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
   # head after each review that screened it, a label comment holds the line
-  # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes, the newest screened review of the
-  # head does not pass, or a review newer than it
+  # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes and no newer screened review of
+  # the head outranks it, the newest screened review of the head does not pass, or a review newer than it
   # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's retry
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
@@ -1635,7 +1636,8 @@ consider() {
       esac
       if [ -n "$because" ]; then
         said="#$number: a hold that is not tried again names $head, and $because."
-        # The reason of the line <!-- withdraw-owed <head> <why> <run> <read> -->, whatever the newest review says.
+        # The reason of the line <!-- withdraw-owed <head> <why> <run> <read> -->, while no newer screened review
+        # outranks it.
         if [ "${from:-}" = owed ]; then
           said="#$number: a hold that is not tried again names $head. Its label comment records a reason of an earlier"
           said+=" run to withdraw the import check runs of $head."

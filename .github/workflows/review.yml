@@ -2969,11 +2969,14 @@ jobs:
       # Each run withdraws each check run of the head that still stands when the newest screened review comment does
       # not pass, or one newer than it gives a blocking finding or the verdict person (output earlier, with that
       # reason). It withdraws also while the label comment holds the line
-      # <!-- withdraw-owed <head> <why> <run> <read> --> for the head, for its why, whatever the newest review says: a
-      # withdrawal that an earlier run found a reason for and did not finish, or whose reason no comment of the workflow
-      # gives yet (.github/review/rules.py owed). A relabel with such a line records no check run. When the newest
-      # review comment of the head is then a screened pass and no comment of the workflow gives the reason of the line,
-      # the decision is withdrawn, and the label comment says so (.github/review/rules.py NO_REASON). When a hold
+      # <!-- withdraw-owed <head> <why> <run> <read> --> for the head, for its why, whatever the newest review says
+      # else: a withdrawal that an earlier run found a reason for and did not finish, or whose reason no comment of the
+      # workflow gives yet (.github/review/rules.py owed). The line is a word from its <read> (OSSV-221's architect,
+      # 2026-11-25 01:13Z, G1): once the newest screened review comment of the head outranks it, it gives no reason,
+      # and nothing is withdrawn for it (.github/review/rules.py owed_reason). A relabel with a line records no check
+      # run. When the newest review comment of the head is then a screened pass, the decision is hand for a line that
+      # gives no reason, and withdrawn for a line whose reason no comment of the workflow gives: the label comment
+      # says so (.github/review/rules.py NO_REASON). When a hold
       # comment of the screen that names the head is newer than each
       # screened review comment (held), a later screen held the head: the decision is held, so that the label comment
       # says so, and a later step withdraws its check run. A review by hand with no screen (a review or a rescreen whose
@@ -3132,6 +3135,12 @@ jobs:
           # (rules.py, the decision withdrawn), and screened else. For an outside author whose newest review comment is
           # a screened pass, rules.py verdict reads the comments again with the import check runs of the head
           # (import_checks), whose summaries decide posted.
+          # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
+          # review comment outranks it, it gives no why, and from is outranked (rules.py verdict and owed_word): the
+          # output outranked tells the step that withdraws to give the head to its output clear, so that the comment job
+          # takes the line out (rules.py owed). The state screened with the verdict pass and such a line, with no
+          # withdrawal that stands, gives the decision hand: this relabel records no check run while a line stands, and
+          # withdraws none for it. The label step counts an import check run that stands (standing) as recorded.
           # A withdrawal that succeeded is itself the record of the verdict that caused it (OSSV-221's architect,
           # 2026-11-23 01:47Z and 03:06Z), and the run that withdrew it can have ended before its comment posted. So
           # when the withdrawal of the newest read among them (by the time that each one names, never by completed_at;
@@ -3166,12 +3175,17 @@ jobs:
               echo "earlier=$why" >> "$GITHUB_OUTPUT"
             fi
             [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
+            [ "$from" != outranked ] || echo "outranked=true" >> "$GITHUB_OUTPUT"
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
               [ "$posted" != unposted ] || decided withdrawn unposted
               decided screened "$why"
             fi
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
               decided withdrawn neutral check "$stands" from "$since"
+            fi
+            if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$from" = outranked ]; then
+              standing
+              decided hand outranked
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
               [ "$why" = - ] || decided screened "$why"
@@ -3187,9 +3201,11 @@ jobs:
           # relabel. Else a why (blocking or person, or the why of the line
           # <!-- withdraw-owed <head> <why> <run> <read> --> of the label comment, with from_owed true) goes to the
           # output earlier, so that the same step withdraws each check run that still stands for that verdict. held or
-          # a why writes the output owed first (write_owed). Only for an outside author does the rule give a decision:
-          # held gives held, and screened or earlier gives screened with a why, and hand with none, with the output
-          # standing. The state unscreened gives replaced, and else the import check below gives the decision screen.
+          # a why writes the output owed first (write_owed). A line that the newest screened review comment outranks
+          # gives no why, and gives the output outranked, as for relabeled. Only for an outside author does the rule
+          # give a decision: held gives held, and screened or earlier gives screened with a why, and hand with none,
+          # with the output standing. The state unscreened gives replaced, and else the import check below gives the
+          # decision screen.
           by_hand() {
             local reviewed earlier state why from
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
@@ -3206,6 +3222,7 @@ jobs:
               echo "earlier=$why" >> "$GITHUB_OUTPUT"
             fi
             [ "$from" != owed ] || echo "from_owed=true" >> "$GITHUB_OUTPUT"
+            [ "$from" != outranked ] || echo "outranked=true" >> "$GITHUB_OUTPUT"
             [ "$RECORD" = true ] || return 0
             if [ "$state" = screened ] || [ "$state" = earlier ]; then
               [ "$why" = - ] || decided screened "$why"
@@ -3406,6 +3423,9 @@ jobs:
           # true.
           EARLIER: ${{ steps.decide.outputs.earlier }}
           FROM_OWED: ${{ steps.decide.outputs.from_owed }}
+          # true when the label comment holds the line of the head, and the newest screened review comment of the head
+          # outranks it, so that the line gives no reason (rules.py verdict, from outranked).
+          OUTRANKED: ${{ steps.decide.outputs.outranked }}
           # The author-kind table's answer retry (the first step of this job).
           RETRY: ${{ steps.answers.outputs.retry }}
           # The head that the name of this run gives (the trust job's named), or empty.
@@ -3480,7 +3500,16 @@ jobs:
             access)
               because="GitHub did not say whether the author of #$NUMBER has write access, so the pass of this run is"
               because+=" no approval" after="the read of this run" ;;
-            *) logged clear none; exit 0 ;;
+            *)
+              logged clear none
+              # A line <!-- withdraw-owed <head> <why> <run> <read> --> that a newer screened review outranks gives no
+              # why (OUTRANKED): nothing is withdrawn for it. The output clear still names the head, so that the
+              # comment job takes the line out: that newer review is the cause for it to go (rules.py owed).
+              if [ "${OUTRANKED:-}" = true ]; then
+                [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the $gave job gave no head commit: $head"; exit 1; }
+                echo "clear=$head" >> "$GITHUB_OUTPUT"
+              fi
+              exit 0 ;;
           esac
           [[ $head =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the $gave job gave no head commit: $head"; exit 1; }
           # No line <!-- withdraw-owed --> holds access, so nothing is owed for it (the comment above).
@@ -4054,17 +4083,18 @@ jobs:
       # line of that head and reason that stands, or names the run of the newest review comment of the head with that
       # verdict and the time of that comment, and this run and STARTED only when no such comment names a run
       # (owed_run). Every later write of the label comment keeps the
-      # line (KEPT). A relabel and a review by hand of that head withdraw again for its why while the line stands,
-      # whatever the newest review says (rules.py verdict, held.sh relabel_withdraws): an edit of a review comment in
-      # place can hide the review that gave the reason. Only a run that finished the withdrawal of that head takes the
-      # line out (the post job's output withdrawn), and only while a comment of the workflow gives a reason for it: the
+      # line (KEPT). A relabel and a review by hand of that head withdraw again for its why while the line stands and
+      # no newer screened review comment of the head outranks it, whatever the newest review says else (rules.py
+      # verdict, held.sh relabel_withdraws): an edit of a review comment in place can hide the review that gave the
+      # reason. Only a run that finished the withdrawal of that head takes the line out (the post job's output
+      # withdrawn, which a relabel also gives for a line that a newer screened review outranks), and only while a
+      # comment of the workflow gives a reason for it: the
       # hold comment or the review comment of the line's run that gives its why, or a review comment of the head whose
       # run read the item after the time of the line (with no marker of that read: one that GitHub last changed after
       # it, and no pass), which must be screened unless the trust job's outside is false (OSSV-221's architect,
       # 2026-11-22 16:06Z and 16:08Z, 2026-11-23 01:47Z, and 2026-11-24 01:20Z and 01:26Z; rules.py word_time). That
       # time is the <read> of the line. A line of the old form, with no <read>, counts from the hold or the withdrawal
-      # of its run (the post job's output sources), and else from no time. Until then, each later relabel withdraws
-      # and records
+      # of its run (the post job's output sources), and else from no time. Until then, each later relabel records
       # nothing. When the post job finished the withdrawal for a blocking finding or the verdict person of this run's
       # own review of that head, that review has not posted yet. So this step writes the line of that head and verdict
       # all the same (rules.py owed with owed= and withdrawn=), and gives the head to the step after the post of the
@@ -4867,8 +4897,8 @@ jobs:
   # comment says nothing of why the screen held it: the screen job's one output is its verdict. A hold that the
   # rescreen pass tries again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which the pass finds it
   # and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient,
-  # a screened review that failed otherwise or ran out of time, or a run whose gather or screen job failed or was
-  # cancelled, while it has failed fewer than REVIEW_TRIES times. <run>
+  # a screened review that failed otherwise or ran out of time, or a run whose gather or screen job failed, while it
+  # has failed fewer than REVIEW_TRIES times. <run>
   # is the run of the event this hold comes from (a run that takes the hold again keeps it), and <tries> the screened
   # reviews of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
   # <!-- review-held-<kind> <run> <tries> answer <comment id> -->, and the marker of a draft's hold with the task:
@@ -4878,9 +4908,10 @@ jobs:
   # of that kind leaves the state label as it is: the state of the item does not wait for the answer. An approval has
   # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, by
   # its screen, whose hold says that the checks of the pull request have not run, or when its gather or screen job
-  # failed. A gather or screen job that failed or was cancelled judged nothing of the item, so no screen held it: its
-  # hold is transient, or its last try, and never a hold of the screen. It names no read, and no reader counts it as a
-  # word on the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A hold that is not tried again (the screen's, or
+  # failed. A gather or screen job that failed judged nothing of the item, so no screen held it: its hold is
+  # transient, or its last try, and never a hold of the screen. It names no read, and no reader counts it as a word on
+  # the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A cancelled gather or screen job gets no hold, as a newer
+  # run of the item decides. A hold that is not tried again (the screen's, or
   # the last try of a review, an answer, a draft or a run whose gather or screen job failed) gives waits-on-theorem
   # and a label comment that names Sami's next step (.github/review/rules.py, from main's checkout of .github/). The
   # label call gives the trust job's
@@ -4985,15 +5016,14 @@ jobs:
       # main's .github/, for .github/review/rules.py and .github/review/held.sh; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
-      # A gather job or a screen job of this run that failed or was cancelled. No screen judged the item, so no screen
-      # held it (OSSV-221's architect, 2026-11-25 01:13Z, G2): the label step holds it as a run that did not finish,
-      # with a transient hold that the rescreen pass tries again, never with a hold of the screen. As in the two steps
-      # after this one, the if alone reads those jobs, and the step writes only the literal output failed=true.
-      - name: Whether the gather or the screen job of this run failed or was cancelled
+      # A gather job or a screen job of this run that failed. No screen judged the item, so no screen held it
+      # (OSSV-221's architect, 2026-11-25 01:13Z, G2): the label step holds it as a run that did not finish, with a
+      # transient hold that the rescreen pass tries again, never with a hold of the screen. A cancelled gather or screen
+      # job gets no hold, as a newer run of the item decides: the if of this job admits no such job. As in the two
+      # steps after this one, the if alone reads those jobs, and the step writes only the literal output failed=true.
+      - name: Whether the gather or the screen job of this run failed
         id: unscreened
-        if: >-
-          needs.gather.result == 'failure' || needs.gather.result == 'cancelled'
-          || needs.screen.result == 'failure' || needs.screen.result == 'cancelled'
+        if: needs.gather.result == 'failure' || needs.screen.result == 'failure'
         run: echo "failed=true" >> "$GITHUB_OUTPUT"
       # A screen of this run that held the head, in a review, a rescreen or an approval: the tasks whose post job
       # withdraws for a held screen (the author-kind table's withdraw). The if alone reads the screen, and the step
@@ -5144,8 +5174,8 @@ jobs:
           # an issue names in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in
           # its marker <!-- review-read <time> -->.
           STARTED: ${{ needs.trust.outputs.started }}
-          # true when the gather job or the screen job of this run failed or was cancelled (the step "Whether the gather
-          # or the screen job of this run failed or was cancelled"): no screen judged the item, so none held it.
+          # true when the gather job or the screen job of this run failed (the step "Whether the gather or the screen
+          # job of this run failed"): no screen judged the item, so none held it.
           UNSCREENED: ${{ steps.unscreened.outputs.failed }}
         run: |
           set -euo pipefail
@@ -5352,32 +5382,33 @@ jobs:
             why="$again$why"$'\n\n'"${who^} can still be at the limit at the first event of the list above after $next. Then the workflow keeps $what held and screens it at a later event of that list."
           elif [ -z "$OUTSIDER" ]; then
             # A run by hand that asked for the screen first: no account's limit, and no try again. So a gather job or a
-            # screen job of it that failed or was cancelled (UNSCREENED) gives the last try, as its review that did not
-            # finish does. No screen held the item, so this is no hold of the screen.
+            # screen job of it that failed (UNSCREENED) gives the last try, as its review that did not finish does. No
+            # screen held the item, so this is no hold of the screen.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
               fact=tries_used_up
               why="The automated review did not finish. The workflow does not try it again. The automated screen passed $what."
             elif [ "${UNSCREENED:-}" = true ]; then
               fact=tries_used_up
-              why="The checks of this run did not finish, so $work_of did not run. The workflow does not try it again."
+              why="The automated screen of $what did not finish, so the workflow skipped $work_of."
+              why+=" The workflow does not try it again."
             else
               fact=screen_held
               why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
             fi
           elif [ "${UNSCREENED:-}" = true ]; then
-            # The gather job or the screen job of this run failed or was cancelled (UNSCREENED), so no screen judged the
-            # item (OSSV-221's architect, 2026-11-25 01:13Z, G2). As for a review that did not finish, the hold is
-            # transient and counts a try: the rescreen pass tries it again, and the last try waits on Sami. It is never
-            # a hold of the screen: its text never says that the screen held the item, and it names no read. So no
-            # reader counts it as a word on the head (.github/review/rules.py hold_fact and comment_word).
+            # The gather job or the screen job of this run failed (UNSCREENED), so no screen judged the item
+            # (OSSV-221's architect, 2026-11-25 01:13Z, G2). As for a review that did not finish, the hold is transient
+            # and counts a try: the rescreen pass tries it again, and the last try waits on Sami. It is never a hold of
+            # the screen: its text never says that the screen held the item, and it names no read. So no reader counts
+            # it as a word on the head (.github/review/rules.py hold_fact and comment_word).
             tries=$((tries + 1))
             if (( tries < REVIEW_TRIES )); then
               kind=transient
-              why="$again$from The checks of this run did not finish, so $work_of did not run."
+              why="$again$from The automated screen of $what did not finish, so the workflow skipped $work_of."
               why+=" This was try $tries of $REVIEW_TRIES. $again_other"
             else
               fact=tries_used_up
-              why="The checks of this run did not finish, so $work_of did not run."
+              why="The automated screen of $what did not finish, so the workflow skipped $work_of."
               why+=" This was try $tries of $REVIEW_TRIES. The workflow does not try it again. $from"
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then

@@ -218,30 +218,34 @@ newer (a hold at the same time outranks a pass), or when no review comment of <h
 comment exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is screened,
 earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is the reason
 for which a relabel or a review by hand withdraws each import check run of <head> that stands: screen for held; else
-the <why> of the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment (OWED), whatever the newest
-review says; else blocking or person, of the newest review comment newer than the newest screened one that gives one,
-or of the newest screened review comment when it does not pass; else -. <from> is owed when <why> is the line's, and -
-else. <posted> is, for <from> owed, posted when a comment of github-actions[bot] gives a reason for the line to go, as
-for an outside author (line_reason: from the <read> of the line, and for a line of the old form, from the source runs
-and times of <checks.jsonl> and the holds), and unposted when none does; - else. <checks.jsonl> holds the import
-check runs of <head> for <number>, {id, conclusion, completed_at, summary} one on each line; with none given, no check
-run is read. They are in the order of the time that each one names, never of completed_at: for a success, the time when
-its run read the item, and for a withdrawal (the conclusion neutral), the time from which it counts. A success that
-names no time is older than each other one, and a withdrawal that names no time is newer; at a tie, the withdrawal is
-the newer (newest_withdrawal; OSSV-221's architect, 2026-11-24 09:43Z). <stands> is the id of the withdrawal of the
-newest read when no success names a newer read and when it blocks a record: its summary names no time, or no screened
-review comment that passes <head> counts from a time after that time (withdrawal_stands); - else. <since> is that time,
-or - when <stands> is - or the summary names no time. <run>
-and <read> are the run of the newest review comment of <head> and the time when that run read the item, from its
-markers <!-- review-read <time> --> and <!-- review-run <run> -->, or - and - when it has none: a relabel's record names
-them. The line gives only the reason, never the state. A relabel records the import check run only for screened with
-the verdict pass, no <why> and <stands> -: with a <why> (OWED), its decision is withdrawn when <posted> is unposted,
-and screened else, and with <stands> it is withdrawn. For earlier with the verdict pass, its decision is hand with no
-<why>, and screened with one. A review by hand with no screen records none. Its post job's decision is hand for
-screened or earlier with no <why>, and screened with a <why>: the review of this run has not posted yet. It is held
-for held, and screen for unscreened. For the decision hand, the label step counts an import check run of <head> that
-still stands, for the value of the variable now, as recorded. The comment job's label step reads the check runs again
-before it writes the state import, and writes it only while such a check run stands: else its decision is gone (GONE).
+the <why> of the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment (OWED), a word from its
+<read>, while the newest screened review comment of <head> does not outrank it (owed_reason: a line of the old form
+counts from the hold of <run>, else after each time), whatever the newest review says else; else blocking or person,
+of the newest review comment newer than the newest screened one that gives one, or of the newest screened review
+comment when it does not pass; else -. <from> is owed when <why> is the line's, outranked when that review outranks
+the line, so that the line gives no reason, and - else. <posted> is, for <from> owed, posted when a comment of
+github-actions[bot] gives a reason for the line to go, as for an outside author (line_reason: from the <read> of the
+line, and for a line of the old form, from the source runs and times of <checks.jsonl> and the holds), and unposted
+when none does; - else. <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion,
+completed_at, summary} one on each line; with none given, no check run is read. They are in the order of the time that
+each one names, never of completed_at: for a success, the time when its run read the item, and for a withdrawal (the
+conclusion neutral), the time from which it counts. A success that names no time is older than each other one, and a
+withdrawal that names no time is newer; at a tie, the withdrawal is the newer (newest_withdrawal; OSSV-221's
+architect, 2026-11-24 09:43Z). <stands> is the id of the withdrawal of the newest read when no success names a newer
+read and when it blocks a record: its summary names no time, or no screened review comment that passes <head> counts
+from a time after that time (withdrawal_stands); - else. <since> is that time, or - when <stands> is - or the summary
+names no time. <run> and <read> are the run of the newest review comment of <head> and the time when that run read the
+item, from its markers <!-- review-read <time> --> and <!-- review-run <run> -->, or - and - when it has none: a
+relabel's record names them. The line gives only the reason, never the state. A relabel records the import check run
+only for screened with the verdict pass, no <why>, <stands> - and <from> -: with a <why> (OWED), its decision is
+withdrawn when <posted> is unposted, and screened else, and with <stands> it is withdrawn. With <from> outranked, it
+records none while the line stands, and it withdraws none for the line: its decision is hand, and the step OWE of its
+comment job takes the line out. For earlier with the verdict pass, its decision is hand with no <why>, and screened
+with one. A review by hand with no screen records none. Its post job's decision is hand for screened or earlier with
+no <why>, and screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for
+unscreened. For the decision hand, the label step counts an import check run of <head> that still stands, for the
+value of the variable now, as recorded. The comment job's label step reads the check runs again before it writes the
+state import, and writes it only while such a check run stands: else its decision is gone (GONE).
 
 own-record: "<decision> <what> <since> <verdict>" on standard output for <head> of the pull request <number>, for a
 run on the route screen whose own screen and review passed <head> (own_record): whether a newer run held <head>,
@@ -273,7 +277,8 @@ comments, and 2 when <kind> is no kind of word.
 relabel-withdraws: why a relabel of <head> withdraws the import check runs of <head>, from <comments.jsonl>, the
 comments of the item as the API lists them, one on each line (review_verdict): screen for a hold of the screen that
 outranks each screened review, "<why> owed" for the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label
-comment, the verdict blocking or person of the review that verdict reads, or - when a relabel withdraws nothing. The
+comment while the newest screened review of <head> does not outrank it (owed_reason: the line is a word from its
+<read>), the verdict blocking or person of the review that verdict reads, or - when a relabel withdraws nothing. The
 rescreen pass reads it (held.sh relabel_withdraws), so that it orders the words on <head> by the one model of this
 file.
 
@@ -443,10 +448,11 @@ REFUSALS = ("", "review", "answer", "fix")
 # head and no hold comment of the screen is newer (the states screened and earlier). It is screened when review_verdict
 # gives a reason to withdraw (its why:
 # the newest screened review comment does not pass, one newer than it gives a blocking finding or the verdict person,
-# or a label comment holds the line of OWED of the head), and this run withdraws each check run of the head that still
-# stands. So the state follows the verdict of this run, and a pass gets PASSED. Else it is hand, and so is a relabel's
-# in the state earlier with the verdict pass and no such reason. A relabel withdraws, and records no check run, also in
-# the state screened with the verdict pass and a line of OWED. Its decision is then withdrawn when no comment of BOT
+# or a label comment holds the line of OWED of the head, which that newest screened review does not outrank:
+# owed_reason), and this run withdraws each check run of the head that still stands. So the state follows the verdict
+# of this run, and a pass gets PASSED. Else it is hand, and so is a relabel's in the state earlier with the verdict
+# pass and no such reason. A relabel withdraws, and records no check run, also in the state screened with the verdict
+# pass and a line of OWED that gives a reason. Its decision is then withdrawn when no comment of BOT
 # gives a reason for that line to go (line_reason): the comment of its reason did not post, and no screened review
 # comment is newer than the time of the line. The label step gets a decision only from a post job that succeeded, so
 # the withdrawal is done by then, and the text says so in the place of PASSED (NO_REASON). Else its decision is
@@ -454,6 +460,10 @@ REFUSALS = ("", "review", "answer", "fix")
 # withdrawal among the import check runs of the head stands: the one of the newest read, by the time that each check
 # run names, when no success names a newer read and no screened pass of the head is newer (withdrawal_stands). A
 # withdrawal that succeeded is itself the record of its reason, and the comment of that reason may not have posted.
+# A line that the newest screened review outranks gives no reason (OSSV-221's architect, 2026-11-25 01:13Z, G1). With
+# such a line and no withdrawal that stands, a relabel in the state screened with the verdict pass records no check
+# run while the line stands, and withdraws none for it: its decision is hand, and the step OWE of its comment job
+# takes the line out (owe).
 # The line of OWED gives only the reason, never the state: with no screened review comment of the head, the decision
 # is screen. For the decision hand, the label step counts an import check run of the head that still stands, for the
 # value of the variable now, as recorded (the post job's standing), so its state is import or decide as that check run
@@ -646,10 +656,12 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # Its label call writes a label comment with the line in any state (apply). The comment job's label step also writes
 # the line when it stops for a hold made after the run started (mark). When the label step stops before its label call
 # for any other cause, the line is not recorded. A relabel and a review by hand of that head withdraw for why while
-# the line stands, whatever the newest review says (review_verdict). The line goes only after a run finished the
-# withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew each one),
-# and only while a comment of BOT gives a reason for it (line_reason): the comment of the line's run that gives why, or
-# a review of the head newer than the time of the line. Until then, each relabel withdraws and records nothing (owe).
+# the line stands and the newest screened review of the head does not outrank it, whatever the newest review says else
+# (review_verdict, owed_reason: the line is a word from its read). The line goes only after a run finished the
+# withdrawal of that head (it found no import check run of the head with conclusion success, or withdrew each one, or
+# a newer screened review outranks the line), and only while a comment of BOT gives a reason for it (line_reason): the
+# comment of the line's run that gives why, or a review of the head newer than the time of the line. Until then, each
+# relabel records nothing (owe).
 # Each head has a line of its own (marker_kind).
 OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|screen) ([1-9][0-9]*)"
                   rf"(?: ({TIME.pattern}))? -->")
@@ -708,10 +720,9 @@ LOG_DECISIONS = {
     # The label step: gone, in the place of the post job's decision, and the hold that keeps the labels.
     "gone": ("No import check run of the head with the conclusion success and the marker of the import's paths "
              "stands now. So the label comment does not say that the workflow recorded the check."),
-    "stay": ("The label step leaves the state label and the text of the label comment as they are. The label step "
-             "adds only the withdraw-owed line that this run owes, if there is one. When the item has no label "
-             "comment, the label step posts a whole label comment with that line, of the state working or "
-             "after-hold."),
+    "stay": ("The label step leaves the state label and the text of the label comment as they are. When the item has "
+             "no label comment and this run owes a withdraw-owed line, the label step posts a label comment with "
+             "that line. That label comment has the state working or after-hold."),
     # The step that finds the import check runs to withdraw, and the step that records the check run of not-approved.
     "withdraw": "A later step of this job withdraws the import check runs that check names.",
     "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
@@ -737,12 +748,14 @@ LOG_CAUSES = {
     "missing": ("No import check run of the head with the conclusion success and the marker of the import's paths "
                 "stands."),
     "unposted": "The label comment holds a withdraw-owed line, and no comment of the workflow gives its reason.",
+    "outranked": ("A screened review of a newer read outranks the withdraw-owed line of the label comment, so that "
+                  "line gives no reason."),
     "earlier": "A screen passed the head in the run of an earlier review.",
     "standing": "An import check run of the head with the conclusion success stands.",
     "head": "The head of the pull request is not the head that this run read.",
-    "rule": ("The decide step of the post job applies the rules of R12 (import_decision). They read whether a screen "
-             "passed the head, the verdict, the soundness hold, the import's paths and the changed files that the "
-             "step read."),
+    "rule": ("The decide step of the post job applies the rules of R12 (import_decision). They read the verdict, the "
+             "soundness hold, the import's paths, the changed files that the step read, and whether a screen passed "
+             "the head."),
     "none": "This run has no reason to withdraw an import check run.",
 }
 # The fields after read, in this order: the pattern of the value, and what it says. The check run ids of check are
@@ -750,8 +763,8 @@ LOG_CAUSES = {
 LOG_FIELDS = {
     "run": (re.compile(r"[1-9][0-9]*"),
             "The id of the run that gave the word that decides, none when its comment names no run. The withdraw and "
-            "keep lines leave run out when the word is this run's own, or when this run knows no run of it. The skip "
-            "line of the comment job leaves run out when the post job of this run gave way."),
+            "keep lines have no field run for this run's own word, or for a word whose run this run does not know. "
+            "The skip line of the comment job has no field run when the post job of this run gave way."),
     "check": (re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*"), "The ids of the import check runs that the decision names."),
     "from": (TIME, "The time from which that word counts, none when it names no time."),
     "files": (re.compile(r"0|[1-9][0-9]*"), "The number of changed files that the step read."),
@@ -1383,24 +1396,25 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     OSSV-221's architect, 2026-11-22 17:27Z and 2026-11-25 01:30Z), so that a refused withdrawal of a relabel never
     takes the place of that run and its read. When the item has no label comment, it writes nothing, says so, and the
     result is the line: the step gives it to the label step of its job. withdrawn alone, a head whose withdrawal the
-    job finished, takes the line of that head out (unmark), but only while a comment of BOT gives a reason for it
+    job finished (or the head of a line that a newer screened review outranks, owed_reason, for which a relabel
+    withdraws nothing), takes the line of that head out (unmark), but only while a comment of BOT gives a reason for it
     (line_reason; OSSV-221's architect, 2026-11-22 16:06Z): the comment of the line's run that gives its why, or a
     review comment of the head whose run read the item after the time of the line, its read (2026-11-25 01:30Z). A
     line of the old form, with no read, counts from the time of the hold of the run that it names, or the time from
     which a withdrawal by that run counts (for its own reason, when that run read the item; source_time, with sources,
     the post job's output sources; 2026-11-23 01:47Z and 03:06Z, and 2026-11-24 05:23Z), and else from no time. That
     review comment must be screened when the rule holds back for the author of run (holds_back). Else the line stays,
-    and each later relabel withdraws for it and records nothing. owed and withdrawn of one head are a withdrawal that
-    the job finished before a later step of the job posts the comment of its reason (the review of the comment job, or
-    the hold comment of the hold job): the line goes in as for owed alone, so that it stands when that step fails. An
-    item with no label comment then gets nothing, and the result is "", so that no label step gets the line: that
-    comment gives the reason once it posts. owed and withdrawn of two heads are a ValueError. The state label and the
-    text of the label comment stay as they are. As for set_state, the label answer of the author-kind table for run
-    unchanged takes no line out, and gives a notice, but for owed: the line of a withdrawal that a run owes goes in for
-    every author, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z). For that
-    answer, withdrawn also rewrites a label comment that says that the workflow recorded the check on that head, when
-    no such record stands (unrecord, first; F5): the label step of such a run changes no label comment. Else the
-    result is ""."""
+    and each later relabel records nothing; it withdraws for the line while the line gives a reason. owed and withdrawn
+    of one head are a withdrawal that the job finished before a later step of the job posts the comment of its reason
+    (the review of the comment job, or the hold comment of the hold job): the line goes in as for owed alone, so that
+    it stands when that step fails. An item with no label comment then gets nothing, and the result is "", so that no
+    label step gets the line: that comment gives the reason once it posts. owed and withdrawn of two heads are a
+    ValueError. The state label and the text of the label comment stay as they are. As for set_state, the label answer
+    of the author-kind table for run unchanged takes no line out, and gives a notice, but for owed: the line of a
+    withdrawal that a run owes goes in for every author, as the post job withdraws for every author (OSSV-221's
+    architect, 2026-11-23 01:47Z). For that answer, withdrawn also rewrites a label comment that says that the workflow
+    recorded the check on that head, when no such record stands (unrecord, first; F5): the label step of such a run
+    changes no label comment. Else the result is ""."""
     line = f"<!-- withdraw-owed {owed} -->" if owed else ""
     m = OWED.fullmatch(line) if owed else None
     if owed and not (m and m.group(4)):
@@ -2049,6 +2063,10 @@ WITHDRAWING = ("blocking", "person")
 #   read the pull request (recorded_by), and at no time when its summary names none.
 # - An import check run of the head with the conclusion neutral, a withdrawal or a check run of not_approved: neutral,
 #   from the time that its summary names (blocks_from), and after each time (NEWEST) when it names none.
+# - The line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking or person as a
+#   verdict, and hold for screen, from <read>, the time when its run read the item, never from when its step wrote the
+#   line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). A line of the old form counts from the hold of its
+#   run, and after each time (NEWEST) with none. It gives only a reason to withdraw, never a state or a comment.
 # - The read of a run that gives no word of its own, such as a relabel or an approval: read, from the time when its
 #   trust job read the item.
 # The order is by time. At the same time, a kind of a higher rank outranks a kind of a lower one: a verdict or a hold
@@ -2065,9 +2083,12 @@ WITHDRAWING = ("blocking", "person")
 # word (own_record), and withdraws only a success that does not outrank its own word (withdraws). The comment and hold
 # jobs post nothing while a word of another run outranks their own (newer_word), and the label step writes no label
 # while a hold outranks its read. A relabel, a review by hand and the rescreen pass read the newest word
-# (review_verdict, relabel_facts, and held.sh relabel_withdraws through the command relabel-withdraws).
+# (review_verdict, relabel_facts, and held.sh relabel_withdraws through the command relabel-withdraws). The line gives
+# its reason only while the newest screened review comment does not outrank it (owed_reason): so an older read's line
+# never withdraws a newer read's record, and never takes the place of the state of a newer pass.
 RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "neutral": 2, "hold": 3}
-# The time of a word that counts after each time: a neutral check run whose summary names no time (check_word).
+# The time of a word that counts after each time: a neutral check run whose summary names no time (check_word), and a
+# line of OWED of the old form whose run left no hold (owed_word).
 NEWEST = None
 
 
@@ -2172,17 +2193,19 @@ def review_verdict(comments, head):
     later screen held the head. A hold at the same time as a screened review outranks it, which fails closed. Else it
     is screened when the newest review comment of head is screened, earlier when an older one is screened but the
     newest is not (a review by hand runs no screen), and unscreened when none is. Such a run records the check run only
-    for the state screened
-    with the verdict pass and no why: the newest review comment is a screened pass. why is the reason for which it
-    withdraws each check run of head that stands (WITHDRAWN): screen for held; else the why of the line of OWED of head
-    in a label comment of BOT (owed_line), whatever the newest review says, as an edit of a review comment in place can
-    hide the review that gave it; else the verdict blocking or person of the newest review comment newer than the
-    newest screened one (of any review comment of head when none is screened) that gives one; else that of the newest
-    screened review comment when it does not pass; else "". The line of OWED gives only the reason, never the state.
-    So an unscreened pass newer than a screened pass neither records nor withdraws, and a check run that stands stays,
-    unless such a line stands. Only the markers at the start of a review comment count: no marker of the model's or the
-    reader's text reaches a comment (trim.py inert). The markers of a hold comment and the lines of a label comment are
-    the workflow's own."""
+    for the state screened with the verdict pass and no why: the newest review comment is a screened pass. why is the
+    reason for which it withdraws each check run of head that stands (WITHDRAWN): screen for held; else the why of the
+    line of OWED of head in a label comment of BOT, a word from its read, while the newest screened review comment of
+    head does not outrank it (owed_reason, owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1), whatever the
+    newest review says else, as an edit of a review comment in place can hide the review that gave it; else the
+    verdict blocking or person of the newest review comment newer than the newest screened one (of any review comment
+    of head when none is screened) that gives one; else that of the newest screened review comment when it does not
+    pass; else "". The line of OWED gives only the reason, never the state, and a line that a newer screened review
+    outranks gives none: an older read's line never withdraws a newer read's record. So an unscreened pass newer than a
+    screened pass neither records nor withdraws, and a check run that stands stays, unless a line that gives a reason
+    stands. Only the markers at the start of a review comment count: no marker of the model's or the reader's text
+    reaches a comment (trim.py inert). The markers of a hold comment and the lines of a label comment are the
+    workflow's own."""
     reviews, held = head_reviews(comments, head), ""
     for c in comments:
         word = comment_word(c, head)
@@ -2193,7 +2216,7 @@ def review_verdict(comments, head):
     if held and (last < 0 or outranks((held, "hold"), reviews[last][:2])):
         return verdict, "held", "screen"
     newer = [r[1] for r in reviews[last + 1:] if r[1] in WITHDRAWING]
-    why = owed_line(comments, head)[0] or (
+    why = owed_reason(comments, head) or (
         newer[-1] if newer else reviews[last][1] if last >= 0 and reviews[last][1] in WITHDRAWING else "")
     if last < 0:
         return verdict, "unscreened", why
@@ -2214,6 +2237,35 @@ def owed_line(comments, head):
                 if m and m.group(1) == head:
                     owed = (m.group(2), m.group(3), m.group(4) or "")
     return owed
+
+
+def owed_word(comments, head):
+    """(read, kind, why) of the line of OWED of head (owed_line) as a word on head, or None when no label comment of
+    BOT holds one: the line is a word like any other (OSSV-221's architect, 2026-11-25 01:13Z, G1). read is the read
+    of the line, the time when its run read the item, never the time when its step wrote the line. A line of the old
+    form, with no read, counts from source_time of its run in comments (its hold of the screen), as line_reason counts
+    it when no withdrawal names that run, and else after each time (NEWEST), which fails closed: no word outranks it.
+    Each reader of the line reads it from comments alone, so all of them give it the same time. kind is the rank of
+    why (RANKS): blocking or person as a verdict, and hold for screen."""
+    why, run, read = owed_line(comments, head)
+    if not why:
+        return None
+    return read or source_time(comments, {}, head, run) or NEWEST, "hold" if why == "screen" else why, why
+
+
+def owed_reason(comments, head):
+    """The why of the line of OWED of head when it gives a reason to withdraw the import check runs of head, else "".
+    It gives one while the newest screened review comment of head (head_reviews) does not outrank the line as a word
+    (owed_word, outranks), so an older read's line never withdraws a newer read's record (OSSV-221's architect,
+    2026-11-25 01:13Z, G1). A line that such a review outranks gives no reason. That review read the item after the
+    time of the line, so it gives the reason for the line to go (line_reason), and the step OWE of the comment job
+    takes the line out (owe). A review with no screen never outranks the line, as the decide step reads only a
+    screened review as the verdict of an outside author, which fails closed."""
+    word = owed_word(comments, head)
+    if word is None:
+        return ""
+    screened = [r for r in head_reviews(comments, head) if r[2]]
+    return "" if screened and outranks(screened[-1][:2], word[:2]) else word[2]
 
 
 def owed_marker(head, why, run, read):
@@ -3357,16 +3409,18 @@ def main(argv):
             verdict, state, why = review_verdict(comments, argv[2])
             newest = (head_reviews(comments, argv[2]) or [("", "", False, "", "")])[-1]
             line_why, line_run, line_read = owed_line(comments, argv[2])
-            owed = state != "held" and line_why != ""
+            origin = "-"
+            if state != "held" and line_why:
+                origin = "owed" if owed_reason(comments, argv[2]) else "outranked"
             sources = sources_of(checks, argv[2])
             posted = "-"
-            if owed:
+            if origin == "owed":
                 found = line_reason(comments, argv[2], line_why, line_run, line_read, True, sources)[0]
                 posted = "posted" if found else "unposted"
             stands = withdrawal_stands(checks, comments, argv[2])
             since = blocks_from(newest_withdrawal(checks, argv[2]), argv[2]) if stands else ""
-            print(f"{verdict or '-'} {state} {why or '-'} {'owed' if owed else '-'} {posted} {stands or '-'} "
-                  f"{since or '-'} {newest[3] or '-'} {newest[4] or '-'}")
+            print(f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stands or '-'} {since or '-'} "
+                  f"{newest[3] or '-'} {newest[4] or '-'}")
             return 0
         if (len(argv) == 6 and argv[0] == "own-record" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
                 and TIME.fullmatch(argv[3]) and NUMBER.fullmatch(argv[4])):
@@ -3389,7 +3443,7 @@ def main(argv):
             if not all(isinstance(c, dict) for c in comments):
                 raise ValueError(f"{argv[2]} holds a line that is not a comment")
             _verdict, state, why = review_verdict(comments, argv[1])
-            owed = state != "held" and owed_line(comments, argv[1])[0] != ""
+            owed = state != "held" and owed_reason(comments, argv[1]) != ""
             print(f"{why} owed" if owed else why or "-")
             return 0
         if len(argv) == 1 and argv[0] == "words":
