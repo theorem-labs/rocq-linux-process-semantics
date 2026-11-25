@@ -3566,8 +3566,8 @@ jobs:
           if [ "$kind" = own ] && [ -s "$RUNNER_TEMP/approved.jsonl" ]; then
             # With no start time, the error names no next step (the comment above this step says why).
             [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-              || { echo "::error::no start time of this run, so none of the import check runs of $head is" \
-                     "withdrawn."; exit 1; }
+              || { echo "::error::no start time of this run, so this run withdraws none of the import check runs of" \
+                     "$head."; exit 1; }
             at=$STARTED
           elif [ "$kind" != own ] && [ -s "$RUNNER_TEMP/approved.jsonl" ]; then
             found=$(python3 .github/review/rules.py source "$NUMBER" "$head" "$why" "$kind" \
@@ -3603,8 +3603,8 @@ jobs:
               && { [ "${OUTSIDE:-}" != false ] || [ "${AUTHOR_KIND:-}" = unknown ]; }; then
               # With no start time, no check run can name the read of this run either, so the error names no next step.
               [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-                || { echo "::error::no start time of this run, so no check run records that $head is not approved" \
-                       "for the import."; exit 1; }
+                || { echo "::error::no start time of this run, so this run records no check run that says that $head" \
+                       "is not approved for the import."; exit 1; }
               values=()
               [ -z "${IMPORT_PATHS:-}" ] || values=("$IMPORT_PATHS")
               python3 .github/review/rules.py not-approved "$NUMBER" "$head" "$why" "$GITHUB_RUN_ID" "$STARTED" \

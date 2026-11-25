@@ -22418,8 +22418,8 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual((got["result"], got["steps"][self.FIND], got["post"]["owed"],
                                       got["post"]["withdrawn"]), ("failure", "failure", f"{HEAD} {why}", ""),
                                      self.logs)
-                    self.assertIn(f"::error::no start time of this run, so no check run records that {HEAD} is not "
-                                  "approved for the import.\n", self.logs[-1])
+                    self.assertIn(f"::error::no start time of this run, so this run records no check run that says "
+                                  f"that {HEAD} is not approved for the import.\n", self.logs[-1])
 
     def test_a_run_whose_author_kind_is_unknown_records_that_the_head_is_not_approved_for_each_reason(self):
         """OSSV-221's architect, 2026-11-24 09:28Z (U): a run whose author kind is unknown counts as an outside author's
