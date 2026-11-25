@@ -4649,7 +4649,7 @@ jobs:
           if (( rc == 0 )); then
             python3 .github/review/rules.py log "$NUMBER" "${HEAD:--}" stay hold "$STARTED" from "$last" || exit 1
             # OWED_LINE still goes into a label comment (rules.py mark): the step "Record a withdrawal that the post job
-            # owes" did not write it. A line of the head that outranks OWED_LINE stays (rules.py owed_keeps). mark
+            # owes" did not write it. A line of the head that outranks OWED_LINE stays (owed_keeps of rules.py). mark
             # leaves the state label and the text of a label comment as they are. An item
             # with no label comment gets one with no state label, in a state that follows the hold of last (tried).
             # For a hold that the rescreen pass tries again, it is working: that hold comment gives the time from which
