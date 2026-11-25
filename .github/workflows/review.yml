@@ -3522,8 +3522,7 @@ jobs:
           # .github/review/rules.py log: "#<number> at <head>: decision <decision>, cause <cause>, read <STARTED>",
           # then the fields.
           logged() { python3 .github/review/rules.py log "$NUMBER" "$head" "$1" "$2" "${STARTED:-}" "${@:3}"; }
-          # The reasons that withdraw go on to the steps below. Any other why gives no reason, so this step logs clear
-          # and withdraws nothing.
+          # Only these five causes withdraw, in the steps below. Any other why logs clear and withdraws nothing.
           case $why in
             blocking|person|screen|access|refused) ;;
             *)
