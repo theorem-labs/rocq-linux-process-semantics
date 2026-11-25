@@ -184,11 +184,12 @@ Definition flock_sole_opener (fds : list (word * FdEntry)) (i : Fs.ino) : bool :
       the gate expressible, so this decline is a coverage choice with a
       known shape rather than a missing fact.
     - [FdChannel]: the object is not in the model.  The model already
-      assumes a channel is a PIPE ([Sync.fsync_spec]'s -EINVAL and
-      [ReadWrite.lseek_spec]'s -ESPIPE both spend that assumption), and
-      that assumption does not say whether two channels are two ends of
-      one pipe or two different pipes — which is exactly the question
-      an inode-scoped lock asks.
+      assumes a channel's far end is a pipe end or, on fds 1 and 2, a
+      stream socket (SCOPE.md; [Sync.fsync_spec]'s -EINVAL and
+      [ReadWrite.lseek_spec]'s -ESPIPE hold on each), and that
+      assumption does not say whether two channels are two ends of one
+      pipe, two different pipes or one socket — which is exactly the
+      question an inode-scoped lock asks.
     - [FdDir]: two descriptors on one folder are two [struct file]s on
       one inode — two [openat(".")]s, say — and they conflict as two
       [FdFile]s on one inode do.  [State.FdDir]'s key is the folder's

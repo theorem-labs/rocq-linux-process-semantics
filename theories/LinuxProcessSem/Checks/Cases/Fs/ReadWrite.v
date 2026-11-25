@@ -4257,6 +4257,108 @@ Example channel_and_folder_pwritev2 :
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
+(** Nine complete empty iovec descriptors at 8192, one past
+    [UIO_FASTIOV]: 144 zero bytes, sixteen per entry.  Eight of them are
+    the stack-backed count's vector. *)
+Definition mem_pwv2_nine_zero : word -> option byte :=
+  fun a =>
+    if bv_leu 8192 a && bv_ltu a (8192 + 9 * 16) then Some 0 else None.
+
+(** An empty regular file open O_WRONLY at fd 3 and O_RDONLY at fd 4. *)
+Definition pwv2_file_model : Model :=
+  mkModel [(3, FdFileW 1 0); (4, FdFile 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (demo_fs_raw [([102], SFile [])]) None None None.
+
+(** PWRITEV2'S HEAP-BACKED COUNT BAND DECLINES ON A WRITABLE FILE, as
+    readv's does ([readv_heap_iovec_boundary_fails_closed]).  [vfs_writev]
+    gives [import_iovec] eight stack entries (fs/read_write.c:1031,
+    :1042-1043, Linux v6.18.46), and for 9 through 1024 descriptors
+    [iovec_from_user] allocates the array with [kmalloc_array] and may
+    answer -ENOMEM (lib/iov_iter.c:1308-1311) before it reads one, so
+    the 0 the nine empty entries would otherwise give
+    (fs/read_write.c:1047-1049) and the -ENOMEM are both declined, not
+    judged, at 9 and at 1024.  Eight entries stay on the stack: the 0 is
+    answered and the -ENOMEM refused.  1025 is still the import's
+    -EINVAL (lib/iov_iter.c:1306-1307), and the read-only descriptor is
+    still [vfs_writev]'s -EBADF (fs/read_write.c:1037-1038), both before
+    any allocation. *)
+Example pwritev2_heap_band_declines_on_a_file :
+  check_syscall (mkInput 287 [3; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+    (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 9) (mkEffect 0 [] []))
+    pwv2_file_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pwv2_file_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect 0 [] []) pwv2_file_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 8) (mkEffect 0 [] []))
+       pwv2_file_model
+     = CheckOk pwv2_file_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pwv2_file_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [3; 8192; 1025; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) pwv2_file_model
+     = CheckOk pwv2_file_model []
+  /\ check_syscall (mkInput 287 [4; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) pwv2_file_model
+     = CheckOk pwv2_file_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE SAME BAND ON /dev/urandom OPENED FOR WRITING (fd 3): the device
+    reaches [vfs_writev]'s import as a file does
+    ([urandom_pwritev2_moves_the_gathered_bytes]), so nine and 1024
+    descriptors decline (lib/iov_iter.c:1308-1311, Linux v6.18.46) and
+    eight answer the empty vector's 0 (fs/read_write.c:1047-1049); 1025
+    is -EINVAL and the read-only descriptor (fd 4) -EBADF, as before. *)
+Example urandom_pwritev2_heap_band_declines :
+  check_syscall (mkInput 287 [3; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+    (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 9) (mkEffect 0 [] []))
+    wrpin_urandom_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) wrpin_urandom_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 8) (mkEffect 0 [] []))
+       wrpin_urandom_model
+     = CheckOk wrpin_urandom_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 1025; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) wrpin_urandom_model
+     = CheckOk wrpin_urandom_model []
+  /\ check_syscall (mkInput 287 [4; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) wrpin_urandom_model
+     = CheckOk wrpin_urandom_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** THE SAME BAND ON /dev/null OPENED FOR WRITING (fd 3 of
+    [pwv2_kinds_model]): nine and 1024 descriptors decline
+    (lib/iov_iter.c:1308-1311, Linux v6.18.46), so neither the empty
+    vector's 0 nor the -ENOMEM is judged; eight answer 0; 1025 is
+    -EINVAL and the read-only descriptor (fd 4) -EBADF, as before. *)
+Example devnull_pwritev2_heap_band_declines :
+  check_syscall (mkInput 287 [3; 8192; 9; 0; 0; 32] mem_pwv2_nine_zero (fun _ => None))
+    (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 9) (mkEffect 0 [] []))
+    pwv2_kinds_model
+  = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 1024; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret ENOMEM) [] []) pwv2_kinds_model
+     = CheckUnmodeled
+  /\ check_syscall (mkInput 287 [3; 8192; 8; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (with_copyins (import_iovecs_accesses mem_pwv2_nine_zero 8192 8) (mkEffect 0 [] []))
+       pwv2_kinds_model
+     = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 1025; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) pwv2_kinds_model
+     = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [4; 8192; 9; 0; 0; 0] mem_pwv2_nine_zero (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) pwv2_kinds_model
+     = CheckOk pwv2_kinds_model [].
+Proof. split_conj; check_eq. Qed.
+
 (** A BLOCKING SEND WHOSE SOURCE IS READABLE ONLY IN PART DECLINES: of the
     two bytes only the first is readable.  [unix_stream_sendmsg]
     (net/unix/af_unix.c:2401-2546, Linux v6.18.46) copies the send into
@@ -5836,13 +5938,16 @@ Qed.
     v6.18.46), so the limit applies after the import, the zero-aggregate
     return and the position test on the named position (:1051), as for
     [writev].  With [RWF_NOAPPEND] the write lands at the named position
-    and meets no limit before [LLONG_MAX]. *)
+    and meets no limit before [LLONG_MAX].  The count is outside the
+    heap-backed band ([readv_heap_iovecb]), which the arm declines before
+    the import. *)
 Lemma append_pwritev2_at_the_cap_is_efbig :
   forall i fd iov iovcnt pos_l pos_h flags m p off iovs o,
   bv_unsigned flags = 0%Z ->
   Z.eqb (bv_signed pos_l) (-1)%Z = false ->
   ppos_einvalb pos_l = false ->
   fd_lookup (m_fds m) fd = Some (FdFileA p off) ->
+  readv_heap_iovecb iovcnt = false ->
   (Fs.MAX_LFS_FILESIZE <= Z.of_nat (length (fs_ino_data (m_fs m) p)))%Z ->
   import_iovecs (in_mem i) iov (iovcnt32 iovcnt) = ImpOk iovs ->
   Z.eqb (iovs_total (cap_iovecs iovs)) 0 = false ->
@@ -5851,7 +5956,7 @@ Lemma append_pwritev2_at_the_cap_is_efbig :
   o = Ok (with_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
             (mkEffect (errno_ret EFBIG) [] [])) m [].
 Proof.
-  intros i fd iov iovcnt pos_l pos_h flags m p off iovs o Hfl Hm1 Hpp Hfd Hcap Hiv
+  intros i fd iov iovcnt pos_l pos_h flags m p off iovs o Hfl Hm1 Hpp Hfd Hhp Hcap Hiv
     Htot Hpos.
   assert (Hfb : (append_room (fs_ino_data (m_fs m) p) <=? 0)%Z = true).
   { unfold append_room. apply Z.leb_le. lia. }
@@ -5863,6 +5968,7 @@ Proof.
     cbn [Z.eqb orb negb]. cbv beta iota.
     rewrite Hm1, Hpp. cbv beta iota.
     rewrite Hfd. cbv beta iota.
+    rewrite Hhp. cbv beta iota.
     unfold check_pwritev2_file. cbv zeta.
     rewrite (Z.eqb_refl 0). cbn [andb]. cbv beta iota.
     rewrite Hiv. cbv beta iota zeta. rewrite Htot, Hpos, Hfb. reflexivity. }

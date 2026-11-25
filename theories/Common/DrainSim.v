@@ -98,8 +98,8 @@ Lemma reads_ch_cons : forall rch bs blocks,
 Proof. reflexivity. Qed.
 
 (** All read events of a list of blocks, in order.  Channel 0 is the only
-    one a read can name: [ReadWrite.read_spec] answers -EBADF on every
-    other. *)
+    one a read can name: [ReadWrite.read_spec] declines channels 1 and
+    2. *)
 Definition reads (blocks : list (list byte)) : list event :=
   reads_ch (Z_to_bv 64 0) blocks.
 

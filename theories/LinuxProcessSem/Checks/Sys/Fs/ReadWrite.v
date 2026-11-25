@@ -7115,6 +7115,13 @@ Proof.
     reflexivity.
 Qed.
 
+Lemma readv_heap_gap_no_ok : forall i m eff m' evs,
+  readv_heap_gap i m (Ok eff m' evs) -> False.
+Proof.
+  intros i m eff m' evs H.
+  unfold readv_heap_gap, readv_buf_gap, unmodeled in H. discriminate.
+Qed.
+
 (** The pwritev2 (287) acceptor, in [ReadWrite.pwritev2_spec]'s order:
     the flag word and the position of -1 decline, [do_pwritev]'s
     [pos < 0] and empty slot before the kind, then [vfs_writev]'s
@@ -7122,6 +7129,8 @@ Qed.
     [check_pwritev2_file] on the three writable file kinds.  On each
     device, the FMODE_WRITE test and then [check_pwritev2_urandom] or
     [check_pwritev2_devnull]; a channel's -ESPIPE and a folder's -EBADF.
+    Every kind that reaches the import declines the heap-backed count
+    band ([ReadWrite.readv_heap_iovecb]) first, as [check_readv] does.
     Every other kind declines. *)
 Definition check_pwritev2 (i : SyscallInput) (fd iov iovcnt pos_l pos_h flags : word)
     (eff : SyscallEffect) (m : Model) : check_result :=
@@ -7134,14 +7143,18 @@ Definition check_pwritev2 (i : SyscallInput) (fd iov iovcnt pos_l pos_h flags : 
   | None => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdFile _ _) => check_ret_only eff (errno_ret EBADF) m []
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
-      check_pwritev2_file i m p false iov iovcnt pos_l fl eff
+      if readv_heap_iovecb iovcnt then CheckUnmodeled
+      else check_pwritev2_file i m p false iov iovcnt pos_l fl eff
   | Some (FdFileA p _) =>
-      check_pwritev2_file i m p true iov iovcnt pos_l fl eff
+      if readv_heap_iovecb iovcnt then CheckUnmodeled
+      else check_pwritev2_file i m p true iov iovcnt pos_l fl eff
   | Some (FdUrandom _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
+      else if readv_heap_iovecb iovcnt then CheckUnmodeled
       else check_pwritev2_urandom i iov iovcnt pos_l eff m
   | Some (FdDevNull _ wr) =>
       if negb wr then check_ret_only eff (errno_ret EBADF) m []   (* read-only *)
+      else if readv_heap_iovecb iovcnt then CheckUnmodeled
       else check_pwritev2_devnull i iov iovcnt pos_l eff m
   | Some (FdChannel _) => check_ret_only eff (errno_ret ESPIPE) m []   (* no FMODE_PWRITE *)
   | Some (FdDir _) => check_ret_only eff (errno_ret EBADF) m []        (* FMODE_WRITE clear *)
@@ -7167,6 +7180,21 @@ Proof.
   destruct (ppos_einvalb pos_l) eqn:Hpos; cbv beta iota in H |- *.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
+  destruct (readv_heap_iovecb iovcnt) eqn:Hheap; cbv beta iota in H |- *.
+  { (* the heap-backed band: every kind that imports declines; what comes
+       before the import answers as above *)
+    destruct (fd_lookup (m_fds m) fd)
+      as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+      cbv beta iota in H;
+      try discriminate H;
+      try (apply check_ret_only_ok_iff in H; destruct H as (-> & -> & ->);
+           wv_open Hfd; apply pure_ok).
+    { destruct wr; cbn [negb] in H; cbv beta iota in H; [discriminate H|].
+      apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+      wv_open Hfd. apply pure_ok. }
+    ur_wr; cbn [negb] in H; cbv beta iota in H; [discriminate H|].
+    apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
+    wv_open Hfd. apply pure_ok. }
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     cbv beta iota in H;
@@ -7204,6 +7232,23 @@ Proof.
   { apply unmodeled_intro. }
   destruct (ppos_einvalb pos_l) eqn:Hpos; cbv beta iota in H |- *.
   { now apply check_ret_only_no_unmodeled in H. }
+  destruct (readv_heap_iovecb iovcnt) eqn:Hheap; cbv beta iota in H |- *.
+  { (* the heap-backed band: every kind that imports declines *)
+    destruct (fd_lookup (m_fds m) fd)
+      as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+      cbv beta iota in H;
+      try (now apply check_ret_only_no_unmodeled in H);
+      try (wv_open_unmodeled Hfd; unfold readv_heap_gap, readv_buf_gap;
+           apply unmodeled_intro);
+      try (wv_open_unmodeled Hfd; apply unmodeled_intro).
+    { destruct wr; cbn [negb] in H; cbv beta iota in H.
+      - wv_open_unmodeled Hfd. cbn [negb]. cbv beta iota.
+        unfold readv_heap_gap, readv_buf_gap. apply unmodeled_intro.
+      - exfalso. exact (check_ret_only_no_unmodeled _ _ _ _ H). }
+    ur_wr; cbn [negb] in H; cbv beta iota in H.
+    - wv_open_unmodeled Hfd. cbn [negb]. cbv beta iota.
+      unfold readv_heap_gap, readv_buf_gap. apply unmodeled_intro.
+    - exfalso. exact (check_ret_only_no_unmodeled _ _ _ _ H). }
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     cbv beta iota in H;
@@ -7235,6 +7280,25 @@ Proof.
   destruct (Z.eqb (bv_signed pos_l) (-1)%Z) eqn:Hm1; hall Hm1; inv_ok.
   destruct (ppos_einvalb pos_l) eqn:Hpos; hall Hpos; inv_ok.
   { cbn; try rewrite bv_eqb_refl; reflexivity. }
+  destruct (readv_heap_iovecb iovcnt) eqn:Hheap; hall Hheap; inv_ok.
+  { (* the heap-backed band: no importing kind answers *)
+    destruct (fd_lookup (m_fds m) fd)
+      as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+      hall Hfd; inv_ok;
+      try (exfalso; match goal with
+           | Hg : readv_heap_gap _ _ (Ok _ _ _) |- _ => exact (readv_heap_gap_no_ok _ _ _ _ _ Hg)
+           end);
+      try (cbn; rewrite bv_eqb_refl; reflexivity).
+    { destruct wr; cbn [negb] in *; cbv beta iota in *.
+      - exfalso. match goal with
+        | Hg : readv_heap_gap _ _ (Ok _ _ _) |- _ => exact (readv_heap_gap_no_ok _ _ _ _ _ Hg)
+        end.
+      - inv_ok. cbn. try rewrite bv_eqb_refl. reflexivity. }
+    ur_wr; cbn [negb] in *; cbv beta iota in *.
+    - exfalso. match goal with
+      | Hg : readv_heap_gap _ _ (Ok _ _ _) |- _ => exact (readv_heap_gap_no_ok _ _ _ _ _ Hg)
+      end.
+    - inv_ok. cbn. try rewrite bv_eqb_refl. reflexivity. }
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok;
@@ -7265,6 +7329,18 @@ Proof.
   destruct (Z.eqb (bv_signed pos_l) (-1)%Z) eqn:Hm1; hall Hm1; inv_ok;
     [reflexivity|].
   destruct (ppos_einvalb pos_l) eqn:Hpos; hall Hpos; inv_ok; try discriminate.
+  destruct (readv_heap_iovecb iovcnt) eqn:Hheap; hall Hheap; inv_ok.
+  { (* the heap-backed band: every importing kind declines *)
+    destruct (fd_lookup (m_fds m) fd)
+      as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+      hall Hfd; inv_ok; try discriminate;
+      try reflexivity.
+    { destruct wr; cbn [negb] in *; cbv beta iota in *.
+      - reflexivity.
+      - inv_ok. }
+    ur_wr; cbn [negb] in *; cbv beta iota in *.
+    - reflexivity.
+    - inv_ok. }
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     hall Hfd; inv_ok; try discriminate;
@@ -7286,13 +7362,6 @@ Qed.
     decline.  See [ReadWrite.readv_buf_gap]. *)
 
 Definition check_readv_gap : check_result := CheckUnmodeled.
-
-Lemma readv_heap_gap_no_ok : forall i m eff m' evs,
-  readv_heap_gap i m (Ok eff m' evs) -> False.
-Proof.
-  intros i m eff m' evs H.
-  unfold readv_heap_gap, readv_buf_gap, unmodeled in H. discriminate.
-Qed.
 
 (** [ReadWrite.readv_urandom] as an acceptor, branch for branch: the
     first-byte verdict, the stream's length test, the whole-delivery

@@ -46,10 +46,11 @@ Open Scope sys_scope.
 
     THE OTHER -ENOMEM ON THIS FILE'S SYSCALLS IS NOT HERE.
     [__import_iovec] allocates for 9 through [IOV_MAX] descriptors and
-    may answer -ENOMEM there too (lib/iov_iter.c); [readv] declines that
-    band outright ([readv_heap_iovecb]) and [writev]'s header records it
-    as unrepresented.  Those are shapes the model refuses to judge, not
-    answers it offers, so they add nothing to this list. *)
+    may answer -ENOMEM there too (lib/iov_iter.c); [readv] and [pwritev2]
+    decline that band outright ([readv_heap_iovecb]) and [writev]'s
+    header records it as unrepresented.  Those are shapes the model
+    refuses to judge, not answers it offers, so they add nothing to this
+    list. *)
 Definition write_errnos : list Z := [ENOMEM].
 
 (** The zero-fill a call forces on the model is one the model can
@@ -3426,6 +3427,40 @@ Definition writev_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
       (* declined whole, as the scalar write is: see [write_spec] *)
   end.
 
+(** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
+    include/uapi/linux/uio.h:45, Linux v6.18.46): [vfs_readv] and
+    [vfs_writev] each hand [import_iovec] an [iovstack] of that many
+    (fs/read_write.c:993, :1031).  For counts 9 through [IOV_MAX],
+    lib/iov_iter.c [iovec_from_user] (:1308-1311, v6.18.46) allocates a
+    temporary array with [kmalloc_array] and may fail with [-ENOMEM]
+    before it reads a descriptor or applies [access_ok].  The model does
+    not represent this allocation choice, so it fails closed on the whole
+    heap-backed range, in [readv_spec] and in [pwritev2_spec] alike, each
+    after its fd and mode gates (which run first in Linux too); counts
+    above [IOV_MAX] are [-EINVAL] without allocating (:1306-1307), and a
+    count of one never allocates at all ([__import_iovec], :1360-1361).
+    [writev_spec] reaches the same allocation and still answers the band,
+    as its header records. *)
+Definition UIO_FASTIOV : Z := 8%Z.
+
+Definition readv_heap_iovecb (iovcnt : word) : bool :=
+  let n := bv_unsigned (iovcnt32 iovcnt) in
+  ((UIO_FASTIOV <? n)%Z && (n <=? IOV_MAX)%Z)%bool.
+
+(** A readv destination-shape gap: the model cannot describe this
+    delivery, so it DECLINES.  The input-side analogue of
+    [writev_buf_gap].  [Checks.Sys.Fs.ReadWrite.check_readv_gap] is the
+    single checker-side counterpart of this and of [readv_heap_gap]. *)
+Definition readv_buf_gap : Sys SyscallEffect := unmodeled.
+
+(** Fail closed on the heap-backed count band ([readv_heap_iovecb]).  A
+    DISTINCT NAME for a distinct reason to decline — the optional
+    [-ENOMEM] of the temporary iovec allocation, not an unrepresentable
+    buffer shape — but deliberately not a second copy of the policy: one
+    body, so the two cannot drift apart the way the [MAX_RW_COUNT] cap
+    did between readv and writev. *)
+Definition readv_heap_gap : Sys SyscallEffect := readv_buf_gap.
+
 (** [pwritev2] ON THE RANDOM DEVICE, once [pwritev2_spec] has made the
     tests in front of the descriptor and [vfs_writev]'s FMODE_WRITE test
     (fs/read_write.c:1037-1038, Linux v6.18.46) has passed.  [do_pwritev]
@@ -3527,6 +3562,21 @@ Definition pwritev2_devnull (mp : word -> option byte) (iov iovcnt pos : word)
       (:1042-1045), the zero aggregate's 0 (:1047-1049), and
       [rw_verify_area] on [pos] and the aggregate (:1051-1053) -- all of
       which [writev_file_arm] carries for [writev], here at [pos].
+    - THE HEAP-BACKED COUNT BAND DECLINES, as [readv_spec]'s does
+      ([readv_heap_iovecb]).  [vfs_writev] hands [import_iovec] eight
+      stack entries (:1031, :1042-1043), and for 9 through [IOV_MAX]
+      descriptors lib/iov_iter.c [iovec_from_user] allocates the array
+      with [kmalloc_array] and may answer -ENOMEM (:1308-1311, Linux
+      v6.18.46) before it reads a descriptor, so before the zero
+      aggregate's 0 (fs/read_write.c:1047-1049) too.  The model does not
+      represent that allocation, so every kind that reaches the import
+      -- the three writable file kinds and the two devices opened for
+      writing -- declines the band after its FMODE_WRITE test; the
+      answers that come before the import (the empty slot's -EBADF, a
+      channel's -ESPIPE, a read-only descriptor's or a folder's -EBADF)
+      stand, and a count over [IOV_MAX] stays the import's -EINVAL
+      (lib/iov_iter.c:1306-1307), which allocates nothing.  [writev_spec]
+      still answers the band, as its header records.
     - [do_iter_readv_writev]: only now [kiocb_set_rw_flags]
       (include/linux/fs.h).  A flag word with a bit outside
       [RWF_SUPPORTED] is -EOPNOTSUPP there, after everything above;
@@ -3576,15 +3626,19 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
   | Some (FdFile _ _) => err_ret EBADF         (* [vfs_writev]'s FMODE_WRITE test,
                                                   fs/read_write.c:1037-1038 *)
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
-      pwritev2_file (in_mem i) (m_fs m) p false iov iovcnt pos_l fl
+      if readv_heap_iovecb iovcnt then readv_heap_gap   (* [iovec_from_user]'s -ENOMEM *)
+      else pwritev2_file (in_mem i) (m_fs m) p false iov iovcnt pos_l fl
   | Some (FdFileA p _) =>
-      pwritev2_file (in_mem i) (m_fs m) p true iov iovcnt pos_l fl
+      if readv_heap_iovecb iovcnt then readv_heap_gap
+      else pwritev2_file (in_mem i) (m_fs m) p true iov iovcnt pos_l fl
   | Some (FdUrandom _ wr) =>
       if negb wr then err_ret EBADF              (* [vfs_writev]'s FMODE_WRITE test,
                                                     fs/read_write.c:1037-1038 *)
+      else if readv_heap_iovecb iovcnt then readv_heap_gap
       else pwritev2_urandom (in_mem i) iov iovcnt pos_l
   | Some (FdDevNull _ wr) =>
       if negb wr then err_ret EBADF              (* the same FMODE_WRITE test *)
+      else if readv_heap_iovecb iovcnt then readv_heap_gap
       else pwritev2_devnull (in_mem i) iov iovcnt pos_l
   | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE (fs/read_write.c:1151-1152):
                                                     the far end is a pipe or a socket, both
@@ -3769,35 +3823,6 @@ Definition readable_fd (e : FdEntry) : option ReadableFd :=
   | FdDgram _ => Some RdDgram
     (* a socket file, O_RDWR: [RdSocket]'s argument *)
   end.
-
-(** Linux keeps eight iovecs on the syscall stack ([UIO_FASTIOV],
-    include/uapi/linux/uio.h).  For counts 9 through [IOV_MAX],
-    lib/iov_iter.c [iovec_from_user] (v6.18.46) allocates a temporary
-    array with [kmalloc_array] and may fail with [-ENOMEM] before it
-    reads a descriptor or applies [access_ok].  The model does not
-    represent this allocation choice, so it fails closed on the whole
-    heap-backed range.  The fd and [FMODE_READ] gates in [readv_spec]
-    run first; counts above [IOV_MAX] are [-EINVAL] without allocating,
-    and a count of one never allocates at all. *)
-Definition UIO_FASTIOV : Z := 8%Z.
-
-Definition readv_heap_iovecb (iovcnt : word) : bool :=
-  let n := bv_unsigned (iovcnt32 iovcnt) in
-  ((UIO_FASTIOV <? n)%Z && (n <=? IOV_MAX)%Z)%bool.
-
-(** A readv destination-shape gap: the model cannot describe this
-    delivery, so it DECLINES.  The input-side analogue of
-    [writev_buf_gap].  [Checks.Sys.Fs.ReadWrite.check_readv_gap] is the
-    single checker-side counterpart of this and of [readv_heap_gap]. *)
-Definition readv_buf_gap : Sys SyscallEffect := unmodeled.
-
-(** Fail closed on the heap-backed count band ([readv_heap_iovecb]).  A
-    DISTINCT NAME for a distinct reason to decline — the optional
-    [-ENOMEM] of the temporary iovec allocation, not an unrepresentable
-    buffer shape — but deliberately not a second copy of the policy: one
-    body, so the two cannot drift apart the way the [MAX_RW_COUNT] cap
-    did between readv and writev. *)
-Definition readv_heap_gap : Sys SyscallEffect := readv_buf_gap.
 
 (** A PARTIALLY WRITABLE DESTINATION IS UNDESCRIBED, for every fd kind
     that copies, and this is why.

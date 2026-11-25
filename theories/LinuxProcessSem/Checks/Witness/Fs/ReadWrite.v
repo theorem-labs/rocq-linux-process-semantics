@@ -2306,11 +2306,14 @@ Definition pwritev2_witness (fd iov iovcnt pos_l pos_h flags : word)
   | None => ret_outcome (errno_ret EBADF) m
   | Some (FdFile _ _) => ret_outcome (errno_ret EBADF) m
   | Some (FdFileW p _) | Some (FdFileRW p _) =>
-      pwritev2_file_witness i m p false iov iovcnt pos_l fl
+      if readv_heap_iovecb iovcnt then Unmodeled   (* the heap-backed band *)
+      else pwritev2_file_witness i m p false iov iovcnt pos_l fl
   | Some (FdFileA p _) =>
-      pwritev2_file_witness i m p true iov iovcnt pos_l fl
+      if readv_heap_iovecb iovcnt then Unmodeled
+      else pwritev2_file_witness i m p true iov iovcnt pos_l fl
   | Some (FdUrandom _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m   (* read-only *)
+      else if readv_heap_iovecb iovcnt then Unmodeled
       else
         outcome_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
           (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
@@ -2326,6 +2329,7 @@ Definition pwritev2_witness (fd iov iovcnt pos_l pos_h flags : word)
            end)
   | Some (FdDevNull _ wr) =>
       if negb wr then ret_outcome (errno_ret EBADF) m   (* read-only *)
+      else if readv_heap_iovecb iovcnt then Unmodeled
       else
         outcome_copyins (import_iovecs_accesses (in_mem i) iov (iovcnt32 iovcnt))
           (match import_iovecs (in_mem i) iov (iovcnt32 iovcnt) with
@@ -2355,6 +2359,20 @@ Proof.
     [apply unmodeled_intro|].
   destruct (Z.eqb (bv_signed pos_l) (-1)%Z); cbv beta iota; [apply unmodeled_intro|].
   destruct (ppos_einvalb pos_l); cbv beta iota; [apply pure_ok|].
+  destruct (readv_heap_iovecb iovcnt) eqn:Hheap; cbv beta iota.
+  { (* the heap-backed band: every kind that imports declines; what comes
+       before the import answers as below *)
+    destruct (fd_lookup (m_fds m) fd)
+      as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
+      try (wvw_open Hfd; unfold readv_heap_gap, readv_buf_gap; apply unmodeled_intro);
+      try (wvw_open Hfd; apply unmodeled_intro);
+      try (wvw_open Hfd; apply pure_ok).
+    { wvw_open Hfd. destruct wr; cbn [negb]; cbv beta iota; [|apply pure_ok].
+      unfold readv_heap_gap, readv_buf_gap. apply unmodeled_intro. }
+    wvw_open Hfd.
+    match goal with Hu : _ = Some (FdUrandom _ ?b) |- _ => destruct b end;
+      cbn [negb]; cbv beta iota; [|apply pure_ok].
+    unfold readv_heap_gap, readv_buf_gap. apply unmodeled_intro. }
   destruct (fd_lookup (m_fds m) fd)
     as [[ch|p off|p off|p off|p off| |sk|id w|rd wr| |sid side st|ctx|fam]|] eqn:Hfd;
     try (wvw_open Hfd; apply unmodeled_intro);
