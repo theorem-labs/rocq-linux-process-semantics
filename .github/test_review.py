@@ -21920,6 +21920,82 @@ class ImportCheckTest(ReaderRunner):
         state = rules.review_verdict(comments, HEAD)[1]
         self.assertFalse(state == "held" and self.successes(checks), (state, checks, self.logs[-4:]))
 
+    def test_no_older_reads_line_takes_the_place_of_a_newer_reads_line_whose_review_never_posted(self):
+        """The tester's audit of round 25, H1, by OSSV-221's architect's ruling of 2026-11-25 07:24Z (a failure path
+        that fails open; I1): a withdraw-owed line is replaced only by a line that outranks it in the order of the words
+        on a head. The CI review run 60 of mallory's #7 read the item 70 minutes ago, passed HEAD and recorded 901.
+        Rescreen run 120 read the item 20 minutes ago and gave HEAD a blocking finding: GitHub refuses the withdrawal of
+        its post job and then its review comment, so its line <!-- withdraw-owed HEAD blocking 120 <read> --> is the one
+        trace of its verdict. Rescreen run 110 read the item 30 minutes ago and passed HEAD: it records 902 and posts
+        its pass. Then the CI review run 100, which read the item 40 minutes ago and gave a blocking finding (or whose
+        screen held HEAD), runs its post job and its comment job (or its hold job), which owes for its own word and
+        gives way to run 110's newer pass. Two relabels of #7 follow. At the end no success stands: the newest word on
+        HEAD is run 120's blocking finding. At 6a64af1f run 100's owe writes its older line in the place of run 120's,
+        each relabel finds that line outranked by run 110's pass, and 902 stands."""
+        for case in ("a blocking review", "a screen hold"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                older = review_of(HEAD, at=ago(69), run=60, read=ago(70))
+                label = {"id": 40, "user": {"login": BOT}, "created_at": ago(69), "updated_at": ago(69),
+                         "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+                checks = [dict(rules.check_run("7", HEAD, self.LPS, False, "60", ago(70)), id=901,
+                               app={"id": VERIFY_APP_ID}, completed_at=ago(69))]
+
+                def labelled(comments):
+                    """comments with the label comment as the last job left it."""
+                    bodies = [b for _m, e, b in label_comments(self.api) if e == f"repos/{REPO}/issues/comments/40"]
+                    if not bodies:
+                        return comments
+                    return [c for c in comments if c["id"] != 40] + [dict(label, updated_at=ago(0), body=bodies[-1])]
+
+                def refused():
+                    for name in os.listdir(self.api):
+                        if name.endswith(".fail"):
+                            os.remove(os.path.join(self.api, name))
+
+                # Run 120: GitHub refuses its withdrawal and its review comment, so neither changes #7.
+                late = dict(self.REVIEWED, task="rescreen", started=ago(20))
+                self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+                late_got = self.judge(["README.md"], value=self.LPS, verdict="blocking", trust=late,
+                                      event="workflow_dispatch", comments=[older, label], listed=checks)
+                refused()
+                self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
+                self.serve_checks(checks)
+                self.comment_job_after_post(late_got, late, "blocking", [older, label], "120")
+                refused()
+                comments = labelled([older, label])
+                # Run 110: it records 902 and posts its pass.
+                middle = dict(self.REVIEWED, task="rescreen", started=ago(30))
+                got, checks = self.judged(checks, "110", trust=middle, event="workflow_dispatch", comments=comments)
+                self.serve_checks(checks)
+                self.forget()
+                _o, _w, _l, review = self.comment_job_after_post(got, middle, "pass", comments, "110")
+                comments = labelled([dict(review, id=30)] + [c for c in comments if c["id"] != 30])
+                # Run 100: its word is older than run 110's pass, so it gives way after it owes for its own word.
+                early = dict(self.REVIEWED, started=ago(40))
+                if case == "a blocking review":
+                    got, checks = self.judged(checks, "100", verdict="blocking", trust=early, comments=comments)
+                    self.serve_checks(checks)
+                    self.forget()
+                    self.comment_job_after_post(got, early, "blocking", comments, "100")
+                else:
+                    got, checks = self.judged(checks, "100", screen="held", trust=early, comments=comments)
+                    self.serve_checks(checks)
+                    self.forget()
+                    self.hold_job_after_post(got, early, comments, "100")
+                checks = self.applied_checks(checks)
+                comments = labelled(comments) + [
+                    {"id": 50, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0), "body": body}
+                    for body in self.posted("<!-- review-held -->")]
+                for k in (1, 2):
+                    _got, checks = self.judged(checks, str(900 + k), trust=dict(self.RELABEL, started=ago(-k)),
+                                               event="workflow_dispatch", comments=comments)
+                    comments = labelled(comments)
+                self.assertEqual(self.successes(checks), [],
+                                 ([l for c in comments for l in c["body"].split("\n") if "withdraw-owed" in l],
+                                  self.logs[-3:]))
+
     def label_step(self, trust, got, listed, comments, verdict="pass"):
         """The comment job's label step of the run whose trust job gave trust (such as the screened CI review of #7 at
         HEAD), whose review gave verdict (a pass by default) and whose post job gave got (judge), while the variable
