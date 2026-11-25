@@ -708,8 +708,10 @@ LOG_DECISIONS = {
     # The label step: gone, in the place of the post job's decision, and the hold that keeps the labels.
     "gone": ("No import check run of the head with the conclusion success and the marker of the import's paths "
              "stands now. So the label comment does not say that the workflow recorded the check."),
-    "stay": ("The label step leaves the state label and the text of the label comment as they are. It writes only the "
-             "withdraw-owed line of this run, if there is one, in a new label comment when the item has none."),
+    "stay": ("The label step leaves the state label and the text of the label comment as they are. The label step "
+             "adds only the withdraw-owed line that this run owes, if there is one. When the item has no label "
+             "comment, the label step posts a whole label comment with that line, of the state working or "
+             "after-hold."),
     # The step that finds the import check runs to withdraw, and the step that records the check run of not-approved.
     "withdraw": "A later step of this job withdraws the import check runs that check names.",
     "keep": ("This job leaves the import check runs that check names: the run that recorded each one read the item "
@@ -738,14 +740,18 @@ LOG_CAUSES = {
     "earlier": "A screen passed the head in the run of an earlier review.",
     "standing": "An import check run of the head with the conclusion success stands.",
     "head": "The head of the pull request is not the head that this run read.",
-    "rule": "The rules of R12 (import_decision) decide it, from the changed files that the step read.",
+    "rule": ("The decide step of the post job applies the rules of R12 (import_decision). They read whether a screen "
+             "passed the head, the verdict, the soundness hold, the import's paths and the changed files that the "
+             "step read."),
     "none": "This run has no reason to withdraw an import check run.",
 }
 # The fields after read, in this order: the pattern of the value, and what it says. The check run ids of check are
 # separated by commas.
 LOG_FIELDS = {
     "run": (re.compile(r"[1-9][0-9]*"),
-            "The id of the run that gave the word that decides, none when its comment names no run."),
+            "The id of the run that gave the word that decides, none when its comment names no run. The withdraw and "
+            "keep lines leave run out when the word is this run's own, or when this run knows no run of it. The skip "
+            "line of the comment job leaves run out when the post job of this run gave way."),
     "check": (re.compile(r"[1-9][0-9]*(?:,[1-9][0-9]*)*"), "The ids of the import check runs that the decision names."),
     "from": (TIME, "The time from which that word counts, none when it names no time."),
     "files": (re.compile(r"0|[1-9][0-9]*"), "The number of changed files that the step read."),

@@ -47,7 +47,8 @@ works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0
 # <run> <tries> <kind> <task> <comment> <id> <head>". For a hold that the rescreen pass tries again (its
 # marker <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit
 # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that
-# failed or ran out of time), <run> the run of the event this hold comes from (a run that takes the hold
+# failed or ran out of time, or a run whose gather or screen job failed or was cancelled), <run> the run of
+# the event this hold comes from (a run that takes the hold
 # again keeps it), <tries> the screened reviews of it that failed so far, <task> the task that takes it again
 # (answer, draft or approve as the marker names it, and rescreen for a marker with no task), and <comment>
 # the comment that a held answer answers (- for none). Each of <run> to <comment> is - for a hold that is not

@@ -96,8 +96,9 @@
 #   keep their hold comment and the time of its new try. The rescreen pass takes each item that a stopped run left,
 #   by its own rules. This rule counts no run of the rescreen pass and no run by hand, and stops none.
 # - An item held for a reason that is not its own is taken again with no person: at that limit; a screened review
-#   stopped at SCREENED_HOURLY_CAP; or a screened review, answer or draft that failed or ran out of time, until it has
-#   failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that end with neither a new hold nor a post, its
+#   stopped at SCREENED_HOURLY_CAP; a screened review, answer or draft that failed or ran out of time; or a run whose
+#   gather or screen job failed, until it has failed REVIEW_TRIES times. After REVIEW_TRIES runs since its hold that
+#   end with neither a new hold nor a post, its
 #   hold comment says that it is not tried again. A run counts no try when a sign-in that judges nothing failed in it,
 #   when the limit or the cap stopped it before any work, or when its trust job succeeded and decided that it has no
 #   task (.github/review/held.sh, try_rule). A trust job that failed counts a try. Such a stop of the pass's own run of
@@ -4866,7 +4867,8 @@ jobs:
   # comment says nothing of why the screen held it: the screen job's one output is its verdict. A hold that the
   # rescreen pass tries again ends with the marker <!-- review-held-<kind> <run> <tries> -->, by which the pass finds it
   # and the account: limit (OUTSIDE_HOURLY_LIMIT); cap, a screened review stopped at SCREENED_HOURLY_CAP; or transient,
-  # a screened review that failed otherwise or ran out of time, while it has failed fewer than REVIEW_TRIES times. <run>
+  # a screened review that failed otherwise or ran out of time, or a run whose gather or screen job failed or was
+  # cancelled, while it has failed fewer than REVIEW_TRIES times. <run>
   # is the run of the event this hold comes from (a run that takes the hold again keeps it), and <tries> the screened
   # reviews of it that failed so far. The marker of an answer's hold ends with the task and the comment that it answers:
   # <!-- review-held-<kind> <run> <tries> answer <comment id> -->, and the marker of a draft's hold with the task:
@@ -4874,10 +4876,14 @@ jobs:
   # that comment, and the draft as a draft, which posts nothing, and never either as a review. Such a hold gives the
   # UTC time when the item is tried again, and no state label: the workflow still works on the item. An answer's hold
   # of that kind leaves the state label as it is: the state of the item does not wait for the answer. An approval has
-  # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, or by
-  # its screen, whose hold says that the checks of the pull request have not run. A hold that is not tried again (the
-  # screen's, or the last try of a review, an answer or a draft) gives waits-on-theorem and a label comment that names
-  # Sami's next step (.github/review/rules.py, from main's checkout of .github/). The label call gives the trust job's
+  # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, by
+  # its screen, whose hold says that the checks of the pull request have not run, or when its gather or screen job
+  # failed. A gather or screen job that failed or was cancelled judged nothing of the item, so no screen held it: its
+  # hold is transient, or its last try, and never a hold of the screen. It names no read, and no reader counts it as a
+  # word on the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A hold that is not tried again (the screen's, or
+  # the last try of a review, an answer, a draft or a run whose gather or screen job failed) gives waits-on-theorem
+  # and a label comment that names Sami's next step (.github/review/rules.py, from main's checkout of .github/). The
+  # label call gives the trust job's
   # outside, outsider and kind as they are (the author-kind table). Only an outside author's item gets the state label
   # (R5). Any other item, as a writer's pull request whose head an outsider pushed and whose screen held it, gets that
   # label comment, with its marker <!-- waits-on-theorem: Sami -->, but no state label. When GitHub did not say whether
@@ -4979,6 +4985,16 @@ jobs:
       # main's .github/, for .github/review/rules.py and .github/review/held.sh; never the pull request.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
         with: {ref: main, persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
+      # A gather job or a screen job of this run that failed or was cancelled. No screen judged the item, so no screen
+      # held it (OSSV-221's architect, 2026-11-25 01:13Z, G2): the label step holds it as a run that did not finish,
+      # with a transient hold that the rescreen pass tries again, never with a hold of the screen. As in the two steps
+      # after this one, the if alone reads those jobs, and the step writes only the literal output failed=true.
+      - name: Whether the gather or the screen job of this run failed or was cancelled
+        id: unscreened
+        if: >-
+          needs.gather.result == 'failure' || needs.gather.result == 'cancelled'
+          || needs.screen.result == 'failure' || needs.screen.result == 'cancelled'
+        run: echo "failed=true" >> "$GITHUB_OUTPUT"
       # A screen of this run that held the head, in a review, a rescreen or an approval: the tasks whose post job
       # withdraws for a held screen (the author-kind table's withdraw). The if alone reads the screen, and the step
       # writes only the literal output held=true, which the next step reads: no step of this job reads anything else
@@ -5128,6 +5144,9 @@ jobs:
           # an issue names in the marker <!-- review-held-read <time> -->, as the review of the comment job names it in
           # its marker <!-- review-read <time> -->.
           STARTED: ${{ needs.trust.outputs.started }}
+          # true when the gather job or the screen job of this run failed or was cancelled (the step "Whether the gather
+          # or the screen job of this run failed or was cancelled"): no screen judged the item, so none held it.
+          UNSCREENED: ${{ steps.unscreened.outputs.failed }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -5332,13 +5351,34 @@ jobs:
             fi
             why="$again$why"$'\n\n'"${who^} can still be at the limit at the first event of the list above after $next. Then the workflow keeps $what held and screens it at a later event of that list."
           elif [ -z "$OUTSIDER" ]; then
-            # A run by hand that asked for the screen first: no account's limit, and no try again.
+            # A run by hand that asked for the screen first: no account's limit, and no try again. So a gather job or a
+            # screen job of it that failed or was cancelled (UNSCREENED) gives the last try, as its review that did not
+            # finish does. No screen held the item, so this is no hold of the screen.
             if [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
               fact=tries_used_up
               why="The automated review did not finish. The workflow does not try it again. The automated screen passed $what."
+            elif [ "${UNSCREENED:-}" = true ]; then
+              fact=tries_used_up
+              why="The checks of this run did not finish, so $work_of did not run. The workflow does not try it again."
             else
               fact=screen_held
               why="The automated screen held $what, so the automated review did not run. You do not need to do anything."
+            fi
+          elif [ "${UNSCREENED:-}" = true ]; then
+            # The gather job or the screen job of this run failed or was cancelled (UNSCREENED), so no screen judged the
+            # item (OSSV-221's architect, 2026-11-25 01:13Z, G2). As for a review that did not finish, the hold is
+            # transient and counts a try: the rescreen pass tries it again, and the last try waits on Sami. It is never
+            # a hold of the screen: its text never says that the screen held the item, and it names no read. So no
+            # reader counts it as a word on the head (.github/review/rules.py hold_fact and comment_word).
+            tries=$((tries + 1))
+            if (( tries < REVIEW_TRIES )); then
+              kind=transient
+              why="$again$from The checks of this run did not finish, so $work_of did not run."
+              why+=" This was try $tries of $REVIEW_TRIES. $again_other"
+            else
+              fact=tries_used_up
+              why="The checks of this run did not finish, so $work_of did not run."
+              why+=" This was try $tries of $REVIEW_TRIES. The workflow does not try it again. $from"
             fi
           elif [ "$REVIEW" = failure ] || [ "$REVIEW" = cancelled ]; then
             # Stopped at SCREENED_HOURLY_CAP: tried (read above) gives cap, as the review job's step "Hold at the hourly

@@ -4834,6 +4834,121 @@ class HoldTest(Holding):
             self.assertEqual((rc, len(posts)), (0, 1), out)
             self.assertNotIn("review-held-read", body)
 
+    def unfinished_job(self, task, failed, comments, tries="0", away=False):
+        """The hold job of run 130 of mallory's #7 at HEAD, a rescreen (task rescreen) or an answer of comment 77 (task
+        answer), whose trust job read the item 20 minutes ago, as GitHub runs it (run_job). Its gather job or its screen
+        job (failed) failed, so no screen judged the item, and no review job and no post job ran. The run takes run
+        100's hold again, with tries, the tries that the trust job gave. #7's comments are comments, with no label
+        comment. away takes the env UNSCREENED out of the label step, as a control: the label step of before, whose last
+        else holds such a run as a hold of the screen. (the outcome of each step, the hold comment that the job posted,
+        or "", the contexts after the job)."""
+        gathered = failed != "gather"
+        trust = dict(self.OUTSIDER, task=task, head=HEAD, started=ago(20), account="mallory", kind="outsider",
+                     origin="100", tries=tries, comment="77" if task == "answer" else "")
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"needs.trust.result": "success", "needs.gather.result": "success" if gathered else "failure",
+                    "needs.gather.outputs.kind": "pr" if gathered else "",
+                    "needs.gather.outputs.digest": "0" * 64 if gathered else "",
+                    "needs.screen.result": "failure" if gathered else "skipped", "needs.screen.outputs.verdict": "",
+                    "needs.review.result": "skipped", "needs.post.result": "skipped",
+                    "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": "token-of-this-run",
+                    "github.run_id": "130", "github.run_attempt": "1", "github.event_name": "workflow_dispatch",
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+        self.assertEqual([bool(evaluate(JOBS[job]["if"], ctx)) for job in ("review", "post", "hold")],
+                         [False, False, True])
+        self.serve(f"repos/{REPO}/issues/7", {"number": 7, "pull_request": {}, "user": {"login": "mallory"}})
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": f"https://github.com/{REPO}/pull/7#c50"})
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
+        self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}})
+        jobs = (self.gathered() + [attempt_job("screen", "Screen", name="screen mallory")] if gathered
+                else [attempt_job("trust"), attempt_job("gather", "Gather the pull request or issue")])
+        self.serve(f"repos/{REPO}/actions/runs/130/attempts/1/jobs", {"jobs": jobs})
+        summary = os.path.join(self.dir, "summary")
+        open(summary, "w").close()
+        self.env["GITHUB_STEP_SUMMARY"] = summary
+        self.logs = []
+        env = step("hold", self.STEP)["env"]
+        unscreened = env.pop("UNSCREENED") if away else None
+        try:
+            outcomes = run_job(self, "hold", ctx, {})
+        finally:
+            if away:
+                env["UNSCREENED"] = unscreened
+        bodies = [a[len("body="):] for c in writes(self.api) for a in c if a.startswith("body=<!-- review-held -->")]
+        return outcomes, bodies[-1] if bodies else "", ctx
+
+    def unfinished_facts(self, outcomes, body, ctx, older):
+        """What the hold comment body of such a run gives each reader: (its marker of a hold that is tried again, or
+        None; whether it names a read, <!-- review-held-read <time> -->; its fact, rules.py hold_fact; its word on HEAD,
+        rules.py comment_word; the state of HEAD beside the review comment older, rules.py review_verdict; and what the
+        run owes: the outcome of the step "Record a withdrawal that this run owes", its output line, and each label
+        comment that the job wrote with a line of a withdrawal for the screen of HEAD)."""
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body}
+        tried = re.search(r"<!-- review-held-transient [^\n]* -->", body)
+        owed = [b for _m, _e, b in label_comments(self.api) if f"<!-- withdraw-owed {HEAD} screen " in b]
+        return (tried.group(0) if tried else None, "<!-- review-held-read " in body, rules.hold_fact(body),
+                rules.comment_word(hold, HEAD), rules.review_verdict([older, hold], HEAD)[1],
+                (outcomes["Record a withdrawal that this run owes"], ctx.get("steps.owed.outputs.line"), owed))
+
+    def test_a_screen_job_that_failed_gives_a_transient_hold_that_no_reader_counts_as_a_word(self):
+        """OSSV-221's architect, 2026-11-25 01:13Z, G2: a screen job that failed at its step Screen, after its
+        sign-ins, gave no verdict, so no screen held the item. The hold job of rescreen run 130 of mallory's #7 at HEAD,
+        which takes run 100's hold again, holds it as a run that did not finish: a transient hold, with the next try in
+        its marker, that says that the checks of this run did not finish and names no read. rules.py takes it for a
+        hold that is tried again, never for a hold of the screen: it is no word on HEAD, and the screened pass of run
+        60 keeps the state screened. The run owes no withdrawal for a screen. At the last try, the hold is not tried
+        again: waits-on-theorem, with Sami's next step, and still no word. The control, the label step with no
+        UNSCREENED (its last else), posts a hold of the screen with the read of run 130, which outranks that pass."""
+        older = review_of(HEAD, at=ago(70), run=60, read=ago(70))
+        for tries, marker, fact in (("1", "<!-- review-held-transient 100 2 -->", "held"),
+                                    (str(self.TRIES - 1), None, "tries_used_up")):
+            with self.subTest(tries=tries):
+                self.tearDown()
+                self.setUp()
+                outcomes, body, ctx = self.unfinished_job("rescreen", "screen", [older], tries=tries)
+                self.assertEqual(outcomes[self.STEP], "success", self.logs)
+                self.assertIn("The checks of this run did not finish, so the automated review did not run. This was "
+                              f"try {int(tries) + 1} of {self.TRIES}.", body)
+                self.assertEqual(self.unfinished_facts(outcomes, body, ctx, older),
+                                 (marker, False, fact, None, "screened", ("skipped", None, [])), body)
+                if fact == "held":
+                    self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+                else:
+                    self.assertWaitsOnSami("Sami starts again, by hand, the work that the hold comment names.")
+        self.tearDown()
+        self.setUp()
+        outcomes, body, ctx = self.unfinished_job("rescreen", "screen", [older], tries="1", away=True)
+        facts = self.unfinished_facts(outcomes, body, ctx, older)
+        self.assertEqual((facts[:3], facts[3][1:], facts[4]), ((None, True, "screen_held"), ("hold", "130"), "held"),
+                         body)
+
+    def test_a_gather_job_that_failed_on_an_answer_gives_a_transient_hold_that_no_reader_counts_as_a_word(self):
+        """OSSV-221's architect, 2026-11-25 01:13Z, G2: the gather job of answer run 130 of comment 77 on mallory's #7
+        at HEAD failed, so no screen ran. The hold job holds the answer as one that did not finish: a transient hold of
+        the answer, with its task and its comment in its marker, that says that the checks of this run did not finish
+        and names no read. It leaves the state label and the label comment as they are, owes no withdrawal for a
+        screen, and withdraws nothing: no screen of this run held the head. rules.py takes it for no word on HEAD. The
+        control, the label step with no UNSCREENED (its last else), posts a hold of the screen with the read of run
+        130, which outranks the screened pass of run 60."""
+        older = review_of(HEAD, at=ago(70), run=60, read=ago(70))
+        outcomes, body, ctx = self.unfinished_job("answer", "gather", [older])
+        self.assertEqual(outcomes[self.STEP], "success", self.logs)
+        self.assertIn("The checks of this run did not finish, so the automated answer to your comment did not run. "
+                      f"This was try 1 of {self.TRIES}.", body)
+        self.assertEqual(self.unfinished_facts(outcomes, body, ctx, older),
+                         ("<!-- review-held-transient 100 1 answer 77 -->", False, None, None, "screened",
+                          ("skipped", None, [])), body)
+        self.assertEqual((state_labels(self.api), label_comments(self.api)), ([], []))
+        self.assertEqual(outcomes["Find the import check runs that the screen of this answer withdraws"], "skipped")
+        self.tearDown()
+        self.setUp()
+        outcomes, body, ctx = self.unfinished_job("answer", "gather", [older], away=True)
+        facts = self.unfinished_facts(outcomes, body, ctx, older)
+        self.assertEqual((facts[:3], facts[3][1:], facts[4]), ((None, True, "screen_held"), ("hold", "130"), "held"),
+                         body)
+
 
 def run_post(test, ctx, tokens, mint=True):
     """The post job's steps in the contexts ctx (run_job)."""
