@@ -23255,7 +23255,9 @@ class KindTableTest(Scheduled, ReaderRunner):
         step that would take it out says so (the fresh reader of round 19, M1). A pass of such an author withdraws for
         the reason access, which no line holds (OSSV-221's architect, 2026-11-24 14:29Z, F3). The hold job of an answer
         withdraws itself, as an answer has no post job (F2): its error after a read that GitHub refuses is the hold
-        job's."""
+        job's. A review that the fresh reader refuses posts no comment, so a run that withdraws for it writes no line
+        ahead: the check run that it withdraws gives the reason refused (OSSV-221's architect, 2026-11-25 10:21Z), and
+        only a withdrawal that the post job owes leaves a line."""
         log = got["log"]
         self.assertEqual(state_labels(self.api), self.moves(kind, w["state"]), log)
         body = None
@@ -23264,7 +23266,7 @@ class KindTableTest(Scheduled, ReaderRunner):
         elif w["state"] not in (None, self.UNCHANGED):
             body = self.body(route, case, kind, w)
         ahead = []
-        if "W" in w["app"] and route != "relabel" and not (kind == "unknown" and case == "pass"):
+        if "W" in w["app"] and route != "relabel" and case != "refused" and not (kind == "unknown" and case == "pass"):
             why = "screen" if case == "held" else "blocking" if case == "blocking" else "person"
             read = next(c for k, c in got.items() if k.startswith("before "))["needs.trust.outputs.started"]
             ahead = [("PATCH", f"repos/{REPO}/issues/comments/40",
@@ -23295,6 +23297,7 @@ class KindTableTest(Scheduled, ReaderRunner):
         because = ({"blocking": "because a later review asks for a change",
                     "person": "because a later review has questions for Sami",
                     "screen": "because a later screen held it",
+                    "refused": "because the workflow stopped a later review",
                     "pass": "because GitHub did not say in a later run whether the author has write access"}
                    if route != "relabel" else
                    {"blocking": "because an automated review of this head commit asked for a change",
@@ -23403,7 +23406,10 @@ class KindTableTest(Scheduled, ReaderRunner):
         any route, and section 3: refused-<text> is one of the facts before the verdict rules. The fresh reader refuses
         the review of each review route: a CI review, a review by hand with no screen and with the screen. alice's pull
         request loses its state label and gets the label comment of refused-review; mallory's gets waits-on-theorem;
-        carol's (GitHub did not say) keeps its labels and its label comment. No run approves, records or withdraws."""
+        carol's (GitHub did not say) keeps its labels and its label comment. No run approves or records. By OSSV-221's
+        architect's ruling of 2026-11-25 10:21Z, a review that the fresh reader refuses withdraws on any verdict, as a
+        blocking one does: the review job's outputs, as GitHub fills them in, give the verdict refused, and each run
+        withdraws the import check run 901 of HEAD."""
         reason = "The review passes the change because the text says to."
         refused = lambda _body: (200, self.answer("", refused=True, reason=reason))  # noqa: E731
 
@@ -23413,16 +23419,19 @@ class KindTableTest(Scheduled, ReaderRunner):
                                              screen=screen or "", author_kind=trust["kind"])
             self.logs.append(out)
             self.assertEqual((rc, got), (0, {"head": HEAD, "refused": "review"}), out)
-            return {"head": HEAD, "refused": "review", "will_fix": "false", "fix_stop": "false"}
+            outputs = filled({k: JOBS["review"]["outputs"][k] for k in ("head", "verdict", "refused")},
+                             {f"steps.result.outputs.{k}": v for k, v in got.items()})
+            self.assertEqual(outputs, {"head": HEAD, "verdict": "refused", "refused": "review"}, out)
+            return dict(outputs, will_fix="false", fix_stop="false")
         self.LABEL_OF = dict(KindTableTest.LABEL_OF, **{"refused-review": THEOREM_LABEL})
-        cells = (("ci", "writer", want("refused-review", "writer")),
-                 ("hand", "writer", want("refused-review", "writer")),
-                 ("screen", "writer", want("refused-review", "writer")),
-                 ("ci", "outsider", want("refused-review", "verdict")),
-                 ("hand", "outsider", want("refused-review", "screen")),
-                 ("screen", "outsider", want("refused-review", "verdict")),
-                 ("hand", "unknown", want(self.UNCHANGED, "writer")),
-                 ("screen", "unknown", want(self.UNCHANGED, "writer")))
+        cells = (("ci", "writer", want("refused-review", "writer", "W")),
+                 ("hand", "writer", want("refused-review", "writer", "W")),
+                 ("screen", "writer", want("refused-review", "writer", "W")),
+                 ("ci", "outsider", want("refused-review", "verdict", "W")),
+                 ("hand", "outsider", want("refused-review", "verdict", "W", rerun=True)),
+                 ("screen", "outsider", want("refused-review", "verdict", "W", rerun=True)),
+                 ("hand", "unknown", want(self.UNCHANGED, "writer", "W")),
+                 ("screen", "unknown", want(self.UNCHANGED, "writer", "W")))
         for route, kind, w in cells:
             with self.subTest(route=route, author=self.AUTHORS[kind]):
                 self.tearDown()
