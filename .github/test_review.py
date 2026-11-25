@@ -22869,6 +22869,43 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual([b.split("\n")[1] for b in labels],
                          [f"**Next step:** {rules.STATES['refused-review'][1]}"], self.logs[-6:])
 
+    def test_a_relabel_withdraws_an_older_pass_under_the_line_of_a_newer_refusal_behind_an_older_blocking_review(self):
+        """The tester's audit of round 28 (G1): a success import check run stands only when the newest word of its head
+        is a pass of an outsider run, and a review that the fresh reader refuses is a word that every reader orders as
+        a blocking review (OSSV-221's architect, 2026-11-25 19:29Z). Run 90 of mallory's #7 read the item 60 minutes
+        ago and posted a screened blocking review. The CI review run 100 read it 40 minutes ago and passed HEAD, and its
+        post job records 901. Rescreen run 130 read it 20 minutes ago, and the fresh reader refused its review. GitHub
+        refuses run 130's PATCH of 901, so its post job fails and owes the withdrawal, and its comment job writes the
+        line <!-- withdraw-owed HEAD refused 130 <read> -->. Run 100's comment job comes after it: the line outranks
+        run 100's pass, so its pass never posts, and the newest review comment of HEAD is run 90's blocking review.
+        The rescreen pass then starts a relabel for the line (refused owed). That relabel must withdraw 901: the line
+        is a word of a newer read than 901, whatever the verdict of the newest review comment is, so no success
+        stands on HEAD after it."""
+        blocking = review_of(HEAD, "blocking", at=ago(58), run=90, read=ago(60))
+        ci = dict(self.REVIEWED, started=ago(40))
+        mine, checks = self.judged([], "100", trust=ci, comments=[blocking])
+        self.assertEqual(self.successes(checks), [901], self.logs[-3:])
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
+                 "body": rules.label_comment("change", "")}
+        self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
+        got, _after, rescreen = self.refused_run("pass", checks, [blocking, label])
+        self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} refused"), self.logs[-4:])
+        _outcomes, _wrote, bodies = self.refused_comment_job(got, rescreen, "130", [blocking, label])
+        line = f"<!-- withdraw-owed {HEAD} refused 130 {rescreen['started']} -->"
+        # The stand-in gh serves #7's comments as the test gives them, so the label step read the label comment of
+        # before the owed step: the label comment after both steps is rules.label_comment of the owed step's body.
+        marked = dict(label, body=rules.label_comment("refused-review", bodies[0]), updated_at=ago(15))
+        self.assertIn(line, marked["body"].split("\n"))
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
+        self.serve_checks(checks)
+        _o, wrote, labels, _review = self.comment_job_after_post(mine, ci, "pass", [blocking, marked], "100")
+        self.assertEqual((wrote, labels), ([], []), self.logs[-6:])
+        self.assertEqual(self.relabel_withdraws([blocking, marked]), "refused owed")
+        relabel = dict(self.RELABEL, started=ago(10))
+        start = len(self.logs)
+        got, end = self.judged(checks, "140", trust=relabel, event="workflow_dispatch", comments=[blocking, marked])
+        self.assertEqual(self.successes(end), [], (got["post"], "\n".join(self.logs[start:])))
+
     # The one line of newer_word that takes the line of OWED and the check runs of a refused review as words of HEAD.
     WORDS = "    words += [owed_run_word(comments, head), *refused_checks(checks, head)]\n"
 
