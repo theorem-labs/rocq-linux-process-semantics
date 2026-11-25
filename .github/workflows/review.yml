@@ -2861,13 +2861,6 @@ jobs:
         ${{ steps.withdraw.outputs.clear == '' && steps.withdrawn.outputs.head == '' && steps.neutral.outputs.head == ''
         && (steps.withdraw.outputs.owed || steps.decide.outputs.owed || steps.own.outputs.owed) || '' }}
       withdrawn: ${{ steps.withdraw.outputs.clear || steps.withdrawn.outputs.head || steps.neutral.outputs.head }}
-      # The source runs of the withdrawals of the head before this job withdrew any, each with the time from which its
-      # withdrawals count (.github/review/rules.py sources): "<run>=<time> ...", or empty. The line
-      # <!-- withdraw-owed <head> <why> <run> <read> --> goes for a review comment of the head only when its run read
-      # the item after <read>. A line of the old form, with no <read>, counts from the hold or the withdrawal of <run>.
-      # A review with no marker of that read counts from when GitHub last changed it, and a pass with none never counts
-      # (.github/review/rules.py line_reason and word_time).
-      sources: ${{ steps.withdraw.outputs.sources }}
       # The decision held, withdrawn or newer of the own record of a run on the route screen (screened_run in the
       # decision step): a run that read the item at or after this run held the head, withdrew its import check run, or
       # gave it a verdict. The comment job of this run then posts nothing on the item. Empty for any other decision.
@@ -3545,15 +3538,6 @@ jobs:
             > "$RUNNER_TEMP/import-checks.jsonl" \
             || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
                  exit 1; }
-          # sources: the source runs and times that the withdrawals of the head name, before this run withdraws any
-          # (rules.py sources). The comment job or the hold job takes the line
-          # <!-- withdraw-owed <head> <why> <run> <read> --> out for a review comment of the head only when its run read
-          # the item after <read>, and for a line of the old form, after the hold or the withdrawal of <run> (rules.py
-          # word_time).
-          sources=$(python3 .github/review/rules.py sources "$head" "$RUNNER_TEMP/import-checks.jsonl") \
-            || { echo "::error::the import check runs of $head could not be read, so none of them is withdrawn.$again"
-                 exit 1; }
-          echo "sources=$sources" >> "$GITHUB_OUTPUT"
           jq -c 'select(.conclusion == "success")' "$RUNNER_TEMP/import-checks.jsonl" > "$RUNNER_TEMP/approved.jsonl"
           # Each request names this run (GITHUB_RUN_ID) as the run that withdraws the check run, and kind. For own, the
           # time is when this run read the item (STARTED). Else it names the run of the older cause and its time: for
@@ -4114,8 +4098,7 @@ jobs:
       # run read the item after the time of the line (with no marker of that read: one that GitHub last changed after
       # it, and no pass), which must be screened unless the trust job's outside is false (OSSV-221's architect,
       # 2026-11-22 16:06Z and 16:08Z, 2026-11-23 01:47Z, and 2026-11-24 01:20Z and 01:26Z; rules.py word_time). That
-      # time is the <read> of the line. A line of the old form, with no <read>, counts from the hold or the withdrawal
-      # of its run (the post job's output sources), and else from no time. Until then, each later relabel records
+      # time is the <read> of the line. Until then, each later relabel records
       # nothing. When the post job finished the withdrawal for a blocking finding or the verdict person of this run's
       # own review of that head, that review has not posted yet. So this step writes the line of that head and verdict
       # all the same (rules.py owed with owed= and withdrawn=), and gives the head to the step after the post of the
@@ -4146,7 +4129,6 @@ jobs:
         env:
           OWED: ${{ needs.post.outputs.owed }}
           WITHDRAWN: ${{ needs.post.outputs.withdrawn }}
-          SOURCES: ${{ needs.post.outputs.sources }}
           TASK: ${{ needs.trust.outputs.task }}
           # The head that this run's review read, and its verdict.
           REVIEW_HEAD: ${{ needs.review.outputs.head }}
@@ -4176,8 +4158,7 @@ jobs:
           fi
           rc=0
           python3 .github/review/rules.py owed "$NUMBER" owed="$owed" withdrawn="${WITHDRAWN:-}" own="$own" \
-            sources="${SOURCES:-}" task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
-            author="${AUTHOR_KIND:-}" || rc=$?
+            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
           (( rc != 3 )) || exit 0
           exit "$rc"
       # Whether the posts of this run are skipped because a review or a hold of its head is newer than the read of this
@@ -4329,7 +4310,6 @@ jobs:
         if: steps.owed.outputs.pending != '' && steps.way.outputs.gave_way != 'true'
         env:
           PENDING: ${{ steps.owed.outputs.pending }}
-          SOURCES: ${{ needs.post.outputs.sources }}
           TASK: ${{ needs.trust.outputs.task }}
           # The trust job's outputs as they are, which .github/review/rules.py reads (the author-kind table).
           OUTSIDE: ${{ needs.trust.outputs.outside }}
@@ -4338,8 +4318,8 @@ jobs:
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
-          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= sources="${SOURCES:-}" \
-            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
+          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= task="$TASK" \
+            outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
       # The answer, once for each comment that it answers, from the comments of the item as they are just before it
       # posts. A comment of github-actions[bot] with the same text is this run's answer, which an earlier attempt of
       # this job posted. Any other answer of github-actions[bot] (it starts with <!-- review-answer ) that names the
@@ -5121,7 +5101,6 @@ jobs:
         env:
           OWED: ${{ needs.post.outputs.owed }}
           WITHDRAWN: ${{ needs.post.outputs.withdrawn }}
-          SOURCES: ${{ needs.post.outputs.sources }}
           # true when the screen of this run held the head in a review, a rescreen, an approval or an answer (the two
           # steps before).
           SCREEN_HELD: ${{ steps.screened.outputs.held || steps.answered.outputs.held }}
@@ -5141,8 +5120,7 @@ jobs:
           [ -n "$owed" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
           rc=0
           python3 .github/review/rules.py owed "$NUMBER" owed="$owed" withdrawn="${WITHDRAWN:-}" own="$own" \
-            sources="${SOURCES:-}" task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
-            author="${AUTHOR_KIND:-}" || rc=$?
+            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
           (( rc != 3 )) || exit 0
           exit "$rc"
       # Whether the posts of this run are skipped because a word of another run on its head outranks the own word of
@@ -5634,9 +5612,8 @@ jobs:
           PENDING: >-
             ${{ steps.owed.outputs.pending || steps.withdraw.outputs.clear || steps.withdrawn.outputs.head
             || steps.neutral.outputs.head }}
-          SOURCES: ${{ needs.post.outputs.sources || steps.withdraw.outputs.sources }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
-          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= sources="${SOURCES:-}" \
-            task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
+          python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= task="$TASK" \
+            outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"

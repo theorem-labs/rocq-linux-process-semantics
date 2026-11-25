@@ -6,7 +6,7 @@ labels").
         [<fact>=<value> ...] [head=<commit>] [marker=<line> ...]
     python3 .github/review/rules.py mark <number> <line> [state=<state>]
     python3 .github/review/rules.py owed <number> owed=<head, why and run> withdrawn=<head> own=<true or false>
-        sources=<run>=<time> ... task=<task> outside=<outside> outsider=<outsider> author=<kind>
+        task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
     python3 .github/review/rules.py log <number> <head> <decision> <cause> <read> [<field> <value> ...]
     python3 .github/review/rules.py make-label <name>
@@ -25,7 +25,6 @@ labels").
     python3 .github/review/rules.py relabel-withdraws <head> <comments.jsonl>
     python3 .github/review/rules.py words < <comments.jsonl>
     python3 .github/review/rules.py outranks <time> <kind> <time> <kind>
-    python3 .github/review/rules.py sources <head> <checks.jsonl>
     python3 .github/review/rules.py source <number> <head> <why> <kind> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
         <directory>
@@ -100,10 +99,7 @@ review comment of the line's run that gives the reason of the line, or a review 
 a time after the time of the line: the time when its run read the item (its marker <!-- review-read <time> -->),
 never when it posted, and with no such marker, when GitHub last changed it for a blocking finding or the verdict
 person and no time for a pass (word_time). The time of the line is its <read> (OSSV-221's architect, 2026-11-25
-01:30Z). A line of the old form, with no <read>, counts from the time of the hold of the screen of the run that it
-names, or from the time from which a withdrawal by that run counts (for its own reason, when that run read the item;
-source_time). sources=<run>=<time> ... is the post job's output sources, the source runs and times that the
-withdrawals of the head name (the command sources). With no time, no review comment takes the line out this way.
+01:30Z).
 Unless the trust job's outside is false, that review comment must be screened. Else the line stays, and a line says
 so. Both, for one head, are a withdrawal that the job finished before a later step of the job posts the comment of
 its reason: the review of the comment job, or the hold comment of the hold job. They give the line as owed alone
@@ -222,13 +218,12 @@ comment exists: a later screen held <head>. Else it is screened when the newest 
 earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is the reason
 for which a relabel or a review by hand withdraws each import check run of <head> that stands: screen for held; else
 the <why> of the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment (OWED), a word from its
-<read>, while the newest screened review comment of <head> does not outrank it (owed_reason: a line of the old form
-counts from the hold of <run>, else after each time), whatever the newest review says else; else blocking or person,
-of the newest review comment newer than the newest screened one that gives one, or of the newest screened review
-comment when it does not pass; else -. <from> is owed when <why> is the line's, outranked when that review outranks
-the line, so that the line gives no reason, and - else. <posted> is, for <from> owed, posted when a comment of
-github-actions[bot] gives a reason for the line to go, as for an outside author (line_reason: from the <read> of the
-line, and for a line of the old form, from the source runs and times of <checks.jsonl> and the holds), and unposted
+<read>, while the newest screened review comment of <head> does not outrank it (owed_reason), whatever the newest
+review says else; else blocking or person, of the newest review comment newer than the newest screened one that
+gives one, or of the newest screened review comment when it does not pass; else -. <from> is owed when <why> is the
+line's, outranked when that review outranks the line, so that the line gives no reason, and - else. <posted> is, for
+<from> owed, posted when a comment of github-actions[bot] gives a reason for the line to go, as for an outside
+author (line_reason: from the <read> of the line), and unposted
 when none does; - else. <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion,
 completed_at, summary} one on each line; with none given, no check run is read. They are in the order of the time that
 each one names, never of completed_at: for a success, the time when its run read the item, and for a withdrawal (the
@@ -294,19 +289,14 @@ the words on a head (outranks: by time, then by the rank of the kind, RANKS), an
 time as GitHub gives it, or empty for no time, which is before each time. A <kind> is one of RANKS: read, pass,
 success, blocking, person, neutral or hold. The status is 2 when an argument is not one of these.
 
-sources: the source runs and times that the withdrawals among the import check runs of <checks.jsonl> on <head> name
-(sources_of), as verdict reads them, on one line of standard output: <run>=<time> for each source run, with the latest
-time from which one of its withdrawals holds, and an empty line when none names one. The status is 2 when a line is
-not a check run.
-
 source: "<source> <time>" on standard output for a withdrawal of the import check runs of <head> of the pull request
 <number> for <why> that the withdrawing run did not give itself (reason_source), by <kind>: held, the run of the newest
 hold comment of the screen that names <head>; owed, the run of the line of OWED of <head>; earlier, the run of the
 newest review comment of <head> with the verdict <why>, by the time when its run read the item. For owed, <time> is
-the <read> of the line. Else, and for a line of the old form, it is the latest time of that run: when it read the item
-(for earlier, from its review that gives <why>), of its hold of the screen, or of its withdrawal (source_time, with
-the withdrawals of <checks.jsonl>). "- -" when no run or no time is known: the withdrawal then counts from the time
-now, which fails closed. It reads the comments of github-actions[bot] on <number>.
+the <read> of the line. Else it is the latest time of that run: when it read the item (for earlier, from its review
+that gives <why>), of its hold of the screen, or of its withdrawal (source_time, with the withdrawals of
+<checks.jsonl>). "- -" when no run or no time is known: the withdrawal then counts from the time now, which fails
+closed. It reads the comments of github-actions[bot] on <number>.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, screen, a screen that held
@@ -334,11 +324,10 @@ of <head> for <number> has the conclusion success, as it then has no success to 
 2026-11-24 05:33Z), for an author whom holds_back treats as outside (2026-11-24 09:28Z). The write jobs of an item
 run one at a time (the group write-<n>), and the post job of a run that read the item before <read> can come after
 it. The summary names <why>, <run>, <read>, <head> and <number> in plain sentences (NOT_APPROVED). So own-record,
-verdict and sources read this check run as a withdrawal by
-<run> that counts from <read> (withdrawn_by), and that older run records nothing. Its name, its external_id
-<number>:<head> and its output text, the marker line of import-marker for <import paths>, are those of a record. The
-import reads only a check run with the conclusion success, so this one approves nothing. The status is 2 when an
-argument is not one of these.
+verdict and source read this check run as a withdrawal by <run> that counts from <read> (withdrawn_by), and that
+older run records nothing. Its name, its external_id <number>:<head> and its output text, the marker line of
+import-marker for <import paths>, are those of a record. The import reads only a check run with the conclusion
+success, so this one approves nothing. The status is 2 when an argument is not one of these.
 
 steering: whether a pull request changes a steering file (steering, a file under .github/), from <files.jsonl>, its
 files as the API lists them on every page of pulls/<n>/files, one {filename, previous_filename} on each line: true
@@ -640,7 +629,7 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
                   r"|<!-- (issue-reply-posted) [0-9]+ -->|<!-- (review-catchup) [0-9a-f]{40} -->"
                   r"|<!-- (review-steering) [0-9a-f]{40} -->|<!-- (review-no-key) [0-9a-f]{40} -->"
                   r"|<!-- (withdraw-owed) [0-9a-f]{40} (?:blocking|person|screen) [1-9][0-9]*"
-                  rf"(?: {TIME.pattern})? -->")
+                  rf" {TIME.pattern} -->")
 # The marker line of a withdrawal of the import check runs of a head (R12) that a run found a reason for and did not
 # finish (GitHub refused it, or the job failed or stopped before it), or whose reason no comment of the item gives yet.
 # The head, why (WITHDRAWN), a run (OSSV-221's architect, 2026-11-22 16:06Z and 17:27Z): the run whose own comment
@@ -648,9 +637,9 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # 01:30Z). The hold job's line of its own screen, and the comment job's line of its own review's verdict, name their
 # own run and its trust job's started. Any other writer, as a relabel whose withdrawal GitHub refused, keeps the run and
 # the read of the line of that head and why that stands, or names the run of the comment that gives why and the time of
-# that comment (word_time), and its own run and read only when no comment names a run (owed_run). A line of the old
-# form, with no read, counts from the time of a hold or a withdrawal of its run (source_time), else from no time, which
-# fails closed. Each job writes it ahead, before its first step that can fail or that withdraws: the post job through
+# that comment (word_time), and its own run and read only when no comment names a run (owed_run). That comment must
+# have a time of TIME: else owed_run gives an error, and no line goes without a read. Each job writes it ahead,
+# before its first step that can fail or that withdraws: the post job through
 # its output owed, which the comment job or the hold job of its run records; the hold job for a screen that held the
 # head in a review, a rescreen or an approval of its run; and the comment job for a blocking finding or the verdict
 # person of its run's review, when the post job finished the withdrawal before that review posted. It goes into a
@@ -669,8 +658,7 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # does not outrank it as a word on the head (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z), for each writer:
 # owe, also for the line of its own run, mark, and the label call (apply). So no older read's line takes the place of
 # a newer read's line whose comment never posted.
-OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|screen) ([1-9][0-9]*)"
-                  rf"(?: ({TIME.pattern}))? -->")
+OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|screen) ([1-9][0-9]*) ({TIME.pattern}) -->")
 
 # --- the decision log -----------------------------------------------------------------------------------------------
 # The one short fixed form of each log line, and of each line of a job summary, that states a decision of the workflow
@@ -1051,7 +1039,7 @@ def make_label(name):
 def apply(number, state, markers=(), head="", imports=None, comments=None, labelled=True):
     """Gives the item number the state label of state, takes the other one off, and writes its label comment
     (label_comment, with imports). comments are the item's comments of BOT as the API lists them (read_comments), when
-    the caller read them already; else this reads them when a line of OWED is among markers, and else only its label
+    the caller read them already, and this takes its label comments from them; else this reads only its label
     comments (read_labels). When labelled is False (the label answer off of the author-kind table), the item gets no
     state label and loses each one that it has, but its label comment is the state's all the same, with the marker of
     the state's label. An item with no label comment gets one when state has a state label, or when a line of OWED is
@@ -1071,11 +1059,9 @@ def apply(number, state, markers=(), head="", imports=None, comments=None, label
     if want and want not in have:
         make_label(want)
         gh("--method", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={want}", "--jq", ".[].name")
-    if comments is None and any(OWED.fullmatch(m) for m in markers):
-        comments = read_comments(number)
     labels = read_labels(number) if comments is None else label_list(comments)
     old = labels[-1] if labels else None
-    kept = [owed_keeps(number, comments, old["body"], m) if old else "" for m in markers]
+    kept = [owed_keeps(number, old["body"], m) if old else "" for m in markers]
     for said in filter(None, kept):
         print(said)
     markers = [m for m, said in zip(markers, kept) if not said]
@@ -1140,7 +1126,7 @@ def with_marker(body, line):
     return text + gap + "\n".join(kept + [line] + rest)
 
 
-def mark(number, line, make=True, state="working", labels=None, comments=None):
+def mark(number, line, make=True, state="working", labels=None):
     """Records line, a marker line of KEPT, in the label comment of the item number (with_marker), and writes nothing
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
     of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
@@ -1148,16 +1134,13 @@ def mark(number, line, make=True, state="working", labels=None, comments=None):
     working or after-hold, by the hold that stopped it. When make is False (owe: a line of OWED), such an item gets
     nothing, and the result is False. Else the result is True. A line of OWED does not take the place of the line of
     its head that outranks it (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z): that line stays, and the log says
-    so. labels are the item's label comments of BOT, each {id, body}, and comments its comments of BOT as the API lists
-    them (read_comments), when the caller read them already; else this reads them: for a line of OWED, the comments,
-    and the label comments among them."""
+    so. labels are the item's label comments of BOT, each {id, body}, when the caller read them already; else this
+    reads them."""
     marker_kind(line)
     if state not in STATES or label_of(state) is not None:
         raise ValueError(f"mark makes a label comment only in a state with no state label, not {state!r}")
-    if comments is None and OWED.fullmatch(line):
-        comments = read_comments(number)
     if labels is None:
-        labels = read_labels(number) if comments is None else label_list(comments)
+        labels = read_labels(number)
     old = labels[-1] if labels else None
     if old is None and not make:
         return False
@@ -1165,7 +1148,7 @@ def mark(number, line, make=True, state="working", labels=None, comments=None):
         write_label(number, None, label_comment(state, "", [line]))
         print(f"#{number}: it had no label comment, so this step posted one, with {line}.")
         return True
-    kept = owed_keeps(number, comments, old["body"], line)
+    kept = owed_keeps(number, old["body"], line)
     if kept:
         print(kept)
         return True
@@ -1423,7 +1406,7 @@ def unrecord(number, head):
     return [*labels[:-1], dict(old, body=body)]
 
 
-def owe(number, run, owed="", withdrawn="", own=False, sources=None):
+def owe(number, run, owed="", withdrawn="", own=False):
     """Records in the label comment of the item number the withdrawal of the import check runs of a head that a run
     owes (OWED). owed, "<head> <why> <run> <read>", is the post job's output owed, "<head> <why>" of a withdrawal that
     it found a reason for and did not finish (or "<head> screen" from the hold job, for a screen that held the head in
@@ -1438,10 +1421,7 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     job finished (or the head of a line that a newer screened review outranks, owed_reason, for which a relabel
     withdraws nothing), takes the line of that head out (unmark), but only while a comment of BOT gives a reason for it
     (line_reason; OSSV-221's architect, 2026-11-22 16:06Z): the comment of the line's run that gives its why, or a
-    review comment of the head whose run read the item after the time of the line, its read (2026-11-25 01:30Z). A
-    line of the old form, with no read, counts from the time of the hold of the run that it names, or the time from
-    which a withdrawal by that run counts (for its own reason, when that run read the item; source_time, with sources,
-    the post job's output sources; 2026-11-23 01:47Z and 03:06Z, and 2026-11-24 05:23Z), and else from no time. That
+    review comment of the head whose run read the item after the time of the line, its read (2026-11-25 01:30Z). That
     review comment must be screened when the rule holds back for the author of run (holds_back). Else the line stays,
     and each later relabel records nothing; it withdraws for the line while the line gives a reason. owed and withdrawn
     of one head are a withdrawal that the job finished before a later step of the job posts the comment of its reason
@@ -1458,14 +1438,13 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     07:24Z): that line stays, and the log says so."""
     line = f"<!-- withdraw-owed {owed} -->" if owed else ""
     m = OWED.fullmatch(line) if owed else None
-    if owed and not (m and m.group(4)):
+    if owed and not m:
         raise ValueError(f"not a head commit, a reason to withdraw, a run id and a read time: {owed!r}")
     head, why = (m.group(1), m.group(2)) if m else ("", "")
     if withdrawn and not HEAD.fullmatch(withdrawn):
         raise ValueError(f"not a head commit: {withdrawn!r}")
     if owed and withdrawn and head != withdrawn:
         raise ValueError(f"owed and withdrawn name two heads: {owed!r} {withdrawn!r}")
-    sources = sources or {}
     unchanged = bool(withdrawn) and (
         answers(run["task"], run["outside"], run["outsider"], run["author"])["label"] == "unchanged")
     # The label comments as unrecord left them, when it wrote one: the later writes of this command start from them.
@@ -1479,7 +1458,7 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     if withdrawn and not owed:
         why, wrote, read = owed_line(comments, withdrawn)
         screened = holds_back(run["outside"], run["author"])
-        posted, since = line_reason(comments, withdrawn, why, wrote, read, screened, sources) if why else (True, "")
+        posted, since = line_reason(comments, withdrawn, why, wrote, read, screened) if why else (True, "")
         if not posted:
             kept = owed_marker(withdrawn, why, wrote, read)
             if why == "screen":
@@ -1487,24 +1466,14 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
             else:
                 said = f"No review comment of run {wrote} gives {withdrawn} the verdict {why}."
             newer = (f"No {'screened ' if screened else ''}review comment of {withdrawn} comes from a run that read "
-                     f"#{number} after {since}.")
-            if read:
-                newer += f" That is the time of the line, when run {wrote} read #{number}."
-            elif since:
-                newer += (f" The line names no read of run {wrote}. So its time comes from a hold of run {wrote}, or "
-                          f"from a withdrawal whose summary names a time of run {wrote}.")
-            else:
-                newer = (f"The workflow has no time for the line, so it does not remove the line for a review comment "
-                         f"of {withdrawn} from another run. The line names no read of run {wrote}, and no hold or "
-                         f"withdrawal of run {wrote} gives a time. Only a withdrawal that was there when the post job "
-                         f"of this run read the check runs counts.")
+                     f"#{number} after {since}. That is the time of the line, when run {wrote} read #{number}.")
             print(f"#{number}: its label comment keeps {kept}. {said} {newer}")
             return ""
         unmark(number, f"withdraw-owed {withdrawn}", f"owed withdrawal of the import check runs of {withdrawn}", labels)
         return ""
     if owed and not own:
         line = owed_marker(head, why, *owed_run(comments, head, why, m.group(3), m.group(4)))
-    if line and not mark(number, line, make=False, labels=labels, comments=comments):
+    if line and not mark(number, line, make=False, labels=labels):
         if withdrawn:
             comment = (f"the hold comment of the screen that held {head}" if why == "screen"
                        else f"the review comment that gives {head} the verdict {why}")
@@ -2072,16 +2041,12 @@ def not_approved(number, head, why, value, run, at):
 
 # The last sentences of the summary of a check run of not_approved: the run, the time when it read the pull request,
 # the head, the pull request, and the reason of that run. withdrawn_by reads them as those of a withdrawal by that run,
-# for its own reason, that counts from that time. It also reads the two earlier forms, which a check run of an open
-# pull request can still hold: the one that said "at this head commit" after the pull request, and the one of before
-# the pull request was named.
+# for its own reason, that counts from that time.
 NOT_APPROVED = re.compile(
     rf" Run (?P<run>[1-9][0-9]*) of the review workflow read the pull request at (?P<read>{TIME.pattern})\. Then it "
-    r"found no import check run of head commit (?P<head>[0-9a-f]{40})(?: for pull request #(?P<number>[1-9][0-9]*) "
-    r"that was an approval for the import\. So this check records that pull request #(?P=number) is not approved for "
-    r"the import(?: at this head commit)?| that was an approval for the import\. So this check records that this head "
-    r"commit is not approved for the import), for the reason `(?P<own>blocking|person|screen|access)` of run "
-    r"(?P=run) itself\.$")
+    r"found no import check run of head commit (?P<head>[0-9a-f]{40}) for pull request #(?P<number>[1-9][0-9]*) that "
+    r"was an approval for the import\. So this check records that pull request #(?P=number) is not approved for the "
+    r"import, for the reason `(?P<own>blocking|person|screen|access)` of run (?P=run) itself\.$")
 # The verdicts of a review that withdraw an import check run of its head (WITHDRAWN).
 WITHDRAWING = ("blocking", "person")
 
@@ -2101,8 +2066,8 @@ WITHDRAWING = ("blocking", "person")
 #   from the time that its summary names (blocks_from), and after each time (NEWEST) when it names none.
 # - The line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking or person as a
 #   verdict, and hold for screen, from <read>, the time when its run read the item, never from when its step wrote the
-#   line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). A line of the old form counts from the hold of its
-#   run, and after each time (NEWEST) with none. It gives only a reason to withdraw, never a state or a comment.
+#   line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). It gives only a reason to withdraw, never a state or
+#   a comment.
 # - The read of a run that gives no word of its own, such as a relabel or an approval: read, from the time when its
 #   trust job read the item.
 # The order is by time. At the same time, a kind of a higher rank outranks a kind of a lower one: a verdict or a hold
@@ -2123,8 +2088,7 @@ WITHDRAWING = ("blocking", "person")
 # its reason only while the newest screened review comment does not outrank it (owed_reason): so an older read's line
 # never withdraws a newer read's record, and never takes the place of the state of a newer pass.
 RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "neutral": 2, "hold": 3}
-# The time of a word that counts after each time: a neutral check run whose summary names no time (check_word), and a
-# line of OWED of the old form whose run left no hold (owed_word).
+# The time of a word that counts after each time: a neutral check run whose summary names no time (check_word).
 NEWEST = None
 
 
@@ -2263,7 +2227,7 @@ def owed_line(comments, head):
     """(why, run, read) of the line of OWED of head in a label comment of BOT among comments (the newest such line), or
     ("", "", ""): the reason of a withdrawal of the import check runs of head that a run owes, the id of the run that
     the line names, and its read, the time when that run read the item, which is the time of the line (OSSV-221's
-    architect, 2026-11-25 01:30Z). read is "" for a line of the old form, which names no read."""
+    architect, 2026-11-25 01:30Z)."""
     owed = ("", "", "")
     for c in comments:
         body = c.get("body") or ""
@@ -2271,7 +2235,7 @@ def owed_line(comments, head):
             for line in body.split("\n"):
                 m = OWED.fullmatch(line)
                 if m and m.group(1) == head:
-                    owed = (m.group(2), m.group(3), m.group(4) or "")
+                    owed = (m.group(2), m.group(3), m.group(4))
     return owed
 
 
@@ -2280,25 +2244,22 @@ def owed_word(comments, head):
     comment of BOT holds one: the line is a word like any other (OSSV-221's architect, 2026-11-25 01:13Z, G1). Each
     reader of the line reads it from comments alone, so all of them give it the same time."""
     why, run, read = owed_line(comments, head)
-    return line_word(comments, head, why, run, read) if why else None
+    return line_word(why, read) if why else None
 
 
-def line_word(comments, head, why, run, read):
-    """(read, kind, why) of the line of OWED of head for why that names run and read (owed_marker) as a word on head.
-    read is the read of the line, the time when run read the item, never the time when a step wrote the line. A line
-    of the old form, with no read, counts from source_time of run in comments (its hold of the screen), as line_reason
-    counts it when no withdrawal names that run, and else after each time (NEWEST), which fails closed: no word
-    outranks it. kind is the rank of why (RANKS): blocking or person as a verdict, and hold for screen."""
-    return read or source_time(comments, {}, head, run) or NEWEST, "hold" if why == "screen" else why, why
+def line_word(why, read):
+    """(read, kind, why) of the line of OWED for why that names read (owed_marker) as a word on its head. read is the
+    read of the line, the time when its run read the item, never the time when a step wrote the line. kind is the rank
+    of why (RANKS): blocking or person as a verdict, and hold for screen."""
+    return read, "hold" if why == "screen" else why, why
 
 
-def owed_keeps(number, comments, body, line):
+def owed_keeps(number, body, line):
     """The log text that says why line, a marker line of KEPT, does not take the place of the line of OWED of its head
-    in body, the label comment of the item number: that line outranks line as a word on the head (line_word, with
-    comments, the item's comments of BOT as the API lists them). Else "", and line takes its place. A line of OWED is
-    replaced only by a line that the line that stands does not outrank (OSSV-221's architect, 2026-11-25 07:24Z), for
-    each writer (mark, apply), so that no older read's line takes the place of a newer read's line whose comment never
-    posted. A line of the old form counts as owed_word gives it."""
+    in body, the label comment of the item number: that line outranks line as a word on the head (line_word). Else "",
+    and line takes its place. A line of OWED is replaced only by a line that the line that stands does not outrank
+    (OSSV-221's architect, 2026-11-25 07:24Z), for each writer (mark, apply), so that no older read's line takes the
+    place of a newer read's line whose comment never posted."""
     new = OWED.fullmatch(line)
     if not new:
         return ""
@@ -2306,16 +2267,12 @@ def owed_keeps(number, comments, body, line):
     if not stands:
         return ""
     kept = stands[-1]
-    (at, kind, _why), (other, rank, _new) = (line_word(comments, *m.groups("")) for m in (kept, new))
+    (at, kind, _why), (other, rank, _new) = (line_word(m.group(2), m.group(4)) for m in (kept, new))
     if not outranks((at, kind), (other, rank)):
         return ""
     if at == other:
-        why = (f"Both lines count {'as later than any time' if at is NEWEST else f'from {at}'}. The line that stands "
-               "is for a hold of the screen, which outranks "
+        why = (f"Both lines count from {at}. The line that stands is for a hold of the screen, which outranks "
                f"{'a blocking finding' if new.group(2) == 'blocking' else 'the verdict person'} at the same time.")
-    elif at is NEWEST:
-        why = (f"The line that stands names no read, and no hold of run {kept.group(3)} gives it a time. So it counts "
-               "as later than any time, and it outranks the other line.")
     else:
         why = f"The line that stands counts from {at}, later than {other}, so it outranks the other line."
     return f"#{number}: its label comment keeps {kept.group(0)}. This step does not write {line}. {why}"
@@ -2337,9 +2294,8 @@ def owed_reason(comments, head):
 
 
 def owed_marker(head, why, run, read):
-    """The line of OWED of head for why, which names run and read, the time when run read the item, or the line of the
-    old form when read is "": no read of run is known (owed_run)."""
-    return f"<!-- withdraw-owed {head} {why} {run}{f' {read}' if read else ''} -->"
+    """The line of OWED of head for why, which names run and read, the time when run read the item (owed_run)."""
+    return f"<!-- withdraw-owed {head} {why} {run} {read} -->"
 
 
 def owed_run(comments, head, why, run, read):
@@ -2352,8 +2308,8 @@ def owed_run(comments, head, why, run, read):
     comment of the screen that names head (or its updated_at with no marker of that read); for blocking or person, a
     review comment of head with that verdict. Else run and read, the writer's own run and the time when it read the
     item, also when that comment names no run: then no comment of an earlier run can take the line out (line_reason),
-    and it fails closed. The read is "" when the line that stands names none, or when the time of that comment is not
-    one of TIME: the line then has the old form, which counts from source_time of its run, else from no time."""
+    and it fails closed. A ValueError when the time of that comment is not one of TIME, as owe gives for an owed value
+    with no read: no line goes without a read."""
     standing, wrote, at = owed_line(comments, head)
     if standing == why:
         return wrote, at
@@ -2370,7 +2326,12 @@ def owed_run(comments, head, why, run, read):
             h = HELD_HEAD.search(body)
             if h and h.group(1) == head and word_time(c) >= at:
                 found, at = HELD_RUN.search(body), word_time(c)
-    return (found.group(1), at if TIME.fullmatch(at) else "") if found else (run, read)
+    if not found:
+        return run, read
+    if not TIME.fullmatch(at):
+        raise ValueError(f"the comment of run {found.group(1)} that gives {why} on {head} has no time as GitHub gives "
+                         f"it, so the line would have no read: {at!r}")
+    return found.group(1), at
 
 
 def reason_posted(comments, head, why, run, screened, since):
@@ -2406,16 +2367,12 @@ def reason_posted(comments, head, why, run, screened, since):
     return False
 
 
-def line_reason(comments, head, why, run, read, screened, sources):
+def line_reason(comments, head, why, run, read, screened):
     """(posted, since) of the line <!-- withdraw-owed <head> <why> <run> <read> --> of OWED. posted is whether a
     comment of BOT gives a reason for the line to go (reason_posted), with since, the time of the line. That time is
-    read, the time when run read the item (OSSV-221's architect, 2026-11-25 01:30Z). For a line of the old form, with
-    no read, it is source_time of run with sources (the times that the withdrawals of head name), when a hold or a
-    withdrawal of run gives one. Else since is empty: no review comment gives a reason by the time of the line, which
-    fails closed. The updated_at of the label comment is no time of the line: each relabel writes the label comment
-    again."""
-    since = read or source_time(comments, sources, head, run)
-    return reason_posted(comments, head, why, run, screened, since), since
+    read, the time when run read the item (OSSV-221's architect, 2026-11-25 01:30Z). The updated_at of the label
+    comment is no time of the line: each relabel writes the label comment again."""
+    return reason_posted(comments, head, why, run, screened, read), read
 
 
 def withdrawn_by(check, head):
@@ -2480,10 +2437,10 @@ def reason_source(comments, sources, head, why, kind):
     that names head; owed, the run of the line of OWED of head (owed_line); earlier, the run of the newest review
     comment of head with the verdict why (REVIEW_RUN). The newest is by word_time: the time when the run of the hold or
     of the review read the item (2026-11-24 01:20Z, and 09:43Z, A3), and for a hold with no marker of that read, its
-    updated_at. For owed, at is the read of the line, the time when its run read the item (2026-11-25 01:30Z). Else,
-    and for a line of the old form, at is source_time of that run, for earlier with the review of that run that gives
-    why: so a review that names its run gives at least the time when that run read the item. ("", "") when no run or
-    no time is known: the withdrawal then counts from the time now, which fails closed."""
+    updated_at. For owed, at is the read of the line, the time when its run read the item (2026-11-25 01:30Z). Else at
+    is source_time of that run, for earlier with the review of that run that gives why: so a review that names its run
+    gives at least the time when that run read the item. ("", "") when no run or no time is known: the withdrawal then
+    counts from the time now, which fails closed."""
     _why, run, read = owed_line(comments, head) if kind == "owed" else ("", "", "")
     newest = ""
     for c in comments:
@@ -3367,19 +3324,13 @@ def main(argv):
             set_state(argv[1], run, facts, markers, head)
             return 0
         if len(argv) >= 2 and argv[0] == "owed" and NUMBER.fullmatch(argv[1]):
-            facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn", "own", "sources"))
+            facts, markers, head, given = parse(argv[2:], RUN + ("owed", "withdrawn", "own"))
             if facts or markers or head:
-                raise ValueError("owed takes the run, owed=, withdrawn=, own= and sources= alone")
+                raise ValueError("owed takes the run, owed=, withdrawn= and own= alone")
             owed, withdrawn, own = given.pop("owed"), given.pop("withdrawn"), given.pop("own")
-            sources = {}
-            for pair in given.pop("sources").split():
-                source, eq, at = pair.partition("=")
-                if not (NUMBER.fullmatch(source) and eq and TIME.fullmatch(at)):
-                    raise ValueError(f"not <run>=<time>: {pair!r}")
-                sources[source] = max(sources.get(source, ""), at)
             if own not in ("", "true", "false"):
                 raise ValueError(f"own is true, false or empty, not {own!r}")
-            line = owe(argv[1], given, owed, withdrawn, own == "true", sources)
+            line = owe(argv[1], given, owed, withdrawn, own == "true")
             if not line:
                 return 0
             output = os.environ.get("GITHUB_OUTPUT")
@@ -3480,10 +3431,9 @@ def main(argv):
             origin = "-"
             if state != "held" and line_why:
                 origin = "owed" if owed_reason(comments, argv[2]) else "outranked"
-            sources = sources_of(checks, argv[2])
             posted = "-"
             if origin == "owed":
-                found = line_reason(comments, argv[2], line_why, line_run, line_read, True, sources)[0]
+                found = line_reason(comments, argv[2], line_why, line_run, line_read, True)[0]
                 posted = "posted" if found else "unposted"
             stands = withdrawal_stands(checks, comments, argv[2])
             since = blocks_from(newest_withdrawal(checks, argv[2]), argv[2]) if stands else ""
@@ -3525,9 +3475,6 @@ def main(argv):
         if (len(argv) == 5 and argv[0] == "outranks" and all(TIME.fullmatch(t) or t == "" for t in argv[1::2])
                 and all(k in RANKS for k in argv[2::2])):
             return 0 if outranks((argv[1], argv[2]), (argv[3], argv[4])) else 3
-        if len(argv) == 3 and argv[0] == "sources" and HEAD.fullmatch(argv[1]):
-            print(" ".join(f"{run}={at}" for run, at in sorted(sources_of(check_lines(argv[2]), argv[1]).items())))
-            return 0
         if (len(argv) == 6 and argv[0] == "source" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
                 and argv[3] in WITHDRAWN and argv[4] in ("held", "owed", "earlier")):
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
