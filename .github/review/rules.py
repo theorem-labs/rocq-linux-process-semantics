@@ -757,7 +757,8 @@ LOG_CAUSES = {
                 "line of the label comment gives that refusal."),
     "pass": "A review of the head gives the verdict pass.",
     "verdict": ("A review of the head gives a blocking finding or the verdict person, or the fresh reader refused it. "
-                "The output gave_way of the post job does not say which. Its log line of the decision newer says it."),
+                "The output gave_way of the post job does not say which. The post job's log line of the decision newer "
+                "says which."),
     "screen": "A screen held the head.",
     "hold": "A hold comment of the workflow counts from a time at or after the read of this run.",
     "access": "GitHub did not say whether the author has write access.",
