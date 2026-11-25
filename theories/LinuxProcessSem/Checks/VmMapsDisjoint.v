@@ -1820,7 +1820,8 @@ Ltac vm_done H :=
   | (eapply check_open_result_frame in H;
      [exact H | intros; reflexivity])
   | (apply check_random_write_ok_inv in H; destruct H as (-> & _); reflexivity)
-  | (apply check_pwritev2_urandom_ok_inv in H; destruct H as (-> & _); reflexivity) ].
+  | (apply check_pwritev2_urandom_ok_inv in H; destruct H as (-> & _); reflexivity)
+  | (apply check_pwritev2_devnull_ok_inv in H; destruct H as (-> & _); reflexivity) ].
 
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
@@ -2014,7 +2015,7 @@ Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd r iovs0 eff m m' evs H.
-  unfold check_readv_imported in H.
+  unfold check_readv_imported, check_readv_urandom in H.
   vm_frame3 H.
 Qed.
 
@@ -2441,6 +2442,19 @@ Lemma check_fstat_urandom_frame : forall fd i statbuf eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 
+Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
+  check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|]; [|vm_frame2 H].
+  destruct e as [ch|p cur|p cur|p cur|p cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H; try discriminate.
+  all: first [eapply check_fstat_file_frame; exact H
+             |eapply check_fstat_dir_frame; exact H
+             |eapply check_fstat_devnull_frame; exact H
+             |eapply check_fstat_urandom_frame; exact H].
+Qed.
+
 (** newfstatat's success arm, like [fstat]'s, records a stat pin
     ([State.with_statpin]); that setter rebuilds [ProcState] and carries
     [m_vmmaps] across untouched. *)
@@ -2464,7 +2478,9 @@ Proof.
         | eapply check_fstat_link_frame; exact He ]. }
     destruct (path_eqb p []).
     - destruct (negb (statat_empty_path flag)); [vm_frame2 H|].
-      destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
+      destruct (negb (bv_eqb dirfd AT_FDCWD32)).
+      { destruct (statat_fstat_fdb dirfd); [|discriminate].
+        eapply check_fstat_frame; exact H. }
       destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; [|discriminate].
       exact (Hent _ _ H).
     - destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
@@ -2484,18 +2500,6 @@ Proof.
   - apply check_walk_refusals_ok_cases in H as [H | (_ & -> & _ & _)];
       [exact (Hbody H) | reflexivity].
   - exact (Hbody H).
-Qed.
-Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
-  check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
-Proof.
-  intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
-  destruct (fd_lookup (m_fds m) fd) as [e|]; [|vm_frame2 H].
-  destruct e as [ch|p cur|p cur|p cur|p cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
-    cbv iota in H; try discriminate.
-  all: first [eapply check_fstat_file_frame; exact H
-             |eapply check_fstat_dir_frame; exact H
-             |eapply check_fstat_devnull_frame; exact H
-             |eapply check_fstat_urandom_frame; exact H].
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,

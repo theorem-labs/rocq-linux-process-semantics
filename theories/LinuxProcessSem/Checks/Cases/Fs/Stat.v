@@ -1738,3 +1738,70 @@ Example device_descriptor_dup_shares_its_pin :
              fstat_at 4 (devfd_stat 18 259); st_fstat (devfd_stat 18 259)] devfd_two
      = CheckReject.
 Proof. vm_compute. split_conj; try exact I; reflexivity. Qed.
+
+(* -------------------------------------------------------------------------
+   newfstatat(fd, "", st, AT_EMPTY_PATH) on a descriptor is fstat(fd, st).
+   [getname_maybe_null] gives no name for "" under the flag, so
+   [vfs_fstatat] takes [vfs_fstat] for a dfd of 0 or more (fs/stat.c:372-373,
+   Linux v6.18.46), the stat [newfstat] gives (:550-559).  The empty name's
+   one byte is in the ledger.
+   ------------------------------------------------------------------------- *)
+
+Definition statat_fd_input (fd flag : Z) : SyscallInput :=
+  mkInput 79 [Z_to_bv 64 fd; 0x2000; 4096; Z_to_bv 64 flag; 0; 0] (statat_mem []) stat_out.
+
+(** On a regular file: [fstat_first_answer_pins]' answer, pinned the same
+    way, with or without AT_SYMLINK_NOFOLLOW.  Refused: the -ENOENT of a
+    walk, a character device's stat, and a success on a closed number,
+    whose answer is [fstat]'s -EBADF. *)
+Example newfstatat_empty_name_on_a_file_is_its_fstat :
+  check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+    (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] [])) fstat_model
+  = CheckOk (pin1 stat_truthful fstat_model) []
+  /\ check_syscall (statat_fd_input 3 (AT_EMPTY_PATH + AT_SYMLINK_NOFOLLOW))
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] [])) fstat_model
+     = CheckOk (pin1 stat_truthful fstat_model) []
+  /\ check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret ENOENT) [] [])) fstat_model
+     = CheckReject
+  /\ check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)]
+          (mkEffect 0 [(4096, stat_of 4711 S_IFCHR 0 0 1700000000)] [])) fstat_model
+     = CheckReject
+  /\ check_syscall (statat_fd_input 5 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect (errno_ret EBADF) [] [])) fstat_model
+     = CheckOk fstat_model []
+  /\ check_syscall (statat_fd_input 5 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] [])) fstat_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** On /dev/null: the device's stat is admitted and a stat with
+    /dev/urandom's [st_rdev] (1:9) is refused, as [fstat] judges them
+    ([device_descriptor_stat_holds_its_node]).  On a folder: the verdict
+    is [fstat]'s, which is a judgement and not a decline.  On a channel:
+    declined, as [fstat] declines it (its [st_mode] is the far end's). *)
+Example newfstatat_empty_name_on_a_device_folder_channel :
+  let dirm := with_fds [(Z_to_bv 64 3, FdDir Fs.default_cwd)] statat_ns_model in
+  let dir_bytes := dir_stat 2 in
+  (match check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+           (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, devfd_stat 17 259)] []))
+           (devfd_model (demo_fs [])) with
+   | CheckOk _ _ => True
+   | _ => False
+   end)
+  /\ check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, devfd_stat 17 265)] []))
+       (devfd_model (demo_fs []))
+     = CheckReject
+  /\ check_syscall (statat_fd_input 3 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, dir_bytes)] [])) dirm
+     = check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) stat_out)
+         (mkEffect 0 [(4096, dir_bytes)] []) dirm
+  /\ check_syscall (mkInput 80 [3; 4096; 0; 0; 0; 0] (fun _ => None) stat_out)
+       (mkEffect 0 [(4096, dir_bytes)] []) dirm <> CheckUnmodeled
+  /\ check_syscall (statat_fd_input 1 AT_EMPTY_PATH)
+       (with_copyins [(0x2000, 1%nat)] (mkEffect 0 [(4096, stat_truthful)] []))
+       statat_ns_model
+     = CheckUnmodeled.
+Proof. vm_compute. split_conj; first [exact I | reflexivity | discriminate]. Qed.

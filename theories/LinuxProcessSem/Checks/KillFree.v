@@ -194,6 +194,10 @@ Ltac kf_step H :=
       apply check_pwritev2_urandom_ok_inv in H;
       let H1 := fresh in let H2 := fresh in
       destruct H as (H1 & H2); subst
+  | check_pwritev2_devnull _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pwritev2_devnull_ok_inv in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as (H1 & H2); subst
   | context [ if ?b then _ else _ ] => destruct b eqn:?
   | context [ match ?x with _ => _ end ] => destruct x eqn:?
   end.
@@ -479,7 +483,7 @@ Lemma check_readv_imported_kf : forall i fd r iovs0 eff m m' evs,
   check_readv_imported i fd r iovs0 eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd r iovs0 eff m m' evs H Hoff Hk.
-  unfold check_readv_imported in H. cbv beta iota zeta in H.
+  unfold check_readv_imported, check_readv_urandom in H. cbv beta iota zeta in H.
   repeat (kf_step H
           || exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
           || kf_stream H Hoff Hk
@@ -958,8 +962,9 @@ Lemma check_newfstatat_kf : forall i dirfd pathp statbuf flag eff m m' evs,
   check_newfstatat i dirfd pathp statbuf flag eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp statbuf flag eff m m' evs H Hoff Hk.
-  unfold check_newfstatat, Stat.check_newfstatat_body, check_stat_entry,
+  unfold check_newfstatat, Stat.check_newfstatat_body, check_stat_entry, check_fstat,
     check_fstat_file, check_fstat_dir, check_fstat_devnull, check_fstat_urandom,
+    check_fstat_devfd,
     check_fstat_chrdev, check_fstat_link, check_fstat_pinned, check_fstat_deliver_gen,
     dir_pin_after, file_pin_after, pinned_after in H.
   cbv beta iota zeta in H.

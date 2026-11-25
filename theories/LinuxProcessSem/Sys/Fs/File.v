@@ -93,11 +93,12 @@ Definition unused_fd_none_spec (m : Model) : Sys SyscallEffect :=
       events, so two fds naming one channel already share everything a
       description shares: copying the entry IS the sharing.
     - [FdDir k] carries only the folder's key, which a copy shares as
-      it is, and no modeled arm observes a directory
-      position: [ReadWrite.lseek_spec] declines on [FdDir], and
-      [Readdir.getdents64_spec] declines every listing, answering only
-      where the buffer has no room for an entry — which is the arm that
-      moves no position.
+      it is, and no modeled arm moves a directory position, so the one
+      arm that reports it, [ReadWrite.lseek_spec] at a result of 0,
+      reports the 0 every copy holds: that arm declines a result above
+      0, and [Readdir.getdents64_spec] declines every listing, answering
+      only where the buffer has no room for an entry — which is the arm
+      that moves no position.
     - [FdFile]/[FdFileW]/[FdFileRW] carry [offset], which read, readv,
       write, writev and lseek rewrite in place.  Copying such an entry would
       give the two fds INDEPENDENT offsets, so

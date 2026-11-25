@@ -662,7 +662,9 @@ Definition newfstatat_core_witness (dirfd pathp statbuf flag : word)
        | CstrOk p =>
            if path_eqb p [] then
              if negb (statat_empty_path flag) then ret_outcome (errno_ret ENOENT) m
-             else if negb (bv_eqb dirfd AT_FDCWD32) then Unmodeled
+             else if negb (bv_eqb dirfd AT_FDCWD32) then
+               (if statat_fstat_fdb dirfd then fstat_witness dirfd statbuf i m
+                else Unmodeled)   (* the descriptor's own stat, or a negative dirfd *)
              else
                match Fs.fs_lookup (m_fs m) (m_cwd m) with
                | Some e => stat_entry_witness (m_cwd m) e statbuf i m
@@ -709,7 +711,9 @@ Proof.
   all: destruct (path_eqb p []) eqn:Hpe; cbv iota.
   1,3: destruct (negb (statat_empty_path flag)); cbv iota;
       [unfold ret_outcome; apply pure_ok|];
-    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota; [apply unmodeled_intro|];
+    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota;
+      [destruct (statat_fstat_fdb dirfd); cbv iota;
+         [apply fstat_witness_ok|apply unmodeled_intro]|];
     destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; cbv iota;
       [apply stat_entry_witness_ok|apply unmodeled_intro].
   all: destruct (negb (bv_eqb dirfd AT_FDCWD32)) eqn:Hd; cbv iota;

@@ -586,8 +586,10 @@ Definition clone_fork_flags_b (flags : word) : bool :=
     [FdDir] shares an [f_pos] on a real kernel exactly as a regular file
     does, and the reason it does not close this gate is NOT that the
     model has no position for it — that would be the same defect one
-    line up, read backwards.  It is that no modeled syscall can OBSERVE
-    a directory position: [ReadWrite.lseek_spec] declines [FdDir], and
+    line up, read backwards.  It is that no modeled syscall MOVES a
+    directory position, so every [struct file] the sharing joins is at
+    0 and stays there: [ReadWrite.lseek_spec] declines a directory
+    result above 0 and reports only the 0 the position holds, and
     [Readdir.getdents64_spec] declines every listing while its one
     directory answer — [filldir64]'s -EINVAL for a buffer with no room
     for an entry — is the arm on which the kernel leaves [f_pos]

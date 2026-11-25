@@ -202,7 +202,8 @@ Definition getdents64_no_room (count : word) : bool :=
     - Every [FdDir] a modeled run can hold IS at position 0.
       [State.FdDir] carries no position field, and nothing modeled gives
       it one: [Open.openat_spec] mints it from a fresh open,
-      [ReadWrite.lseek_spec] DECLINES a directory fd,
+      [ReadWrite.lseek_spec] declines every result above 0 on a
+      directory fd and answers the rest without moving it,
       [ReadWrite.read_spec] answers -EISDIR without moving anything,
       [Fork.clone_spec] shares a [struct file] neither branch can
       advance, and this spec's own only non-declining directory arm does

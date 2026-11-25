@@ -565,6 +565,7 @@ Definition errno_ret (e : Z) : word := Z_to_bv 64 (- e).
 Definition EPERM  : Z := 1%Z.
 Definition ENOENT : Z := 2%Z.
 Definition ESRCH  : Z := 3%Z.
+Definition ENXIO  : Z := 6%Z.   (* include/uapi/asm-generic/errno-base.h:10 *)
 Definition EBADF  : Z := 9%Z.
 Definition ECHILD : Z := 10%Z.
 Definition EFAULT : Z := 14%Z.

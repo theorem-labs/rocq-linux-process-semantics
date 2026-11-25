@@ -2584,6 +2584,83 @@ Proof.
          |split; [vm_compute; reflexivity|split; check_eq]].
 Qed.
 
+(** SEEK_DATA AND SEEK_HOLE OUTSIDE THE FILE: -ENXIO, the offset
+    unchanged ([ReadWrite.lseek_nxiob]).  tmpfs's [shmem_file_llseek]
+    (mm/shmem.c:3669-3687, Linux v6.18.46) refuses an offset below 0 and
+    one at or past [i_size], and ramfs's [must_set_pos]
+    (fs/read_write.c:102-140) refuses an unsigned offset at or past the
+    size.  "hi" is two bytes long, so offset 2 is its end and -1 is below
+    its start.  The model declined both before.  Refused: the size that
+    ramfs's SEEK_HOLE gives inside a file, and -EINVAL. *)
+Example lseek_seek_data_outside_a_file_is_enxio :
+  check_syscall (mkInput 62 [3; 2; 3; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENXIO) [] []) lseek_model
+  = CheckOk lseek_model []
+  /\ check_syscall (mkInput 62 [3; Z_to_bv 64 (-1); 4; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret ENXIO) [] []) lseek_model
+     = CheckOk lseek_model []
+  /\ check_syscall (mkInput 62 [3; 2; 4; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2 [] []) lseek_model
+     = CheckReject
+  /\ check_syscall (mkInput 62 [3; 2; 3; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) lseek_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(* -------------------------------------------------------------------------
+   lseek ON A FOLDER, from the [f_pos] of 0 every modeled [FdDir] holds
+   ([ReadWrite.lseek_dir_einvalb]): [offset_dir_llseek] for tmpfs
+   (fs/libfs.c:433-448, Linux v6.18.46) and [dcache_dir_lseek] for ramfs
+   (:146-181).  The model declined every whence up to [SEEK_MAX] here.
+   ------------------------------------------------------------------------- *)
+
+(** POSITIVE: musl's [rewinddir] is [lseek(fd, 0, SEEK_SET)], which is
+    0, and so is [lseek(fd, 0, SEEK_CUR)]; SEEK_END, SEEK_DATA,
+    SEEK_HOLE and a negative result are -EINVAL. *)
+Example lseek_folder_zero_and_einval :
+  check_syscall (mkInput 62 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) readv_dir_model
+  = CheckOk readv_dir_model []
+  /\ check_syscall (mkInput 62 [3; 0; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) readv_dir_model
+     = CheckOk readv_dir_model []
+  /\ check_syscall (mkInput 62 [3; 0; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
+     = CheckOk readv_dir_model []
+  /\ check_syscall (mkInput 62 [3; 0; 3; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
+     = CheckOk readv_dir_model []
+  /\ check_syscall (mkInput 62 [3; 0; 4; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
+     = CheckOk readv_dir_model []
+  /\ check_syscall (mkInput 62 [3; Z_to_bv 64 (-1); 1; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
+     = CheckOk readv_dir_model [].
+Proof. split_conj; check_eq. Qed.
+
+(** NEGATIVE: the answers the old decline let through are refused --
+    -EINVAL for [rewinddir]'s call, 0 for SEEK_END, and a position other
+    than 0 for [lseek(fd, 0, SEEK_CUR)]. *)
+Example lseek_folder_refuses_wrong_answers :
+  check_syscall (mkInput 62 [3; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) readv_dir_model
+  = CheckReject
+  /\ check_syscall (mkInput 62 [3; 0; 2; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 0 [] []) readv_dir_model
+     = CheckReject
+  /\ check_syscall (mkInput 62 [3; 0; 1; 0; 0; 0] (fun _ => None) (fun _ => None))
+       (mkEffect 2 [] []) readv_dir_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** FAIL-CLOSED: a result above 0 moves [f_pos], which [FdDir] does not
+    carry. *)
+Example lseek_folder_positive_result_is_unmodeled :
+  check_syscall (mkInput 62 [3; 5; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
+    (mkEffect 5 [] []) readv_dir_model
+  = CheckUnmodeled.
+Proof. vm_compute; reflexivity. Qed.
+
 (** [SYSCALL_DEFINE3(lseek, unsigned int, fd, off_t, offset,
     unsigned int, whence)]: the origin selector is truncated exactly like
     the fd, so lseek(3, 0, 2^32 | SEEK_END) is a SEEK_END and reports the
@@ -3975,6 +4052,87 @@ Example urandom_pwritev2_read_only_is_ebadf :
      = CheckReject.
 Proof. split_conj; check_eq. Qed.
 
+(** /dev/null open O_WRONLY at fd 3 and O_RDONLY at fd 4, the start
+    folder at fd 5, the channels at 0-2. *)
+Definition pwv2_kinds_model : Model :=
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
+           (3, FdDevNull false true); (4, FdDevNull true false);
+           (5, FdDir Fs.default_cwd)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
+
+(** PWRITEV2 ON /dev/null OPENED FOR WRITING returns the aggregate:
+    [do_pwritev] (fs/read_write.c:1141-1160, Linux v6.18.46) hands the
+    call to [vfs_writev] (:1028-1066), and the device's
+    [write_iter_null] (drivers/char/mem.c:429-434) returns the
+    iterator's count.  The source bytes are never read, so a ledger
+    charging them is refused, as is a 0; both flag words answer alike. *)
+Example devnull_pwritev2_returns_the_aggregate :
+  check_syscall (mkInput 287 [3; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
+    (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 2 [] [])) pwv2_kinds_model
+  = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 2 [] [])) pwv2_kinds_model
+     = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat); (4096, 1%nat); (4097, 1%nat)]
+          (mkEffect 2 [] [])) pwv2_kinds_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [3; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 0 [] [])) pwv2_kinds_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** The same device at [LLONG_MAX] is [rw_verify_area]'s -EINVAL
+    (fs/read_write.c:467-469, Linux v6.18.46), after the import, since
+    the device's operations (drivers/char/mem.c:644-652) carry no
+    FOP_UNSIGNED_OFFSET; opened read-only it is [vfs_writev]'s -EBADF
+    (fs/read_write.c:1037-1038), before the import.  The count each
+    would refuse is refused. *)
+Example devnull_pwritev2_einval_and_ebadf :
+  check_syscall (mkInput 287 [3; 8192; 2; Z_to_bv 64 (2 ^ 63 - 1); 0; 0]
+                   mem_writev_ab (fun _ => None))
+    (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect (errno_ret EINVAL) [] []))
+    pwv2_kinds_model
+  = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [3; 8192; 2; Z_to_bv 64 (2 ^ 63 - 1); 0; 0]
+                      mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 2 [] [])) pwv2_kinds_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [4; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) pwv2_kinds_model
+     = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [4; 8192; 2; 0; 0; 0] mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 2 [] [])) pwv2_kinds_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+(** A CHANNEL IS -ESPIPE and A FOLDER -EBADF, as for [pwrite64]: a
+    channel's far end carries no FMODE_PWRITE (fs/read_write.c:1151-1152,
+    Linux v6.18.46), and a folder holds it but not FMODE_WRITE
+    (:1037-1038), both before the iovec array is read.  Refused: the
+    write a writable kind answers, the other kind's errno, and a
+    folder's -EISDIR. *)
+Example channel_and_folder_pwritev2 :
+  check_syscall (mkInput 287 [1; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+    (mkEffect (errno_ret ESPIPE) [] []) pwv2_kinds_model
+  = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [1; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (with_copyins [(8192, 16%nat); (8208, 16%nat)] (mkEffect 2 [] [])) pwv2_kinds_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [1; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) pwv2_kinds_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [5; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (mkEffect (errno_ret EBADF) [] []) pwv2_kinds_model
+     = CheckOk pwv2_kinds_model []
+  /\ check_syscall (mkInput 287 [5; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (mkEffect (errno_ret EISDIR) [] []) pwv2_kinds_model
+     = CheckReject
+  /\ check_syscall (mkInput 287 [5; 8192; 2; 0; 0; 32] mem_writev_ab (fun _ => None))
+       (mkEffect (errno_ret ESPIPE) [] []) pwv2_kinds_model
+     = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
 (** A BLOCKING SEND WHOSE SOURCE IS READABLE ONLY IN PART DECLINES: of the
     two bytes only the first is readable.  [unix_stream_sendmsg]
     (net/unix/af_unix.c:2401-2546, Linux v6.18.46) copies the send into
@@ -4184,6 +4342,38 @@ Proof.
   split; [check_eq|]. split; [vm_compute; exact I|].
   split; [check_eq | vm_compute; exact I].
 Qed.
+
+(** READV OF /dev/urandom SCATTERS [read]'s DELIVERY.  [vfs_readv]
+    (fs/read_write.c:1017-1018, Linux v6.18.46) hands the imported
+    iterator to [urandom_read_iter] (drivers/char/random.c:1453-1475),
+    whose [get_random_bytes_user] (:434-482) fills it in order: the five
+    declared bytes "hello" land as "he" at 4096 and "llo" at 4098, and
+    the stream is left empty.  Refused: the same bytes claimed as one
+    write (the ledger is the canonical scatter), and five bytes the
+    declared stream does not hold.  A destination none of which is
+    writable is -EFAULT (:481). *)
+Example readv_urandom_scatters_the_stream :
+  let mem := mem_iov_pair 4096 2 4098 3 in
+  let L := import_iovecs_accesses mem 8192 2 in
+  (match check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+           (with_copyins L (mkEffect 5 [(4096, [104; 101]); (4098, [108; 108; 111])] []))
+           (urandom_open_model hello_stdin) with
+   | CheckOk m [] => m_urandom m = IEof
+   | _ => False
+   end)
+  /\ check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+       (with_copyins L (mkEffect 5 [(4096, [104; 101; 108; 108; 111])] []))
+       (urandom_open_model hello_stdin)
+     = CheckReject
+  /\ check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (wmem_first 5))
+       (with_copyins L (mkEffect 5 [(4096, [0; 0]); (4098, [0; 0; 0])] []))
+       (urandom_open_model hello_stdin)
+     = CheckReject
+  /\ check_syscall (mkInput 65 [3; 8192; 2; 0; 0; 0] mem (fun _ => None))
+       (with_copyins L (mkEffect (errno_ret EFAULT) [] []))
+       (urandom_open_model hello_stdin)
+     = CheckOk (urandom_open_model hello_stdin) [].
+Proof. vm_compute. repeat split; reflexivity. Qed.
 
 (* -------------------------------------------------------------------------
    The append and read-write kinds on the calls the examples above do not

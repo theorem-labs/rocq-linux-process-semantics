@@ -3395,6 +3395,38 @@ Definition pwritev2_urandom (mp : word -> option byte) (iov iovcnt pos : word)
            (fun r => iov_prefix_accesses (cap_iovecs iovs0) (Z.to_nat r))
    end).
 
+(** [pwritev2] ON /dev/null, once [pwritev2_spec] has made the tests in
+    front of the descriptor and [vfs_writev]'s FMODE_WRITE test
+    (fs/read_write.c:1037-1038, Linux v6.18.46) has passed.  The device
+    carries FMODE_PWRITE for [pwrite64_spec]'s reason ([do_dentry_open],
+    fs/open.c:961), which [memory_open] (drivers/char/mem.c:707-727)
+    does not clear, and FMODE_CAN_WRITE because [null_fops] has a
+    [.write_iter] (drivers/char/mem.c:644-652).
+    So [do_pwritev] (fs/read_write.c:1151-1153) hands the call to
+    [vfs_writev] (:1028-1066), and then [pwritev2_urandom]'s order: the
+    import and its two errnos
+    (:1042-1045), the zero aggregate's 0 (:1047-1049), [rw_verify_area]
+    on the NAMED position (:1051-1053, :467-470: [null_fops] carries no
+    FOP_UNSIGNED_OFFSET), and [do_iter_readv_writev] (:1057), whose
+    [kiocb_set_rw_flags] answers both flag words as on the random
+    device.  Last, [write_iter_null] (drivers/char/mem.c:429-434)
+    advances the iterator by its count and returns it: the aggregate the
+    import capped at [MAX_RW_COUNT].  No source byte is read, so the
+    descriptor array is the whole ledger, as in [writev_spec]'s
+    [FdDevNull] arm.  The model is unchanged on every answer. *)
+Definition pwritev2_devnull (mp : word -> option byte) (iov iovcnt pos : word)
+    : Sys SyscallEffect :=
+  record_copyins (import_iovecs_accesses mp iov (iovcnt32 iovcnt))
+  (match import_iovecs mp iov (iovcnt32 iovcnt) with
+   | ImpFault => err_ret EFAULT
+   | ImpInval => err_ret EINVAL
+   | ImpOk iovs0 =>
+       let total := iovs_total (cap_iovecs iovs0) in
+       if Z.eqb total 0 then ret_only (Z_to_bv 64 0)
+       else if rw_pos_einvalb pos total then err_ret EINVAL
+       else ret_only (Z_to_bv 64 total)
+   end).
+
 (** [pwritev2 fd iov iovcnt pos_l pos_h flags] (riscv64 nr 287): a
     gathered write at a position the call names, with per-call [rwf_t]
     flags.  THE ARM EXISTS FOR ONE CALLER: musl 1.2.6's [pwrite]
@@ -3403,8 +3435,9 @@ Definition pwritev2_urandom (mp : word -> option byte) (iov iovcnt pos : word)
     -EOPNOTSUPP or -ENOSYS, which v6.18.46 never answers it.  So a
     program's [pwrite] on the file of a [tmpfile()] reaches the
     kernel here, not at [pwrite64_spec].  It is answered on a regular
-    file descriptor ([pwritev2_file]) and on the random device
-    ([pwritev2_urandom]), and declined on every other kind.
+    file descriptor ([pwritev2_file]), on the two devices
+    ([pwritev2_urandom], [pwritev2_devnull]), on a channel and on a
+    folder, and declined on every other kind.
 
     THE ORDER IS LINUX v6.18.46's (fs/read_write.c):
 
@@ -3419,7 +3452,8 @@ Definition pwritev2_urandom (mp : word -> option byte) (iov iovcnt pos : word)
     - [do_pwritev] (fs/read_write.c:1141-1160): [pos < 0] is -EINVAL
       BEFORE the descriptor is looked up (:1146-1147); then an empty
       slot is -EBADF (:1144, :1149); then a file without FMODE_PWRITE is
-      -ESPIPE (:1151-1152), which no regular file is.
+      -ESPIPE (:1151-1152): a channel, by [pwrite64_spec]'s piped-stdio
+      premise.  No regular file, device or folder lacks the bit.
     - [vfs_writev] (:1028-1066): FMODE_WRITE clear is -EBADF (:1037-1038),
       before the iovec array is read; then the import and its two errnos
       (:1042-1045), the zero aggregate's 0 (:1047-1049), and
@@ -3481,8 +3515,22 @@ Definition pwritev2_spec (fd iov iovcnt pos_l pos_h flags : word)
       if negb wr then err_ret EBADF              (* [vfs_writev]'s FMODE_WRITE test,
                                                     fs/read_write.c:1037-1038 *)
       else pwritev2_urandom (in_mem i) iov iovcnt pos_l
-  | Some (FdChannel _) | Some (FdDir _)
-  | Some (FdSocket _) | Some (FdPipe _ _) | Some (FdDevNull _ _)
+  | Some (FdDevNull _ wr) =>
+      if negb wr then err_ret EBADF              (* the same FMODE_WRITE test *)
+      else pwritev2_devnull (in_mem i) iov iovcnt pos_l
+  | Some (FdChannel _) => err_ret ESPIPE         (* no FMODE_PWRITE (fs/read_write.c:1151-1152):
+                                                    the far end is a pipe or a socket, both
+                                                    [stream_open]ed, as [pwrite64_spec]'s
+                                                    channel arm says *)
+  | Some (FdDir _) => err_ret EBADF              (* a folder holds FMODE_PWRITE
+                                                    ([do_dentry_open], fs/open.c:961; neither
+                                                    [dcache_dir_open], fs/libfs.c:86-91, nor
+                                                    [simple_offset_dir_operations], :568-573,
+                                                    clears it) and is open O_RDONLY, so
+                                                    [vfs_writev]'s FMODE_WRITE test answers
+                                                    (fs/read_write.c:1037-1038), before the
+                                                    iovec array is read; not -EISDIR *)
+  | Some (FdSocket _) | Some (FdPipe _ _)
   | Some (FdStream _ _ _) | Some (FdEventfd _)
   | Some (FdDgram _) => unmodeled
       (* DECLINED: no target writes any other kind with this call *)
@@ -3739,6 +3787,49 @@ Definition readv_heap_gap : Sys SyscallEffect := readv_buf_gap.
     segment with no bytes left ([if (likely(part))]) and never touches
     its base, which [State.scatter_iovecs] mirrors. *)
 
+(** A READV OF /dev/urandom, once the import has passed and the capped
+    aggregate [total] is nonzero: [read_urandom] over a scatter.
+    [vfs_readv] (fs/read_write.c:990-1026, Linux v6.18.46) hands the
+    imported iterator to [do_iter_readv_writev] (:1017-1018), since
+    [urandom_fops] has a [.read_iter] (drivers/char/random.c:1572-1573),
+    and [urandom_read_iter] (:1453-1475) is [get_random_bytes_user]
+    (:434-482) over it.  That function sees the iterator's count and
+    nothing of its segments: [copy_to_iter] walks them in order, and the
+    page-multiple stop (:471-473) counts the bytes copied so far across
+    all of them.  So the answers are [read_urandom]'s at the count
+    [total]: the first-byte -EFAULT (:481), the decline when the declared
+    stream ends short of [total], the partial-destination decline (see
+    above), and otherwise [k] bytes off the front of [State.m_urandom],
+    [k] being [total] or a page multiple below it ([random_page_stopb]),
+    scattered over the segments as [State.scatter_iovecs] scatters them
+    and the stream advanced past them.  [rw_verify_area] (:1013) cannot
+    fire first: [f_pos] is 0 on this device for good ([read_urandom]'s
+    caller says why), and [total] is under [MAX_RW_COUNT]. *)
+Definition readv_urandom (iovs : list (word * word)) (total : Z)
+    (i : SyscallInput) (m : Model) : Sys SyscallEffect :=
+  match scatter_iovecs (in_wmem i) iovs [Z_to_bv 8 0] with
+  | None => err_ret EFAULT                       (* not one byte can land *)
+  | Some _ =>
+      let r := stream_take_z (m_urandom m) total in
+      if negb (Z.eqb (Z.of_nat (length (fst r))) total)
+      then unmodeled                             (* the declared stream ran out *)
+      else
+      match scatter_iovecs (in_wmem i) iovs (fst r) with
+      | None => readv_buf_gap                    (* writable prefix, unwritable tail *)
+      | Some _ =>
+          k <- choose (fun k : Z => k = total \/ random_page_stopb total k = true) ;;
+          let t := stream_take_z (m_urandom m) k in
+          match scatter_iovecs (in_wmem i) iovs (fst t) with
+          | Some writes =>
+              set_urandom (snd t) ;;
+              pure (mkEffect (len_word (fst t)) writes [])
+          | None => choose (fun _ => False)
+              (* unreachable: a prefix of a scatterable delivery
+                 scatters.  Coq requires the arm; it admits no outcome *)
+          end
+      end
+  end.
+
 (** Execute readv once [State.import_iovecs] has accepted the descriptor
     array.  [iovs0] is the array as imported; the aggregate cap is
     applied here ([State.cap_iovecs]), and everything below reads the
@@ -3932,15 +4023,7 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          carries [.read_iter]; no destination byte is touched and
          [f_pos], pinned at 0, cannot make [rw_verify_area] fire.  The
          zero-aggregate case above answered the same 0 first *)
-  | RdUrandom => readv_buf_gap
-      (* FAIL-CLOSED, though derivable.  A real answer is
-         [urandom_read_iter] (drivers/char/random.c, v6.18.46) over the
-         imported iterator: the capped aggregate's worth of bytes off
-         the front of [State.m_urandom], scattered across the segments
-         the way the channel arm's [scatter_iovecs] scatters stdin's,
-         with the same partial-destination decline.  Not written, so the
-         vectored read declines through [readv_buf_gap] rather than
-         guess at a scatter; [read_urandom] is the scalar answer *)
+  | RdUrandom => readv_urandom iovs total i m
   | RdDir => err_ret EISDIR
       (* fs/libfs.c [generic_read_dir] (v6.18.46), reached through
          fs/read_write.c [do_loop_readv_writev] because a directory's
@@ -3951,10 +4034,11 @@ Definition readv_imported (fd : word) (r : ReadableFd)
          it imports whether or not it is mapped.  PREMISE: the
          directory's position is 0, so [rw_verify_area]'s position test
          above cannot fire — [FdDir] tracks no position because nothing
-         modeled moves it ([lseek_spec] declines on a directory, and
-         [Readdir.getdents64_spec] declines every listing and answers the
-         rest with [filldir64]'s -EINVAL, which leaves [f_pos] where it
-         found it); give either an arm
+         modeled moves it ([lseek_spec] answers a directory only with
+         -EINVAL or with a result of 0 and declines a result above 0,
+         and [Readdir.getdents64_spec] declines every listing and answers
+         the rest with [filldir64]'s -EINVAL, which leaves [f_pos] where
+         it found it); give either a position-moving arm
          and this -EISDIR needs the test in front of it, since ext4's
          [ext4_dx_readdir] parks an exhausted listing at
          [EXT4_HTREE_EOF_64BIT] = LLONG_MAX *)
@@ -4086,7 +4170,8 @@ Definition readv_spec (fd iov iovcnt : word) : Sys SyscallEffect :=
     once [lseek_spec] has rejected everything past [SEEK_MAX], means
     exactly SEEK_DATA (3) and SEEK_HOLE (4): real filesystems answer
     those (with a filesystem-dependent notion of what a hole is), so
-    they are unmodeled here rather than -EINVAL. *)
+    they are answered only outside the file ([lseek_nxiob]) and
+    unmodeled inside it, never -EINVAL. *)
 (** [len] is the recorded file's length, which presumes the path names a
     regular file with a length at all: on a character device
     [null_lseek] pins the offset at 0 for every whence, where this
@@ -4107,6 +4192,38 @@ Definition lseek_dest (base off : word) : option word :=
   let d := (bv_unsigned base + bv_signed off)%Z in
   if ((0 <=? d) && (d <? 2 ^ 63))%Z then Some (Z_to_bv 64 d) else None.
 
+(** SEEK_DATA AND SEEK_HOLE OUTSIDE THE FILE are -ENXIO, with [f_pos]
+    unchanged, on both file systems whose regular files hold bytes.
+    tmpfs: [shmem_file_llseek] (mm/shmem.c:3669-3687, Linux v6.18.46)
+    answers -ENXIO for an offset below 0 (:3677-3678) and otherwise
+    hands [i_size] to [mapping_seek_hole_data] (:3682), which answers
+    -ENXIO when [end <= start] (mm/filemap.c:3159-3168).  ramfs:
+    [generic_file_llseek] (fs/ramfs/file-mmu.c:48; fs/read_write.c:244-251)
+    passes [i_size_read] as [eof] to [must_set_pos]
+    (fs/read_write.c:102-140), which answers -ENXIO when the offset read
+    UNSIGNED is at or past [eof] (:125-126, :133-134), a negative offset
+    included.  [off] is the [loff_t] the call names, so it is read
+    signed here.  INSIDE the file the two disagree -- ramfs answers the
+    offset itself or the size, tmpfs the next resident or absent page,
+    which the model does not carry -- so that stays declined. *)
+Definition lseek_nxiob (off : word) (data : list byte) : bool :=
+  ((bv_signed off <? 0) || (Z.of_nat (length data) <=? bv_signed off))%Z.
+
+(** A FOLDER'S lseek, from the [f_pos] of 0 every modeled [FdDir]
+    holds.  A tmpfs folder takes [offset_dir_llseek] (fs/libfs.c:433-448,
+    Linux v6.18.46; [simple_offset_dir_operations] :568-573, installed
+    at mm/shmem.c:3138), a ramfs folder [dcache_dir_lseek]
+    (fs/libfs.c:146-181; [simple_dir_operations] :230-237).  Both add
+    [f_pos] for SEEK_CUR, answer -EINVAL for a negative result and for
+    every other whence -- SEEK_END, SEEK_DATA and SEEK_HOLE -- and
+    otherwise set [f_pos] to the result and return it.  With [f_pos] at
+    0, SEEK_SET and SEEK_CUR both name [off] itself, so this is the
+    -EINVAL.  [f_pos] is 0 because nothing modeled moves it: see the
+    [RdDir] arm of [readv_imported]. *)
+Definition lseek_dir_einvalb (whence off : word) : bool :=
+  negb (Z.eqb (bv_unsigned whence) SEEK_SET || Z.eqb (bv_unsigned whence) SEEK_CUR)
+  || (bv_signed off <? 0)%Z.
+
 (** [lseek fd offset whence].  Real repositioning of the fd's file
     offset — the same offset read and write advance — with
     SEEK_SET/SEEK_CUR/SEEK_END semantics; returns (and records) the new
@@ -4126,10 +4243,13 @@ Definition lseek_dest (base off : word) : option word :=
     -EINVAL, not -ESPIPE, and [lseek(<closed fd>, 0, 42)] is -EBADF, not
     -EINVAL.
 
-    Directory fds: real lseek on a directory fd SUCCEEDS (getdents64
-    positioning), but [FdDir] tracks no offset, so the model cannot
-    judge the call — [unmodeled], fail closed, NOT an errno return.  A
-    whence past [SEEK_MAX] is still -EINVAL there, as on Linux.
+    Directory fds: a folder's [.llseek] answers -EINVAL for SEEK_END,
+    SEEK_DATA, SEEK_HOLE and a negative result, and returns a result of
+    0 without moving the 0 [f_pos] it holds ([lseek_dir_einvalb]).  A
+    result above 0 is a real success that moves [f_pos], which [FdDir]
+    does not carry and every later [getdents64] would read, so it is
+    [unmodeled], fail closed.  A whence past [SEEK_MAX] is still
+    -EINVAL there, as on Linux.
 
     A zero-LENGTH write at an offset past end-of-file (which only lseek
     can produce) leaves the file untouched, as on Linux; [Fs.file_write]
@@ -4216,15 +4336,26 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
                                                     descriptor shares the same 0.  FMODE_LSEEK is
                                                     set because the table has an [.llseek], so
                                                     [vfs_llseek] dispatches rather than -ESPIPE *)
-      | FdDir _ => unmodeled                           (* real lseek on a directory fd succeeds, but [FdDir]
-                                                    tracks no offset, so the model cannot judge the
-                                                    call: unmodeled, fail closed *)
+      | FdDir _ =>
+          if lseek_dir_einvalb whence off then err_ret EINVAL
+          else if w_is0 off then ret_only (Z_to_bv 64 0)
+            (* the result is the 0 [f_pos] already holds: [dcache_dir_lseek]
+               skips its cursor move ([if (offset != file->f_pos)],
+               fs/libfs.c:160) and [vfs_setpos] (fs/read_write.c:71-86,
+               through [vfs_setpos_cookie], :55-69) stores the same 0 *)
+          else unmodeled
+            (* a position above 0, which [FdDir] does not carry: fail
+               closed *)
       | FdFile p cur =>
           let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
-              | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: real filesystems answer
-                                                    these, with a filesystem-dependent notion of a
-                                                    hole — unmodeled, fail closed *)
+              | None =>
+                  if lseek_nxiob off data then err_ret ENXIO
+                    (* SEEK_DATA/SEEK_HOLE outside the file: [lseek_nxiob] *)
+                  else unmodeled
+                    (* SEEK_DATA/SEEK_HOLE inside it: tmpfs answers from the
+                       pages it holds, which the model does not carry --
+                       unmodeled, fail closed *)
               | Some base =>
                   match lseek_dest base off with
                   | None => err_ret EINVAL       (* negative/unrepresentable result: real -EINVAL *)
@@ -4243,7 +4374,8 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              (fs/read_write.c, Linux v6.18.46). *)
           let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
-              | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
+              | None => if lseek_nxiob off data then err_ret ENXIO else unmodeled
+                                                     (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
                   match lseek_dest base off with
                   | None => err_ret EINVAL       (* negative/unrepresentable result: real -EINVAL *)
@@ -4257,7 +4389,8 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              repositions exactly like a read-only one *)
           let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
-              | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
+              | None => if lseek_nxiob off data then err_ret ENXIO else unmodeled
+                                                     (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
                   match lseek_dest base off with
                   | None => err_ret EINVAL       (* negative/unrepresentable result: real -EINVAL *)
@@ -4281,7 +4414,8 @@ Definition lseek_spec (fd off whence : word) : Sys SyscallEffect :=
              declining side. *)
           let data := fs_ino_data (m_fs m) p in
               match lseek_base whence cur (len_word data) with
-              | None => unmodeled                    (* SEEK_DATA/SEEK_HOLE: see above *)
+              | None => if lseek_nxiob off data then err_ret ENXIO else unmodeled
+                                                     (* SEEK_DATA/SEEK_HOLE: see above *)
               | Some base =>
                   match lseek_dest base off with
                   | None => err_ret EINVAL       (* negative/unrepresentable result: real -EINVAL *)

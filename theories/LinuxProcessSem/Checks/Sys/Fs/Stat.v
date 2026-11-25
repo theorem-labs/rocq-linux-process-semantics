@@ -1299,6 +1299,101 @@ Proof.
     | now apply check_fstat_link_complete_unmodeled ].
 Qed.
 
+(** fstat: total over [FdEntry], answering on the closed descriptor's
+    -EBADF, the four file kinds, which share one inode and so one
+    answer, the directory, /dev/null and /dev/urandom.  The other six
+    decline as a body; see [Stat.fstat_spec] for which of [struct
+    stat]'s twenty members each would have to invent, and for why the
+    match carries no wildcard. *)
+Definition check_fstat (i : SyscallInput) (fd statbuf : word)
+    (eff : SyscallEffect) (m : Model) : check_result :=
+  match fd_lookup (m_fds m) fd with
+  | None => check_ret_only eff (errno_ret EBADF) m []
+  | Some (FdChannel _) => CheckUnmodeled
+  | Some (FdFile ino _)  => check_fstat_file i ino statbuf eff m
+  | Some (FdFileW ino _) => check_fstat_file i ino statbuf eff m
+  | Some (FdFileA ino _) => check_fstat_file i ino statbuf eff m
+  | Some (FdFileRW ino _) => check_fstat_file i ino statbuf eff m
+  | Some (FdDir k)     => check_fstat_dir k i statbuf eff m
+  | Some (FdSocket _)  => CheckUnmodeled
+  | Some (FdStream _ _ _) => CheckUnmodeled
+  | Some (FdDgram _)   => CheckUnmodeled
+  | Some (FdEventfd _) => CheckUnmodeled
+  | Some (FdPipe _ _)  => CheckUnmodeled
+  | Some (FdDevNull _ _) => check_fstat_devnull fd i statbuf eff m
+  | Some (FdUrandom _ _) => check_fstat_urandom fd i statbuf eff m
+  end.
+
+Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
+  check_fstat i fd statbuf eff m = CheckOk m' evs ->
+  fstat_spec fd statbuf i m (Ok eff m' evs).
+Proof.
+  intros i fd statbuf eff m m' evs H.
+  unfold check_fstat in H. unfold fstat_spec.
+  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok. }
+  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H |- *; try discriminate.
+  all: first [now apply check_fstat_file_sound_ok
+             |now apply check_fstat_dir_sound_ok
+             |now apply check_fstat_devnull_sound_ok
+             |now apply check_fstat_urandom_sound_ok].
+Qed.
+
+Lemma check_fstat_sound_unmodeled : forall i fd statbuf eff m,
+  check_fstat i fd statbuf eff m = CheckUnmodeled ->
+  fstat_spec fd statbuf i m Unmodeled.
+Proof.
+  intros i fd statbuf eff m H.
+  unfold check_fstat in H. unfold fstat_spec.
+  eapply bind_unmodeled2; [apply get_model_ok|].
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv beta iota in H |- *;
+    [|now apply check_ret_only_no_unmodeled in H].
+  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H |- *; try apply unmodeled_intro.
+  all: first [eapply check_fstat_file_sound_unmodeled; exact H
+             |eapply check_fstat_dir_sound_unmodeled; exact H
+             |eapply check_fstat_devnull_sound_unmodeled; exact H
+             |eapply check_fstat_urandom_sound_unmodeled; exact H].
+Qed.
+
+Lemma check_fstat_complete_ok : forall i fd statbuf eff m m' evs,
+  fstat_spec fd statbuf i m (Ok eff m' evs) ->
+  check_fstat i fd statbuf eff m = CheckOk m' evs.
+Proof.
+  intros i fd statbuf eff m m' evs H.
+  unfold fstat_spec in H. unfold check_fstat.
+  apply bind_get_model_ok_inv in H. cbv beta in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { unfold pure in H. inversion H; clear H; subst.
+       apply check_ret_only_ok_iff. now repeat split. }
+  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H |- *.
+  all: first [now apply check_fstat_file_complete_ok
+             |now apply check_fstat_dir_complete_ok
+             |now apply check_fstat_devnull_complete_ok
+             |now apply check_fstat_urandom_complete_ok
+             |unfold unmodeled in H; discriminate].
+Qed.
+
+Lemma check_fstat_complete_unmodeled : forall i fd statbuf m eff,
+  fstat_spec fd statbuf i m Unmodeled ->
+  check_fstat i fd statbuf eff m = CheckUnmodeled.
+Proof.
+  intros i fd statbuf m eff H.
+  unfold fstat_spec in H. unfold check_fstat.
+  apply bind_get_model_unmodeled_inv in H. cbv beta in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
+  2: { unfold pure in H. discriminate. }
+  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H |- *; try reflexivity.
+  all: first [eapply check_fstat_file_complete_unmodeled; exact H
+             |eapply check_fstat_dir_complete_unmodeled; exact H
+             |eapply check_fstat_devnull_complete_unmodeled; exact H
+             |eapply check_fstat_urandom_complete_unmodeled; exact H].
+Qed.
+
 (** newfstatat: the path errnos, the two declines, and — new in R22 —
     the SUCCESS, one row per resolved entry kind.  Writing nothing is
     not reading nothing: each FAILING arm is
@@ -1323,7 +1418,9 @@ Definition check_newfstatat_body (i : SyscallInput)
   | CstrOk p =>
       if path_eqb p [] then
         if negb (statat_empty_path flag) then check_ret_only eff (errno_ret ENOENT) m []
-        else if negb (bv_eqb dirfd AT_FDCWD32) then CheckUnmodeled
+        else if negb (bv_eqb dirfd AT_FDCWD32) then
+          if statat_fstat_fdb dirfd then check_fstat i dirfd statbuf eff m
+          else CheckUnmodeled
         else
           match Fs.fs_lookup (m_fs m) (m_cwd m) with
           | Some e => check_stat_entry (m_cwd m) e i statbuf eff m
@@ -1444,6 +1541,24 @@ Proof.
     | eapply check_fstat_link_no_copyin; exact H ].
 Qed.
 
+Local Lemma check_fstat_no_copyin : forall i fd statbuf eff m m' evs,
+  check_fstat i fd statbuf eff m = CheckOk m' evs -> eff_copyins eff = [].
+Proof.
+  intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
+  destruct (fd_lookup (m_fds m) fd) as [e|].
+  2: { apply check_ret_only_ok_iff in H as (-> & _ & _). reflexivity. }
+  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
+    cbv iota in H; try discriminate.
+  all: first [ eapply check_fstat_file_no_copyin; exact H
+             | eapply check_fstat_dir_no_copyin; exact H
+             | unfold check_fstat_devnull, check_fstat_urandom, check_fstat_devfd,
+                 check_fstat_chrdev in H;
+               match type of H with
+               | context [dev_sole_node ?a ?b ?c] => destruct (dev_sole_node a b c)
+               end; cbv iota in H;
+               eapply check_fstat_pinned_no_copyin; exact H ].
+Qed.
+
 Local Lemma check_newfstatat_body_sound_ok :
   forall i dirfd pathp statbuf flag eff m m' evs,
   check_newfstatat_body i dirfd pathp statbuf flag eff m = CheckOk m' evs ->
@@ -1456,7 +1571,9 @@ Proof.
   destruct (path_eqb p []); cbv iota.
   - destruct (negb (statat_empty_path flag)); cbv iota;
       [now apply check_ret_only_sound_ok|].
-    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota; [discriminate|].
+    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota.
+    { destruct (statat_fstat_fdb dirfd); cbv iota; [|discriminate].
+      now apply check_fstat_sound_ok. }
     destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; cbv iota; [|discriminate].
     now apply check_stat_entry_sound_ok.
   - destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota; [discriminate|].
@@ -1481,7 +1598,9 @@ Proof.
   destruct (path_eqb p []); cbv iota.
   - destruct (negb (statat_empty_path flag)); cbv iota;
       [now apply check_ret_only_no_unmodeled in H|].
-    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota; [apply unmodeled_intro|].
+    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota.
+    { destruct (statat_fstat_fdb dirfd); cbv iota; [|apply unmodeled_intro].
+      eapply check_fstat_sound_unmodeled. exact H. }
     destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; cbv iota;
       [|apply unmodeled_intro].
     eapply check_stat_entry_sound_unmodeled. exact H.
@@ -1513,8 +1632,12 @@ Proof.
   - destruct (negb (statat_empty_path flag)); cbv iota in H |- *;
       [split; [apply check_ret_only_ok_iff|];
        sys_unfold; inv_ok; now repeat split|].
-    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H |- *;
-      [unfold unmodeled in H; inv_ok|].
+    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H |- *.
+    { destruct (statat_fstat_fdb dirfd); cbv iota in H |- *;
+        [|unfold unmodeled in H; inv_ok].
+      assert (Hc : check_fstat i dirfd statbuf core m = CheckOk m' evs)
+        by (now apply check_fstat_complete_ok).
+      split; [exact Hc | eapply check_fstat_no_copyin; exact Hc]. }
     destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; cbv iota in H |- *;
       [|unfold unmodeled in H; inv_ok].
     assert (Hc : check_stat_entry (m_cwd m) e i statbuf core m = CheckOk m' evs)
@@ -1546,8 +1669,9 @@ Proof.
   destruct (path_eqb p []); cbv iota in H |- *.
   - destruct (negb (statat_empty_path flag)); cbv iota in H |- *;
       [sys_unfold; inv_ok|].
-    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H |- *;
-      [reflexivity|].
+    destruct (negb (bv_eqb dirfd AT_FDCWD32)); cbv iota in H |- *.
+    { destruct (statat_fstat_fdb dirfd); cbv iota in H |- *; [|reflexivity].
+      now apply check_fstat_complete_unmodeled. }
     destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; cbv iota in H |- *;
       [|reflexivity].
     now apply check_stat_entry_complete_unmodeled.
@@ -1862,99 +1986,4 @@ Proof.
              (check_newfstatat_fetched_complete_unmodeled i dirfd pathp statbuf flag m)
              eff H).
   - exact (check_newfstatat_fetched_complete_unmodeled i dirfd pathp statbuf flag m eff H).
-Qed.
-
-(** fstat: total over [FdEntry], answering on the closed descriptor's
-    -EBADF, the four file kinds, which share one inode and so one
-    answer, the directory, /dev/null and /dev/urandom.  The other six
-    decline as a body; see [Stat.fstat_spec] for which of [struct
-    stat]'s twenty members each would have to invent, and for why the
-    match carries no wildcard. *)
-Definition check_fstat (i : SyscallInput) (fd statbuf : word)
-    (eff : SyscallEffect) (m : Model) : check_result :=
-  match fd_lookup (m_fds m) fd with
-  | None => check_ret_only eff (errno_ret EBADF) m []
-  | Some (FdChannel _) => CheckUnmodeled
-  | Some (FdFile ino _)  => check_fstat_file i ino statbuf eff m
-  | Some (FdFileW ino _) => check_fstat_file i ino statbuf eff m
-  | Some (FdFileA ino _) => check_fstat_file i ino statbuf eff m
-  | Some (FdFileRW ino _) => check_fstat_file i ino statbuf eff m
-  | Some (FdDir k)     => check_fstat_dir k i statbuf eff m
-  | Some (FdSocket _)  => CheckUnmodeled
-  | Some (FdStream _ _ _) => CheckUnmodeled
-  | Some (FdDgram _)   => CheckUnmodeled
-  | Some (FdEventfd _) => CheckUnmodeled
-  | Some (FdPipe _ _)  => CheckUnmodeled
-  | Some (FdDevNull _ _) => check_fstat_devnull fd i statbuf eff m
-  | Some (FdUrandom _ _) => check_fstat_urandom fd i statbuf eff m
-  end.
-
-Lemma check_fstat_sound_ok : forall i fd statbuf eff m m' evs,
-  check_fstat i fd statbuf eff m = CheckOk m' evs ->
-  fstat_spec fd statbuf i m (Ok eff m' evs).
-Proof.
-  intros i fd statbuf eff m m' evs H.
-  unfold check_fstat in H. unfold fstat_spec.
-  eapply bind_ok0; [apply get_model_ok|]. cbv beta.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
-  2: { apply check_ret_only_ok_iff in H as (-> & -> & ->). apply pure_ok. }
-  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
-    cbv iota in H |- *; try discriminate.
-  all: first [now apply check_fstat_file_sound_ok
-             |now apply check_fstat_dir_sound_ok
-             |now apply check_fstat_devnull_sound_ok
-             |now apply check_fstat_urandom_sound_ok].
-Qed.
-
-Lemma check_fstat_sound_unmodeled : forall i fd statbuf eff m,
-  check_fstat i fd statbuf eff m = CheckUnmodeled ->
-  fstat_spec fd statbuf i m Unmodeled.
-Proof.
-  intros i fd statbuf eff m H.
-  unfold check_fstat in H. unfold fstat_spec.
-  eapply bind_unmodeled2; [apply get_model_ok|].
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv beta iota in H |- *;
-    [|now apply check_ret_only_no_unmodeled in H].
-  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
-    cbv iota in H |- *; try apply unmodeled_intro.
-  all: first [eapply check_fstat_file_sound_unmodeled; exact H
-             |eapply check_fstat_dir_sound_unmodeled; exact H
-             |eapply check_fstat_devnull_sound_unmodeled; exact H
-             |eapply check_fstat_urandom_sound_unmodeled; exact H].
-Qed.
-
-Lemma check_fstat_complete_ok : forall i fd statbuf eff m m' evs,
-  fstat_spec fd statbuf i m (Ok eff m' evs) ->
-  check_fstat i fd statbuf eff m = CheckOk m' evs.
-Proof.
-  intros i fd statbuf eff m m' evs H.
-  unfold fstat_spec in H. unfold check_fstat.
-  apply bind_get_model_ok_inv in H. cbv beta in H.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
-  2: { unfold pure in H. inversion H; clear H; subst.
-       apply check_ret_only_ok_iff. now repeat split. }
-  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
-    cbv iota in H |- *.
-  all: first [now apply check_fstat_file_complete_ok
-             |now apply check_fstat_dir_complete_ok
-             |now apply check_fstat_devnull_complete_ok
-             |now apply check_fstat_urandom_complete_ok
-             |unfold unmodeled in H; discriminate].
-Qed.
-
-Lemma check_fstat_complete_unmodeled : forall i fd statbuf m eff,
-  fstat_spec fd statbuf i m Unmodeled ->
-  check_fstat i fd statbuf eff m = CheckUnmodeled.
-Proof.
-  intros i fd statbuf m eff H.
-  unfold fstat_spec in H. unfold check_fstat.
-  apply bind_get_model_unmodeled_inv in H. cbv beta in H.
-  destruct (fd_lookup (m_fds m) fd) as [e|] eqn:Hfd; cbv iota in H |- *.
-  2: { unfold pure in H. discriminate. }
-  destruct e as [ch|ino cur|ino cur|ino cur|ino cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
-    cbv iota in H |- *; try reflexivity.
-  all: first [eapply check_fstat_file_complete_unmodeled; exact H
-             |eapply check_fstat_dir_complete_unmodeled; exact H
-             |eapply check_fstat_devnull_complete_unmodeled; exact H
-             |eapply check_fstat_urandom_complete_unmodeled; exact H].
 Qed.

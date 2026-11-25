@@ -4105,16 +4105,20 @@ Proof. vm_compute. reflexivity. Qed.
     answers 0 ([do_fcntl], fs/fcntl.c:465-466: FD_CLOEXEC only when the
     close-on-exec bit is set, and these words carry no O_CLOEXEC), and
     the model's F_GETFD arm admits it; the empty-path newfstatat is the
-    descriptor's [vfs_fstat] in Linux ([vfs_fstatat], fs/stat.c:365-373),
-    and the model declines it, since it answers an empty pathname only
-    against AT_FDCWD ([check_newfstatat_body]). *)
+    descriptor's [vfs_fstat] (fs/stat.c:266-282) through [vfs_fstatat] (fs/stat.c:365-373), and the
+    model gives it [fstat]'s verdict on the same bytes, which admits
+    the stat [r1_open_fstat_read4k_close] admits. *)
 Example r1_fstat_fallback_not_reached :
   r1_call (r1_open_step r1_rdnb 3) r1_s_m0 = CheckOk r1_s_m3 []
   /\ r1_call (r1_fstat_ret_step (errno_ret EBADF)) r1_s_m3 = CheckReject
   /\ r1_call (r1_fcntl_step F_GETFD 0) r1_s_m3 = CheckOk r1_s_m3 []
   /\ r1_call (r1_fstatat_empty_step (file_stat (S_IFREG + 420) 1 12787)) r1_s_m3
-     = CheckUnmodeled.
-Proof. split_conj; check_eq. Qed.
+     = r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 12787)) r1_s_m3
+  /\ match r1_call (r1_fstat_step (file_stat (S_IFREG + 420) 1 12787)) r1_s_m3 with
+     | CheckOk _ _ => True
+     | _ => False
+     end.
+Proof. split_conj; first [vm_compute; exact I | check_eq]. Qed.
 
 (** D, concretely: /usr/local/etc/app.conf a folder. *)
 Definition r1_d_fs : Fs.Fs :=
