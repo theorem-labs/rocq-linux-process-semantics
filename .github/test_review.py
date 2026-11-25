@@ -22816,6 +22816,27 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual((mine["post"].get("recorded"), self.successes(end)), ("false", []),
                          (mine["post"], self.logs[-4:]))
 
+    def test_an_older_pass_posts_nothing_and_keeps_the_label_after_a_newer_refused_review(self):
+        """The tester's audit of round 27 (F2), by OSSV-221's architect's ruling of 2026-11-25 19:29Z: a refused
+        review is a word of its head, and every reader that orders words treats it as it treats a blocking review.
+        The jobs of #7 run in write-7 in this order: the post job of the screened CI review run 100 (read 40 minutes
+        ago, passes HEAD, records 901), the post job of rescreen run 130 (read 20 minutes ago, its review refused by
+        the fresh reader: withdraws 901), run 130's comment job (the label state refused-review), then run 100's
+        comment job. The newest word is run 130's refusal, so run 100's comment job posts nothing and writes no
+        label, as it does after run 130's blocking review, and the label state stays refused-review."""
+        ci = dict(self.REVIEWED, started=ago(40))
+        mine, checks = self.judged([], "100", trust=ci)
+        self.assertEqual(self.successes(checks), [901], self.logs[-3:])
+        got, after, _rescreen = self.refused_run("pass", checks, [])
+        self.assertEqual(self.successes(after), [])
+        (body,) = got["comments"]
+        self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {rules.STATES['refused-review'][1]}"),
+                        body)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(1), "updated_at": ago(1), "body": body}
+        self.serve_checks(after)
+        _outcomes, wrote, labels, _review = self.comment_job_after_post(mine, ci, "pass", [label], "100")
+        self.assertEqual((wrote, [b.split("\n")[1] for b in labels]), ([], []), self.logs[-6:])
+
 
 def want(state=None, decision="", app="", held="", stop=None, owed=None, jobs=None, said="", marked=False, rerun=False):
     """What the approved author-kind table gives for one cell of KindTableTest. state: the state of the label call
