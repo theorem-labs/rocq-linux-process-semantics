@@ -18187,8 +18187,8 @@ class ImportCheckTest(ReaderRunner):
         screened = review_of(HEAD, at=ago(120))
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
-        marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 100 {ago(1)} -->")
         by_hand = dict(self.BY_HAND, started=ago(1), named=HEAD)
+        marked = rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 100 {by_hand['started']} -->")
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
         got = self.judge(["README.md"], "blocking", self.LPS, trust=by_hand, event="workflow_dispatch",
                          comments=[screened, old], listed=[listed], named=HEAD)
@@ -18477,8 +18477,8 @@ class ImportCheckTest(ReaderRunner):
         no label comment and gives the line to the label step, which runs. The state is reviewed, which has no state
         label: the label step must still post a label comment with the line, not drop it."""
         listed, _others = self.recorded()
-        line = f"<!-- withdraw-owed {HEAD} blocking 100 {ago(1)} -->"
         trust = dict(self.BY_HAND, outside="false", kind="writer", started=ago(1), named=HEAD)
+        line = f"<!-- withdraw-owed {HEAD} blocking 100 {trust['started']} -->"
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
         got = self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch", listed=[listed])
         self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)
@@ -18515,8 +18515,8 @@ class ImportCheckTest(ReaderRunner):
         of #7, which is tried again and so writes no label comment, was made after this run started: the label step
         leaves the labels as they are, at the current head. The line must still reach a label comment."""
         listed, _others = self.recorded()
-        line = f"<!-- withdraw-owed {HEAD} blocking 100 {ago(1)} -->"
         trust = dict(self.BY_HAND, started=ago(1), named=HEAD)
+        line = f"<!-- withdraw-owed {HEAD} blocking 100 {trust['started']} -->"
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
         got = self.judge(["README.md"], "blocking", self.LPS, trust=trust, event="workflow_dispatch", listed=[listed])
         self.assertEqual((got["result"], got["post"]["owed"]), ("failure", f"{HEAD} blocking"), self.logs)

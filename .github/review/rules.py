@@ -49,7 +49,9 @@ one label takes the other off. review-held, the mark of a hold, stays beside the
 github-actions[bot] on the item, edited in place (label_comment). Its first line is <!-- review-label -->, its text
 names the next step and who takes it, and with a state label its last line is the marker <!-- waits-on-author --> or
 <!-- waits-on-theorem: Sami -->. It keeps each marker line of KEPT that it holds, and a marker=<line> of the same kind
-takes the place of that line. It holds <!-- review-conflict-state <head> --> while it gives the head waits-on-author
+takes the place of that line, but a line of OWED never takes the place of a line of its head that outranks it as a
+word on the head (owed_keeps): that line stays, and a line says so. It holds <!-- review-conflict-state <head> -->
+while it gives the head waits-on-author
 for a merge conflict, and loses that line with any other state. The state steering (the fact steering=true, with
 head=<commit>) records <!-- review-steering <head> -->, a line of KEPT: the head changes a file under .github/, or
 3,000 files or more, so the post job approves none of its runs, and the rescreen pass starts no approval of it. The
@@ -69,7 +71,8 @@ names the next step. GH_TOKEN and REPO come from the job's environment, as for g
 
 mark: records the marker line <line> of KEPT in the label comment of <number>, and changes nothing else
 (with_marker): the state label, the text and the other lines stay as they are, as label would keep them for the same
-state. <line> takes the place of the line of its kind. An item with no label comment gets one, of the state working,
+state. <line> takes the place of the line of its kind, but a line of OWED never takes the place of a line of its head
+that outranks it, as for label. An item with no label comment gets one, of the state working,
 or of state=<state>, which must be a state with no state label. The comment job of a catch-up records the line
 <!-- review-catchup <head> --> with it. The rescreen pass reads that line, so that each head gets one catch-up. The
 comment job's label step records the line of an owed withdrawal (OWED) with it when a hold made after its run started
@@ -662,7 +665,10 @@ KEPT = re.compile(r"<!-- (repo-pairs-import-paths) [0-9a-f]{40}: .* -->|<!-- (is
 # a newer screened review outranks the line), and only while a comment of BOT gives a reason for it (line_reason): the
 # comment of the line's run that gives why, or a review of the head newer than the time of the line. Until then, each
 # relabel records nothing (owe).
-# Each head has a line of its own (marker_kind).
+# Each head has a line of its own (marker_kind). A line takes the place of the line of its head only when that line
+# does not outrank it as a word on the head (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z), for each writer:
+# owe, also for the line of its own run, mark, and the label call (apply). So no older read's line takes the place of
+# a newer read's line whose comment never posted.
 OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|screen) ([1-9][0-9]*)"
                   rf"(?: ({TIME.pattern}))? -->")
 
@@ -1042,13 +1048,16 @@ def make_label(name):
     print(f"::warning::the label {name} could not be made or described; adding it makes it, with no description.")
 
 
-def apply(number, state, markers=(), head="", imports=None, labels=None, labelled=True):
+def apply(number, state, markers=(), head="", imports=None, comments=None, labelled=True):
     """Gives the item number the state label of state, takes the other one off, and writes its label comment
-    (label_comment, with imports). labels are the item's label comments of BOT, each {id, body}, when the caller read
-    them already; else this reads them. When labelled is False (the label answer off of the author-kind table), the
-    item gets no state label and loses each one that it has, but its label comment is the state's all the same, with
-    the marker of the state's label. An item with no label comment gets one when state has a state label, or when a
-    line of OWED is among markers, so that a label step records that line in any state. Else it gets none."""
+    (label_comment, with imports). comments are the item's comments of BOT as the API lists them (read_comments), when
+    the caller read them already; else this reads them when a line of OWED is among markers, and else only its label
+    comments (read_labels). When labelled is False (the label answer off of the author-kind table), the item gets no
+    state label and loses each one that it has, but its label comment is the state's all the same, with the marker of
+    the state's label. An item with no label comment gets one when state has a state label, or when a line of OWED is
+    among markers, so that a label step records that line in any state. Else it gets none. A line of OWED among markers
+    does not take the place of the line of its head that outranks it (owed_keeps; OSSV-221's architect, 2026-11-25
+    07:24Z): that line stays, and the log says so."""
     repo = os.environ["REPO"]
     want = label_of(state) if labelled else None
     have = set(gh("--paginate", f"repos/{repo}/issues/{number}/labels", "--jq", ".[].name").split("\n"))
@@ -1062,9 +1071,14 @@ def apply(number, state, markers=(), head="", imports=None, labels=None, labelle
     if want and want not in have:
         make_label(want)
         gh("--method", "POST", f"repos/{repo}/issues/{number}/labels", "-f", f"labels[]={want}", "--jq", ".[].name")
-    if labels is None:
-        labels = read_labels(number)
+    if comments is None and any(OWED.fullmatch(m) for m in markers):
+        comments = read_comments(number)
+    labels = read_labels(number) if comments is None else label_list(comments)
     old = labels[-1] if labels else None
+    kept = [owed_keeps(number, comments, old["body"], m) if old else "" for m in markers]
+    for said in filter(None, kept):
+        print(said)
+    markers = [m for m, said in zip(markers, kept) if not said]
     shown = f"#{number}: {want or 'no state label'} ({state})"
     if old is None and label_of(state) is None and not any(OWED.fullmatch(m) for m in markers):
         print(f"{shown}, and no label comment to change.")
@@ -1082,6 +1096,21 @@ def read_labels(number):
     mine = f"select(.user.login == {json.dumps(BOT)} and (.body | startswith({json.dumps(FIRST)})))"
     return gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
                       f".[] | {mine} | {{id, body}} | @json")
+
+
+def read_comments(number):
+    """The comments of BOT on the item number as the API lists them, each {id, user: {login}, body, updated_at}, in the
+    order that GitHub lists them."""
+    return gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
+                      f".[] | select(.user.login == {json.dumps(BOT)})"
+                      " | {id, user: {login: .user.login}, body, updated_at} | @json")
+
+
+def label_list(comments):
+    """The label comments among comments, the item's comments of BOT as the API lists them, each {id, body}, in their
+    order (read_labels)."""
+    return [{"id": c.get("id"), "body": c["body"]} for c in comments
+            if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
 
 
 def write_label(number, old, body):
@@ -1111,25 +1140,34 @@ def with_marker(body, line):
     return text + gap + "\n".join(kept + [line] + rest)
 
 
-def mark(number, line, make=True, state="working", labels=None):
+def mark(number, line, make=True, state="working", labels=None, comments=None):
     """Records line, a marker line of KEPT, in the label comment of the item number (with_marker), and writes nothing
     else: the state label and the text of the label comment stay as they are. An item with no label comment gets one
     of state, with line, when make is True. state is working unless the caller gives another. It must be a state with
     no state label, as mark writes no state label: a ValueError for any other. The comment job's label step gives
     working or after-hold, by the hold that stopped it. When make is False (owe: a line of OWED), such an item gets
-    nothing, and the result is False. Else the result is True. labels are the item's label comments of BOT, each {id,
-    body}, when the caller read them already; else this reads them."""
+    nothing, and the result is False. Else the result is True. A line of OWED does not take the place of the line of
+    its head that outranks it (owed_keeps; OSSV-221's architect, 2026-11-25 07:24Z): that line stays, and the log says
+    so. labels are the item's label comments of BOT, each {id, body}, and comments its comments of BOT as the API lists
+    them (read_comments), when the caller read them already; else this reads them: for a line of OWED, the comments,
+    and the label comments among them."""
     marker_kind(line)
     if state not in STATES or label_of(state) is not None:
         raise ValueError(f"mark makes a label comment only in a state with no state label, not {state!r}")
+    if comments is None and OWED.fullmatch(line):
+        comments = read_comments(number)
     if labels is None:
-        labels = read_labels(number)
+        labels = read_labels(number) if comments is None else label_list(comments)
     old = labels[-1] if labels else None
     if old is None and not make:
         return False
     if old is None:
         write_label(number, None, label_comment(state, "", [line]))
         print(f"#{number}: it had no label comment, so this step posted one, with {line}.")
+        return True
+    kept = owed_keeps(number, comments, old["body"], line)
+    if kept:
+        print(kept)
         return True
     body = with_marker(old["body"], line)
     if body == old["body"]:
@@ -1298,9 +1336,9 @@ def answers(task, outside, outsider, kind=""):
     return dict(zip(ANSWERS, TABLE[(task, author_class(outside, kind))]))
 
 
-def set_state(number, run, facts, markers=(), head="", labels=None):
+def set_state(number, run, facts, markers=(), head="", comments=None):
     """Gives the item number the state that facts give (label_state), as the label answer of the author-kind table for
-    run says (answers, with RUN): set, off (apply, with labels), or unchanged, which writes nothing and gives a notice.
+    run says (answers, with RUN): set, off (apply with comments), or unchanged, which writes nothing and gives a notice.
     That notice names each line of OWED among markers, which the workflow then does not record: the step gives such a
     line only for an item with no label comment (owe). label_state's outsider is outside_author of the trust job's
     outside. For an outside pull request, the label comment names the steps of R12 for the import, and holds the marker
@@ -1320,7 +1358,7 @@ def set_state(number, run, facts, markers=(), head="", labels=None):
         if head:
             markers = [*markers, import_marker(head, imports[0])]
     label_comment(state, "", markers, head, imports)
-    apply(number, state, markers, head, imports, labels, labelled=label == "set")
+    apply(number, state, markers, head, imports, comments, labelled=label == "set")
 
 
 # The marker line of R12 (import_marker) in a label comment: the head, and the value of REPO_PAIRS_IMPORT_PATHS as JSON.
@@ -1415,7 +1453,9 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
     withdrawal that a run owes goes in for every author, as the post job withdraws for every author (OSSV-221's
     architect, 2026-11-23 01:47Z). For that answer, withdrawn also rewrites a label comment that says that the workflow
     recorded the check on that head, when no such record stands (unrecord, first; F5): the label step of such a run
-    changes no label comment. Else the result is ""."""
+    changes no label comment. Else the result is "". Also with own, the line of owed does not take the place of the
+    line of its head that outranks it as a word on the head (mark, owed_keeps; OSSV-221's architect, 2026-11-25
+    07:24Z): that line stays, and the log says so."""
     line = f"<!-- withdraw-owed {owed} -->" if owed else ""
     m = OWED.fullmatch(line) if owed else None
     if owed and not (m and m.group(4)):
@@ -1434,13 +1474,8 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
         print(f"::notice::#{number}: GitHub did not say whether its author has write access, so this step removes no "
               f"withdraw-owed line of {withdrawn} from its label comment.")
         return ""
-    comments, labels = None, rewritten
-    if (withdrawn and not owed) or (owed and not own):
-        comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{number}/comments", "--jq",
-                              f".[] | select(.user.login == {json.dumps(BOT)})"
-                              " | {id, user: {login: .user.login}, body, updated_at} | @json")
-        labels = rewritten or [{"id": c.get("id"), "body": c["body"]} for c in comments
-                               if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
+    comments = read_comments(number) if owed or withdrawn else []
+    labels = rewritten or label_list(comments)
     if withdrawn and not owed:
         why, wrote, read = owed_line(comments, withdrawn)
         screened = holds_back(run["outside"], run["author"])
@@ -1469,7 +1504,7 @@ def owe(number, run, owed="", withdrawn="", own=False, sources=None):
         return ""
     if owed and not own:
         line = owed_marker(head, why, *owed_run(comments, head, why, m.group(3), m.group(4)))
-    if line and not mark(number, line, make=False, labels=labels):
+    if line and not mark(number, line, make=False, labels=labels, comments=comments):
         if withdrawn:
             comment = (f"the hold comment of the screen that held {head}" if why == "screen"
                        else f"the review comment that gives {head} the verdict {why}")
@@ -2241,17 +2276,48 @@ def owed_line(comments, head):
 
 
 def owed_word(comments, head):
-    """(read, kind, why) of the line of OWED of head (owed_line) as a word on head, or None when no label comment of
-    BOT holds one: the line is a word like any other (OSSV-221's architect, 2026-11-25 01:13Z, G1). read is the read
-    of the line, the time when its run read the item, never the time when its step wrote the line. A line of the old
-    form, with no read, counts from source_time of its run in comments (its hold of the screen), as line_reason counts
-    it when no withdrawal names that run, and else after each time (NEWEST), which fails closed: no word outranks it.
-    Each reader of the line reads it from comments alone, so all of them give it the same time. kind is the rank of
-    why (RANKS): blocking or person as a verdict, and hold for screen."""
+    """(read, kind, why) of the line of OWED of head (owed_line) as a word on head (line_word), or None when no label
+    comment of BOT holds one: the line is a word like any other (OSSV-221's architect, 2026-11-25 01:13Z, G1). Each
+    reader of the line reads it from comments alone, so all of them give it the same time."""
     why, run, read = owed_line(comments, head)
-    if not why:
-        return None
+    return line_word(comments, head, why, run, read) if why else None
+
+
+def line_word(comments, head, why, run, read):
+    """(read, kind, why) of the line of OWED of head for why that names run and read (owed_marker) as a word on head.
+    read is the read of the line, the time when run read the item, never the time when a step wrote the line. A line
+    of the old form, with no read, counts from source_time of run in comments (its hold of the screen), as line_reason
+    counts it when no withdrawal names that run, and else after each time (NEWEST), which fails closed: no word
+    outranks it. kind is the rank of why (RANKS): blocking or person as a verdict, and hold for screen."""
     return read or source_time(comments, {}, head, run) or NEWEST, "hold" if why == "screen" else why, why
+
+
+def owed_keeps(number, comments, body, line):
+    """The log text that says why line, a marker line of KEPT, does not take the place of the line of OWED of its head
+    in body, the label comment of the item number: that line outranks line as a word on the head (line_word, with
+    comments, the item's comments of BOT as the API lists them). Else "", and line takes its place. A line of OWED is
+    replaced only by a line that the line that stands does not outrank (OSSV-221's architect, 2026-11-25 07:24Z), for
+    each writer (mark, apply), so that no older read's line takes the place of a newer read's line whose comment never
+    posted. A line of the old form counts as owed_word gives it."""
+    new = OWED.fullmatch(line)
+    if not new:
+        return ""
+    stands = [m for m in map(OWED.fullmatch, body.split("\n")) if m and m.group(1) == new.group(1)]
+    if not stands:
+        return ""
+    kept = stands[-1]
+    (at, kind, _why), (other, rank, _new) = (line_word(comments, *m.groups("")) for m in (kept, new))
+    if not outranks((at, kind), (other, rank)):
+        return ""
+    if at == other:
+        why = (f"Both lines count {'after each time' if at is NEWEST else f'from {at}'}, and a hold of the screen "
+               "outranks a blocking finding or the verdict person.")
+    elif at is NEWEST:
+        why = (f"The line that stands names no read, and no hold of run {kept.group(3)} gives it a time. So it counts "
+               "after each time, and it outranks the other line.")
+    else:
+        why = f"The line that stands counts from {at}, later than {other}, so it outranks the other line."
+    return f"#{number}: its label comment keeps {kept.group(0)}. This step does not write {line}. {why}"
 
 
 def owed_reason(comments, head):
@@ -3499,9 +3565,7 @@ def main(argv):
                 raise ValueError("relabel names its head before the facts, not as head=")
             run["task"] = "relabel"
             repo = os.environ["REPO"]
-            comments = gh_objects("--paginate", f"repos/{repo}/issues/{number}/comments", "--jq",
-                                  f".[] | select(.user.login == {json.dumps(BOT)})"
-                                  " | {id, user: {login: .user.login}, body, updated_at} | @json")
+            comments = read_comments(number)
             found = relabel_facts(
                 comments,
                 lambda: gh_objects("--paginate", f"repos/{repo}/pulls/{number}/reviews", "--jq", ".[] | @json"),
@@ -3513,10 +3577,8 @@ def main(argv):
             if both:
                 raise ValueError(f"relabel reads these facts itself: {', '.join(both)}")
             facts.update(found)
-            # The label comments that apply would read again: nothing between the two reads writes a comment.
-            labels = [{"id": c.get("id"), "body": c["body"]} for c in comments
-                      if isinstance(c.get("body"), str) and c["body"].startswith(FIRST)]
-            set_state(number, run, facts, markers, head, labels)
+            # The comments that apply would read again: nothing between the two reads writes a comment.
+            set_state(number, run, facts, markers, head, comments)
             return 0
     except ValueError as e:
         print(f"::error::rules.py: {e}", file=sys.stderr)
