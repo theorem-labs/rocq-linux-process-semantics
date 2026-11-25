@@ -277,7 +277,8 @@ changed it, and a pass with none at no time. The line counts from its <read>, an
 summary names. <other> is the run of that word, or - when it names none. "-" alone when no such word stands. A run
 whose own word such a word outranks posts nothing on the item: the comment job and the hold job read this. It reads
 the comments and the import check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is
-1 when GitHub could not give the comments or the check runs, and 2 when <kind> is no kind of word.
+1 when GitHub could not give the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID
+is not the id of an App.
 
 relabel-withdraws: why a relabel of <head> withdraws the import check runs of <head>, from <comments.jsonl>, the
 comments of the item as the API lists them, one on each line (review_verdict): screen for a hold of the screen that
@@ -2310,7 +2311,7 @@ def owed_word(comments, head):
 def owed_run_word(comments, head):
     """(read, kind, run) of the line of OWED of head (owed_line) as a word on head (line_word), as comment_word gives
     the word of a comment. run is the run that the line names. None when no label comment of BOT holds such a line.
-    own_record, newer_word and relabel_facts read the line from this."""
+    own_record and newer_word read the line from this, as each of them compares the run of a word with its own run."""
     why, run, read = owed_line(comments, head)
     return (*line_word(why, read)[:2], run) if why else None
 
@@ -3370,7 +3371,7 @@ def relabel_facts(comments, reviews, head, history, checks=()):
     verdict after 2 fix reviews since the author's last own push, the fix review of head not counted, as the review job
     decided it before it posted that fix). A review that the fresh reader refused is a word too, from the time when its
     run read the item (OSSV-221's architect, 2026-11-25 19:29Z). It posts no comment, so two other writes carry it. One
-    is the line of OWED of head for refused (owed_run_word). The other is a check run of checks, the import check runs
+    is the line of OWED of head for refused (owed_word). The other is a check run of checks, the import check runs
     of head (import_checks), that a refused review gave (refused_checks). The newest of them that outranks the review
     side gives {"refused": "review"}: the state refused-review, in which Sami writes the review by hand. A hold that
     outranks that refusal gives its own fact in its place. With none of them, a label comment that holds the
@@ -3397,7 +3398,7 @@ def relabel_facts(comments, reviews, head, history, checks=()):
             conflicted = True
     reviewed, verdict, will_fix = review or ("", "", False)
     side = max((reviewed, verdict or "read"), (answered, "read"), key=lambda word: word_key(*word))
-    line = owed_run_word(comments, head)
+    line = owed_word(comments, head)
     refusals = [word[:2] for word in [line, *refused_checks(checks, head)] if word and word[1] == "refused"]
     refusal = max(refusals, key=lambda word: word_key(*word), default=None)
     if refusal and outranks(refusal, side):

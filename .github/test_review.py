@@ -22384,15 +22384,13 @@ class ImportCheckTest(ReaderRunner):
         the import that GitHub refuses follows the path of a refused withdrawal. Rescreen run 100 of mallory's #7 gave
         HEAD a blocking finding, or its screen held HEAD, and no import check run of HEAD stands. The step that posts
         it fails, and so does the post job: its output owed names HEAD and the reason, and withdrawn is empty, so the
-        comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> -->. The error names HEAD
-        and says what comes next: when the run's name gives HEAD, the relabel that the rescreen pass starts, which
+        comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> <read> -->. The error names
+        HEAD and says what comes next: when the run's name gives HEAD, the relabel that the rescreen pass starts, which
         withdraws each success for the verdict or the screen of this run, leaves one only when the run that recorded
         it read #7 after that, and records no such check run (the fresh readers of round 22, M1, M2, N4, S2 and S3);
-        else a re-run. The withdraw step's own error of that path, for a run with no start time, names the cause, the
-        screen of this run that held HEAD: a run whose screen held HEAD shows it, as its comment job, which needs that
-        time, does not run. That error ends after "for the import." and names no next step: with no start time, no
-        withdraw-owed line can name the read of the run (rules.py owe), so no relabel withdraws for it (OSSV-221's
-        architect's list of round 28, item 3)."""
+        else a re-run. The withdraw step's own error of that path, for a run with no start time, ends after "for the
+        import." and names no next step: with no start time, no withdraw-owed line can name the read of the run
+        (rules.py owe), so no relabel withdraws for it (OSSV-221's architect's list of round 28, item 3)."""
         ending = (" It records no check run that says that the head is not approved. After "
                   f"{WF['env']['REVIEW_TRIES']} failed tries, this one included, the label comment names the next "
                   "step for Sami.")
@@ -22886,7 +22884,7 @@ class ImportCheckTest(ReaderRunner):
         return dict(rules.not_approved("7", HEAD, why, self.LPS, run, read), id=902, app={"id": VERIFY_APP_ID})
 
     def test_the_line_or_the_check_run_of_a_refused_review_of_a_newer_read_is_the_newer_word(self):
-        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 2): newer_word, which the comment job and
+        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 1): newer_word, which the comment job and
         the hold job read before they post, reads three carriers of a word on HEAD. Run 100 of mallory's #7 read the
         item 40 minutes ago and passed HEAD. (i) The line <!-- withdraw-owed HEAD <why> 130 <read> --> of run 130,
         which read the item 20 minutes ago, is the newer word for refused and for blocking. The line of run 100 itself
@@ -22958,7 +22956,7 @@ class ImportCheckTest(ReaderRunner):
                                      ("held", later, "", "") if control is own else none)
 
     def test_a_relabel_gives_the_state_of_a_refusal_that_is_newer_than_the_newest_review(self):
-        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 6): relabel_facts reads a refused review
+        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 1): relabel_facts reads a refused review
         as a word of HEAD, from its line of OWED or from its check run. Run 100 of mallory's #7 read the item 40
         minutes ago, and its screened pass is the newest review comment of HEAD. (i) A refusal of run 130, which read
         the item 20 minutes ago, gives {"refused": "review"}, the state refused-review: the line
@@ -22975,6 +22973,7 @@ class ImportCheckTest(ReaderRunner):
         refusal = self.not_approved_check("refused", "130", newer)
         no_refusal = ("    refusals = [word[:2] for word in [line, *refused_checks(checks, head)] if word and "
                       'word[1] == "refused"]\n', "    refusals = []\n")
+        changed = None
         for case, comments, checks, want, control in (
                 ("a line of a newer read", [passed, self.owed_label("refused", "130", newer)], [], refused, facts),
                 ("a withdrawal for the refusal of a newer read", [passed],
@@ -22989,11 +22988,11 @@ class ImportCheckTest(ReaderRunner):
                  held)):
             with self.subTest(case=case):
                 self.assertEqual(rules.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks), want)
-                changed = self.changed_module(*no_refusal)
+                changed = changed or self.changed_module(*no_refusal)
                 self.assertEqual(changed.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks), control)
 
     def test_the_hold_job_gives_way_to_the_check_run_of_a_refused_review_of_a_newer_read(self):
-        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 3): the hold job's step that skips its
+        """OSSV-221's architect's ruling of 2026-11-25 19:29Z (round 28, item 1): the hold job's step that skips its
         posts reads the import check runs of HEAD too (rules.py newer-word). The screen of run 100 of mallory's #7,
         which read the item 40 minutes ago, held HEAD. The check run that says that HEAD is not approved for the import,
         for the refusal of rescreen run 130, which read the item 20 minutes ago, is a newer word: the step skips the
@@ -23559,10 +23558,11 @@ class KindTableTest(Scheduled, ReaderRunner):
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
         start = len(self.logs)
         job = "hold" if route == "answer" else "post"
-        hold, way = JOBS["hold"]["steps"], step("hold", HoldTest.SKIP)
-        if job == "hold":
+        if job == "post":
+            steps = run_job(self, job, dict(got[f"before {job}"]), ApproveTest.TOKENS)
+        else:
             # The step SKIP of the hold job reads the import check runs of HEAD first (rules.py newer-word; OSSV-221's
-            # architect's list of round 28, item 3). A read that GitHub refuses fails that step: nothing is held, and
+            # architect's list of round 28, item 1). A read that GitHub refuses fails that step: nothing is held, and
             # no App write runs.
             steps = run_job(self, job, dict(got[f"before {job}"]), ApproveTest.TOKENS)
             log = "\n".join(self.logs[start:])
@@ -23574,12 +23574,12 @@ class KindTableTest(Scheduled, ReaderRunner):
             # the hold job with the step SKIP taken out.
             self.forget()
             start = len(self.logs)
+            hold, way = JOBS["hold"]["steps"], step("hold", HoldTest.SKIP)
             at = hold.index(way)
             hold.remove(way)
-        try:
-            steps = run_job(self, job, dict(got[f"before {job}"]), ApproveTest.TOKENS)
-        finally:
-            if way not in hold:
+            try:
+                steps = run_job(self, job, dict(got[f"before {job}"]), ApproveTest.TOKENS)
+            finally:
                 hold.insert(at, way)
         log = "\n".join(self.logs[start:])
         self.assertEqual(steps[self.ANSWER_FIND if job == "hold" else self.FIND], "failure", log)

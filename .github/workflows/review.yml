@@ -3504,16 +3504,11 @@ jobs:
           # the newest one, which a relabel reads (a relabel gives no verdict of its own), or EARLIER (rules.py
           # verdict).
           kind=own
-          if [ "$TASK" = relabel ]; then
-            kind=earlier
-          fi
+          [ "$TASK" != relabel ] || kind=earlier
           [ "${HELD:-}" != true ] || kind=held
           if [ -n "${EARLIER:-}" ] && [ "$why" != blocking ] && [ "$why" != person ] && [ "$why" != refused ]; then
-            why=$EARLIER
-            kind=earlier
-            if [ "${FROM_OWED:-}" = true ]; then
-              kind=owed
-            fi
+            why=$EARLIER kind=earlier
+            [ "${FROM_OWED:-}" != true ] || kind=owed
           fi
           # access: GitHub did not say whether the author has write access, and this run's own review passed the head.
           # That pass is no approval, so it withdraws as a blocking finding does, from the read of this run (F3).
@@ -3569,8 +3564,7 @@ jobs:
           # that names no such run, and for each one when no time is known.
           source=- at=-
           if [ "$kind" = own ] && [ -s "$RUNNER_TEMP/approved.jsonl" ]; then
-            # With no start time, rules.py owe writes no withdraw-owed line, as the line needs the read of this run. So
-            # no relabel withdraws for this run, and the error names no next step.
+            # With no start time, the error names no next step (the comment above this step says why).
             [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
               || { echo "::error::no start time of this run, so none of the import check runs of $head is" \
                      "withdrawn."; exit 1; }
@@ -3607,9 +3601,7 @@ jobs:
             # not approved for the import" posts it, after the sign-in.
             if [ -z "$kept" ] && [ "$kind" = own ] \
               && { [ "${OUTSIDE:-}" != false ] || [ "${AUTHOR_KIND:-}" = unknown ]; }; then
-              # With no start time, no check run can name the read of this run. rules.py owe writes no withdraw-owed
-              # line either, as the line needs that read. So no relabel withdraws for this run, and the error names no
-              # next step.
+              # With no start time, no check run can name the read of this run either, so the error names no next step.
               [[ ${STARTED:-} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
                 || { echo "::error::no start time of this run, so no check run records that $head is not approved" \
                        "for the import."; exit 1; }
@@ -4074,8 +4066,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     # contents: read for main's .github/, which holds .github/review/rules.py; checks: read for the import check runs
-    # of the head, which the label step reads again before it writes the state import, and which the step way and a
-    # relabel read for a refused review (rules.py newer-word and relabel).
+    # of the head, which the label step reads again before it writes the state import, and which the step that skips
+    # its posts and a relabel read for a refused review (rules.py newer-word and relabel).
     permissions: {contents: read, issues: write, pull-requests: write, checks: read}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -4676,9 +4668,9 @@ jobs:
           # The hold of last stops the labels when it outranks the own word of this run in the order of the words on a
           # head (.github/review/rules.py outranks): the verdict of this run's review from STARTED, or a read from
           # STARTED for a run that gives no verdict. The verdict of a review that the fresh reader refused is refused,
-          # as in the step way of this job: one rule in each reader (OSSV-221's architect, 2026-11-25 19:29Z). A hold
-          # outranks a refusal exactly when it outranks a read, so this changes no outcome. A hold at STARTED outranks
-          # each of them, which fails closed.
+          # as in the step of this job that skips its posts: one rule in each reader (OSSV-221's architect, 2026-11-25
+          # 19:29Z). A hold outranks each verdict, a refusal included, exactly when it outranks a read. A hold at
+          # STARTED outranks each of them, which fails closed.
           word=read
           if [ "${TASK:-}" = review ] || [ "${TASK:-}" = rescreen ]; then
             case ${VERDICT:-} in pass|blocking|person|refused) word=$VERDICT ;; esac
@@ -5036,8 +5028,8 @@ jobs:
     # runs (did a newer run of the item and task cancel it?); pull-requests: write reads the open pull requests too,
     # which map a head to its pull request, and the head of this pull request now (is the hold stale?); checks: read
     # for the notices of a newer CI run's trust job, which name its pull request, and for the import check runs of the
-    # head that the withdrawal of an answer and the step way read; contents: read for main's .github/, which holds
-    # .github/review/rules.py and .github/review/held.sh.
+    # head that the withdrawal of an answer and the step that skips its posts read; contents: read for main's
+    # .github/, which holds .github/review/rules.py and .github/review/held.sh.
     permissions: {contents: read, issues: write, pull-requests: write, actions: read, checks: read}
     env:
       GH_TOKEN: ${{ github.token }}
