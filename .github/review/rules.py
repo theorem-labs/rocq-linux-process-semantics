@@ -24,8 +24,9 @@ labels").
     python3 .github/review/rules.py newer-word <number> <head> <started> <run> [<kind>]
     python3 .github/review/rules.py relabel-withdraws <head> <comments.jsonl>
     python3 .github/review/rules.py words < <comments.jsonl>
+    python3 .github/review/rules.py stays <head> <started> <kind> <work> < <words.jsonl>
     python3 .github/review/rules.py outranks <time> <kind> <time> <kind>
-    python3 .github/review/rules.py source <number> <head> <why> <kind> <checks.jsonl>
+    python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <own> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
         <directory>
     python3 .github/review/rules.py not-approved <number> <head> <why> <run> <read> <request.json> [<import paths>]
@@ -204,47 +205,49 @@ JSON string, or null when it is not given. The JSON writes each character outsid
 so that the line holds no line break and no --> before its end.
 
 verdict: "<verdict> <state> <why> <from> <posted> <stands> <since> <run> <read>" on standard output for <head> of the
-pull request <number> (review_verdict), from the comments of github-actions[bot]. The review comments that name <head>
-are in the order of the time when their run read the item, the marker <!-- review-read <time> --> of each, never in the
-order in which they posted. One with no such marker comes in the order of when GitHub last changed it for a blocking
-finding or the verdict person, and before each other one for a pass (word_time). Of two at the same time, a blocking
-finding or the verdict person is the newer (head_reviews). A hold comment of the screen counts from the time when its
+pull request <number> (review_verdict), from the comments of github-actions[bot] and the import check runs of
+<checks.jsonl> when it is given. Each word on <head> comes from the one model of the order of the words on a head
+(head_words, newest_word, below). A review comment that names <head> counts from the time when its run read the item,
+its marker <!-- review-read <time> -->, never from when it posted. One with no such marker counts from when GitHub last
+changed it for a blocking finding or the verdict person, and at no time for a pass (word_time). Of two at the same
+time, a blocking finding or the verdict person is the newer. A hold comment of the screen counts from the time when its
 run read the item, its marker <!-- review-held-read <time> -->, and one with no such marker from when GitHub last
 changed it. <verdict> is the verdict of the marker <!-- review-verdict <head> <verdict>[ will-fix] --> of the newest
 review comment that names <head>, or - when none does. A review comment of <head> is screened when it holds
 <!-- review-screened <head> --> as the next marker line, so that the screen passed <head> in the run of that review.
-<state> is held when a hold comment of the screen that names <head> is as new as the newest screened review comment or
-newer (a hold at the same time outranks a pass), or when no review comment of <head> is screened and such a hold
-comment exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is screened,
-earlier when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is the reason
-for which a relabel or a review by hand withdraws each import check run of <head> that stands: screen for held; else
-the <why> of the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment (OWED), a word from its
-<read>, while the newest screened review comment of <head> does not outrank it (owed_reason), whatever the newest
-review says else; else blocking or person, of the newest review comment newer than the newest screened one that
-gives one, or of the newest screened review comment when it does not pass; else -. <from> is owed when <why> is the
-line's, outranked when that review outranks the line, so that the line gives no reason, and - else. <posted> is, for
-<from> owed, posted when a comment of github-actions[bot] gives a reason for the line to go, as for an outside
-author (line_reason: from the <read> of the line), and unposted
-when none does; - else. <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion,
-completed_at, summary} one on each line; with none given, no check run is read. They are in the order of the time that
-each one names, never of completed_at: for a success, the time when its run read the item, and for a withdrawal (the
+A hold of the screen is a hold comment of the screen that names <head>, the line
+<!-- withdraw-owed <head> screen <run> <read> --> of a label comment (OWED) from its <read>, or an import check run of
+<head> for the reason screen. <state> is held when a hold of the screen is as new as the newest screened review comment
+or newer (a hold at the same time outranks a pass), or when no review comment of <head> is screened and such a hold
+exists: a later screen held <head>. Else it is screened when the newest review comment of <head> is screened, earlier
+when only an older one is, and unscreened when none is (a review by hand runs no screen). <why> is the reason for which
+a relabel or a review by hand withdraws each import check run of <head> that stands: screen for held; else blocking,
+person or refused, of the newest word that gives one (a review comment, the line
+<!-- withdraw-owed <head> <why> <run> <read> --> from its <read>, or an import check run), when the newest screened
+review comment of <head> does not outrank it; else -. <from> is owed when the line gives a reason, as the newest
+screened review comment does not outrank it (owed_reason), outranked when that review outranks the line, so that the
+line gives no reason, and - else. <posted> is, for <from> owed, posted when a comment of github-actions[bot] gives a
+reason for the line to go, as for an outside author (line_reason: from the <read> of the line), and unposted when none
+does; - else. <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion, completed_at,
+summary} one on each line; with none given, no check run is read. They are in the order of the time that each one
+names, never of completed_at: for a success, the time when its run read the item, and for a withdrawal (the
 conclusion neutral), the time from which it counts. A success that names no time is older than each other one, and a
-withdrawal that names no time is newer; at a tie, the withdrawal is the newer (newest_withdrawal; OSSV-221's
+withdrawal that names no time is newer; at a tie, the withdrawal is the newer (standing_withdrawal; OSSV-221's
 architect, 2026-11-24 09:43Z). <stands> is the id of the withdrawal of the newest read when no success names a newer
 read and when it blocks a record: its summary names no time, or no screened review comment that passes <head> counts
 from a time after that time (withdrawal_stands); - else. <since> is that time, or - when <stands> is - or the summary
 names no time. <run> and <read> are the run of the newest review comment of <head> and the time when that run read the
 item, from its markers <!-- review-read <time> --> and <!-- review-run <run> -->, or - and - when it has none: a
-relabel's record names them. The line gives only the reason, never the state. A relabel records the import check run
-only for screened with the verdict pass, no <why>, <stands> - and <from> -: with a <why> (OWED), its decision is
-withdrawn when <posted> is unposted, and screened else, and with <stands> it is withdrawn. With <from> outranked, it
-records none while the line stands, and it withdraws none for the line: its decision is hand, and the step OWE of its
-comment job takes the line out. For earlier with the verdict pass, its decision is hand with no <why>, and screened
-with one. A review by hand with no screen records none. Its post job's decision is hand for screened or earlier with
-no <why>, and screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for
-unscreened. For the decision hand, the label step counts an import check run of <head> that still stands, for the
-value of the variable now, as recorded. The comment job's label step reads the check runs again before it writes the
-state import, and writes it only while such a check run stands: else its decision is gone (GONE).
+relabel's record names them. Only the line for screen gives a state (held). A relabel records the import check run
+only for screened with the verdict pass, no <why>, <stands> - and <from> -: with a <why>, its decision is withdrawn
+when <posted> is unposted, and screened else, and with <stands> it is withdrawn.
+With <from> outranked, it records none while the line stands, and it withdraws none for the line: its decision is
+hand, and the step OWE of its comment job takes the line out. For earlier with the verdict pass, its decision is hand
+with no <why>, and screened with one. A review by hand with no screen records none. Its post job's decision is hand for
+screened or earlier with no <why>, and screened with a <why>: the review of this run has not posted yet. It is held for
+held, and screen for unscreened. For the decision hand, the label step counts an import check run of <head> that still
+stands, for the value of the variable now, as recorded. The comment job's label step reads the check runs again
+before it writes the state import, and writes it only while such a check run stands: else its decision is gone (GONE).
 
 own-record: "<decision> <what> <since> <verdict>" on standard output for <head> of the pull request <number>, for a
 run on the route screen whose own screen and review passed <head> (own_record): whether a newer run held <head>,
@@ -252,7 +255,7 @@ withdrew its import check run or gave it a verdict while this run ran. <started>
 this run read the item, and <run> is the id of this run. The pass of this run is the word (<started>, pass) in the
 order of the words on <head> (outranks, below). <decision> is held when a hold comment of the screen that names <head>
 outranks it (word_time: the time when its run read the item, or when GitHub last changed one with no marker of that
-read), or the line <!-- withdraw-owed <head> screen <run> <read> --> of another run does, and <what> is that time;
+read), or the line <!-- withdraw-owed <head> screen <run> <read> --> does, of another run, and <what> is that time;
 else withdrawn when a withdrawal among the import check runs of <checks.jsonl> stands (withdrawal_stands, the
 withdrawal of the newest read in the order of verdict) and outranks it, and then <what> is its id and <since> the time
 from which it counts, or - when its summary names none; else newer when a review comment of <head> of another run
@@ -267,57 +270,90 @@ newer-word: "<other> <kind> <time>" on standard output for <head> of the pull re
 <head> of another run that outranks the own word of this run, (<started>, <kind>) (newer_word, outranks below).
 <started> is the time when the trust job of this run read the item, <run> the id of this run, and <kind> the kind of
 its own word: its verdict pass, blocking, person or refused, hold for a hold of its screen, or read (the default) for
-a run that gives no word. A word is a review comment of github-actions[bot] that names <head> (<kind>: its verdict), a
-hold comment of the screen that names <head> (<kind>: hold), the line <!-- withdraw-owed <head> <why> <run> <read> -->
-of a label comment (<kind>: <why>, or hold for screen), or an import check run of <head> with the conclusion neutral
-for the reason refused (<kind>: refused), of another run than <run>. A refused review posts no comment, so only its
-check run or its line gives its word. A review or a hold counts from the time when its run read the item (its marker
-<!-- review-read <time> --> or <!-- review-held-read <time> -->), a hold with no such marker from when GitHub last
-changed it, and a pass with none at no time. The line counts from its <read>, and the check run from the time that its
-summary names. <other> is the run of that word, or - when it names none. "-" alone when no such word stands. A run
-whose own word such a word outranks posts nothing on the item: the comment job and the hold job read this. It reads
-the comments and the import check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is
-1 when GitHub could not give the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID
-is not the id of an App.
+a run that gives no word. A word comes from the one model of the order of the words on a head (head_words,
+newest_word): a review comment of github-actions[bot] that names <head> (<kind>: its verdict), a hold comment of the
+screen that names <head> (<kind>: hold), the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment
+(<kind>: <why>, or hold for screen), or an import check run of <head> with the conclusion neutral for the reason
+refused (<kind>: refused), of another run than <run>. A refused review posts no comment, so only its check run or its
+line gives its word; each other word has a comment of its own, or the line when that comment could not post. A review
+or a hold counts from the time when its run read the item (its marker <!-- review-read <time> --> or
+<!-- review-held-read <time> -->), a hold with no such marker from when GitHub last changed it, and a pass with none
+at no time. The line counts from its <read>, and the check run from the time that its summary names. <other> is the
+run of that word, or - when it names none. "-" alone when no such word stands. A run whose own word such a word
+outranks posts nothing on the item: the comment job and the hold job read this. It reads the comments and the import
+check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is 1 when GitHub could not give
+the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID is not a whole number
+greater than 0 (NUMBER).
 
 relabel-withdraws: why a relabel of <head> withdraws the import check runs of <head>, from <comments.jsonl>, the
-comments of the item as the API lists them, one on each line (review_verdict): screen for a hold of the screen that
-outranks each screened review, "<why> owed" for the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label
-comment while the newest screened review of <head> does not outrank it (owed_reason: the line is a word from its
-<read>), the verdict blocking or person of the review that verdict reads, or - when a relabel withdraws nothing. The
-rescreen pass reads it (held.sh relabel_withdraws), so that it orders the words on <head> by the one model of this
-file.
+comments of the item as the API lists them, one on each line (review_verdict, with no check run): screen for a hold of
+the screen that outranks each screened review (a hold comment of the screen, or the line
+<!-- withdraw-owed <head> screen <run> <read> --> of a label comment from its <read>); else blocking, person or refused,
+of the newest word that gives one (a review comment, or the line from its <read>) when the newest screened review of
+<head> does not outrank it; else - when a relabel withdraws nothing. " owed" follows that why while the line
+<!-- withdraw-owed <head> <why> <run> <read> --> gives a reason: the newest screened review of <head> does not outrank
+it (owed_reason). The rescreen pass reads it (held.sh relabel_withdraws), so that it orders the words on <head> by the
+one model of this file.
 
 words: each comment of standard input, one JSON object on each line as the API lists them, with its time as a word
-on its head (word_time) in the field word, one on each line of standard output. The comment job's label step reads
-the time of each hold comment from it.
+on its head (word_time) in the field word, one on each line of standard output. The comment job's label step gives
+its output to stays.
+
+stays: "<last> <tried> <stays>" on standard output for the comment job's label step: the newest hold that stops the
+labels of this run, and whether it outranks the own word of this run, (<started>, <kind>), in the order of the words on
+a head (stays). Standard input holds the comments of the item, one JSON object on each line, each with the field word
+of words. <head> is the head that this run read, or - for an issue. <started> is the time when the trust job of this
+run read the item, <kind> the kind of its own word (one of RANKS), and <work> the work of this run: review, answer or
+draft. A hold that stops the labels is a hold comment of github-actions[bot]: for the work answer each one, and for
+any other work each one but a hold of an answer that the rescreen pass tries again. The line
+<!-- withdraw-owed <head> screen <run> <read> --> of a label comment is such a hold too, from its <read>. <last> is the
+time of the newest of them, or - when there is none or it counts at no time: such a hold stops nothing. <tried> is
+true when that hold is a hold comment that the rescreen pass tries again, else false. <stays> is true when <last> is
+not - and that hold outranks the own word, else false. The status is 2 when an argument or a line is not one of
+these.
 
 outranks: the status is 0 when the word (<time>, <kind>) outranks the word of the next two arguments in the order of
 the words on a head (outranks: by time, then by the rank of the kind, RANKS), and 3 when it does not. A <time> is a
 time as GitHub gives it, or empty for no time, which is before each time. A <kind> is one of RANKS: read, pass,
 success, blocking, person, refused, neutral or hold. The status is 2 when an argument is not one of these.
 
-source: "<source> <time>" on standard output for a withdrawal of the import check runs of <head> of the pull request
-<number> for <why> that the withdrawing run did not give itself (reason_source), by <kind>: held, the run of the newest
-hold comment of the screen that names <head>; owed, the run of the line of OWED of <head>; earlier, the run of the
-newest review comment of <head> with the verdict <why>, by the time when its run read the item. For owed, <time> is
-the <read> of the line. Else it is the latest time of that run: when it read the item (for earlier, from its review
-that gives <why>), of its hold of the screen, or of its withdrawal (source_time, with the withdrawals of
-<checks.jsonl>). "- -" when no run or no time is known: the withdrawal then counts from the time now, which fails
-closed. It reads the comments of github-actions[bot] on <number>.
+withdraw-word: "<why> <kind> <source> <at> <outranked>" on standard output for the step that finds the import check
+runs of <head> of the pull request <number> to withdraw (withdraw_word): the newest word on <head> that withdraws,
+whichever carrier gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). It reads the comments of github-actions[bot]
+on <number>, and <checks.jsonl>, the import check runs of <head>, {id, conclusion, completed_at, summary} one on each
+line. <started> is the time when the trust job of this run read the item, or - when it is not known, and <run> is the
+id of this run. <own> is the kind of the own word of this run, which has not posted yet: blocking, person or refused,
+of its review (a review, a rescreen, or a review by hand); screen, when its screen held <head>; access, when its review
+passed and GitHub did not say whether the author has write access; pass, when its review passed on the route screen;
+and - for none (a relabel, or a review by hand whose pass ran no screen). The own word counts from <started>, or after
+each time when <started> is -. A word withdraws when it gives a blocking finding, the verdict person or a refused
+review, or when it is a hold of the screen (a hold comment of the screen, the line
+<!-- withdraw-owed <head> screen <run> <read> -->, an import check run for the reason screen, or the own word screen).
+A word lifts when it is a screened pass, an import check run with the conclusion success, or the own word pass. Of
+the words at or before <started>, the newest one that withdraws decides, unless the newest one that lifts outranks
+it, and the own word access (<own> access, on the route screen) is such a word at <started>. With none, or when one
+that lifts outranks it, <own> access-last (the same word of a review by hand) decides: it comes after each other word
+that withdraws. With no word that decides, the line is "- - - - <outranked>": <outranked>
+is outranked when the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment stands and a screened
+review comment of <head> outranks it, and - else. Else <why> is screen for a hold, access for the own word access, and
+the kind of that word else. <kind> is own for the own word, held for a hold comment or a check run for screen, owed
+for the line, and earlier for a review comment or another check run. <source> and <at> are the run of that word and
+the time from which it counts, or - and - when it names no run or no time: then the withdrawal counts from the time
+now, which fails closed. For own, <source> is - and <at> is <started>. <outranked> is - then. The status is 1 when
+GitHub could not give the comments, and 2 when an argument or a line is not one of these.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, refused, a review of <head>
 that the fresh reader refused (OSSV-221's architect, 2026-11-25 10:21Z), screen, a screen that held it (R12), or
 access, a run in which GitHub did not say whether the author has write access (its verdict is no approval;
 2026-11-24 14:29Z, F3). <kind> is own when <why> is the verdict, the screen or the access of <run>, the id of the run
-that withdraws them, and else held, owed or earlier, as for source. For own, the
+that withdraws them, and else held, owed or earlier, as withdraw-word gives it. For own, the
 texts say later when the run that recorded the check run read the pull request before <at>, or names no such run
 (recorded_by: it counts as read at no time; WITHDRAWN). When that run read it at <at>, the same time as <run>, they
 name <run> (TIE_WITHDRAWN). For each other kind, the review
 or the hold that gave <why> can be older than the check run, so the texts do not say later (OWED_WITHDRAWN). <source>
-and <at> are the source run of <why> and the time from which the withdrawal counts (source), or - and the time when
-<run> read the pull request for own, or - and - when no time of the source is known: then the time is now. The
+and <at> are the source run of <why> and the time from which the withdrawal counts (withdraw-word), or - and the time
+when <run> read the pull request for own, or - and - when no time of the source is known: then the time is now. The
 summary of each request names <run>, <head>, <why>, the source and the time (WITHDREW), and its completed_at is the
 time now. <checks.jsonl> holds each check run {id, conclusion, summary, text}, one on each line. A request goes only
 for a check run whose run read the pull request at or before <at>, or that names no such run, or for each one when
@@ -346,17 +382,23 @@ job approves no held run of such a head (R10). The status is 2 when a line is no
 
 relabel: label (above) for the head <head> of the pull request <number>, for the task relabel (the job gives no
 task=), with the facts that the workflow wrote of that head (relabel_facts) beside the facts and the marker lines of
-the job: the verdict and will-fix of the newest review comment that names <head>, an answer at <head> whose author said
-they will make the change, the fix reviews of <head> and the count of fix reviews since the author's last own push, or
-the hold comment that names <head> when it is newer than all of those. A review that the fresh reader refused gives
-the state refused-review when it is newer than the review side: the line <!-- withdraw-owed <head> refused <run>
-<read> --> of a label comment, or an import check run of <head> with the conclusion neutral for the reason refused. It
-reads the import check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number> for that. A hold newer
-than that refusal gives the state of the hold. A review comment and a hold comment of the screen count from the time
-when their run read the item, never from when they posted, a pass with no marker of that time counts at no time, and
-a hold with none from when GitHub last changed it (word_time). When the workflow wrote nothing of <head> but the
-conflict-state line of its label comment, the item gets no state label and the line goes. When it wrote nothing of
-<head>, nothing changes.
+the job. Each word comes from the one model of the order of the words on a head (head_words, newest_word): a word
+outranks another when it is later, or at the same time when its kind has a higher rank (RANKS). The review side is the
+word that outranks each other word of a verdict or a refusal: the verdict of a review comment that names <head>, or a
+review that the fresh reader refused, which the line <!-- withdraw-owed <head> refused <run> <read> --> of a label
+comment or an import check run of <head> for the reason refused carries; and an answer at <head> whose author said
+they will make the change. A blocking finding or the verdict person of the line or of a check run gives no verdict:
+its review comment never posted, so the decision withdrawn says that no comment gives the reason. The review side
+gives the verdict and will-fix, the fix reviews of <head> and the count of fix reviews since the author's last own
+push. A hold that names <head> (a hold comment, the line for screen, or an import check run for the reason screen)
+that outranks the review side gives the state of the hold. Else a refusal that outranks the rest of the review side
+gives the state refused-review. It reads the import check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID)
+for <number> for that. A review comment and a hold comment of the screen count from the time when their run read the
+item, never from when they posted, a pass with no marker of that time counts at no time, and a hold with none from
+when GitHub last changed it (word_time). When the workflow wrote nothing of <head> but the conflict-state line of its
+label comment, the item gets no state label and the line goes. When it wrote nothing of <head>, nothing changes. A
+relabel gives no word of its own, so no word of its run (GITHUB_RUN_ID) counts, such as its own withdrawal for a word
+whose run is not known, which counts from when it withdrew.
 
 answers: the answers of the author-kind table (TABLE) for <task>, one of TASKS, as <answer>=<value> lines for
 $GITHUB_OUTPUT: label (set, off or unchanged), then approve, record, withdraw and retry (true or false). <outside> and
@@ -380,6 +422,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import namedtuple
 
 AUTHOR = "waits-on-author"
 THEOREM = "waits-on-theorem"
@@ -718,11 +761,13 @@ LOG_DECISIONS = {
     "writer": ("The author is not known to be an outside author, so this run records no import check run with the "
                "conclusion success."),
     "held": ("In a relabel or a review by hand, the newest hold of the screen that names the head outranks each "
-             "screened review of the head. In a run on the route screen, a hold of the screen that names the head "
+             "screened review of the head. Such a hold is a hold comment, the withdraw-owed line for screen, or an "
+             "import check run for screen. In a run on the route screen, a hold of the screen that names the head "
              "outranks the pass of this run. So this run records no import check run with the conclusion success."),
     "hand": ("This run records no import check run with the conclusion success, and the comments of the head give no "
              "reason to withdraw one. In a review by hand, a later step can still withdraw for the verdict of this "
-             "run's own review. In a relabel, which gives no verdict of its own, this run withdraws nothing."),
+             "run's own review. In a relabel, which gives no verdict of its own, a later step withdraws only for an "
+             "import check run that no newer pass lifts."),
     "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
                  "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
                  "keep line of the step that finds those check runs names that time in the field from. The later step "
@@ -751,16 +796,19 @@ LOG_DECISIONS = {
              "withdraw-owed line that an earlier step wrote stays."),
 }
 LOG_CAUSES = {
-    "blocking": "A review of the head, or the withdraw-owed line of the label comment, gives a blocking finding.",
-    "person": "A review of the head, or the withdraw-owed line of the label comment, gives the verdict person.",
-    "refused": ("The fresh reader refused a review of the head, whatever verdict the model gave, or the withdraw-owed "
-                "line of the label comment gives that refusal."),
+    "blocking": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the "
+                 "head gives a blocking finding."),
+    "person": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the head "
+               "gives the verdict person."),
+    "refused": ("The fresh reader refused a review of the head, whatever verdict the model gave. The withdraw-owed "
+                "line of the label comment, or an import check run of the head, can give that refusal."),
     "pass": "A review of the head gives the verdict pass.",
     "verdict": ("A review of the head gives a blocking finding or the verdict person, or the fresh reader refused it. "
                 "The output gave_way of the post job does not say which. The post job's log line of the decision newer "
                 "says which."),
     "screen": "A screen held the head.",
-    "hold": "A hold comment of the workflow counts from a time at or after the read of this run.",
+    "hold": ("A hold comment of the workflow, or the withdraw-owed line for screen, counts from a time at or after the "
+             "read of this run."),
     "access": "GitHub did not say whether the author has write access.",
     "writer": "The author has write access, or is an App that the workflow trusts.",
     "neutral": ("When the post job read the import check runs, one of them was a withdrawal: a check run with the "
@@ -1393,7 +1441,7 @@ def import_checks(number, head):
     """The import check runs of head for the pull request number, as the API lists them (commits/<head>/check-runs),
     of any conclusion (filter=all), as the comment job's label step reads them. Each one has the name CHECK, is of the
     OSS Verify App (OSS_VERIFY_APP_ID), and is for this pull request (external_id <number>:<head>). A ValueError when
-    OSS_VERIFY_APP_ID is not the id of an App, and GhError when GitHub does not give them."""
+    OSS_VERIFY_APP_ID is not a whole number greater than 0 (NUMBER), and GhError when GitHub does not give them."""
     app = os.environ.get("OSS_VERIFY_APP_ID", "")
     if not NUMBER.fullmatch(app):
         raise ValueError(f"not the id of the OSS Verify App: {app!r}")
@@ -1992,9 +2040,9 @@ OWED_WITHDRAWN = {
                "access."),
 }
 
-# The kinds of the cause of a withdrawal, as the step that finds the check runs gives them: own, the verdict or the
-# screen of the run that withdraws; held, a newer hold of the screen; owed, the line of OWED; earlier, a review comment
-# of the head (reason_source).
+# The kinds of the cause of a withdrawal, as the step that finds the check runs gives them (withdraw_word): own, the
+# verdict, the screen or the access of the run that withdraws; held, a hold comment of the screen or a check run for
+# screen; owed, the line of OWED; earlier, a review comment of the head or another check run.
 CAUSES = ("own", "held", "owed", "earlier")
 
 
@@ -2011,9 +2059,9 @@ def withdrawal(number, head, why, text, run, kind="own", source="", at="", read=
     read, never from the time when run wrote it (2026-11-24 05:23Z). read is the time when the run that recorded the
     check run read the pull request (recorded_by), or empty when the check run names no such run. The texts of own say
     later only when read is empty or before at (WITHDRAWN); else they name run (TIE_WITHDRAWN). For another kind,
-    source and at are the run that gave why and its time (reason_source): the time when that run read the item (for
-    earlier, from its review that gives why, and for owed, the read of the line of OWED), or of its hold or its
-    withdrawal. The summary names the run and the time. When neither is given, the workflow knows no time of that
+    source and at are the run that gave why and the time of its word (withdraw_word): the time when that run read the
+    item (of its review, of its hold of the screen, or the read of the line of OWED), or the time that its check run
+    names. The summary names the run and the time. When neither is given, the workflow knows no time of that
     earlier run: the summary says so, and the withdrawal counts from now, which fails closed. Its completed_at is the
     time now."""
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -2108,26 +2156,30 @@ WITHDRAWING = ("blocking", "person")
 # --- the order of the words on a head -------------------------------------------------------------------------------
 # The one model by which each reader and each writer of the import check run, of a review or hold comment and of the
 # label orders what the workflow wrote of a head (OSSV-221's architect, 2026-11-24 14:29Z to 14:40Z). A word is
-# (read, kind): the time from which it counts, and its kind (RANKS).
-# - A review comment of BOT that names the head: its verdict, pass, blocking or person, from the time when its run
-#   read the item, its marker <!-- review-read <time> --> (word_time). With no such marker, a pass counts at no time
-#   ("", before each time), and a blocking finding or the verdict person from when GitHub last changed it.
-# - A hold comment of BOT of the screen that names the head: hold, from the time when its run read the item, its
-#   marker <!-- review-held-read <time> -->, and with no such marker from when GitHub last changed it (word_time).
-# - An import check run of the head with the conclusion success: success, from the time when the run that recorded it
-#   read the pull request (recorded_by), and at no time when its summary names none.
-# - An import check run of the head with the conclusion neutral, a withdrawal or a check run of not_approved: neutral,
-#   from the time that its summary names (blocks_from), and after each time (NEWEST) when it names none.
-# - The line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking, person or
-#   refused as a verdict, and hold for screen, from <read>, the time when its run read the item, never from when its
-#   step wrote the line (owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). It gives a reason to withdraw, and
-#   never a comment. Only a line for refused gives a state: the state of a refusal in a relabel (relabel_facts).
-# - A review that the fresh reader refused: refused, from the time when its run read the item. The kind refused ranks
-#   as a verdict. Such a review posts no comment, so two other writes carry its word (OSSV-221's architect, 2026-11-25
-#   10:21Z and 19:29Z). Its post job records a neutral check run, or withdraws, for the reason refused at its own read
-#   (refused_checks). When GitHub refuses that write, its comment job writes the line for refused.
-# - The read of a run that gives no word of its own, such as a relabel or an approval: read, from the time when its
-#   trust job read the item.
+# (read, kind): the time from which it counts, and its kind (RANKS). head_words gives each word on a head as a Word,
+# from each carrier of a word, and newest_word gives the newest of them that a reader asks for. Each reader takes its
+# word from newest_word, and no reader orders words by itself (OSSV-221's architect, 2026-11-25 23:02Z). The carriers:
+# - review: a review comment of BOT that names the head: its verdict, pass, blocking or person, from the time when its
+#   run read the item, its marker <!-- review-read <time> --> (word_time). With no such marker, a pass counts at no
+#   time ("", before each time), and a blocking finding or the verdict person from when GitHub last changed it.
+# - hold: a hold comment of BOT that names the head: hold. A hold of the screen (hold_fact screen_held) counts from the
+#   time when its run read the item, its marker <!-- review-held-read <time> -->, and with no such marker from when
+#   GitHub last changed it (word_time). Each other hold counts from when GitHub last changed it. A reader of the hold
+#   of the screen reads no other hold (screen_hold).
+# - line: the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment of BOT (OWED): blocking, person
+#   or refused as a verdict, and hold for screen, from <read>, the time when its run read the item, never from when
+#   its step wrote the line (line_word; OSSV-221's architect, 2026-11-25 01:13Z, G1). It never posts as a comment.
+# - check: an import check run of the head. A success is a pass, from the time when the run that recorded it read the
+#   pull request (recorded_by), and at no time when its summary names none. A check run with the conclusion neutral (a
+#   withdrawal, or a check run of not_approved) has the kind of its reason (withdrawn_by): blocking, person or refused
+#   as a verdict, hold for screen, and neutral for access. It counts from the time that its summary names
+#   (blocks_from). One whose summary names no time is neutral, and counts after each time (NEWEST).
+# A review that the fresh reader refused is the word refused, from the time when its run read the item. The kind
+# refused ranks as a verdict. Such a review posts no comment, so two other carriers carry its word (OSSV-221's
+# architect, 2026-11-25 10:21Z and 19:29Z). Its post job records a neutral check run, or withdraws, for the reason
+# refused at its own read. When GitHub refuses that write, its comment job writes the line for refused. The read of a
+# run that gives no word of its own, such as a relabel or an approval, is the word read, from the time when its trust
+# job read the item.
 # The order is by time. At the same time, a kind of a higher rank outranks a kind of a lower one: a verdict or a hold
 # outranks a pass, a neutral check run outranks a success, a hold outranks a verdict (review_verdict reads a hold at
 # the time of a screened review as held), and each word outranks a read. Two words of the same rank at the same time
@@ -2139,19 +2191,24 @@ WITHDRAWING = ("blocking", "person")
 # (I2) the label says that the workflow recorded the check exactly while a success stands; (I3) the label's state is
 # the state of the newest word; (I4) the review or the hold of the newest verdict posts, and no older run takes its
 # place; (I5) no run withdraws a success of a newer read. The post job records only while its pass outranks each other
-# word (own_record), and withdraws only a success that does not outrank its own word (withdraws). The comment and hold
-# jobs post nothing while a word of another run outranks their own (newer_word), and the label step writes no label
-# while a hold outranks its own word. A relabel, a review by hand and the rescreen pass read the newest word
-# (review_verdict, relabel_facts, and held.sh relabel_withdraws through the command relabel-withdraws). Each reader
-# that orders the words on a head reads both carriers of a refusal. own_record reads the line as a word, and the
-# neutral check run as a withdrawal (withdrawal_stands). newer_word and relabel_facts read both as the word refused
-# (refused_checks). review_verdict reads the line as a reason (owed_reason), and the command verdict reads the check
-# run as a withdrawal. The line gives its reason only while the newest screened review comment does not outrank it
-# (owed_reason): so an older read's line never withdraws a newer read's record, and never takes the place of the state
-# of a newer pass.
+# word (own_record), and withdraws only a success that does not outrank its own word (withdraws), for the newest word
+# that withdraws (withdraw_word). The comment and hold jobs post nothing while a word of another run outranks their
+# own (newer_word), and the label step writes no label while a hold outranks its own word (stays). A relabel, a review
+# by hand and the rescreen pass read the newest word (review_verdict, relabel_facts, and held.sh relabel_withdraws
+# through the command relabel-withdraws). The line gives its reason only while the newest screened review comment
+# does not outrank it (owed_reason): so an older read's line never withdraws a newer read's record.
 RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "refused": 2, "neutral": 2, "hold": 3}
-# The time of a word that counts after each time: a neutral check run whose summary names no time (check_word).
+# The time of a word that counts after each time: a neutral check run whose summary names no time (head_words).
 NEWEST = None
+# A word on a head (head_words): read and kind, as above; run, the id of the run that gave it ("" when none is known);
+# carrier, review, hold, line or check, as above (and own for the word of this run that has not posted yet, answer for
+# an answer that relabel_facts reads); why: a review's verdict, a hold's hold_fact, the why of the line, and for a
+# check run pass for a success, else the reason that withdrawn_by names ("" for none); screened, True for a review
+# comment that holds the marker <!-- review-screened <head> -->; check and comment, the check run or the comment that
+# carries it, or None.
+Word = namedtuple("Word", "read kind run carrier why screened check comment")
+# The kinds of the words that withdraw as a verdict does: a blocking finding, the verdict person, a refused review.
+VERDICT_WITHDRAWS = ("blocking", "person", "refused")
 
 
 def word_key(read, kind):
@@ -2168,34 +2225,90 @@ def outranks(word, other):
     return word_key(*word) > word_key(*other)
 
 
+def head_words(comments, head, checks=()):
+    """Each word on head as a Word, from each of its carriers, in the order of the words on head (word_key; words at
+    the same place keep the order below): each review comment and each hold comment of BOT among comments, the item's
+    comments as the API lists them (with updated_at), that names head (REVIEWED, HELD_HEAD), in the API's order; then
+    the line of OWED of head (owed_line); then each check run among checks, the import check runs of head as the API
+    lists them (import_checks), in the API's order. A review comment gives its verdict, from its word_time, with the
+    run of REVIEW_RUN. A hold comment gives hold, from its word_time, with the run of HELD_RUN and its fact
+    (hold_fact): a reader of the hold of the screen reads only one whose fact is screen_held (screen_hold). The line
+    gives line_word, with the run that it names. A success gives pass, from the read of recorded_by, with its run. A
+    check run with the conclusion neutral gives the kind of the reason that withdrawn_by names (hold for screen, neutral
+    for access), from the time that it names, with the run that gave the reason; with no such time, neutral after each
+    time (NEWEST). A check run of another conclusion gives no word."""
+    words = []
+    for c in comments:
+        if not of_bot(c):
+            continue
+        body = c.get("body") or ""
+        m = REVIEWED.match(body)
+        if m:
+            if m.group(1) == head:
+                r = REVIEW_RUN.match(body, m.end())
+                words.append(Word(word_time(c), m.group(2), r.group(1) if r else "", "review", m.group(2),
+                                  bool(m.group(4)), None, c))
+        elif body.startswith("<!-- review-held -->"):
+            h, r = HELD_HEAD.search(body), HELD_RUN.search(body)
+            if h and h.group(1) == head:
+                run = r.group(1) if r else ""
+                words.append(Word(word_time(c), "hold", run, "hold", hold_fact(body), False, None, c))
+    why, run, read = owed_line(comments, head)
+    if why:
+        words.append(Word(*line_word(why, read)[:2], run, "line", why, False, None, None))
+    for check in checks:
+        if check.get("conclusion") == "success":
+            run, read = recorded_by(check) or ("", "")
+            words.append(Word(read, "pass", run, "check", "pass", False, check, None))
+        elif check.get("conclusion") == "neutral":
+            why, run, _at = withdrawn_by(check, head) or ("", "", "")
+            kind = {"screen": "hold", "access": "neutral", "": "neutral"}.get(why, why)
+            words.append(Word(blocks_from(check, head) or NEWEST, kind, run, "check", why, False, check, None))
+    words.sort(key=lambda word: word_key(word.read, word.kind))
+    return words
+
+
+def newest_word(words, *, kinds=None, carriers=None, run=None, over=None, until=None, where=None):
+    """The newest Word among words (head_words, or Words of the same form) that a reader asks for, or None: the one
+    rule by which each reader takes its word (OSSV-221's architect, 2026-11-25 23:02Z). The newest is the last in the
+    order of the words on a head (word_key), and of words at the same place the later in words. It reads only a word
+    whose kind is in kinds and whose carrier is in carriers (when they are given), whose run is not run (when it is
+    given: the word of this run never counts), that outranks over, a word (read, kind) (when it is given), whose read
+    is at or before until, a time (when it is given: never NEWEST), and for which where(word) holds (when it is
+    given)."""
+    found = None
+    for word in words:
+        if (kinds is not None and word.kind not in kinds or carriers is not None and word.carrier not in carriers
+                or run is not None and word.run == run or over is not None and not outranks(word[:2], over)
+                or until is not None and (word.read is NEWEST or word.read > until)
+                or where is not None and not where(word)):
+            continue
+        if found is None or word_key(*word[:2]) >= word_key(*found[:2]):
+            found = word
+    return found
+
+
+def screen_hold(word):
+    """Whether word, a Word, is a hold of the screen: a hold comment of the screen (hold_fact screen_held), the line of
+    OWED for screen, a check run for the reason screen, or the own word of a run whose screen held the head."""
+    return word.kind == "hold" and (word.carrier != "hold" or word.why == "screen_held")
+
+
 def comment_word(c, head):
-    """(read, kind, run) of the word on head that c, a comment as the API lists it, gives, or None: a review comment of
-    BOT that names head (REVIEWED; kind: its verdict), or a hold comment of BOT of the screen that names head
-    (hold_fact screen_held, HELD_HEAD; kind: hold). read is its word_time, and run the run that wrote it (REVIEW_RUN or
-    HELD_RUN), or "" when it names none."""
-    if not of_bot(c):
-        return None
-    body = c.get("body") or ""
-    m = REVIEWED.match(body)
-    if m:
-        r = REVIEW_RUN.match(body, m.end())
-        return (word_time(c), m.group(2), r.group(1) if r else "") if m.group(1) == head else None
-    if body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
-        h, r = HELD_HEAD.search(body), HELD_RUN.search(body)
-        if h and h.group(1) == head:
-            return word_time(c), "hold", r.group(1) if r else ""
-    return None
+    """(read, kind, run) of the word on head that c, a comment as the API lists it, gives (head_words), or None: a
+    review comment of BOT that names head (kind: its verdict), or a hold comment of BOT of the screen that names head
+    (screen_hold; kind: hold). read is its word_time, and run the run that wrote it, or "" when it names none."""
+    found = [word[:3] for word in head_words([c], head) if word.carrier == "review" or word.why == "screen_held"]
+    return found[0] if found else None
 
 
 def check_word(check, head=""):
-    """(read, kind) of the word that check, an import check run as the API lists it, gives, or None for a check run of
-    another conclusion: success from the time that recorded_by names, or "" when it names none; neutral, for head, from
-    blocks_from, or NEWEST when its summary names no time."""
-    if check.get("conclusion") == "success":
-        return (recorded_by(check) or ("", ""))[1], "success"
-    if check.get("conclusion") == "neutral":
-        return blocks_from(check, head) or NEWEST, "neutral"
-    return None
+    """(read, kind) of the word that check, an import check run as the API lists it, gives on head (head_words), or
+    None for a check run of another conclusion than success or neutral: pass, from the time that recorded_by names, or
+    "" when it names none, for a success; for a check run with the conclusion neutral, the kind of its reason, from the
+    time that withdrawn_by names for head, or neutral after each time (NEWEST) when it names none."""
+    found = head_words((), head, (check,))
+    return found[0][:2] if found else None
 
 
 def word_time(c):
@@ -2219,70 +2332,39 @@ def word_time(c):
     return read.group(1) if read else "" if m.group(2) == "pass" else at
 
 
-def head_reviews(comments, head):
-    """The review comments of BOT among comments that name head, oldest first, each as (word_time, verdict, screened,
-    run, read): screened when it holds the marker <!-- review-screened <head> --> after its verdict, and run and read
-    the id of its run and the time when that run read the item, from its last two markers (REVIEW_READ), or both ""
-    when it has no such markers. They are in the order of the words on head (word_key): by their word_time, the time
-    when their run read the item, never the time when they posted (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z),
-    and a pass with no marker of that time comes before each one that has a time. Of two at the same time, one with a
-    blocking finding or the verdict person outranks a pass, which fails closed (2026-11-24 05:23Z); else the two keep
-    the order of the API."""
-    reviews = []
-    for c in comments:
-        body = c.get("body") or ""
-        m = REVIEWED.match(body) if of_bot(c) else None
-        if m and m.group(1) == head:
-            read = REVIEW_READ.match(body, m.end())
-            run = REVIEW_RUN.match(body, m.end()).group(1) if read else ""
-            reviews.append((word_time(c), m.group(2), bool(m.group(4)), run, read.group(1) if read else ""))
-    reviews.sort(key=lambda r: word_key(r[0], r[1]))
-    return reviews
-
-
-def review_verdict(comments, head):
+def review_verdict(comments, head, checks=()):
     """(verdict, state, why) of head, from comments, the item's comments as the API lists them (issues/<n>/comments,
-    with updated_at): the one rule by which a run that reads the head, a relabel or a review by hand, records or
-    withdraws its import check run (R12; OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). The review comments of
-    BOT that name head are in the order of head_reviews: by their word_time, the time when their run read the item,
-    never the time when they posted (2026-11-24 01:20Z and 01:26Z). Of two at the same time, a blocking finding or the
-    verdict person counts as the newer (2026-11-24 05:23Z). verdict is the verdict of the newest of them ("" when none
-    names head). A review comment of head is screened when it holds the marker <!-- review-screened <head> --> after
-    its verdict, so that the screen passed head in the run of that review. state is held when a hold comment of BOT of
-    the screen (hold_fact screen_held) that names head outranks the newest screened review comment of head
-    (comment_word, outranks: by its word_time, the time when its run read the item, or its updated_at with no marker of
-    that read; 2026-11-24 09:43Z, A3), or when no review comment of head is screened and such a hold comment exists: a
-    later screen held the head. A hold at the same time as a screened review outranks it, which fails closed. Else it
-    is screened when the newest review comment of head is screened, earlier when an older one is screened but the
-    newest is not (a review by hand runs no screen), and unscreened when none is. Such a run records the check run only
-    for the state screened with the verdict pass and no why: the newest review comment is a screened pass. why is the
-    reason for which it withdraws each check run of head that stands (WITHDRAWN): screen for held; else the why of the
-    line of OWED of head in a label comment of BOT, a word from its read, while the newest screened review comment of
-    head does not outrank it (owed_reason, owed_word; OSSV-221's architect, 2026-11-25 01:13Z, G1), whatever the
-    newest review says else, as an edit of a review comment in place can hide the review that gave it; else the
-    verdict blocking or person of the newest review comment newer than the newest screened one (of any review comment
-    of head when none is screened) that gives one; else that of the newest screened review comment when it does not
-    pass; else "". The line of OWED gives only the reason, never the state, and a line that a newer screened review
-    outranks gives none: an older read's line never withdraws a newer read's record. So an unscreened pass newer than a
-    screened pass neither records nor withdraws, and a check run that stands stays, unless a line that gives a reason
-    stands. Only the markers at the start of a review comment count: no marker of the model's or the reader's text
-    reaches a comment (trim.py inert). The markers of a hold comment and the lines of a label comment are the
-    workflow's own."""
-    reviews, held = head_reviews(comments, head), ""
-    for c in comments:
-        word = comment_word(c, head)
-        if word and word[1] == "hold":
-            held = max(held, word[0])
-    last = max((i for i, r in enumerate(reviews) if r[2]), default=-1)
-    verdict = reviews[-1][1] if reviews else ""
-    if held and (last < 0 or outranks((held, "hold"), reviews[last][:2])):
+    with updated_at), and checks, the import check runs of head (import_checks; none when not given): the one rule by
+    which a run that reads the head, a relabel or a review by hand, records or withdraws its import check run (R12;
+    OSSV-221's architect, 2026-11-20 21:33Z and 22:21Z). Each word comes from head_words and newest_word: the order of
+    the words on head (2026-11-24 01:20Z and 01:26Z, 05:23Z, and 2026-11-25 23:02Z). verdict is the verdict of the
+    newest review comment of head ("" when none names head). A review comment of head is screened when it holds the
+    marker <!-- review-screened <head> --> after its verdict, so that the screen passed head in the run of that review.
+    state is held when a hold of the screen (screen_hold: a hold comment of the screen, the line of OWED for screen, or
+    a check run for the reason screen) outranks the newest screened review comment of head, or when no review comment
+    of head is screened and such a hold exists: a later screen held the head. A hold at the same time as a screened
+    review outranks it, which fails closed. Else it is screened when the newest review comment of head is screened,
+    earlier when an older one is screened but the newest is not (a review by hand runs no screen), and unscreened when
+    none is. Such a run records the check run only for the state screened with the verdict pass and no why: the newest
+    review comment is a screened pass. why is the reason for which it withdraws each check run of head that stands
+    (WITHDRAWN): screen for held; else the kind of the newest word that withdraws as a verdict does (blocking, person or
+    refused, of a review comment, of the line of OWED or of a check run) when the newest screened review comment does
+    not outrank it; else "". So an older read's line never withdraws a newer read's record (OSSV-221's architect,
+    2026-11-25 01:13Z, G1), and an unscreened pass newer than a screened pass neither records nor withdraws: a check run
+    that stands stays, unless a word that gives a reason stands. Only the markers at the start of a review comment
+    count: no marker of the model's or the reader's text reaches a comment (trim.py inert). The markers of a hold
+    comment and the lines of a label comment are the workflow's own."""
+    words = head_words(comments, head, checks)
+    newest = newest_word(words, carriers={"review"})
+    screened = newest_word(words, carriers={"review"}, where=lambda word: word.screened)
+    verdict = newest.kind if newest else ""
+    if newest_word(words, over=screened[:2] if screened else None, where=screen_hold):
         return verdict, "held", "screen"
-    newer = [r[1] for r in reviews[last + 1:] if r[1] in WITHDRAWING]
-    why = owed_reason(comments, head) or (
-        newer[-1] if newer else reviews[last][1] if last >= 0 and reviews[last][1] in WITHDRAWING else "")
-    if last < 0:
+    found = newest_word(words, kinds=VERDICT_WITHDRAWS, carriers={"review", "line", "check"})
+    why = found.kind if found and not (screened and outranks(screened[:2], found[:2])) else ""
+    if not screened:
         return verdict, "unscreened", why
-    return verdict, "screened" if last == len(reviews) - 1 else "earlier", why
+    return verdict, "screened" if newest is screened else "earlier", why
 
 
 def owed_line(comments, head):
@@ -2299,22 +2381,6 @@ def owed_line(comments, head):
                 if m and m.group(1) == head:
                     owed = (m.group(2), m.group(3), m.group(4))
     return owed
-
-
-def owed_word(comments, head):
-    """(read, kind, why) of the line of OWED of head (owed_line) as a word on head (line_word), or None when no label
-    comment of BOT holds one: the line is a word like any other (OSSV-221's architect, 2026-11-25 01:13Z, G1). Each
-    reader of the line reads it from comments alone, so all of them give it the same time."""
-    why, run, read = owed_line(comments, head)
-    return line_word(why, read) if why else None
-
-
-def owed_run_word(comments, head):
-    """(read, kind, run) of the line of OWED of head (owed_line) as a word on head (line_word), as comment_word gives
-    the word of a comment. run is the run that the line names. None when no label comment of BOT holds such a line.
-    own_record and newer_word read the line from this, as each of them compares the run of a word with its own run."""
-    why, run, read = owed_line(comments, head)
-    return (*line_word(why, read)[:2], run) if why else None
 
 
 def line_word(why, read):
@@ -2351,17 +2417,17 @@ def owed_keeps(number, body, line):
 
 def owed_reason(comments, head):
     """The why of the line of OWED of head when it gives a reason to withdraw the import check runs of head, else "".
-    It gives one while the newest screened review comment of head (head_reviews) does not outrank the line as a word
-    (owed_word, outranks), so an older read's line never withdraws a newer read's record (OSSV-221's architect,
-    2026-11-25 01:13Z, G1). A line that such a review outranks gives no reason. That review read the item after the
-    time of the line, so it gives the reason for the line to go (line_reason), and the step OWE of the comment job
-    takes the line out (owe). A review with no screen never outranks the line, as the decide step reads only a
-    screened review as the verdict of an outside author, which fails closed."""
-    word = owed_word(comments, head)
-    if word is None:
+    It gives one while the newest screened review comment of head does not outrank the line as a word (head_words,
+    newest_word), so an older read's line never withdraws a newer read's record (OSSV-221's architect, 2026-11-25
+    01:13Z, G1). A line that such a review outranks gives no reason. That review read the item after the time of the
+    line, so it gives the reason for the line to go (line_reason), and the step OWE of the comment job takes the line
+    out (owe). A review with no screen never outranks the line, as the decide step reads only a screened review as the
+    verdict of an outside author, which fails closed."""
+    words = head_words(comments, head)
+    line = newest_word(words, carriers={"line"})
+    if line is None or newest_word(words, carriers={"review"}, over=line[:2], where=lambda word: word.screened):
         return ""
-    screened = [r for r in head_reviews(comments, head) if r[2]]
-    return "" if screened and outranks(screened[-1][:2], word[:2]) else word[2]
+    return line.why
 
 
 def owed_marker(head, why, run, read):
@@ -2469,87 +2535,6 @@ def withdrawn_by(check, head):
             named["read"] or named.get("at") or named.get("since"))
 
 
-def sources_of(checks, head):
-    """{run: time} of the withdrawals among checks, the import check runs of head for its pull request as the API
-    lists them: for each source run that a withdrawal names (withdrawn_by, which reads a check run of not_approved as a
-    withdrawal too), the latest time from which one counts."""
-    sources = {}
-    for check in checks:
-        named = withdrawn_by(check, head)
-        if named:
-            sources[named[1]] = max(sources.get(named[1], ""), named[2])
-    return sources
-
-
-def refused_checks(checks, head):
-    """[(at, "refused", run)] of each check run among checks, the import check runs of head as the API lists them, that
-    carries the word of a review that the fresh reader refused (OSSV-221's architect, 2026-11-25 19:29Z). Such a check
-    run is a withdrawal or a check run of not_approved whose summary names the reason refused (withdrawn_by). at is
-    the time from which it counts, and run the run that gave the reason, as comment_word gives the word of a comment.
-    A refused review posts no comment, so only this check run or the line of OWED for refused carries its word. Each
-    other kind of word has a comment of its own (a review or a hold), or the line of OWED when that comment could not
-    post."""
-    words = []
-    for check in checks:
-        named = withdrawn_by(check, head)
-        if named and named[0] == "refused":
-            words.append((named[2], "refused", named[1]))
-    return words
-
-
-def source_time(comments, sources, head, run, why=""):
-    """The time of run as the source of a reason to withdraw the import check runs of head: the latest of the time of
-    each hold comment of BOT of its screen that names head (hold_fact screen_held, HELD_RUN), of its withdrawals
-    (sources, of sources_of), and, when why is blocking or person, of each review comment of BOT of head of run
-    (REVIEW_RUN) with the verdict why. Each comment counts from its word_time: the time when run read the item, never
-    when the comment posted (OSSV-221's architect, 2026-11-24 01:20Z, and 09:43Z, A3), and a hold with no marker of
-    that read from its updated_at. Empty when none gives one."""
-    times = [sources.get(run, "")]
-    for c in comments:
-        if not of_bot(c):
-            continue
-        body = c.get("body") or ""
-        m = REVIEWED.match(body)
-        if m:
-            r = REVIEW_RUN.match(body, m.end())
-            if why in WITHDRAWING and m.group(1) == head and m.group(2) == why and r and r.group(1) == run:
-                times.append(word_time(c))
-        elif body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
-            h, r = HELD_HEAD.search(body), HELD_RUN.search(body)
-            if h and r and h.group(1) == head and r.group(1) == run:
-                times.append(word_time(c))
-    return max(times)
-
-
-def reason_source(comments, sources, head, why, kind):
-    """(source, at) of a withdrawal of the import check runs of head for why that the withdrawing run did not give
-    itself (OSSV-221's architect, 2026-11-23 03:06Z), by kind: held, the run of the newest hold comment of the screen
-    that names head; owed, the run of the line of OWED of head (owed_line); earlier, the run of the newest review
-    comment of head with the verdict why (REVIEW_RUN). The newest is by word_time: the time when the run of the hold or
-    of the review read the item (2026-11-24 01:20Z, and 09:43Z, A3), and for a hold with no marker of that read, its
-    updated_at. For owed, at is the read of the line, the time when its run read the item (2026-11-25 01:30Z). Else at
-    is source_time of that run, for earlier with the review of that run that gives why: so a review that names its run
-    gives at least the time when that run read the item. ("", "") when no run or no time is known: the withdrawal then
-    counts from the time now, which fails closed."""
-    _why, run, read = owed_line(comments, head) if kind == "owed" else ("", "", "")
-    newest = ""
-    for c in comments:
-        body = c.get("body") or ""
-        if kind == "owed" or not of_bot(c):
-            continue
-        m = REVIEWED.match(body)
-        if kind == "earlier" and m and m.group(1) == head and m.group(2) == why:
-            if word_time(c) >= newest:
-                r = REVIEW_RUN.match(body, m.end())
-                run, newest = (r.group(1) if r else ""), word_time(c)
-        elif kind == "held" and body.startswith("<!-- review-held -->") and hold_fact(body) == "screen_held":
-            h, r = HELD_HEAD.search(body), HELD_RUN.search(body)
-            if h and h.group(1) == head and word_time(c) >= newest:
-                run, newest = (r.group(1) if r else ""), word_time(c)
-    at = read or (source_time(comments, sources, head, run, why if kind == "earlier" else "") if run else "")
-    return (run, at) if run and at else ("", "")
-
-
 def blocks_from(check, head):
     """The time from which check, a withdrawal of the import check runs of head, blocks a record: the time that its
     summary names (withdrawn_by), or "" when it names none. A check run of not_approved counts as a withdrawal by its
@@ -2563,50 +2548,40 @@ def blocks_from(check, head):
     return named[2] if named else ""
 
 
+def standing_withdrawal(words):
+    """The Word of the withdrawal that blocks a record among words (head_words), or None (OSSV-221's architect,
+    2026-11-24 09:43Z, and 2026-11-25 23:02Z): the newest of the import check runs and of the screened review
+    comments that pass (newest_word), when it is a check run with the conclusion neutral. Each one counts in the order
+    of the words on the head, never by completed_at: a success from the time when the run that recorded it read the
+    pull request (recorded_by), a withdrawal (withdrawn_by reads a check run of not_approved as one) from the time from
+    which it counts (blocks_from), and a screened pass from the time when its run read the item (word_time). Each fails
+    closed: a success or a pass that names no read counts at no time, so it lifts no withdrawal, and a withdrawal that
+    names no time counts after each time. A withdrawal outranks a success or a pass of the same read. A pass of a run
+    whose author's write access GitHub did not say lifts no withdrawal: the post job of that run withdrew, or recorded
+    a neutral check run, for the reason access from the read of that pass (2026-11-24 14:29Z, F3)."""
+
+    def counts(word):
+        return word.carrier == "check" or word.carrier == "review" and word.screened and word.kind == "pass"
+
+    found = newest_word(words, where=counts)
+    return found if found and found.carrier == "check" and found.kind != "pass" else None
+
+
 def newest_withdrawal(checks, head):
-    """The withdrawal of the newest read among checks, the import check runs of head as the API lists them, or None
-    (OSSV-221's architect, 2026-11-24 09:43Z). Each reader orders them in the order of the words on head (check_word,
-    word_key), never by completed_at: a success by the time when the run that recorded it read the pull request
-    (recorded_by), and a withdrawal (the conclusion neutral; withdrawn_by reads a check run of not_approved as one) by
-    the time from which it counts (blocks_from). Both fail closed: a success that names no read counts as read at no
-    time, so it is older than each other check run, and a withdrawal that names no time counts as newer than each. A
-    check run of another conclusion is no word and does not count. The newest read decides, and a withdrawal withdraws
-    each success of an older read or of the same read: at a tie, the neutral check run outranks the success. So this is
-    the withdrawal of the newest read, the first in the list of those at the same time, when no success outranks it.
-    None when a success outranks it, or when no check run is a withdrawal."""
-
-    def key(check):
-        return word_key(*check_word(check, head))
-
-    newest = max((c for c in checks if c.get("conclusion") == "neutral"), key=key, default=None)
-    if newest is None or any(key(c) > key(newest) for c in checks if c.get("conclusion") == "success"):
-        return None
-    return newest
+    """The withdrawal of the newest read among checks, the import check runs of head as the API lists them, or None:
+    standing_withdrawal of their words alone. None when a success outranks it, or when no check run is a withdrawal."""
+    found = standing_withdrawal(head_words((), head, checks))
+    return found.check if found else None
 
 
 def withdrawal_stands(checks, comments, head):
-    """The id of the withdrawal of the newest read among checks, the import check runs of head (newest_withdrawal),
-    when it blocks a record, else "". No success of a newer read stands over it then. It blocks unless a screened
-    review comment of head that passes it outranks its word (outranks, check_word: the time from which it counts,
-    blocks_from): a review comment of BOT that names head with the verdict pass and the marker
-    <!-- review-screened <head> -->, whose word_time is after that time. That is the time when its run read the item,
-    never the time when it posted (OSSV-221's architect, 2026-11-24 01:20Z): a pass whose run read the head before the
-    withdrawal's reason does not lift it, whenever it posted, and a pass of the same read does not either. A pass with
-    no marker of that time counts at no time, so it never lifts a withdrawal (01:26Z). A withdrawal whose summary names
-    no time blocks (fail closed). A withdrawal that succeeded is itself the record of its reason, so a relabel never
-    records over it unless such a pass stands (2026-11-23 01:47Z and 03:06Z): the run that withdrew it can have ended
-    before its comment posted. The pass of a run whose author's write access GitHub did not say lifts no withdrawal:
-    the post job of that run withdrew, or recorded a neutral check run, for the reason access from the read of that
-    pass, which the pass does not outrank (2026-11-24 14:29Z, F3)."""
-    newest = newest_withdrawal(checks, head)
-    if not newest:
-        return ""
-    stands = check_word(newest, head)
-    for c in comments:
-        word = comment_word(c, head)
-        if word and word[1] == "pass" and REVIEWED.match(c["body"]).group(4) and outranks(word[:2], stands):
-            return ""
-    return str(newest.get("id") or "-")
+    """The id of the withdrawal among checks, the import check runs of head, that blocks a record, else "":
+    standing_withdrawal of the words of checks and comments, the item's comments as the API lists them. No success of
+    a newer read and no screened pass of a newer read stands over it then. A withdrawal that succeeded is itself the
+    record of its reason, so a relabel never records over it unless such a pass stands (OSSV-221's architect,
+    2026-11-23 01:47Z and 03:06Z): the run that withdrew it can have ended before its comment posted."""
+    found = standing_withdrawal(head_words(comments, head, checks))
+    return str(found.check.get("id") or "-") if found else ""
 
 
 def own_record(checks, comments, head, started, run):
@@ -2614,57 +2589,39 @@ def own_record(checks, comments, head, started, run):
     at head, and why not (OSSV-221's architect, 2026-11-23 18:38Z): a newer run's post, comment or hold job can run in
     the group write-<n> between the review of this run and its post job. started is the time when this run's trust job
     read the item (its output started), from which its own pass counts (word_time; 2026-11-24 01:20Z), and run is the
-    id of this run. Its own word is (started, pass): each test below asks whether another word outranks it (outranks).
-    (decision, what, since, verdict), the first that holds:
-    ("held", the time of the hold, "", "") when a hold comment of BOT of the screen that names head (hold_fact
-    screen_held, HELD_HEAD) counts from a time at or after started: a run that read the item at or after this run held
+    id of this run. Its own word is (started, pass): each test below asks whether another word outranks it, and takes
+    that word from head_words and newest_word (2026-11-25 23:02Z). (decision, what, since, verdict), the first that
+    holds:
+    ("held", the time of the hold, "", "") when the newest hold of the screen (screen_hold: a hold comment of the screen
+    or the line of OWED for screen) of another run outranks it: a run that read the item at or after this run held
     head, and this run records nothing. A hold comment counts from its word_time, the time when its run read the item
     (OSSV-221's architect, 2026-11-24 09:43Z, A3), so the hold of a run that read the item before this run leaves its
-    record, whenever it posted. A hold with no marker of that read counts from its updated_at, which fails closed. The
-    line of OWED of head for screen (owed_run_word) is such a hold too, from its read, when it names another run than
-    run.
-    ("withdrawn", the id of the check run, the time from which it counts, "") when a withdrawal among the import check
-    runs of head stands (withdrawal_stands: the withdrawal of the newest read, by the time that each check run names,
-    never by completed_at; OSSV-221's architect, 2026-11-24 09:43Z) and counts from a time at or after started
-    (blocks_from): no success names a newer read, no screened pass of head whose run read the item after that time
-    stands, and this run's own pass counts from started. A withdrawal whose summary names no time stands, as it does
-    for a relabel, and so does one at started (fail closed: a neutral check run outranks a pass at the same time). The
-    check run of not_approved of a newer run is such a withdrawal: that run found no success to withdraw, as its post
-    job came before this one (2026-11-24 05:33Z). So is one that completed before the check run of not_approved of an
-    older read: the read decides, never the time when a check run completed.
-    ("newer", the run of the word, its time, its kind) when a review comment of BOT of head of another run (REVIEW_RUN;
-    "" for a comment that names no run) gives the verdict blocking or person, and its word_time is at or after
-    started: a run that read the item at or after this run gave head that verdict, so the pass of this run is not the
-    newest word on head. The line of OWED of head for blocking, person or refused of another run is such a word too,
-    from its read (OSSV-221's architect, 2026-11-25 19:29Z, F1). A refused review posts no
-    comment. So when GitHub refused its withdrawal, its line is the one word of that review that this reads. When its
-    withdrawal succeeded, its check run is a withdrawal, which gives withdrawn above. Of such words, the newest
-    (word_key), and the later in the list at the same place, with the line after the comments.
+    record, whenever it posted. A hold with no marker of that read counts from its updated_at, which fails closed.
+    ("withdrawn", the id of the check run, the time from which it counts, "") when the withdrawal that blocks a record
+    (standing_withdrawal: of the import check runs and the screened passes, the newest is a withdrawal) outranks it.
+    A withdrawal whose summary names no time stands, as it does for a relabel, and so does one at started (fail closed:
+    a neutral check run outranks a pass at the same time). The check run of not_approved of a newer run is such a
+    withdrawal: that run found no success to withdraw, as its post job came before this one (2026-11-24 05:33Z). So is
+    one that completed before the check run of not_approved of an older read: the read decides, never the time when a
+    check run completed.
+    ("newer", the run of the word, its time, its kind) when the newest word of another run that withdraws as a verdict
+    does (blocking, person or refused) of a review comment or of the line of OWED outranks it: a run that read the item
+    at or after this run gave head that verdict, so the pass of this run is not the newest word on head (2026-11-25
+    19:29Z, F1). A refused review posts no comment. So when GitHub refused its withdrawal, its line is the one word of
+    that review that this reads. When its withdrawal succeeded, its check run is a withdrawal, which gives withdrawn
+    above. The run of a comment that names none is "".
     ("", "", "", "") when none holds: a hold, a withdrawal or a review older than the start of this run leaves its
     record, as after a blocking review, a fix and a screen that passed the head again."""
-    own = (started, "pass")
-    held, newer = "", ("", "", "")
-    words = [comment_word(c, head) for c in comments]
-    line = owed_run_word(comments, head)
-    if line and line[2] != run:
-        words.append(line)
-    for word in words:
-        if not word or not outranks(word[:2], own):
-            continue
-        at, kind, gave = word
-        if kind == "hold":
-            held = max(held, at)
-        elif (kind in WITHDRAWING or kind == "refused") and gave != run and (
-                not newer[1] or word_key(at, kind) >= word_key(*newer[1:])):
-            newer = (gave, at, kind)
+    own, words = (started, "pass"), head_words(comments, head, checks)
+    held = newest_word(words, kinds={"hold"}, carriers={"hold", "line"}, run=run, over=own, where=screen_hold)
     if held:
-        return "held", held, "", ""
-    stands = withdrawal_stands(checks, comments, head)
-    newest = newest_withdrawal(checks, head) if stands else None
-    if stands and outranks(check_word(newest, head), own):
-        return "withdrawn", stands, blocks_from(newest, head), ""
-    if newer[1]:
-        return ("newer", *newer)
+        return "held", held.read, "", ""
+    stands = standing_withdrawal(words)
+    if stands and outranks(stands[:2], own):
+        return "withdrawn", str(stands.check.get("id") or "-"), stands.read or "", ""
+    newer = newest_word(words, kinds=VERDICT_WITHDRAWS, carriers={"review", "line"}, run=run, over=own)
+    if newer:
+        return "newer", newer.run, newer.read, newer.kind
     return "", "", "", ""
 
 
@@ -2675,34 +2632,128 @@ def newer_word(comments, head, started, run, kind="read", checks=()):
     the item's comments as the API lists them, and checks the import check runs of head (import_checks). started is the
     time when the trust job of this run read the item, and run is the id of this run. kind is the kind of its own word:
     pass, blocking, person or refused for its review, and hold for a hold of its screen. It is read for a run that gives
-    no word (a relabel or an approval). A word is one of these three:
-    - A review comment of BOT that names head (kind: its verdict, pass, blocking or person), or a hold comment of BOT of
-      the screen that names head (hold_fact screen_held; kind: hold), with its word_time (comment_word). A review or a
-      hold counts from the time when its run read the item, never from when it posted (2026-11-24 09:43Z, A3). A hold
-      with no marker of that read counts from its updated_at. A pass with no such marker counts at no time, so it never
-      makes this run skip its posts.
-    - The line of OWED of head in a label comment of BOT (owed_run_word), from its read, with the run that it names:
-      kind blocking, person or refused, or hold for screen (line_word).
-    - A check run of checks that carries the word of a refused review (refused_checks): kind refused, from the time
-      that its summary names, with the run that gave the reason.
-    A refused review posts no comment, so only its check run or its line carries its word (2026-11-25 19:29Z, F2). Each
-    other kind of word has a comment of its own, or a line when that comment could not post, so no other check run
-    counts. A word of a later time outranks the own word. At the same time, it outranks only a word of a lower rank
+    no word (a relabel or an approval). The word comes from head_words and newest_word (OSSV-221's architect,
+    2026-11-25 23:02Z): a review comment (its verdict), a hold comment of the screen (hold), the line of OWED (its why,
+    or hold for screen), and a check run of checks that carries the word of a refused review (refused, from the time
+    that its summary names). A refused review posts no comment, so only its check run or its line carries its word
+    (2026-11-25 19:29Z, F2). Each other kind of word has a comment of its own, or a line when that comment could not
+    post, so no other check run counts: a run whose post job withdrew for its own verdict or screen still lets an
+    older run post until that comment posts (the tester's red test of round 21, the label of a newer read's
+    withdrawal). A review or a hold counts from the time when its run read the item, never from when it posted
+    (2026-11-24 09:43Z, A3). A hold with no marker of that read counts from its updated_at. A pass with no such marker
+    counts at no time, so it never makes this run skip its posts. A hold of another kind than the screen's is no word
+    here. A word of a later time outranks the own word. At the same time, it outranks only a word of a lower rank
     (RANKS). A verdict, a refusal or a hold makes a pass skip. A pass of the same time does not make a verdict, a
-    refusal or a hold skip. Each word makes a read skip, which fails closed. A word of this run never counts: a
-    comment whose REVIEW_RUN or HELD_RUN is run, or a line or a check run that names run. An earlier attempt of this
-    run can have posted it. The word's run is "" when it names none. Of such words, the newest (word_key), and the
-    later in the list at the same place: the comments, then the line, then the check runs."""
-    own, found = (started, kind), None
-    words = [comment_word(c, head) for c in comments]
-    words += [owed_run_word(comments, head), *refused_checks(checks, head)]
-    for word in words:
-        if not word or word[2] == run or not outranks(word[:2], own):
-            continue
-        at, other, gave = word
-        if found is None or word_key(at, other) >= word_key(found[2], found[1]):
-            found = (gave, other, at)
-    return found
+    refusal or a hold skip. Each word makes a read skip, which fails closed. A word of this run never counts: a comment
+    whose REVIEW_RUN or HELD_RUN is run, or a line or a check run that names run. An earlier attempt of this run can
+    have posted it. The word's run is "" when it names none."""
+
+    def counts(word):
+        if word.carrier == "check":
+            return word.why == "refused"
+        return word.carrier != "hold" or screen_hold(word)
+
+    found = newest_word(head_words(comments, head, checks), run=run, over=(started, kind), where=counts)
+    return (found.run, found.kind, found.read) if found else None
+
+
+def withdraw_word(comments, head, checks, started, run, own):
+    """(why, kind, source, at, outranked) of the withdrawal of the import check runs of head that the step which finds
+    them makes for run, the id of this run, whose trust job read the item at started ("" when not known): the newest
+    word that withdraws, whichever carrier gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). comments are the
+    item's comments as the API lists them, and checks the import check runs of head (import_checks). own is the kind
+    of this run's own word, which has not posted yet: blocking, person or refused for its review, screen for a hold
+    of its screen, access for a pass of a run in which GitHub did not say whether the author has write access, pass
+    for a screened pass, and - for none (a relabel, or a review by hand whose pass ran no screen). It is a word at
+    started, after each time when started is "". A word withdraws when it is a blocking finding, the verdict person, a
+    refused review, a hold of the screen (screen_hold) or the own word access of a run on the route screen. A word
+    lifts when it is a screened pass, a success or the own word pass. Of the words at or before started (each word
+    when started is ""), X is the newest that withdraws. When there is none, or the newest that lifts outranks it, X is
+    the own word access of a review by hand (own access-last): a pass of such a run is no approval (OSSV-221's
+    architect, 2026-11-24 14:29Z, F3), and it comes after each other word that withdraws, as the tester's red test asks
+    (KindTableTest, a review by hand withdraws what stands after an earlier blocking review or a newer hold for any
+    author: from none). On the route screen the own word access is the newest word, as the tester's red test of round
+    23, F3, asks (ImportCheckTest, a run whose author kind is unknown is a not-approved word). With no X, all are "-"
+    but outranked: "outranked" when
+    the line of OWED of head stands and a screened review comment outranks it, so that the step OWE of the comment job
+    takes the line out (owe), else "-". Else why is screen for a hold, access for the own word access, and the kind of
+    X else. kind is a cause of CAUSES: own for the own word, held for a hold comment or a check run for screen, owed
+    for the line, and earlier for a review comment or another check run. source and at are the run of X and the time
+    of X when X names both (for own, "-" and started), else "-" and "-": the withdrawal then counts from the time now,
+    and withdraws each success, which fails closed."""
+    words = head_words(comments, head, checks)
+    if own not in ("-", "access-last"):
+        kind = {"screen": "hold", "access": "neutral"}.get(own, own)
+        words.append(Word(started or NEWEST, kind, run, "own", own, own == "pass", None, None))
+    until = started or None
+
+    def withdraws_(word):
+        return word.kind in VERDICT_WITHDRAWS or screen_hold(word) or word.carrier == "own" and word.kind == "neutral"
+
+    def lifts(word):
+        return word.kind == "pass" and (word.carrier != "review" or word.screened)
+
+    found = newest_word(words, until=until, where=withdraws_)
+    if found is None or newest_word(words, until=until, over=found[:2], where=lifts):
+        if own == "access-last":
+            return "access", "own", "-", started or "-", "-"
+        line = newest_word(words, carriers={"line"})
+        lifted = line and newest_word(words, carriers={"review"}, over=line[:2], where=lambda word: word.screened)
+        return "-", "-", "-", "-", "outranked" if lifted else "-"
+    if found.carrier == "own":
+        return own, "own", "-", started or "-", "-"
+    kind = "owed" if found.carrier == "line" else "held" if found.kind == "hold" else "earlier"
+    named = found.run and found.read
+    return ("screen" if found.kind == "hold" else found.kind, kind, found.run if named else "-",
+            found.read if named else "-", "-")
+
+
+# The work of a hold comment, as the comment job's label step reads it (stays), in the words of the trust job's works:
+# the task of the marker of a hold that is tried again (review for a marker with no task), else the work of its title
+# (TITLE_WORK), else review.
+HOLD_TASK = re.compile(r"\n<!-- review-held-(?:limit|cap|transient) [0-9]+(?: [0-9]+(?: (answer|draft|approve)"
+                       r"(?: [1-9][0-9]*)?)?)? -->(?:\n|$)")
+HOLD_TITLE = re.compile(r"<!-- review-held -->\n[*][*]Automated (answer|reply|start of the checks|check for the import"
+                        r"|close and reopen) held[.][*][*](?:\n|$)")
+TITLE_WORK = {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
+              "close and reopen": "catchup"}
+# The marker of a hold that the rescreen pass tries again, as the label step reads it (stays).
+TRIED_AGAIN = re.compile(r"\n<!-- review-held-(?:limit|cap|transient) [0-9]+ ")
+
+
+def hold_work(body):
+    """The work of the hold comment body (HOLD_TASK, HOLD_TITLE)."""
+    m = HOLD_TASK.search(body)
+    if m:
+        return m.group(1) or "review"
+    m = HOLD_TITLE.match(body)
+    return TITLE_WORK[m.group(1)] if m else "review"
+
+
+def stays(comments, head, started, own, work):
+    """(last, tried, stays) of the comment job's label step: the newest hold that stops the labels of this run, and
+    whether it outranks the own word of this run, (started, own) (OSSV-221's architect, 2026-11-24 09:43Z, A3, and
+    2026-11-25 23:02Z). comments are the item's comments as the API lists them, each with its time as a word in the
+    field word (the command words, word_time). work is the work of this run: review, answer or draft. A hold that
+    stops it is a hold comment of BOT: for the work answer each one, and for any other work each one but a hold of an
+    answer that is tried again (hold_work, TRIED_AGAIN). The line of OWED of head for screen is such a hold too, from
+    its read. Of them, the newest (newest_word). last is its time, or "" when there is none or it counts at no time:
+    such a hold stops nothing. tried is True when it is a hold comment that is tried again. stays is True when last is
+    not "" and that hold outranks the own word."""
+    holds = []
+    for c in comments:
+        body = c.get("body") or ""
+        if of_bot(c) and body.startswith("<!-- review-held -->") and (
+                work == "answer" or not (hold_work(body) == "answer" and TRIED_AGAIN.search(body))):
+            holds.append(Word(c.get("word") or "", "hold", "", "hold", hold_fact(body), False, None, c))
+    why, run, read = owed_line(comments, head)
+    if why == "screen":
+        holds.append(Word(*line_word(why, read)[:2], run, "line", why, False, None, None))
+    last = newest_word(holds)
+    tried = bool(last and last.comment and TRIED_AGAIN.search(last.comment.get("body") or ""))
+    if last is None or not last.read:
+        return "", tried, False
+    return last.read, tried, outranks(last[:2], (started, own))
 
 
 # --- the soundness rule (R8) --------------------------------------------------------------------------------------
@@ -3354,69 +3405,58 @@ def fix_heads(reviews):
     return [m.group(1) for r in reviews if of_bot(r) and (m := FIX_MARKER.search(r.get("body") or ""))]
 
 
-def relabel_facts(comments, reviews, head, history, checks=()):
+def relabel_facts(comments, reviews, head, history, checks=(), run=None):
     """The facts of label_state for head from what the workflow wrote of it, or None when it wrote nothing of it.
     comments are the item's comments as the API lists them (issues/<n>/comments, with updated_at), reviews() gives the
-    pull request's reviews (pulls/<n>/reviews), and history() the history of head (commits?sha=<head>), each read
-    only when the facts need it. The newer of the review side (the newest review comment of BOT that names head, and an
-    answer at head whose author said they will make the change) and of a hold comment of BOT that names head gives
-    the facts; an answer's hold that is tried again gives none. A review comment and a hold comment of the screen count
-    from their word_time: the time when their run read the item, never the time when they posted (OSSV-221's architect,
-    2026-11-24 01:20Z and 01:26Z, and 09:43Z, A3). So a hold is newer than a pass whose run read the head before the
-    run of the hold, and than a pass with no marker of that time. Each comparison is the order of the words on head
-    (word_key, outranks): of two review comments at the same time, a blocking finding or the verdict person outranks a
-    pass, and a hold outranks the review side at the same time (2026-11-24 05:23Z: a verdict or a hold outranks a pass
-    at a tie, as in review_verdict). An answer counts as a read on the review side. A hold of the screen with no marker
-    of a read, a hold of another kind and an answer count from their updated_at. The review side gives the
-    verdict, will_fix (of the review or of an answer), fix_posted (a fix review of head) and fix_stop (a blocking
-    verdict after 2 fix reviews since the author's last own push, the fix review of head not counted, as the review job
-    decided it before it posted that fix). A review that the fresh reader refused is a word too, from the time when its
-    run read the item (OSSV-221's architect, 2026-11-25 19:29Z). It posts no comment, so two other writes carry it. One
-    is the line of OWED of head for refused (owed_word). The other is a check run of checks, the import check runs
-    of head (import_checks), that a refused review gave (refused_checks). The newest of them that outranks the review
-    side gives {"refused": "review"}: the state refused-review, in which Sami writes the review by hand. A hold that
-    outranks that refusal gives its own fact in its place. With none of them, a label comment that holds the
-    conflict-state line of head gives no fact: the head goes back to the workflow, and the line goes."""
-    review, answered = None, ""
-    fact, held, conflicted = None, "", False
-    for c in comments:
-        if not of_bot(c):
-            continue
-        body, at = c.get("body") or "", word_time(c)
-        m = REVIEWED.match(body)
-        if m and m.group(1) == head:
-            if review is None or word_key(at, m.group(2)) >= word_key(*review[:2]):
-                review = (at, m.group(2), bool(m.group(3)))
-            continue
-        m = ANSWER_WILL_FIX.match(body)
-        if m and m.group(1) == head:
-            answered = max(answered, at)
-        elif body.startswith("<!-- review-held -->"):
-            m = HELD_HEAD.search(body)
-            if m and m.group(1) == head and hold_fact(body) and at >= held:
-                fact, held = hold_fact(body), at
-        elif body.startswith(FIRST) and conflict_state(head) in body.split("\n"):
-            conflicted = True
-    reviewed, verdict, will_fix = review or ("", "", False)
-    side = max((reviewed, verdict or "read"), (answered, "read"), key=lambda word: word_key(*word))
-    line = owed_word(comments, head)
-    refusals = [word[:2] for word in [line, *refused_checks(checks, head)] if word and word[1] == "refused"]
-    refusal = max(refusals, key=lambda word: word_key(*word), default=None)
-    if refusal and outranks(refusal, side):
-        return {fact: True} if fact and outranks((held, "hold"), refusal) else {"refused": "review"}
-    if fact and outranks((held, "hold"), side):
-        return {fact: True}
-    if review or answered:
-        will_fix = will_fix or bool(answered)
-        found = reviews()
-        heads = fix_heads(found)
-        own = heads.count(head)
-        fix_stop = (verdict == "blocking" and not will_fix and len(heads) - own >= 2
-                    and fixes(history(), found, head) - own >= 2)
-        return {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
-    if conflicted:
-        return {}
-    return None
+    pull request's reviews (pulls/<n>/reviews), history() the history of head (commits?sha=<head>), each read only
+    when the facts need it, and checks the import check runs of head (import_checks). Each word comes from head_words
+    and newest_word, in the order of the words on head (OSSV-221's architect, 2026-11-24 01:20Z, 01:26Z, 05:23Z and
+    09:43Z, A3, and 2026-11-25 23:02Z): a review comment and a hold comment of the screen count from the time when
+    their run read the item, never from when they posted. The review side is the newest word that gives a verdict, of
+    a review comment alone, or a refusal, of the line of OWED or of a check run, with a review comment after a refusal
+    at the same place; and an answer at head whose author said they will make the change, a read from its updated_at.
+    A blocking finding or the verdict person of the line or of a check run gives no verdict: the review comment of
+    that verdict never posted, so the decision withdrawn says that no comment gives the reason (OSSV-221's architect,
+    round 17, part 4, M1, as kept in round 29). The newest hold (a hold comment of BOT that names head, the line of
+    OWED for screen, or a check run for screen) that outranks the review side gives its fact (hold_fact, or screen_held
+    for the line or a check run); an answer's hold that is tried again gives none. A hold outranks the review side at
+    the same time. Else a refusal of the fresh reader, the newest of the review side, gives {"refused": "review"}: the
+    state refused-review, in which Sami writes the review by hand (2026-11-25 19:29Z). A refused review posts no
+    comment, so the line of OWED for refused or a check run of the reason refused carries it. Else the review side
+    gives the verdict (of its newest review comment), will_fix (of that review comment, or of an answer), fix_posted (a
+    fix review of head) and fix_stop (a blocking verdict after 2 fix reviews since the author's last own push, the fix
+    review of head not counted, as the review job decided it before it posted that fix). With none of them, a label
+    comment that holds the conflict-state line of head gives no fact: the head goes back to the workflow, and the line
+    goes. run, when given, is the id of the relabel: a relabel gives no word of its own, so no word of that run counts
+    (newest_word), such as its own withdrawal of a check run for a word whose run is not known, which counts from the
+    time when it withdrew."""
+    words = head_words(comments, head, checks)
+    said = newest_word([*(word for word in words if word.carrier != "review"),
+                        *(word for word in words if word.carrier == "review")],
+                       kinds={"pass", "blocking", "person", "refused"}, carriers={"review", "line", "check"}, run=run,
+                       where=lambda word: word.carrier == "review" or word.kind == "refused")
+    answers = [Word(word_time(c), "read", "", "answer", "will-fix", False, None, c) for c in comments
+               if of_bot(c) and (m := ANSWER_WILL_FIX.match(c.get("body") or "")) and m.group(1) == head]
+    side = newest_word([*answers, *([said] if said else [])])
+    hold = newest_word(words, kinds={"hold"}, carriers={"hold", "line", "check"}, run=run,
+                       over=side[:2] if side else ("", "read"), where=lambda word: word.why)
+    if hold:
+        return {hold.why if hold.carrier == "hold" else "screen_held": True}
+    if side is None:
+        conflicted = any(of_bot(c) and (c.get("body") or "").startswith(FIRST)
+                         and conflict_state(head) in (c.get("body") or "").split("\n") for c in comments)
+        return {} if conflicted else None
+    if side is said and said.kind == "refused":
+        return {"refused": "review"}
+    verdict = said.kind if said and said.kind != "refused" else ""
+    will_fix = bool(answers) or bool(
+        verdict and said.carrier == "review" and REVIEWED.match(said.comment["body"]).group(3))
+    found = reviews()
+    heads = fix_heads(found)
+    own = heads.count(head)
+    fix_stop = (verdict == "blocking" and not will_fix and len(heads) - own >= 2
+                and fixes(history(), found, head) - own >= 2)
+    return {"verdict": verdict, "will_fix": will_fix, "fix_posted": own > 0, "fix_stop": fix_stop}
 
 
 def json_lines(path):
@@ -3546,8 +3586,14 @@ def main(argv):
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
             checks = check_lines(argv[3]) if len(argv) == 4 else []
-            verdict, state, why = review_verdict(comments, argv[2])
-            newest = (head_reviews(comments, argv[2]) or [("", "", False, "", "")])[-1]
+            verdict, state, why = review_verdict(comments, argv[2], checks)
+            words = head_words(comments, argv[2], checks)
+            # The run of the newest review comment and the time when that run read the item, from its last two
+            # markers (REVIEW_READ), or neither when it has none: a relabel's record names them.
+            newest = newest_word(words, carriers={"review"})
+            body = newest.comment["body"] if newest else ""
+            named = newest and REVIEW_READ.match(body, REVIEWED.match(body).end())
+            record_run, record_read = (newest.run, newest.read) if named else ("", "")
             line_why, line_run, line_read = owed_line(comments, argv[2])
             origin = "-"
             if state != "held" and line_why:
@@ -3556,10 +3602,10 @@ def main(argv):
             if origin == "owed":
                 found = line_reason(comments, argv[2], line_why, line_run, line_read, True)[0]
                 posted = "posted" if found else "unposted"
-            stands = withdrawal_stands(checks, comments, argv[2])
-            since = blocks_from(newest_withdrawal(checks, argv[2]), argv[2]) if stands else ""
-            print(f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stands or '-'} {since or '-'} "
-                  f"{newest[3] or '-'} {newest[4] or '-'}")
+            stands = standing_withdrawal(words)
+            stood, since = (str(stands.check.get("id") or "-"), stands.read or "") if stands else ("", "")
+            print(f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stood or '-'} {since or '-'} "
+                  f"{record_run or '-'} {record_read or '-'}")
             return 0
         if (len(argv) == 6 and argv[0] == "own-record" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
                 and TIME.fullmatch(argv[3]) and NUMBER.fullmatch(argv[4])):
@@ -3596,13 +3642,22 @@ def main(argv):
         if (len(argv) == 5 and argv[0] == "outranks" and all(TIME.fullmatch(t) or t == "" for t in argv[1::2])
                 and all(k in RANKS for k in argv[2::2])):
             return 0 if outranks((argv[1], argv[2]), (argv[3], argv[4])) else 3
-        if (len(argv) == 6 and argv[0] == "source" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
-                and argv[3] in WITHDRAWN and argv[4] in ("held", "owed", "earlier")):
+        if (len(argv) == 7 and argv[0] == "withdraw-word" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
+                and (TIME.fullmatch(argv[3]) or argv[3] == "-") and NUMBER.fullmatch(argv[4])
+                and argv[5] in ("blocking", "person", "refused", "screen", "access", "access-last", "pass", "-")):
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
-            source, at = reason_source(comments, sources_of(check_lines(argv[5]), argv[2]), argv[2], argv[3], argv[4])
-            print(f"{source or '-'} {at or '-'}")
+            started = "" if argv[3] == "-" else argv[3]
+            print(" ".join(withdraw_word(comments, argv[2], check_lines(argv[6]), started, argv[4], argv[5])))
+            return 0
+        if (len(argv) == 5 and argv[0] == "stays" and (HEAD.fullmatch(argv[1]) or argv[1] == "-")
+                and TIME.fullmatch(argv[2]) and argv[3] in RANKS and argv[4] in ("review", "answer", "draft")):
+            comments = [loads(line) for line in sys.stdin if line.strip()]
+            if not all(isinstance(c, dict) for c in comments):
+                raise ValueError("a line of standard input is not a comment")
+            last, tried, stay = stays(comments, "" if argv[1] == "-" else argv[1], argv[2], argv[3], argv[4])
+            print(f"{last or '-'} {str(tried).lower()} {str(stay).lower()}")
             return 0
         if len(argv) == 10 and argv[0] == "withdrawal":
             number, head, why, kind, run, source, at, path, directory = argv[1:]
@@ -3639,7 +3694,7 @@ def main(argv):
                 comments,
                 lambda: gh_objects("--paginate", f"repos/{repo}/pulls/{number}/reviews", "--jq", ".[] | @json"),
                 head, lambda: gh_objects(f"repos/{repo}/commits?sha={head}&per_page=100", "--jq", ".[] | @json"),
-                import_checks(number, head))
+                import_checks(number, head), os.environ.get("GITHUB_RUN_ID") or None)
             if found is None:
                 print(f"#{number}: the workflow wrote nothing of {head}, so the labels stay.")
                 return 0
