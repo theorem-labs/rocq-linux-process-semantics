@@ -246,10 +246,11 @@ no_key_of() {
 # architect, 2026-11-24 14:29Z to 14:40Z). Each review comment and each hold comment of the screen counts from the time
 # when its run read the item (rules.py word_time), and at the same time a verdict or a hold outranks a pass. screen when
 # a hold comment of the screen that names <head> outranks each review comment of <head> whose run screened it: the
-# state held. Else "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> --> of a
-# withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason yet),
-# whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out, and only while
-# a comment of github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or person, of the
+# state held. Else "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> <read> -->
+# of a withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason
+# yet), whatever the newest review says. Only a run that finished the withdrawal of <head> takes that line out, and
+# only while a comment of github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or
+# person, of the
 # newest review comment of <head> newer than the newest screened one (of any, when none is screened) that gives one, or
 # of the newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws nothing. It
 # records an import check run only when the newest review comment of <head> holds the marker
@@ -1613,8 +1614,9 @@ consider() {
   [ -z "$taken" ] || return 0
   # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
   # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
-  # head after each review that screened it, a label comment holds the line <!-- withdraw-owed <head> <why> <run> -->
-  # of a withdrawal that a run owes, the newest screened review of the head does not pass, or a review newer than it
+  # head after each review that screened it, a label comment holds the line
+  # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes, the newest screened review of the
+  # head does not pass, or a review newer than it
   # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's retry
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
@@ -1632,7 +1634,7 @@ consider() {
       esac
       if [ -n "$because" ]; then
         said="#$number: a hold that is not tried again names $head, and $because."
-        # The reason of the line <!-- withdraw-owed <head> <why> <run> -->, whatever the newest review says.
+        # The reason of the line <!-- withdraw-owed <head> <why> <run> <read> -->, whatever the newest review says.
         if [ "${from:-}" = owed ]; then
           said="#$number: a hold that is not tried again names $head. Its label comment records a reason of an earlier"
           said+=" run to withdraw the import check runs of $head."
