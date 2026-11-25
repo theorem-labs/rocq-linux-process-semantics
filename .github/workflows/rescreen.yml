@@ -281,7 +281,7 @@ jobs:
       # .github/review/trusted.sh and .github/review/held.sh, which the next step sources, and .github/review/rules.py,
       # which held.sh runs, alone, at the commit of main whose workflow file runs (github.sha); never a file of a pull
       # request.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false

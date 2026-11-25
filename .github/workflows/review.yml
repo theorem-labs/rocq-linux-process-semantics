@@ -213,9 +213,11 @@
 #           the refused draft or the reason. No job signs in to Google Cloud to store a draft, and a reply has no
 #           review job.
 #   post    runs in the environment post, which only main reaches and which holds the App's key from the LPS move. It
-#           does the App's writes, each after a step of its own that mints a token for this repository alone: one
-#           with checks: write and pull-requests: write, and one with actions: write alone, only for an approval
-#           whose screen passed. The hold job of an answer whose screen held the head of a pull request makes the one
+#           does the App's writes, each after a step of its own that mints a token for this repository alone. The first
+#           token has checks: write, for the import check runs of a review or a relabel. For the task catchup alone, the
+#           first token also has pull-requests: write, for the close and reopen of the pull request. The second token
+#           has actions: write alone, only for an approval whose screen passed. The hold job of an answer whose screen
+#           held the head of a pull request makes the one
 #           other App write, the withdrawal of that run (hold, below). For the review of an outside pull request whose
 #           screen passed, and for a relabel, it reads the changed paths at the head with its own token and records the
 #           check run repo-pairs/import-approved on the head when R12's rule holds (.github/review/rules.py
@@ -544,7 +546,7 @@ jobs:
       # .github/review/trusted.sh and .github/review/held.sh, which the next step sources, and .github/review/rules.py,
       # which held.sh runs, alone, at the commit of main whose workflow file runs (github.sha); never a file of the pull
       # request.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -1466,7 +1468,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, fetch-depth: 0}
 
       - name: What to review
@@ -1697,7 +1699,7 @@ jobs:
           digest=$(sha256sum "$RUNNER_TEMP/review-data/review.tar" | cut -d' ' -f1)
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Kept .review/ as review.tar, SHA-256 $digest."
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.gather.outputs.moved != 'true' && steps.gather.outputs.answered != 'true'
         with: {name: review-data, path: "${{ runner.temp }}/review-data/review.tar", if-no-files-found: error, retention-days: 1, overwrite: true}
 
@@ -1768,9 +1770,9 @@ jobs:
       SCREEN_RULE: claude_or_both_detectors
     steps:
       # main's .github/, for screen.py; never the pull request.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false, sparse-checkout: .github, sparse-checkout-cone-mode: false}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.trust.outputs.route != 'measure'
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       # The one copy of the env and the script of this step: the review job's step of this name runs them as well
@@ -1798,7 +1800,7 @@ jobs:
       # A sign-in that fails fails this job before the screen, with no verdict, and the hold job holds nothing for it.
       - name: Sign in to Google Cloud
         id: google
-        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0 (sha-pinned)
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with: {workload_identity_provider: "${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", service_account: "${{ env.GCP_SERVICE_ACCOUNT }}", token_format: access_token, access_token_lifetime: "${{ needs.trust.outputs.route == 'measure' && '3600s' || '600s' }}", create_credentials_file: false, export_environment_variables: false}
       # This step exchanges the identity token for Microsoft Entra's token for Prompt Shields and for Anthropic's token
       # for the screen's model, each when SCREEN_CHECKS lists its check and the job's env above sets up its identity.
@@ -1905,7 +1907,7 @@ jobs:
       QEMU_URL: https://github.com/qemu/qemu
       QEMU_COMMIT: e3ad0582fdcec5c194835b0b4e8342cdc197b5cb
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
 
       # Anthropic's exchange of a new identity token, with the federation rule, the organization, the service account
@@ -2072,7 +2074,7 @@ jobs:
           echo "$COUNT reviews ($POOL) in the last hour, under the cap of $CAP."
 
       # What the gather job kept.
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: review-data, path: "${{ runner.temp }}/review-data"}
       # The env and the script of the screen job's step of this name (&take-env and &take there).
       - name: Take the gathered pull request or issue
@@ -2146,7 +2148,7 @@ jobs:
         id: review
         if: needs.trust.outputs.task == 'review' || needs.trust.outputs.task == 'rescreen'
         timeout-minutes: 50
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           # The job's Anthropic ids (ids, not secrets).
           anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
@@ -2217,7 +2219,7 @@ jobs:
         id: answer
         if: needs.trust.outputs.task == 'answer'
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
@@ -2267,7 +2269,7 @@ jobs:
         id: draft
         if: needs.trust.outputs.task == 'draft'
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
@@ -2560,7 +2562,7 @@ jobs:
       # it posts only after Sami approves its text. GitHub keeps it 90 days, the longest it keeps an artifact of a public
       # repository (or less, when the repository's setting is shorter), as a draft can wait weeks for Sami. A new
       # attempt of the run replaces the artifact of the attempt before it (overwrite).
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: needs.trust.outputs.task == 'draft'
         with: {name: "issue-draft-${{ needs.trust.outputs.number }}", path: "${{ runner.temp }}/issue-draft", if-no-files-found: error, retention-days: 90, overwrite: true}
 
@@ -2653,7 +2655,7 @@ jobs:
         id: fix
         if: steps.fixable.outputs.fix == 'true'
         timeout-minutes: 30
-        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1 (v1.0.264, sha-pinned)
+        uses: anthropics/claude-code-action@d70510b174a1244958df0b03166a54912811f3e6 # v1.0.264
         with:
           anthropic_federation_rule_id: ${{ env.ANTHROPIC_FEDERATION_RULE_ID }}
           anthropic_organization_id: ${{ env.ANTHROPIC_ORGANIZATION_ID }}
@@ -2764,11 +2766,12 @@ jobs:
 
   # The OSS Verify App's writes, and nothing else: no comment and no label. In the environment post, which only
   # main's runs reach and which holds the App's key (OSS_VERIFY_APP_PRIVATE_KEY) from the LPS move. Each write
-  # comes after a step of its own that mints a token for this repository alone: token A, with checks: write and
-  # pull-requests: write, for the import check run of a review or a relabel and for the close and reopen of a
-  # catch-up; token B, with actions: write alone, for the approval of a head's held runs, minted only for the task
-  # approve when the screen passed, GitHub holds runs of the head that the screen read, and that head changes no file
-  # under .github/. Until the LPS move of dispatch://OSSV-321, the environment post of this repository holds no key
+  # comes after a step of its own that mints a token for this repository alone. Token A has checks: write, for the
+  # import check runs of a review or a relabel. For the task catchup alone, token A also has pull-requests: write, for
+  # the close and reopen of the pull request. Token B has actions: write alone, for the approval of a head's held runs.
+  # A step mints token B only for the task approve when the screen passed and GitHub holds runs of the head that the
+  # screen read. That step does not mint token B when that head changes a file under .github/. Until the LPS move of
+  # dispatch://OSSV-321, the environment post of this repository holds no key
   # (R10): while the key is empty (APP_KEY_SET), the job skips the two sign-ins and each step that needs the App or
   # that only finds work for it, ends with success, and says so in its summary. A key that GitHub refuses fails the
   # sign-ins alone. Its own token can only read (actions: read lists a head's held runs, and checks: read the check
@@ -2880,7 +2883,7 @@ jobs:
       # .github/ at the commit of main whose workflow file runs (github.sha), for .github/review/rules.py, and no file
       # of the pull request. This job runs only on main. Its if and the trust job check the ref. So a job that waits
       # in the group write-<n> while main moves runs these files from the commit of its own workflow file.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -3663,7 +3666,7 @@ jobs:
           env.APP_KEY_SET == 'true'
           && (needs.trust.outputs.task == 'catchup' || steps.decide.outputs.decision == 'record'
               || steps.withdraw.outputs.checks != '' || steps.withdraw.outputs.neutral != '')
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with: &app-sign-in
           client-id: ${{ env.OSS_VERIFY_APP_CLIENT_ID }}
           private-key: ${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}
@@ -3973,7 +3976,7 @@ jobs:
         if: >-
           env.APP_KEY_SET == 'true' && needs.trust.outputs.task == 'approve' && needs.screen.outputs.verdict == 'clean'
           && steps.answers.outputs.approve == 'true' && steps.held.outputs.runs != ''
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ env.OSS_VERIFY_APP_CLIENT_ID }}
           private-key: ${{ secrets.OSS_VERIFY_APP_PRIVATE_KEY }}
@@ -4111,7 +4114,7 @@ jobs:
       # .github/ at the commit of main whose workflow file runs (github.sha), for .github/review/rules.py, and no file
       # of the pull request. This job runs only on main. Its if and the trust job check the ref. So a job that waits
       # in the group write-<n> while main moves runs these files from the commit of its own workflow file.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -5075,7 +5078,7 @@ jobs:
       # .github/review/held.sh, and no file of the pull request. This job runs only on main. Its if and the trust job
       # check the ref. So a job that waits in the group write-<n> while main moves runs these files from the commit of
       # its own workflow file.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -5618,7 +5621,7 @@ jobs:
       - name: Sign in as the OSS Verify App
         id: app
         if: env.APP_KEY_SET == 'true' && (steps.withdraw.outputs.checks != '' || steps.withdraw.outputs.neutral != '')
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0 (sha-pinned)
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with: *app-sign-in
       - name: Withdraw the import check runs of the head
         id: withdrawn
