@@ -23351,6 +23351,26 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(rules.stays([own], HEAD, t40, "pass", "review"), (t20, False, True))
         self.assertEqual(rules.stays([other], HEAD, t40, "pass", "review"), ("", False, False))
 
+    def test_a_label_step_that_cannot_read_the_check_runs_says_nothing_false_of_the_label_comment_it_leaves(self):
+        """The tester's round 29 (F3), by OSSV-613's architect's ruling of 2026-11-26 12:52Z: the log line of the label
+        step's read of the check runs after a post job that did not succeed says what the step does in each case it
+        prints for. The CI review run 100 of #7 read the author as an outsider, recorded 901, and the label comment
+        says that the workflow recorded the check. Rescreen run 130 then read the author's kind as unknown, and GitHub
+        refuses the check runs of HEAD: its post job fails before it withdraws, so 901 stands, and its label step
+        cannot read them. That step writes no label comment for a kind that GitHub did not give, so the label comment
+        still says that the workflow recorded the check: its log must not say that the label comment does not."""
+        recorded = rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])
+        self.assertIn("The workflow recorded the check", recorded)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60), "body": recorded}
+        _first, checks = self.judged([], "100", trust=dict(self.REVIEWED, started=ago(90)))
+        listed = [c for c in checks if c.get("conclusion") == "success"]
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        trust = dict(self.REVIEWED, task="rescreen", outside="false", kind="unknown", started=ago(20))
+        got = self.judge(["README.md"], value=self.LPS, trust=trust, event="workflow_dispatch", comments=[label],
+                         listed=listed, named=HEAD)
+        self.assertEqual((got["result"], [c["id"] for c in listed], got["comments"]), ("failure", [901], []))
+        self.assertNotIn("the label comment does not say that the workflow recorded the check", got["log"])
+
     # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
     # job failed or was cancelled (AFTER_FAILURE).
     UNCLAIM = "Leave no label that says the workflow recorded the check"
