@@ -23310,6 +23310,24 @@ class ImportCheckTest(ReaderRunner):
         self.assertNotIn("The workflow recorded the check", final,
                          ({k: v for k, v in outcomes.items() if v != "skipped"}, wrote))
 
+    def test_relabel_facts_takes_the_one_models_word_at_a_tie_of_a_blocking_review_and_a_refusal(self):
+        """The tester's round 29 (F1), by OSSV-613's architect's ruling of 2026-11-26 12:52Z: every reader of the words
+        on a head takes its order from the one model (rules.py head_words and newest_word), and nothing of the order
+        stays outside it. The blocking review of run 120 and the refusal of run 121 read #7 at the same time. The
+        refusal is carried by its withdraw-owed line, or by its check run of not-approved. The one model gives the
+        refusal of run 121 as the newest word, so relabel_facts gives the state refused-review, as review_verdict and
+        newer_word do."""
+        t = ago(30)
+        blocking = review_of(HEAD, "blocking", at=ago(25), run=120, read=t)
+        for carrier, extra, checks in (("the line", [self.owed_label("refused", "121", t)], []),
+                                       ("the check run", [], [self.not_approved_check("refused", "121", t)])):
+            with self.subTest(carrier=carrier):
+                comments = [blocking, *extra]
+                newest = rules.newest_word(rules.head_words(comments, HEAD, checks))
+                self.assertEqual((newest.kind, newest.run), ("refused", "121"))
+                facts = rules.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks)
+                self.assertEqual(facts.get("refused"), "review", facts)
+
     # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
     # job failed or was cancelled (AFTER_FAILURE).
     UNCLAIM = "Leave no label that says the workflow recorded the check"
