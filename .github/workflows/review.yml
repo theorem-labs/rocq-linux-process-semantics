@@ -4907,6 +4907,22 @@ jobs:
                    "label comment."; exit 0; }
           python3 .github/review/rules.py label "$NUMBER" task=approve outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" \
             author="${AUTHOR_KIND:-}" "$fact=true" head="$head"
+      # The last step of this job. It runs only when a step before it failed, or when the job was cancelled (at its
+      # timeout-minutes, say). Whichever step failed, and whatever that step read from GitHub, the label comment of the
+      # item must not keep the claim that the workflow recorded the check repo-pairs/import-approved while no check run
+      # with the conclusion success stands (OSSV-613's architect, 2026-11-25 23:02Z, G2). A step that fails before the
+      # label step leaves the label comment of an earlier run, and a step that fails inside it can leave one too. So
+      # this step reads the newest label comment and the import check runs of the head that it names. It writes the
+      # label comment of the state working in place of a claim that no check run shows, and it also does so when GitHub
+      # does not give the check runs (.github/review/rules.py unclaim). It adds and takes off no state label. When
+      # GitHub refuses a read or the write here, this step fails too, and the rescreen pass runs the failed jobs of
+      # this run again, at most REVIEW_TRIES times in all (held.sh due_rerun).
+      - name: Leave no label that says the workflow recorded the check
+        if: failure() || cancelled()
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          python3 .github/review/rules.py unclaim "$NUMBER"
 
   # A pull request or an issue that the screen held, that could not be gathered or screened, whose review the screen
   # passed but that did not finish (SCREENED_HOURLY_CAP among the causes), or whose account is at OUTSIDE_HOURLY_LIMIT:
@@ -5644,3 +5660,16 @@ jobs:
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           python3 .github/review/rules.py owed "$NUMBER" owed= withdrawn="$PENDING" own= task="$TASK" \
             outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}"
+      # The last step of this job, as in the comment job: it runs only when a step before it failed, or when the job was
+      # cancelled. The label comment of the item must not keep the claim that the workflow recorded the check
+      # repo-pairs/import-approved while no check run with the conclusion success stands (OSSV-613's architect,
+      # 2026-11-25 23:02Z, G2). A hold job that failed after a withdrawal that GitHub refused leaves such a claim. This
+      # step writes the label comment of the state working in place of a claim that no check run shows. It adds and
+      # takes off no state label. When GitHub refuses a read or the write here, this step fails too, and the rescreen
+      # pass runs the failed jobs of this run again, at most REVIEW_TRIES times in all (held.sh due_rerun).
+      - name: Leave no label that says the workflow recorded the check
+        if: failure() || cancelled()
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          python3 .github/review/rules.py unclaim "$NUMBER"

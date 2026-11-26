@@ -50,22 +50,25 @@ jobs:
       - run: python3 .github/test_screen.py
 
   # Every order of the jobs of two and three runs of one head, and the end state that each order must reach
-  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 747 combinations run in 12
-  # shards (ORDERS_SHARD), each in 4 processes, so each shard stays well inside its 30 minutes.
+  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 747 combinations run in 30
+  # shards (ORDERS_SHARD), each in 4 processes, so that each shard ends in under 10 minutes (CI rule 3; OSSV-613's
+  # architect, 2026-11-26 02:17Z). Its failure sweep (ORDERS_FAILURES=1) is no job of this workflow: it takes hours of
+  # CPU time, so it runs on demand on the build cluster, and no env here sets ORDERS_FAILURES.
   review-workflow-orders:
-    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/12)'
+    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/30)'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+                28, 29]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - env:
-          ORDERS_SHARD: ${{ matrix.shard }}/12
+          ORDERS_SHARD: ${{ matrix.shard }}/30
         run: python3 .github/parallel_tests.py --processes 4 .github/test_orders.py
 
   # The one check of this workflow to require: it always runs, and passes only

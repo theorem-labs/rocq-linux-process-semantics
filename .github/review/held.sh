@@ -1233,6 +1233,68 @@ due_retry() {
   fi
   owe "$ended" "$2" "" "$head" - "the post job of run $run $how"
 }
+# due_rerun: the comment job or the hold job of the newest run of the head failed or was cancelled, while its post job
+# succeeded or was skipped (OSSV-613's architect, 2026-11-25 23:02Z, item 3b). The newest run is the newest one, by
+# when GitHub made it, of a review, a rescreen, a relabel or an approval that did work after its trust job: a run that
+# its trust job stopped did none. That run wrote only a part of what it owed on the item (a review comment, a hold
+# comment, a label, a label comment). Its last step left no label comment that says that the workflow recorded the
+# check while no such check run stands (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run
+# again (restart, as rerun does): the post job of that run does not run again. The App's retry takes a run whose post
+# job failed or was cancelled (due_retry). A re-run is one more attempt of the run (its run_attempt, the column 13 of
+# $seen/runs). It starts only while that attempt is below REVIEW_TRIES, and the log gives the number of the attempt
+# that starts. At REVIEW_TRIES attempts the work is not tried again (head_stopped: review for a review or a rescreen,
+# approval for an approval, import for a relabel), and the log gives the count. When GitHub refuses the re-run,
+# nothing is taken, and a later reason may start a new run, as for rerun. A head that this pass already starts a run
+# for, or whose hold the pass tries again (retaken), gets no re-run: that run takes its place.
+due_rerun() {
+  local created ended id run="" task="" f post early commented hold_job which how attempt work
+  [ -z "$retaken" ] || return 0
+  if awk -v n="$number" '$2 == n { found = 1 } END { exit !found }' "$seen/due"; then return 0; fi
+  while read -r created ended id task; do
+    f=$(facts "$id") || { echo "::error::the jobs of run $id could not be read."; return 1; }
+    read -r _ _ post _ early _ commented _ <<< "$f"
+    [ "$early" != stopped ] || continue
+    run=$id
+    break
+  done < <(awk -v n="$number" -v h="$head" '$7 == n && $9 == h && $8 ~ /^(review|rescreen|relabel|approve)$/ {
+    print $2, $3, $1, $8 }' "$seen/runs" | sort -r)
+  [ -n "$run" ] || return 0
+  [ "$post" = success ] || [ "$post" = skipped ] || return 0
+  hold_job=$(jq -rs 'map(select(.name == "hold")) | first | .conclusion // "-"' "$seen/jobs-$run")
+  if [ "$commented" = failure ] || [ "$commented" = cancelled ]; then
+    which=comment how=$commented
+  elif [ "$hold_job" = failure ] || [ "$hold_job" = cancelled ]; then
+    which=hold how=$hold_job
+  else
+    return 0
+  fi
+  [ "$how" != failure ] || how=failed
+  [ "$how" != cancelled ] || how="was cancelled"
+  if [[ ! $ended < $hour ]]; then
+    echo "#$number: the $which job of run $run $how, less than an hour ago: tried again later."
+    return 0
+  fi
+  read -r attempt <<< "$(awk -v r="$run" '$1 == r { print $13; exit }' "$seen/runs")"
+  if [[ ! ${attempt:-} =~ ^[1-9][0-9]*$ ]]; then
+    echo "#$number: the $which job of run $run $how, and GitHub gives no attempt of that run: its failed jobs do not" \
+      "run again."
+    return 0
+  fi
+  case $task in
+    approve) work=approval ;;
+    relabel) work=import ;;
+    *) work=review ;;
+  esac
+  if (( attempt >= REVIEW_TRIES )); then
+    echo "#$number: the $which job of run $run $how. That run is at attempt $attempt of $REVIEW_TRIES: its failed jobs" \
+      "do not run again."
+    head_stopped "$work" "$attempt"
+    return 0
+  fi
+  restart "$run" || return 0
+  echo "#$number: the $which job of run $run $how. Its failed jobs run again: try $((attempt + 1)) of $REVIEW_TRIES."
+  taken=1
+}
 # merge_of: merge, the mergeable_state of #number, read again once while GitHub has not computed it (its
 # mergeable is null); null when it still has not, and then the head waits for the next run.
 merge_of() {
@@ -1601,7 +1663,9 @@ consider() {
   if [ "$labelled" = true ]; then due_held || return 1; fi
   if [ "$outsider" = false ]; then
     [ "$kind" = pr ] || return 0
-    due_unreviewed
+    due_unreviewed || return 1
+    [ -z "$taken" ] || return 0
+    due_rerun
     return
   fi
   due_answer || return 1
@@ -1652,7 +1716,7 @@ consider() {
     echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
     return 0
   fi
-  for reason in catchup old unreviewed variable; do
+  for reason in catchup old unreviewed variable rerun; do
     "due_$reason" || return 1
     [ -z "$taken" ] || return 0
   done

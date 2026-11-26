@@ -4965,22 +4965,32 @@ def run_post(test, ctx, tokens, mint=True):
     return run_job(test, "post", ctx, tokens, mint)
 
 
-def run_job(test, job, ctx, tokens, mint=True):
+# The if of a step that GitHub runs after a step that failed or was cancelled, and in no other case: the last step of
+# the comment job and of the hold job (rules.py unclaim). No other step of a job has a status function in its if.
+AFTER_FAILURE = "failure() || cancelled()"
+
+
+def run_job(test, job, ctx, tokens, mint=True, cancel=None):
     """The steps of job in the contexts ctx, as GitHub runs them: each step whose if holds, in order, and none after a
-    step that failed (GitHub's implicit success()). The job's env, which GitHub fills in from ctx when the job starts,
-    is the context env of each if. ctx gets a stand-in for the App's key (APP_KEY) when it holds none, so that the
-    environment post holds the key unless a test says otherwise. The checkout gives main's .github/ (test.checkout); a
-    sign-in step of the App gives its token of tokens, or fails when mint is False; each other step runs against the
-    stand-in gh, with its env as GitHub fills it in from ctx. Each step's outputs and outcome join ctx, and its log
-    test.logs. The outcome of each step, by its name."""
+    step that failed or was cancelled (GitHub's implicit success()), but a step whose if is AFTER_FAILURE, which runs
+    only after one. cancel is the name of the step that a cancel of the job ends (its outcome is cancelled). The job's
+    env, which GitHub fills in from ctx when the job starts, is the context env of each if. ctx gets a stand-in for the
+    App's key (APP_KEY) when it holds none, so that the environment post holds the key unless a test says otherwise.
+    The checkout gives main's .github/ (test.checkout); a sign-in step of the App gives its token of tokens, or fails
+    when mint is False; each other step runs against the stand-in gh, with its env as GitHub fills it in from ctx. Each
+    step's outputs and outcome join ctx, and its log test.logs. The outcome of each step, by its name."""
     outcomes, failed = {}, False
     ctx.setdefault(APP_KEY, "stand-in-key")
     started = {f"env.{k}": v for k, v in filled(JOBS[job].get("env", {}), ctx).items()}
     for s in JOBS[job]["steps"]:
         name = s.get("name") or "Run " + s["uses"].split("@")[0]
-        test.assertIsNone(STATUS_FUNCTIONS.search(s.get("if", "")), name)
-        if failed or ("if" in s and not evaluate(s["if"], {**started, **ctx})):
+        after = s.get("if") == AFTER_FAILURE
+        if not after:
+            test.assertIsNone(STATUS_FUNCTIONS.search(s.get("if", "")), name)
+        if (not failed) if after else (failed or ("if" in s and not evaluate(s["if"], {**started, **ctx}))):
             outcome = "skipped"
+        elif name == cancel:
+            outcome = "cancelled"
         elif s.get("uses") == CHECKOUT:
             test.assertEqual(s["with"], {"ref": "${{ github.sha }}", "persist-credentials": False,
                                          "sparse-checkout": ".github", "sparse-checkout-cone-mode": False})
@@ -5001,7 +5011,7 @@ def run_job(test, job, ctx, tokens, mint=True):
                 ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
         if "id" in s:
             ctx[f"steps.{s['id']}.outcome"] = outcome
-        failed = failed or outcome == "failure"
+        failed = failed or outcome in ("failure", "cancelled")
         outcomes[name] = outcome
     return outcomes
 
@@ -12942,6 +12952,161 @@ class ScheduleTest(Scheduled):
         rc, out, runs = self.started()
         self.assertEqual((rc, runs), (0, [("7", "approve", "mallory", HEAD, "")]), out)
 
+    # The comment job's label step, at which the comment job of a run in the tests of due_rerun fails.
+    LABEL = PostLabelTest.STEP
+
+    def unfinished(self, author="mallory", rerun=True):
+        """author's #7 at HEAD, whose review comment of HEAD posted 300 minutes ago and whose label comment records the
+        value of REPO_PAIRS_IMPORT_PATHS that the pass reads (LABELLED), so that no reason of the pass but due_rerun
+        takes HEAD. GitHub runs the failed jobs of run 10 again when it is asked to, unless rerun is False."""
+        self.item(kind="pr", author=author, comments=[review_of(HEAD, at=ago(300)), self.LABELLED])
+        if rerun:
+            self.serve(f"repos/{REPO}/actions/runs/10/rerun-failed-jobs", {})
+
+    def left(self, run, ended, jobs, task="rescreen", attempt=1):
+        """Run <run> of task of mallory's #7 at HEAD, which the pass started (its name), made 10 minutes before it
+        ended, that many minutes ago, at its attempt attempt, with jobs after its trust job."""
+        title = run_name(**{"github.event_name": "workflow_dispatch", "inputs.task": task, "inputs.number": 7,
+                            "inputs.head": HEAD, "inputs.comment": "",
+                            "inputs.account": "" if task == "relabel" else "mallory"})
+        self.ran(run, title, made=ended + 10, ended=ended, jobs=jobs, attempt=attempt)
+
+    def commented_jobs(self, comment="failure", post=None):
+        """The jobs after the trust job of a run whose screen passed HEAD and whose review gave its verdict: its post
+        job post (one that decided the import check of HEAD, when None), and its comment job, which failed at its label
+        step (failure), was cancelled there (cancelled), or succeeded (success)."""
+        job = attempt_job("comment", None if comment == "success" else self.LABEL)
+        if comment == "cancelled":
+            job = dict(job, conclusion="cancelled",
+                       steps=[dict(s, conclusion="cancelled") if s["name"] == self.LABEL else s for s in job["steps"]])
+        return [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                post or post_job({self.DECIDE: "success"}), job]
+
+    def reruns(self):
+        """Each run whose failed jobs the stand-in gh was asked to run again (rerun-failed-jobs), as its endpoint."""
+        return [a for c in writes(self.api) for a in c if a.endswith("/rerun-failed-jobs")]
+
+    def test_a_comment_or_hold_job_that_failed_after_its_post_job_runs_its_failed_jobs_again_an_hour_later(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b): the comment job or the hold job of the newest run of HEAD
+        failed or was cancelled after its post job succeeded or was skipped, so that run wrote only a part of what it
+        owed on #7. An hour after that run ended, and not before, the rescreen pass runs its failed jobs again (one POST
+        of rerun-failed-jobs) and starts no run. The cases: rescreen run 10 of mallory's #7, whose comment job failed
+        at its label step at attempt 1 (try 2) or at attempt 2 (try 3), or was cancelled there; whose screen held HEAD
+        and whose hold job failed at its label step, after a post job that succeeded or was skipped; and the CI review
+        run 10 of alice's #7, a writer's, whose comment job posted the review and then failed, which consider takes on
+        the path of a writer. The log gives the job, how it ended and the try that starts. In each case the review
+        comment of HEAD posted, and the label comment records the value of REPO_PAIRS_IMPORT_PATHS now, so no other
+        reason of the pass takes HEAD. The control, held.sh whose due_rerun takes nothing, runs nothing again and
+        starts nothing."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        skipped = {"name": "post", "status": "completed", "conclusion": "skipped"}
+
+        def held(post):
+            """The jobs after the trust job of a run whose screen held HEAD: its hold job, which failed at its label
+            step, and its post job post."""
+            return [attempt_job("gather"), self.screened(), attempt_job("hold", Holding.STEP), post]
+
+        for case, author, jobs, ended, attempt, how in (
+                ("a failed comment job", "mallory", self.commented_jobs(), 61, 1, "the comment job of run 10 failed"),
+                ("under an hour ago", "mallory", self.commented_jobs(), 30, 1, "the comment job of run 10 failed"),
+                ("attempt 2", "mallory", self.commented_jobs(), 61, 2, "the comment job of run 10 failed"),
+                ("a cancelled comment job", "mallory", self.commented_jobs("cancelled"), 61, 1,
+                 "the comment job of run 10 was cancelled"),
+                ("a failed hold job after a post job that succeeded", "mallory",
+                 held(post_job({"Read the author-kind table": "success"})), 61, 1, "the hold job of run 10 failed"),
+                ("a failed hold job after a skipped post job", "mallory", held(skipped), 61, 1,
+                 "the hold job of run 10 failed"),
+                ("a writer's pull request", "alice", self.commented_jobs(), 61, 1, "the comment job of run 10 failed")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.unfinished(author)
+                if author == "alice":
+                    self.ran(10, f"review {HEAD} by alice", made=ended + 10, ended=ended, event="workflow_run",
+                             jobs=jobs, attempt=attempt)
+                else:
+                    self.left(10, ended, jobs, attempt=attempt)
+                (rc, out, runs, wrote), control = self.controlled(lambda: (*self.started(), writes(self.api)),
+                                                                  "due_rerun() { return 0; }")
+                want = [["--method", "POST", rerun]] if ended > 60 else []
+                said = (f"#7: {how}. Its failed jobs run again: try {attempt + 1} of {self.TRIES}." if want
+                        else f"#7: {how}, less than an hour ago: tried again later.")
+                self.assertEqual((rc, runs, wrote), (0, [], want), out)
+                self.assertIn(said, out)
+                self.assertEqual((control[0], control[2], control[3]), (0, [], []), control[1])
+
+    def test_a_run_at_review_tries_attempts_whose_comment_job_failed_stops_the_work_of_its_head(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b): each re-run of the failed jobs of a run is one more
+        attempt of that run (its run_attempt), so the re-runs end at REVIEW_TRIES attempts. Run 10 of HEAD of
+        mallory's #7 ended 61 minutes ago at attempt REVIEW_TRIES, and its comment job failed after its post job
+        succeeded. The rescreen pass runs nothing of it again, and its log gives the count. It starts the stop of the
+        work of the run's task, as at each other bound of tries: head-review for a rescreen, head-approve for an
+        approval, and head-import for a relabel. The pass then fails, as at each stop. The control, the same run at
+        attempt REVIEW_TRIES - 1, runs its failed jobs again, as the last try."""
+        tries = self.TRIES
+        approved = post_job({self.HELD: "success", MINT_B: "success", self.APPROVE: "success"})
+        approval = [attempt_job("gather"), self.screened(), approved,
+                    attempt_job("comment", "Say that a person at Theorem approves the runs of the head")]
+        relabelled = [post_job({self.DECIDE: "success"}), attempt_job("comment", self.LABEL)]
+        for task, stop, jobs in (("rescreen", "head-review", self.commented_jobs()),
+                                 ("approve", "head-approve", approval), ("relabel", "head-import", relabelled)):
+            for attempt, want, said in (
+                    (tries, (1, [("7", "stop", "", HEAD, stop)], []),
+                     f"That run is at attempt {tries} of {tries}: its failed jobs do not run again."),
+                    (tries - 1, (0, [], [f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"]),
+                     f"Its failed jobs run again: try {tries} of {tries}.")):
+                with self.subTest(task=task, attempt=attempt):
+                    self.tearDown()
+                    self.setUp()
+                    self.unfinished()
+                    self.left(10, 61, jobs, task=task, attempt=attempt)
+                    rc, out, runs = self.started()
+                    self.assertEqual((rc, runs, self.reruns()), want, out)
+                    self.assertIn(f"#7: the comment job of run 10 failed. {said}", out)
+
+    def test_the_failed_jobs_of_a_run_run_again_only_for_the_newest_run_with_work_and_no_other_run_of_its_head(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b): the pass runs the failed jobs of the newest run of HEAD
+        again only when that run did work after its trust job, its post job succeeded or was skipped, its comment job
+        or its hold job failed or was cancelled, and no other run takes HEAD in this pass. Rescreen run 10 of
+        mallory's #7 ended 61 minutes ago, and its comment job failed after its post job succeeded: its failed jobs
+        run again, the control of each case below. (a) Its post job failed at the record of the import check run: the
+        App's retry owns that run (due_retry) and starts a relabel of HEAD, and no failed job runs again. (b) Its
+        comment job succeeded: nothing runs again and nothing starts. (c) Rescreen run 11 of HEAD, newer, did no work
+        after its trust job: the failed jobs of run 10 run again, and nothing of run 11. (d) Run 11 is newer, and its
+        comment job succeeded: run 11 wrote all it owed, so nothing runs again. (e) GitHub refuses the re-run of run
+        10: the pass exits 0, its log holds the warning of the refusal, and it starts nothing for #7. (f) GitHub holds
+        runs of HEAD, so the pass starts the approval of HEAD, which takes the place of a re-run."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        failed = self.commented_jobs()
+        recorded = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "failure"})
+        for case, jobs, newer, served, held, want, said in (
+                ("the control", failed, None, True, False, (0, [], [rerun]),
+                 "#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of"),
+                ("a failed post job", self.commented_jobs(post=recorded), None, True, False,
+                 (0, [("7", "relabel", "", HEAD, "")], []), None),
+                ("a comment job that succeeded", self.commented_jobs("success"), None, True, False, (0, [], []), None),
+                ("a newer run that did no work after its trust job", failed, self.stopped_jobs(), True, False,
+                 (0, [], [rerun]), "#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of"),
+                ("a newer run whose comment job succeeded", failed, self.commented_jobs("success"), True, False,
+                 (0, [], []), None),
+                ("GitHub refuses the re-run", failed, None, False, False, (0, [], [rerun]),
+                 "::warning::#7: GitHub refused to run the failed jobs of run 10 again: a new run instead."),
+                ("an approval that this pass starts", failed, None, True, True,
+                 (0, [("7", "approve", "mallory", HEAD, "")], []), None)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.unfinished(rerun=served)
+                if held:
+                    self.held_runs()
+                self.left(10, 61, jobs)
+                if newer is not None:
+                    self.left(11, 29, newer)
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs, self.reruns()), want, out)
+                if said:
+                    self.assertIn(said, out)
+
 
 # The post job's step that closes and reopens a pull request for a catch-up.
 CATCH_UP = "Close and reopen the pull request"
@@ -14999,11 +15164,14 @@ class TriggerTest(unittest.TestCase):
         """b4 (R7): the tests of the review workflow run on each pull request, so a pull request that changes only a
         workflow file of the review (rescreen.yml, say) or only a file of .github/review/ runs them. Since main's #158
         they have their own workflow, review-tests.yml, with no path selection: its pull_request trigger names no paths,
-        no paths-ignore and no branches, and no test job has an if. Its third test job runs .github/test_orders.py in 12
-        shards (OSSV-221's architect, 2026-11-24 14:36Z). It runs on pull_request alone: no push to main
-        and no run by hand starts it (OSSV-221's architect, 2026-11-24 01:33Z). The controls, b4's negative control:
-        a copy of review-tests.yml with a push trigger on main, with a workflow_dispatch trigger, with a paths filter
-        on pull_request, or with an if on a test job, fails the case."""
+        no paths-ignore and no branches, and no test job has an if. Its third test job runs .github/test_orders.py in 30
+        shards, so that each shard ends in under 10 minutes (OSSV-221's architect, 2026-11-24 14:36Z; OSSV-613's
+        architect, 2026-11-26 02:17Z). The failure sweep of test_orders.py (ORDERS_FAILURES) runs on the build cluster
+        and never in this workflow, so no env of that job, of its steps or of the workflow sets ORDERS_FAILURES. It
+        runs on pull_request alone: no push to main and no run by hand starts it (OSSV-221's architect, 2026-11-24
+        01:33Z). The controls, b4's negative control: a copy of review-tests.yml with a push trigger on main, with a
+        workflow_dispatch trigger, with a paths filter on pull_request, with an if on a test job, or with
+        ORDERS_FAILURES in the env of the step of test_orders.py, fails the case."""
 
         def check(wf):
             on = wf["on"]
@@ -15016,16 +15184,22 @@ class TriggerTest(unittest.TestCase):
                              {"python3 .github/parallel_tests.py --processes 4 .github/test_review.py",
                               "python3 .github/test_screen.py",
                               "python3 .github/parallel_tests.py --processes 4 .github/test_orders.py"})
-            self.assertEqual(wf["jobs"]["review-workflow-orders"]["strategy"]["matrix"]["shard"], list(range(12)))
+            orders = wf["jobs"]["review-workflow-orders"]
+            self.assertEqual(orders["strategy"]["matrix"]["shard"], list(range(30)))
+            for env in (wf.get("env"), orders.get("env"), *(s.get("env") for s in orders["steps"])):
+                self.assertNotIn("ORDERS_FAILURES", env or {})
 
         check(REVIEW_TESTS)
         on, jobs = REVIEW_TESTS["on"], REVIEW_TESTS["jobs"]
-        screen = jobs["review-workflow-screen"]
+        screen, orders = jobs["review-workflow-screen"], jobs["review-workflow-orders"]
+        *before, tests = orders["steps"]
+        failures = dict(orders, steps=[*before, dict(tests, env={**tests["env"], "ORDERS_FAILURES": "1"})])
         for case, changed in (
                 ("a push trigger on main", {"on": {**on, "push": {"branches": ["main"]}}}),
                 ("a workflow_dispatch trigger", {"on": {**on, "workflow_dispatch": None}}),
                 ("a paths filter on pull_request", {"on": {"pull_request": {"paths": [".github/review/**"]}}}),
-                ("an if on a test job", {"jobs": {**jobs, "review-workflow-screen": dict(screen, **{"if": "false"})}})):
+                ("an if on a test job", {"jobs": {**jobs, "review-workflow-screen": dict(screen, **{"if": "false"})}}),
+                ("ORDERS_FAILURES in the env of the step", {"jobs": {**jobs, "review-workflow-orders": failures}})):
             with self.subTest(control=case):
                 with self.assertRaises(AssertionError):
                     check(dict(REVIEW_TESTS, **changed))
@@ -19939,10 +20113,11 @@ class ImportCheckTest(ReaderRunner):
         def __missing__(self, _name):
             return "token-A"
 
-    def comment_job_after_post(self, got, trust, verdict, comments, run):
+    def comment_job_after_post(self, got, trust, verdict, comments, run, cancel=None):
         """The comment job of run <run> (trust; its review gave verdict) after its post job gave got, with #7's comments
         now comments: (outcomes, writes as (method, endpoint), label comment bodies, its review comment). The check runs
-        of HEAD are what the test served before (serve_checks)."""
+        of HEAD are what the test served before (serve_checks). cancel is the step that a cancel of the job ends
+        (run_job)."""
         event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
@@ -19960,14 +20135,15 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
         self.serve(f"repos/{REPO}/issues/comments/30", {"html_url": f"https://github.com/{REPO}/pull/7#c30"})
         open(self.summary, "w").close()
-        outcomes = run_job(self, "comment", ctx, self.AnyToken(self.TOKENS))
+        outcomes = run_job(self, "comment", ctx, self.AnyToken(self.TOKENS), cancel=cancel)
         return (outcomes, [tuple(c[1:3]) for c in writes(self.api)],
                 [b for _m, _e, b in label_comments(self.api)], mine)
 
-    def hold_job_after_post(self, got, trust, comments, run):
+    def hold_job_after_post(self, got, trust, comments, run, cancel=None):
         """The hold job of run <run> (trust; its screen held HEAD, so it has no review) after its post job gave got,
         with #7's comments now comments, as GitHub runs it (run_job): (outcomes, writes as (method, endpoint)). The
-        check runs of HEAD are what the test served before (serve_checks)."""
+        check runs of HEAD are what the test served before (serve_checks). cancel is the step that a cancel of the job
+        ends (run_job)."""
         trust = dict(trust, account="mallory", kind="outsider", origin="", tries="0")
         event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
@@ -19992,7 +20168,7 @@ class ImportCheckTest(ReaderRunner):
                              attempt_job("screen", name="screen mallory")]})
         open(self.summary, "w").close()
         self.env["GITHUB_STEP_SUMMARY"] = self.summary
-        outcomes = run_job(self, "hold", ctx, self.AnyToken(self.TOKENS))
+        outcomes = run_job(self, "hold", ctx, self.AnyToken(self.TOKENS), cancel=cancel)
         return outcomes, [tuple(c[1:3]) for c in writes(self.api)]
 
     def serve_checks(self, checks):
@@ -22977,6 +23153,178 @@ class ImportCheckTest(ReaderRunner):
         final = bodies[-1] if bodies else label["body"]
         self.assertNotIn("The workflow recorded the check", final,
                          ({k: v for k, v in outcomes.items() if v != "skipped"}, wrote))
+
+    # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
+    # job failed or was cancelled (AFTER_FAILURE).
+    UNCLAIM = "Leave no label that says the workflow recorded the check"
+
+    def test_a_failed_or_cancelled_comment_or_hold_job_leaves_no_label_that_says_recorded_while_no_check_stands(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (G2; round 29, item 2): the label comment says that the workflow
+        recorded the check only while a success import check run stands, also after a comment job or a hold job that
+        failed or was cancelled. The CI review run 100 of mallory's #7 read the item 40 minutes ago, passed HEAD and
+        recorded 901, and the label comment (40) says that the workflow recorded the check, with the marker line of
+        HEAD. Rescreen run 130 read the item 20 minutes ago: its review gave a blocking finding, or its screen held
+        HEAD, and its post job withdrew 901. Then the label step of its comment job or of its hold job fails, as GitHub
+        refuses the read of #7's labels (502), or a cancel of the job ends that step. The last step of the job runs. No
+        success stands, so it writes the label comment of the state working in place of the claim. That label comment
+        keeps the marker line. The step writes nothing else, so no state label goes on or off. The controls: while 901
+        stands as run 100 left it, the claim is true, so the step writes nothing and its log says that the check run
+        stands; a label comment of the state change makes no claim, so the step writes nothing; a job in which no step
+        failed and that was not cancelled skips the step; and the job whose last step has the if 'false' leaves the
+        label comment that says that the workflow recorded the check."""
+        ci = dict(self.REVIEWED, started=ago(40))
+        passed = review_of(HEAD, at=ago(35), run=100, read=ci["started"])
+        _first, checks = self.judged([], "100", trust=ci)
+        self.assertEqual(self.successes(checks), [901])
+        marker = rules.import_marker(HEAD, self.LPS)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
+                 "body": rules.label_comment("import", "", [marker])}
+        change = dict(label, body=rules.label_comment("change", "", [marker]))
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
+        # Run 130 of each job: its post job's result, and the check runs of HEAD after it.
+        runs = {}
+        for name, screen in (("comment", "clean"), ("hold", "held")):
+            got, after = self.judged(checks, "130", verdict="blocking", screen=screen, trust=rescreen,
+                                     event="workflow_dispatch", comments=[passed, label], named=HEAD)
+            self.assertEqual((got["result"], got["post"]["withdrawn"], self.successes(after)), ("success", HEAD, []),
+                             self.logs[-4:])
+            runs[name] = got, after
+        # The label step of each job, which fails or is cancelled.
+        labelled = {"comment": self.LABEL, "hold": Holding.STEP}
+        refused = os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_issues_7_labels.fail")
+
+        def job(name, fail, comment, served, on=True):
+            """Run 130's job name (comment or hold) on #7, whose label comment is comment, while HEAD has the check
+            runs served: GitHub refuses the read of #7's labels (fail "read"), a cancel of the job ends its label step
+            (fail "cancel"), or neither (None). With on False, the job's last step has the if 'false'. (The outcome of
+            each step, the writes as (method, endpoint), the label comment bodies.)"""
+            last = step(name, self.UNCLAIM)
+            self.assertEqual(last["if"], AFTER_FAILURE)
+            self.serve_checks(served)
+            if fail == "read":
+                self.refuse(f"repos/{REPO}/issues/7/labels", 502, "Bad Gateway")
+            cancel = labelled[name] if fail == "cancel" else None
+            last["if"] = AFTER_FAILURE if on else "false"
+            try:
+                if name == "comment":
+                    outcomes, wrote, bodies, _mine = self.comment_job_after_post(
+                        runs[name][0], rescreen, "blocking", [passed, comment], "130", cancel=cancel)
+                else:
+                    outcomes, wrote = self.hold_job_after_post(runs[name][0], rescreen, [passed, comment], "130",
+                                                               cancel=cancel)
+                    bodies = [b for _m, _e, b in label_comments(self.api)]
+            finally:
+                last["if"] = AFTER_FAILURE
+                if os.path.exists(refused):
+                    os.remove(refused)
+            self.assertEqual(outcomes[labelled[name]], {"read": "failure", "cancel": "cancelled"}.get(fail, "success"),
+                             self.logs[-2:])
+            return outcomes, wrote, bodies
+
+        working = rules.label_comment("working", label["body"])
+        patch = ("PATCH", f"repos/{REPO}/issues/comments/40")
+        for name in ("comment", "hold"):
+            after = runs[name][1]
+            for fail in ("read", "cancel"):
+                with self.subTest(job=name, fail=fail):
+                    outcomes, base, bodies = job(name, fail, label, after, on=False)
+                    self.assertEqual(outcomes[self.UNCLAIM], "skipped")
+                    self.assertTrue(rules.says_recorded(([label["body"]] + bodies)[-1]), bodies)
+                    outcomes, wrote, bodies = job(name, fail, label, after)
+                    self.assertEqual((outcomes[self.UNCLAIM], wrote, bodies[-1]), ("success", base + [patch], working),
+                                     self.logs[-1])
+                    self.assertFalse(rules.says_recorded(bodies[-1]))
+                    self.assertIn(marker, bodies[-1].split("\n"))
+                    self.assertEqual(state_labels(self.api), [])
+                    self.assertIn("No such check run with the conclusion success stands now", self.logs[-1])
+                    for case, comment, served, said in (
+                            ("901 stands", label, checks, "and that check run stands."),
+                            ("no claim", change, after, "does not say that the workflow recorded the check")):
+                        outcomes, wrote, _bodies = job(name, fail, comment, served)
+                        self.assertEqual((outcomes[self.UNCLAIM], wrote), ("success", base), (case, self.logs[-1]))
+                        self.assertIn(said, self.logs[-1], case)
+            with self.subTest(job=name, fail=None):
+                outcomes, _wrote, _bodies = job(name, None, label, after)
+                self.assertNotIn("failure", outcomes.values(), self.logs[-3:])
+                self.assertEqual(outcomes[self.UNCLAIM], "skipped")
+
+    def test_the_last_step_writes_the_state_working_in_place_of_a_claim_that_no_check_run_shows(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (G2): the comment job and the hold job have one script in their last
+        step (rules.py unclaim). #7's label comment (40) says that the workflow recorded the check on HEAD, with the
+        marker line of HEAD. Only a success import check run of HEAD that holds that marker line shows that claim. (a)
+        GitHub refuses the read of the check runs of HEAD (502): nothing shows the claim, so the step writes the label
+        comment of the state working in its place, exits 0, and its log says that GitHub did not give the check runs.
+        (b) A success import check run of HEAD stands, but its output text holds the marker line of another value of
+        REPO_PAIRS_IMPORT_PATHS: it records another decision and does not show the claim, so the step writes the state
+        working too. The control of (b): the same check run with the marker line of the label comment shows the claim,
+        and the step writes nothing."""
+        script = step("comment", self.UNCLAIM)["run"]
+        self.assertEqual(step("hold", self.UNCLAIM)["run"], script)
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
+                 "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        working = rules.label_comment("working", label["body"])
+        self.serve(f"repos/{REPO}/issues/7/comments", [review_of(HEAD, at=ago(35)), label])
+
+        def check(value):
+            """The success import check run 901 of HEAD that run 100 recorded on the value value."""
+            return dict(rules.check_run("7", HEAD, value, False, "100", ago(40)), id=901, app={"id": VERIFY_APP_ID})
+
+        # The case of the refused read comes last: GitHub refuses that read from then on.
+        for case, checks, said, bodies in (
+                ("a success of another value", [check("theories/**")],
+                 "No such check run with the conclusion success stands now", [working]),
+                ("a success of the value of the label comment", [check(self.LPS)], "and that check run stands.", []),
+                ("the check runs refused", None, f"GitHub did not give the check runs of {HEAD}", [working])):
+            with self.subTest(case=case):
+                if checks is None:
+                    self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+                else:
+                    self.serve_checks(checks)
+                self.forget()
+                rc, out, _ = self.run_script(script, NUMBER="7")
+                self.assertEqual((rc, label_comments(self.api), len(writes(self.api))),
+                                 (0, [("PATCH", f"repos/{REPO}/issues/comments/40", b) for b in bodies], len(bodies)),
+                                 out)
+                self.assertIn(said, out)
+
+    def test_the_last_step_fails_when_github_refuses_and_reads_only_the_newest_label_comment(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (G2): the last step of the comment job and of the hold job (rules.py
+        unclaim) fails when it cannot do its work, so that the rescreen pass runs the failed jobs of the run again
+        (held.sh due_rerun). HEAD has no import check run, so no check run shows a claim. GitHub refuses the read of
+        #7's comments: the step exits with a status that is not 0 and writes nothing. GitHub refuses the write of the
+        label comment (the PATCH of comment 40) in place of a claim: the step exits with a status that is not 0. Only
+        the newest label comment of github-actions[bot] counts, as for each reader of the label comment: an older one
+        that says that the workflow recorded the check, before a newer one of the state change, gets no write, and the
+        status is 0. A NUMBER that is not a number fails the step with its error, before any call of gh."""
+        script = step("comment", self.UNCLAIM)["run"]
+        marker = rules.import_marker(HEAD, self.LPS)
+        older = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
+                 "body": rules.label_comment("import", "", [marker])}
+        newer = {"id": 41, "user": {"login": BOT}, "created_at": ago(10), "updated_at": ago(10),
+                 "body": rules.label_comment("change", "", [marker])}
+        patch = ["--method", "PATCH", f"repos/{REPO}/issues/comments/40", "-f",
+                 f"body={rules.label_comment('working', older['body'])}", "--jq", ".html_url"]
+        for case, comments, endpoint, want, said in (
+                ("an older claim", [older, newer], None, (0, []),
+                 "does not say that the workflow recorded the check"),
+                ("the comments refused", [older], f"repos/{REPO}/issues/7/comments", (1, []),
+                 "::error::rules.py: gh: Bad Gateway (HTTP 502)"),
+                ("the write refused", [older], f"repos/{REPO}/issues/comments/40", (1, [patch]),
+                 "::error::rules.py: gh: Bad Gateway (HTTP 502)")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.serve(f"repos/{REPO}/issues/7/comments", comments)
+                if endpoint:
+                    self.refuse(endpoint, 502, "Bad Gateway")
+                rc, out, _ = self.run_script(script, NUMBER="7")
+                self.assertEqual((rc, writes(self.api)), want, out)
+                self.assertIn(said, out)
+        for number in ("x7", "07", ""):
+            with self.subTest(number=number):
+                self.forget()
+                rc, out, _ = self.run_script(script, NUMBER=number)
+                self.assertEqual((rc, out, self.calls()), (1, f"::error::not a number: {number}\n", []))
 
     # The call of newer_word that reads each carrier of a word on HEAD (head_words), and the filter of its words.
     NEWER_WORDS = "head_words(comments, head, checks), run=run"

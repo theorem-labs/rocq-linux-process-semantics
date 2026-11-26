@@ -8,6 +8,7 @@ labels").
     python3 .github/review/rules.py owed <number> owed=<head, why, run and read> withdrawn=<head> own=<true or false>
         task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
+    python3 .github/review/rules.py unclaim <number>
     python3 .github/review/rules.py log <number> <head> <decision> <cause> <read> [<field> <value> ...]
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
@@ -112,6 +113,19 @@ withdraws for every author. For that answer, withdrawn=<head> also reads the lab
 architect, 2026-11-24 16:19Z, F5). When it says that the workflow recorded the check on <head> (the state import),
 this reads the import check runs of <head> again. When no such check run with the conclusion success stands now, the
 label comment becomes the one of the state decide with the decision gone (GONE). No state label goes on or off.
+
+unclaim: the last step of a comment job or a hold job that failed or was cancelled (OSSV-613's architect, 2026-11-25
+23:02Z, G2). Whichever step failed, the label comment of <number> must not say that the workflow recorded the check
+`repo-pairs/import-approved` when no such check run stands. Only the newest label comment of github-actions[bot]
+counts. It makes that claim when its next step and its text are those of the state import (says_recorded). Its marker
+line <!-- repo-pairs-import-paths <head>: <value> --> names the head, for any author. A label comment that makes no
+such claim, or holds no such marker line, stays as it is, and the status is 0. Else this reads the import check runs
+of <head> (import_checks, with OSS_VERIFY_APP_ID). When one with the conclusion success and that marker line stands,
+the claim is true, and this writes nothing. Else, and also when GitHub does not give the check runs, this writes the
+label comment of the state working in its place. That label comment keeps each marker line of KEPT, and it says that
+the workflow tries again. The state working has no state label, so this adds and takes off no state label. The status
+is 1 when GitHub does not give the label comments or does not take the write. Nothing more can be done then, and the
+re-run of the failed jobs of the run tries again (held.sh due_rerun).
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -1421,13 +1435,18 @@ def set_state(number, run, facts, markers=(), head="", comments=None):
 IMPORT_LINE = re.compile(r"<!-- repo-pairs-import-paths ([0-9a-f]{40}): (.*) -->")
 
 
-def record_line(body, head):
-    """(line, value) when body, a label comment of BOT, says that the workflow recorded the import check run on head:
-    its next step and its text are those of the state import, and it holds the marker line of R12 of head
-    (import_marker), line, with value, the text of REPO_PAIRS_IMPORT_PATHS (None for null) on which the record
-    rested. Else None."""
+def says_recorded(body):
+    """True when body, a label comment of BOT, says that the workflow recorded the import check run: its next step and
+    its text are those of the state import."""
     _label, step, text = STATES["import"]
-    if not body.startswith(f"{FIRST}\n**Next step:** {step}\n\n{text}"):
+    return body.startswith(f"{FIRST}\n**Next step:** {step}\n\n{text}")
+
+
+def record_line(body, head):
+    """(line, value) when body, a label comment of BOT, says that the workflow recorded the import check run on head
+    (says_recorded), and it holds the marker line of R12 of head (import_marker), line, with value, the text of
+    REPO_PAIRS_IMPORT_PATHS (None for null) on which the record rested. Else None."""
+    if not says_recorded(body):
         return None
     for line in body.split("\n"):
         m = IMPORT_LINE.fullmatch(line)
@@ -1457,6 +1476,16 @@ def import_checks(number, head):
     return [c for c in checks if ours(c)]
 
 
+def record_stands(checks, line):
+    """True when one of checks, the import check runs of a head, has the conclusion success and holds line, the marker
+    line of R12 of its label comment (import_marker), in its output text."""
+    def record(c):
+        output = c.get("output") if isinstance(c.get("output"), dict) else {}
+        return c.get("conclusion") == "success" and line in str(output.get("text") or "").split("\n")
+
+    return any(record(c) for c in checks)
+
+
 def unrecord(number, head):
     """For an author whose write access GitHub did not give, after a run of that author finished the withdrawal of the
     import check runs of head (owe; OSSV-221's architect, 2026-11-24 16:19Z, F5). When the label comment of the item
@@ -1473,12 +1502,7 @@ def unrecord(number, head):
     if found is None:
         return None
     line, value = found
-
-    def record(c):
-        output = c.get("output") if isinstance(c.get("output"), dict) else {}
-        return c.get("conclusion") == "success" and line in str(output.get("text") or "").split("\n")
-
-    if any(record(c) for c in import_checks(number, head)):
+    if record_stands(import_checks(number, head), line):
         print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and "
               "that check run stands.")
         return None
@@ -1489,6 +1513,40 @@ def unrecord(number, head):
           "which says that a run withdrew the check. GitHub did not say whether the author has write access, so this "
           "step did not add or remove a state label.")
     return [*labels[:-1], dict(old, body=body)]
+
+
+def unclaim(number):
+    """The last step of a comment job or a hold job that failed or was cancelled: whichever step failed, the label
+    comment of the item number never keeps a claim that is not true (OSSV-613's architect, 2026-11-25 23:02Z, G2). The
+    claim is the text that says that the workflow recorded the check on a head (says_recorded), with the marker line of
+    R12 of that head (IMPORT_LINE): the head is the one of that marker line, for any author. Only the newest label
+    comment counts. This reads the import check runs of that head (import_checks). When one with the conclusion success
+    and that marker line stands, the claim is true, and this writes nothing. Else, and also when GitHub does not give
+    the check runs, this writes the label comment of the state working in its place (the marker lines of KEPT stay).
+    That state has no state label, so this adds and takes off no state label. A label comment with no such claim stays
+    as it is. GhError when GitHub does not give the label comments or does not take the write: nothing more can be
+    done here, and the re-run of the failed jobs of the run tries again (held.sh due_rerun)."""
+    labels = read_labels(number)
+    old = labels[-1] if labels else None
+    named = next((m for m in map(IMPORT_LINE.fullmatch, old["body"].split("\n")) if m), None) if old else None
+    if named is None or not says_recorded(old["body"]):
+        print(f"#{number}: its label comment does not say that the workflow recorded the check `{CHECK}`, so this "
+              "step changes nothing.")
+        return
+    head = named.group(1)
+    try:
+        if record_stands(import_checks(number, head), named.group(0)):
+            print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and "
+                  "that check run stands.")
+            return
+        why = "No such check run with the conclusion success stands now: a run withdrew it."
+    except (GhError, ValueError) as e:
+        why = (f"GitHub did not give the check runs of {head} ({' '.join(str(e).split())}), so this step cannot show "
+               "that such a check run stands.")
+    write_label(number, old, label_comment("working", old["body"]))
+    print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. {why} So this "
+          "step wrote the label comment of the state working, which does not say that the workflow recorded the "
+          "check. This step did not add or remove a state label.")
 
 
 def owe(number, run, owed="", withdrawn="", own=False):
@@ -3501,6 +3559,9 @@ def main(argv):
             return 3
         if len(argv) == 3 and argv[0] == "hold-head" and NUMBER.fullmatch(argv[1]):
             return 0 if held_head(argv[1], argv[2]) else 3
+        if len(argv) == 2 and argv[0] == "unclaim" and NUMBER.fullmatch(argv[1]):
+            unclaim(argv[1])
+            return 0
         if len(argv) >= 6 and argv[0] == "log" and len(argv) % 2 == 0:
             names = argv[6::2]
             if len(set(names)) != len(names):
