@@ -745,7 +745,8 @@ stopped() {
   [ "$of" != rescreen ] || of=review runs="rescreen or review"
   [ -z "${3:-}" ] || from="after run $3, which settled its hold"
   echo "::error::#$number: $from, $2 runs of $runs were tries that settled nothing, with no new hold. The work" \
-    "of the hold is not tried again. The label comment will name the next step for Sami."
+    "of the hold is not tried again. The stop's comment job writes its hold comment, and the label comment of the" \
+    "stop when the label rule allows it."
   case $1 in
     answer) title="Automated answer held." work="the automated answer" ;;
     draft) title="Automated reply held." work="the automated reply" ;;
@@ -798,8 +799,8 @@ head_stopped() {
       title="Automated close and reopen held."
       text="The workflow tried $2 times to close and reopen this pull request so that GitHub starts the checks of $commit. No try finished." ;;
   esac
-  echo "::error::#$number at $head: $text It is not tried again, and the label comment will name the next step" \
-    "for Sami."
+  echo "::error::#$number at $head: $text It is not tried again: the stop's comment job writes its hold comment, and" \
+    "the label comment of the stop when the label rule allows it."
   halt "head-$of" tries_used_up "$of" "$title" "$text The workflow does not try it again."
 }
 # left_stopped <tries>: the catch-up that closed #number could not reopen it after <tries> runs that only
@@ -809,7 +810,8 @@ head_stopped() {
 # (gave_up).
 left_stopped() {
   echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
-    "tried again, and the label comment will name the next step for Sami."
+    "tried again. The stop's comment job writes its hold comment, and the label comment of the stop when the label" \
+    "rule allows it."
   halt reopen left_closed catchup "Automated close and reopen held." \
     "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
 }
@@ -986,7 +988,8 @@ answer_stopped() {
   local what="this issue"
   [ "$kind" != pr ] || what="this pull request"
   echo "::error::#$number: $2 answer runs of comment $1 counted a try and posted nothing: the answer is not tried" \
-    "again, and the label comment will name the next step for Sami."
+    "again. The stop's comment job writes its hold comment, and the label comment of the stop when the label rule" \
+    "allows it."
   halt answer-post tries_used_up answer "Automated answer held." "The workflow tried the automated answer to your comment on $what $2 times, and none of these tries posted it. The workflow does not try it again. You do not need to do anything."
 }
 # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
@@ -1059,7 +1062,8 @@ due_answer() {
 # came before, so the text does not say that the workflow held the issue.
 draft_stopped() {
   echo "::error::#$number: $1 draft runs counted a try and stored no draft, with no hold: the draft is not tried" \
-    "again, and the label comment will name the next step for Sami."
+    "again. The stop's comment job writes its hold comment, and the label comment of the stop when the label rule" \
+    "allows it."
   halt hold-draft tries_used_up draft "Automated reply held." "The workflow tried the automated reply $1 times, and none of these tries finished. The workflow does not try it again. You do not need to do anything."
 }
 # due_draft: the draft of the reply to an outside issue whose label comment holds neither a stored draft nor
@@ -1243,6 +1247,16 @@ due_retry() {
   fi
   owe "$ended" "$2" "" "$head" - "the post job of run $run $how"
 }
+# unclaimed <run>: whether, in the newest attempt of <run> ($seen/jobs-<run>, which facts read), the last step of each
+# comment job and hold job that failed or was cancelled succeeded: "Leave no label that says the workflow recorded the
+# check" (rules.py unclaim), which GitHub runs after a step of its job failed or was cancelled. A step that failed, was
+# cancelled or did not run did not succeed, and neither did a step of a list of jobs that jq cannot read.
+unclaimed() {
+  [ "$(jq -rs 'all(.[] | select((.name == "comment" or .name == "hold")
+      and (.conclusion == "failure" or .conclusion == "cancelled"));
+    any(.steps[]?; .name == "Leave no label that says the workflow recorded the check" and .conclusion == "success"))' \
+    "$seen/jobs-$1")" = true ]
+}
 # due_rerun: the comment job or the hold job of a run of #number failed or was cancelled, while its post job succeeded
 # or was skipped (OSSV-613's architect, 2026-11-25 23:02Z, item 3b). The run is the newest such run, by when GitHub
 # made it, of the reviews, rescreens, relabels and approvals of the head and of the answers of #number (the name of an
@@ -1250,19 +1264,46 @@ due_retry() {
 # that wrote all it owed does not hide it: a run that GitHub made earlier can read the item later, so its word can be
 # the newest one, and the step of its failed job that skips its posts gives way when it is not (rules.py newer-word).
 # That run wrote only a part of what it owed on the item (a review comment, a hold comment, a label, a label comment).
-# Its last step left no label comment that says that the workflow recorded the check while no such check run stands
-# (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run again (restart, as rerun does): the post
-# job of that run does not run again. The App's retry takes a run whose post job failed or was cancelled (due_retry).
+# Its last step, when it succeeds, leaves no label comment that says that the workflow recorded the check while no such
+# check run stands (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run again (restart, as rerun
+# does): the post job of that run does not run again. The App's retry takes a run whose post job failed or was
+# cancelled (due_retry).
 # A re-run is one more attempt of the run (its run_attempt, the column 13 of $seen/runs). It starts only while that
 # attempt is below REVIEW_TRIES, and the log gives the number of the attempt that starts. At REVIEW_TRIES attempts the
-# failed jobs do not run again, and the log gives the count. Then the work is not tried again (head_stopped: review for
-# a review or a rescreen, approval for an approval, import for a relabel), unless a hold that is not tried again names
-# the head already (a hold of the screen, or the stop of an earlier pass), and but for an answer, whose comment the
-# pass answers again by itself (due_answer). When GitHub refuses the re-run, nothing is taken and no run starts in
-# its place: the next pass tries the re-run again. A head that this pass already starts a run for, or whose hold the
-# pass tries again (retaken), gets no re-run: that run takes its place.
+# failed jobs do not run again, and the log gives the count. Then unclaimed gives whether the last step of each comment
+# job and hold job of the run that failed or was cancelled, "Leave no label that says the workflow recorded the check"
+# (rules.py unclaim), succeeded in the newest attempt (OSSV-613's architect, round 30, item 2). When it did, the label
+# comment holds no such claim, and the work is not tried again (head_stopped: review for a review or a rescreen,
+# approval for an approval, import for a relabel), unless a hold that is not tried again names the head already (a
+# hold of the screen, or the stop of an earlier pass), and but for an answer, whose comment the pass answers again by
+# itself (due_answer). When it did not (it failed, was cancelled or did not run: GitHub refused its read of the label
+# comments on each try, say), the label comment can still say that the workflow recorded the check while no such
+# check run stands, and no job of the run writes again. Then, in this order:
+# - a stop of the head that GitHub made after the run ended: nothing more. Its comment job writes the label comment of
+#   that stop when the label rule allows it (for an author whose write access GitHub did not give, the label call
+#   changes no label comment), so each run gets at most one stop;
+# - a hold that is not tried again, of the work import, names the head (the stop of the import check of the head):
+#   for any task, the stop of the import check again (head_stopped import), which takes the place of that hold
+#   (replaced_hold) and makes no write of the App. A relabel's post job could write a check run of the head, which
+#   that stop ends;
+# - a relabel, and a review, a rescreen or an approval with no hold that is not tried again and names the head: the
+#   stop of its work (head_stopped: import for a relabel, review for a review or a rescreen, approval for an approval);
+# - an answer, and a review, a rescreen or an approval while another hold that is not tried again names the head (a
+#   hold of the screen, say): nothing more when a relabel of the head that GitHub made after the run ended did work
+#   after its trust job, as the label comment is that relabel's to set. When the comment job or the hold job of that
+#   relabel failed, this takes that relabel, and when its post job failed, the App's retry does (due_retry). After
+#   REVIEW_TRIES such relabels that their trust jobs stopped (no review, hold comment or merge conflict of the
+#   workflow names the head, say), the stop of the import check (head_stopped import). Else one relabel of the head
+#   in this pass: its label step writes the label comment from what the workflow wrote of the head when the label
+#   rule allows it, and by R12 that comment says that the workflow recorded the check only while a check run with the
+#   conclusion success and the marker line of the head stands.
+# consider calls this for no issue, and the label comment of an issue never says that the workflow recorded the check:
+# the state import is for a pull request of an outside author alone (rules.py label_state). When GitHub refuses the
+# re-run, nothing is taken and no run starts in its place: the next pass tries the re-run again. A head that this pass
+# already starts a run for, or whose hold the pass tries again (retaken), gets no re-run: that run takes its place.
 due_rerun() {
   local created ended id task f post early commented hold_job run="" which="" how="" attempt work
+  local stood what made relabel stop idle
   [ -z "$retaken" ] || return 0
   if awk -v n="$number" '$2 == n { found = 1 } END { exit !found }' "$seen/due"; then return 0; fi
   while read -r created ended id task; do
@@ -1304,9 +1345,70 @@ due_rerun() {
   if (( attempt >= REVIEW_TRIES )); then
     echo "#$number: the $which job of run $run $how. That run is at attempt $attempt of $REVIEW_TRIES: its failed" \
       "jobs do not run again."
-    [ -n "$work" ] || return 0
-    [ -z "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ] || return 0
-    head_stopped "$work" "$attempt"
+    # The work of each hold that is not tried again and names the head (holds).
+    stood=$(awk -v h="$head" '$3 == "-" && $9 == h { print $1 }' <<< "$hold")
+    if unclaimed "$run"; then
+      [ -n "$work" ] || return 0
+      [ -z "$stood" ] || return 0
+      head_stopped "$work" "$attempt"
+      return 0
+    fi
+    echo "#$number: in run $run, the step \"Leave no label that says the workflow recorded the check\" of a job that" \
+      "failed or was cancelled did not succeed. So the label comment can still say that the workflow recorded the" \
+      "check repo-pairs/import-approved while no such check run stands."
+    # The newest stop of the head that GitHub made after the run ended: its comment job writes the label comment of
+    # that stop when the label rule allows it, so one stop is enough for each run.
+    stop=$(runs_of stop "$head" | awk -v e="$ended" '$1 > e { s = $3 } END { print s }')
+    if [ -n "$stop" ]; then
+      echo "#$number: stop run $stop of $head was made after run $run ended, so the rescreen pass starts nothing more" \
+        "for run $run."
+      return 0
+    fi
+    if [ -n "$(awk '$1 == "import"' <<< "$stood")" ]; then
+      echo "#$number: the stop of the import check of $head names it, so the rescreen pass starts no relabel, whose" \
+        "post job could write a check run of $head. It starts the stop of the import check of $head again; its" \
+        "comment job writes the label comment of that stop when the label rule allows it."
+      head_stopped import "$attempt"
+      return 0
+    fi
+    if [ "$task" = relabel ] || { [ -n "$work" ] && [ -z "$stood" ]; }; then
+      what=$work
+      [ "$work" != import ] || what="import check"
+      echo "#$number: the rescreen pass starts the stop of the automated $what of $head; its comment job writes the" \
+        "label comment of that stop when the label rule allows it."
+      head_stopped "$work" "$attempt"
+      return 0
+    fi
+    # The relabels of the head that GitHub made after the run ended: one that did work after its trust job sets the
+    # label comment; idle counts those that their trust jobs stopped.
+    idle=0
+    while read -r made _ relabel; do
+      [[ $made > $ended ]] || continue
+      f=$(facts "$relabel") || { echo "::error::the jobs of run $relabel could not be read."; return 1; }
+      read -r _ _ _ _ early _ <<< "$f"
+      if [ "$early" = stopped ]; then idle=$((idle + 1)); continue; fi
+      echo "#$number: relabel run $relabel of $head was made after run $run ended, and did work after its trust job." \
+        "The rescreen pass leaves the label comment to that relabel, and starts nothing more for run $run."
+      return 0
+    done < <(runs_of relabel "$head")
+    if (( idle >= REVIEW_TRIES )); then
+      echo "#$number: the trust job stopped each relabel of $head made after run $run ended ($idle of them), so the" \
+        "rescreen pass starts no more relabels. It starts the stop of the import check of $head; its comment job" \
+        "writes the label comment of that stop when the label rule allows it."
+      head_stopped import "$attempt"
+      return 0
+    fi
+    what="run $run is an answer"
+    [ -z "$work" ] || what="a hold that is not tried again names $head already"
+    echo "#$number: $what, so the rescreen pass starts one relabel of $head. Its label step writes the label comment" \
+      "from what the workflow wrote of $head when the label rule allows it. By R12, that label comment says that the" \
+      "workflow recorded the check only while such a check run of $head stands."
+    if (( idle > 0 )); then
+      echo "#$number: the trust job stopped each relabel of $head made after run $run ended ($idle of them). After" \
+        "$REVIEW_TRIES such relabels, the rescreen pass starts the stop of the import check of $head instead."
+    fi
+    owe "$ended" relabel "" "$head" - "the label comment can say that the workflow recorded the check after run $run"
+    taken=1
     return 0
   fi
   restart "$run" || { echo "#$number: the next rescreen pass tries the failed jobs of run $run again."; return 0; }

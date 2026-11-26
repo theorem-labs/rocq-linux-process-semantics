@@ -3423,8 +3423,9 @@ jobs:
       # a screen held the head after each review that screened it, the newest review of the head gives a blocking
       # finding or the verdict person, or the label comment holds the line
       # <!-- withdraw-owed <head> <why> <run> <read> --> (held.sh, consider). Such a relabel records no check run. After
-      # REVIEW_TRIES failed tries, this run among them, the head is not tried again, and the label comment names the
-      # next step for Sami (held.sh, head_stopped). A later run of the head whose trust job failed or was cancelled (it
+      # REVIEW_TRIES failed tries, this run among them, the head is not tried again: the pass starts the stop of the
+      # import check of the head (held.sh, head_stopped), whose comment job writes the label comment of that stop when
+      # the label rule allows it. A later run of the head whose trust job failed or was cancelled (it
       # ran out of time, say) counts a try too (held.sh failures). So the error says so. The pass tries no App write of
       # another author's pull request again (held.sh, consider and access_of), so for such an author, and for a run
       # whose name gives no head, the error says to re-run this run. The error of a run with no start time names no
@@ -3497,8 +3498,9 @@ jobs:
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
-            again+=" step for Sami."
+            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the import"
+            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
+            again+=" allows it."
           fi
           # Each import check run of the OSS Verify App for this pull request on the head, with its conclusion,
           # completed_at and summary, and the output text that a withdrawal keeps.
@@ -3669,8 +3671,9 @@ jobs:
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
-            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, the label comment names the next"
-            again+=" step for Sami."
+            again+=" run ends. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the import"
+            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
+            again+=" allows it."
           fi
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
@@ -3724,7 +3727,9 @@ jobs:
             again+=" verdict or the screen of this run, that relabel withdraws each import check run with the"
             again+=" conclusion success. It leaves one only when the run that recorded it read #$NUMBER after that"
             again+=" verdict or screen. It records no check run that says that the head is not approved. After"
-            again+=" $REVIEW_TRIES failed tries, this one included, the label comment names the next step for Sami."
+            again+=" $REVIEW_TRIES failed tries, this one included, the rescreen pass starts the stop of the import"
+            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
+            again+=" allows it."
           fi
           request=$RUNNER_TEMP/not-approved.json
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -3870,8 +3875,9 @@ jobs:
           # (held.sh, due_approve and head_stopped approval).
           refuse() {
             echo "::error::$1 This run approves no run of $HEAD. The rescreen pass tries the approval of $HEAD again" \
-              "in a later run, at most once an hour. After $REVIEW_TRIES failed tries, it does not try again, and the" \
-              "label comment names the next step for Sami."
+              "in a later run, at most once an hour. After $REVIEW_TRIES failed tries, it does not try again: it" \
+              "starts the stop of the approval of $HEAD, whose comment job writes the label comment of that stop" \
+              "when the label rule allows it."
             exit 1
           }
           [[ $count =~ ^[0-9]+$ ]] || refuse "#$NUMBER gives no count of changed files."
