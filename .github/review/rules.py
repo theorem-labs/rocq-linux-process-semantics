@@ -26,6 +26,7 @@ labels").
     python3 .github/review/rules.py relabel-withdraws <number> <head> <comments.jsonl>
     python3 .github/review/rules.py words < <comments.jsonl>
     python3 .github/review/rules.py holds < <comments.jsonl>
+    python3 .github/review/rules.py replaced-hold <work> <screen> <head> <started> < <comments.jsonl>
     python3 .github/review/rules.py stays <head> <started> <kind> <work> < <words.jsonl>
     python3 .github/review/rules.py outranks <time> <kind> <time> <kind>
     python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <task> <verdict> <kind> <route>
@@ -337,6 +338,18 @@ the screen counts from the time when its run read the item (its marker <!-- revi
 hold, or one with no such marker, from when GitHub last changed it (word_time), and of holds at the same time the later
 as the API lists them is the newest (newest_word; OSSV-613's architect, round 30, item 1). held.sh holds and the
 comment job's label step read it. It writes nothing. The status is 2 when a line is not a comment.
+
+replaced-hold: the id of the hold comment of github-actions[bot] that a new hold of <work> replaces (replaced_hold),
+from the comments of standard input, one JSON object on each line as the API lists them, or nothing: then the new hold
+posts a comment of its own. <work> is the work of the new hold (review, answer, draft, approve, import or catchup, as
+hold_work gives it), <screen> true for a new hold of the screen and false else, <head> the head that the new hold
+names (- for none), and <started> the time when the trust job of its run read the item (- for none), which it compares
+as text with the time of each hold. A hold of the screen is replaced only by a new hold of the screen of the same
+head, and a new hold of the screen with a <started> replaces no hold that counts from a time after it. Of the holds
+that may be replaced, the newest goes, by the time from which each counts (word_time) and, of holds at the same time,
+the later as the API lists them (newest_word; OSSV-613's architect, round 30, item 1). held.sh replaced_hold reads it,
+for each writer of a hold comment. It writes nothing.
+The status is 2 when <work>, <screen>, <head> or a line is not one of these, or when that hold comment has no id.
 
 stays: "<last> <tried> <stays>" on standard output for the comment job's label step: the newest hold that stops the
 labels of this run, and whether it outranks the own word of this run, (<started>, <kind>), in the order of the words on
@@ -811,14 +824,17 @@ LOG_DECISIONS = {
               "success for this head."),
     "writer": ("The author is not known to be an outside author, so this run records no import check run with the "
                "conclusion success."),
-    "held": ("In a relabel or a review by hand, the newest hold of the screen that names the head outranks each "
-             "screened review of the head. Such a hold is a hold comment, the withdraw-owed line for screen, or an "
-             "import check run for screen. In a run on the route screen, a hold of the screen that names the head "
-             "outranks the pass of this run. So this run records no import check run with the conclusion success."),
-    "hand": ("This run records no import check run with the conclusion success, and the comments of the head give no "
-             "reason to withdraw one. In a review by hand, a later step can still withdraw for the verdict of this "
-             "run's own review. In a relabel, which gives no verdict of its own, a later step withdraws only for an "
-             "import check run that no newer pass lifts."),
+    "held": ("In a relabel or a review by hand, a hold of the screen that names the head outranks each screened review "
+             "of the head. Such a hold is a hold comment of the screen or the withdraw-owed line for screen. In a run "
+             "on the route screen, such a hold of another run outranks the pass of this run. For an outside author, a "
+             "relabel whose newest review is a screened pass also counts an import check run for screen as such a "
+             "hold. So this run records no import check run with the conclusion success."),
+    "hand": ("This run records no import check run with the conclusion success. No word that this step reads gives a "
+             "reason to withdraw one, except a word that the newest screened review outranks. A later step can still "
+             "withdraw for the newest word that withdraws, unless a screened review that passes outranks it. That word "
+             "is a review comment, the withdraw-owed line or a hold of the screen. An import check run is that word "
+             "only while a success that it withdraws stands. In a review by hand, the verdict of this run's own "
+             "review can also withdraw."),
     "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
                  "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
                  "keep line of the step that finds those check runs names that time in the field from. The later step "
@@ -2290,8 +2306,9 @@ WITHDRAWING = ("blocking", "person")
 # that withdraws (withdraw_word). The comment and hold jobs post nothing while a word of another run outranks their
 # own (newer_word), and the label step writes no label while a hold of its head outranks its own word (stays). A
 # relabel, a review by hand and the rescreen pass read the newest word (review_verdict, relabel_facts, and held.sh
-# relabel_withdraws through the command relabel-withdraws, with the import check runs of the head), and the rescreen
-# pass and the label step the newest hold of each work (newest_holds, through the command holds). The line gives its
+# relabel_withdraws through the command relabel-withdraws, with the import check runs of the head), the rescreen pass
+# and the label step the newest hold of each work (newest_holds, through the command holds), and each writer of a hold
+# comment the hold that it replaces (replaced_hold, through the command replaced-hold). The line gives its
 # reason only while the newest screened review comment does not outrank it (owed_reason): so an older read's line
 # never withdraws a newer read's record.
 RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "refused": 2, "neutral": 2, "hold": 3}
@@ -2865,9 +2882,11 @@ def owed_why(words, state, why, started="", own=""):
     return "screen" if found.kind == "hold" else found.kind
 
 
-# The work of a hold comment, as held.sh holds and the comment job's label step read it (newest_holds, stays), in the
-# words of held.sh works: the task of the marker of a hold that is tried again (review for a marker with no task), else
-# the work of its title (TITLE_WORK), else review.
+# The work of a hold comment, as held.sh holds and replaced_hold and the comment job's label step read it (newest_holds,
+# replaced_hold, stays). Each work has hold comments of its own, so that a hold of one work never takes the place of a
+# hold of another, and the rescreen pass takes each work again. The work is the task of the marker of a hold that is
+# tried again (answer, draft or approve; review for a marker with no task, which a rescreen takes again), else the work
+# that its title names (TITLE_WORK: answer, draft for a reply, approve, import or catchup), else review.
 HOLD_TASK = re.compile(r"\n<!-- review-held-(?:limit|cap|transient) [0-9]+(?: [0-9]+(?: (answer|draft|approve)"
                        r"(?: [1-9][0-9]*)?)?)? -->(?:\n|$)")
 HOLD_TITLE = re.compile(r"<!-- review-held -->\n[*][*]Automated (answer|reply|start of the checks|check for the import"
@@ -2901,6 +2920,33 @@ def newest_holds(comments):
             word = Word(word_time(c), "hold", "", "hold", hold_fact(body), False, None, c)
             found.setdefault(hold_work(body), []).append(word)
     return {work: newest_word(found[work]).comment for work in sorted(found)}
+
+
+def replaced_hold(comments, work, screen, head, started=""):
+    """The hold comment of BOT among comments, the item's comments as the API lists them (with updated_at), that a new
+    hold of work (hold_work) replaces, or None: then the new hold posts a comment of its own (held.sh replaced_hold, the
+    one rule of each writer of a hold comment). screen is True for a new hold of the screen, head is the head that the
+    new hold names ("" for none), and started is the time when the trust job of its run read the item ("" for none). A
+    hold of the screen (hold_fact screen_held) is replaced only by a new hold of the screen that names the same head
+    (HELD_HEAD), or none as it does. Each other hold of work is replaced by any new hold of work. A new hold of the
+    screen with a started replaces no hold that counts from a time after started (word_time). Of the holds that the new
+    hold may replace, it replaces the newest by the one model of the order of the words (OSSV-613's architect, round 30,
+    item 1): a hold of the screen counts from the time when its run read the item (HELD_READ), any other hold, or one
+    with no such marker, from its updated_at (word_time), and of holds at the same time the later as the API lists them
+    is the newest (newest_word)."""
+    found = []
+    for c in comments:
+        body = c.get("body") or ""
+        if not (of_bot(c) and body.startswith("<!-- review-held -->") and hold_work(body) == work):
+            continue
+        fact, named, at = hold_fact(body), HELD_HEAD.search(body), word_time(c)
+        if fact == "screen_held" and not (screen and (named.group(1) if named else "") == head):
+            continue
+        if screen and started and at > started:
+            continue
+        found.append(Word(at, "hold", "", "hold", fact, False, None, c))
+    newest = newest_word(found)
+    return newest.comment if newest else None
 
 
 def stays(comments, head, started, own, work):
@@ -3833,6 +3879,20 @@ def main(argv):
                 raise ValueError("a line of standard input is not a comment")
             for work, c in newest_holds(comments).items():
                 print(json.dumps(dict(c, work=work), ensure_ascii=False))
+            return 0
+        # <started> is compared as text with the time of each hold (word_time): the hold job stops a hold of the screen
+        # whose STARTED is not a time before it calls replaced_hold, and halt gives none.
+        if (len(argv) == 5 and argv[0] == "replaced-hold" and (argv[1] == "review" or argv[1] in TITLE_WORK.values())
+                and argv[2] in ("true", "false") and (HEAD.fullmatch(argv[3]) or argv[3] == "-")):
+            comments = [loads(line) for line in sys.stdin if line.strip()]
+            if not all(isinstance(c, dict) for c in comments):
+                raise ValueError("a line of standard input is not a comment")
+            found = replaced_hold(comments, argv[1], argv[2] == "true", "" if argv[3] == "-" else argv[3],
+                                  "" if argv[4] == "-" else argv[4])
+            if found is not None:
+                if not NUMBER.fullmatch(str(found.get("id"))):
+                    raise ValueError(f"a hold comment has no id: {found.get('id')!r}")
+                print(found["id"])
             return 0
         if (len(argv) == 5 and argv[0] == "outranks" and all(TIME.fullmatch(t) or t == "" for t in argv[1::2])
                 and all(k in RANKS for k in argv[2::2])):

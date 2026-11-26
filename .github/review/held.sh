@@ -8,8 +8,9 @@
 #   counts as a try of a run, and calls replaced_hold, the one rule of each writer of a hold comment.
 # Before each of the first two steps, its job checks out this file, trusted.sh and rules.py, the files beside it, alone,
 # at the commit whose workflow file runs (github.sha, a commit of main). The hold job checks out main's .github/. So a
-# file of main runs, and never a file of a pull request. relabel_withdraws and holds run rules.py from that checkout
-# ($GITHUB_WORKSPACE/.github/review/rules.py): the order of the words on a head is written once, in rules.py.
+# file of main runs, and never a file of a pull request. relabel_withdraws, holds and replaced_hold run rules.py from
+# that checkout ($GITHUB_WORKSPACE/.github/review/rules.py): the order of the words on a head is written once, in
+# rules.py.
 # Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
 # source trusted.sh, which defines the function trusted, before it, and define restart after it, which rerun calls.
 # The functions and jq filters of the file read REPO, HELD_LABEL, REVIEW_TRIES and IMPORT_PATHS from the environment
@@ -30,25 +31,12 @@ comments() {
   fi
   cat "$file"
 }
-# works: the start of a jq filter that defines work, the work that a hold comment's body (its input) holds.
-# Each work has hold comments of its own, so that a hold of one work never takes the place of a hold of
-# another, and the rescreen pass takes each work again. A hold that the rescreen pass tries again names its
-# work in its marker: answer, draft or approve as the marker names the task, and review for a marker with no
-# task (a rescreen takes it again). Any other hold names it in its title: answer ("Automated answer held."),
-# draft ("Automated reply held."), approve ("Automated start of the checks held."), import ("Automated check
-# for the import held."), catchup ("Automated close and reopen held."), and review for any other.
-works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
-    | .t // "review")
-  // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
-    | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-       "close and reopen": "catchup"}[.t])
-  // "review"; '
 # holds <number>: the newest hold comment of each work on <number>, one on each line: "<work> <time>
 # <run> <tries> <kind> <task> <comment> <id> <head>". rules.py holds picks it, by the one model of the order
 # of the words (OSSV-613's architect, round 30, item 1): a hold of the screen counts from the time when its
 # run read the item (its marker <!-- review-held-read <time> -->), any other hold, or one with no such marker,
 # from when GitHub last changed it (rules.py word_time), and of holds at the same time the later as GitHub
-# lists them is the newest. Its work is the one of works (rules.py hold_work). <time> is when GitHub last
+# lists them is the newest. Its work is the one of rules.py hold_work. <time> is when GitHub last
 # changed it. For a hold that the rescreen pass tries again (its
 # marker <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit
 # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that
@@ -75,37 +63,30 @@ limit_hold() {
 }
 # replaced_hold <number> <work> <screen> <head> [<started>]: the one rule of each writer of a hold comment: the hold job
 # of this workflow, and halt (stopped, head_stopped, left_stopped, answer_stopped and draft_stopped), whose stop the
-# comment job writes. The id of the hold comment of github-actions[bot] on <number> that a new hold of <work> (works)
-# replaces, or nothing: then the new hold posts a comment of its own. <screen> is true for a new hold of the screen, and
-# <head> is the head that the new hold names (empty for none). A hold of the screen (its text holds "The automated
-# screen held ", and it has no marker of a hold that is tried again) names the head that the screen held, or none on an
-# issue. A relabel and a review by hand read it (rules.py verdict, relabel_withdraws). So only a new hold of the screen
-# that names the same head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of
-# its own, and so does each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of
-# the holds of <work> that the new hold may replace, it replaces the newest (by when GitHub last changed it). A hold of
-# other work stays as it is. <started> is the time when the trust job of the run of a new hold of
-# the screen read the item (the hold job gives it; halt gives none). Such a hold never replaces a hold of a run that
-# read the item later (OSSV-221's architect, 2026-11-24 16:19Z, F4, by A3 of 09:43Z): a hold that counts from a time
-# after <started>, the time of its marker <!-- review-held-read <time> --> for a hold of the screen that has one, else
-# when GitHub last changed it (rules.py word_time). So an older answer of an issue, which names no head and reads no
-# newer word first, never takes the place of the hold of a newer answer, and a re-run attempt of the hold job, whose
-# first hold names the same <started> (a hold of the screen names it on a pull request and on an issue), edits that
-# hold in place. On a pull request, the hold job gives way to such a hold of the screen of the head before this
-# (rules.py newer-word). Before either writer writes, it checks that <head> is still the head of the pull request
-# (rules.py hold-head): a hold of an older head is stale, and writes no hold comment and changes no label.
+# comment job writes. The id of the hold comment of github-actions[bot] on <number> that a new hold of <work>
+# (rules.py hold_work) replaces, or nothing: then the new hold posts a comment of its own. <screen> is true for a new
+# hold of the screen, and <head> is the head that the new hold names (empty for none). A hold of the screen (its text
+# holds "The automated screen held ", and it has no marker of a hold that is tried again) names the head that the
+# screen held, or none on an issue. A relabel and a review by hand read it (rules.py verdict, relabel_withdraws). So
+# only a new hold of the screen that names the same head (or none, as it does) replaces it. A hold of the screen of
+# another head posts a comment of its own, and so does each hold of another kind. Each other hold of <work> is replaced
+# by any new hold of <work>. Of the holds of <work> that the new hold may replace, it replaces the newest by the one
+# model of the order of the words (rules.py replaced-hold; OSSV-613's architect, round 30, item 1): a hold of the screen
+# counts from the time when its run read the item (its marker <!-- review-held-read <time> -->), any other hold, or
+# one with no such marker, from when GitHub last changed it (rules.py word_time), and of holds at the same time the
+# later as GitHub lists them is the newest. A hold of other work stays as it is. <started> is the time when the trust
+# job of the run of a new hold of the screen read the item (the hold job gives it; halt gives none). Such a hold never
+# replaces a hold of a run that read the item later (OSSV-221's architect, 2026-11-24 16:19Z, F4, by A3 of 09:43Z): a
+# hold that counts from a time after <started>, the time of its marker <!-- review-held-read <time> --> for a hold of
+# the screen that has one, else when GitHub last changed it (rules.py word_time). So an older answer of an issue, which
+# names no head and reads no newer word first, never takes the place of the hold of a newer answer, and a re-run
+# attempt of the hold job, whose first hold names the same <started> (a hold of the screen names it on a pull request
+# and on an issue), edits that hold in place. On a pull request, the hold job gives way to such a hold of the screen of
+# the head before this (rules.py newer-word). Before either writer writes, it checks that <head> is still the head of
+# the pull request (rules.py hold-head): a hold of an older head is stale, and writes no hold comment and changes no
+# label.
 replaced_hold() {
-  # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-  comments "$1" | W=$2 SCREEN=$3 SHA=$4 STARTED=${5:-} jq -rs "$works"'[.[]
-    | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->")))
-    | {at: (.updated_at // "-"), id, body: (.body // "")} | select((.body | work) == $ENV.W)
-    | (.body | contains("The automated screen held ")
-        and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+") | not)) as $screen
-    | select(($screen | not) or ($ENV.SCREEN == "true"
-        and ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "") == $ENV.SHA))
-    | select($ENV.SCREEN != "true" or $ENV.STARTED == ""
-        or ((if $screen then (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
-              + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) else null end) // .at) <= $ENV.STARTED)]
-    | if length > 0 then max_by(.at) | .id else empty end'
+  comments "$1" | python3 "$GITHUB_WORKSPACE/.github/review/rules.py" replaced-hold "$2" "$3" "${4:--}" "${5:--}"
 }
 # waiting <number> <author> <kind>: "<time> <id>" of each comment, review with a text and review comment of
 # <author> on <number> (a pull request when <kind> is pr) that waits for an answer, oldest first, as the gather
@@ -732,8 +713,8 @@ waits_of() {
 # left_closed for a catch-up left closed), with Sami's next step in the label comment, then the hold comment
 # with <title> and <text>, which names the head of a pull request and holds no marker of a hold that is tried
 # again. It is no hold of the screen: its text never holds "The automated screen held ". It goes in the place of
-# the hold comment of <work> (works) that replaced_hold picks for it, or as a new one: never in the place of a
-# hold of other work, nor of a hold of the screen. The run of the pass fails for it. The head of the stop is the
+# the hold comment of <work> (rules.py hold_work) that replaced_hold picks for it, or as a new one: never in the place
+# of a hold of other work, nor of a hold of the screen. The run of the pass fails for it. The head of the stop is the
 # current head that this step read (read_pulls, or consider_closed for a closed pull request). The comment job's
 # step reads the head again before it writes, and writes nothing for a stale stop (rules.py hold-head).
 halt() {
@@ -798,8 +779,8 @@ stopped() {
 # check; or catchup) of the head of #number did not finish after <tries> tries, and is not tried again (halt,
 # with the stop head-<work>): waits-on-theorem, with the label comment's step "Sami starts again, by hand, the
 # work that the hold comment names", then a hold comment that says so and names the head, in the place of the
-# newest hold comment of that work (works) that is not a hold of the screen (replaced_hold), or as a new one. It
-# never takes the place of a hold of other work, which the rescreen pass still takes again, nor of a hold of the
+# newest hold comment of that work (rules.py hold_work) that is not a hold of the screen (replaced_hold), or as a new
+# one. It never takes the place of a hold of other work, which the rescreen pass still takes again, nor of a hold of the
 # screen, which a relabel and a review by hand read. That hold stops each later try of the head, and no other reason
 # takes the head in this run (taken).
 head_stopped() {
@@ -1212,11 +1193,11 @@ due_approve() {
 # automated <work> of the head is not tried again (head_stopped <work>).
 due_retry() {
   local created ended run event task f tried post early trust tries how=failed last="" latest="" untrusted=""
-  local top="" found=""
-  # The runs of the head, newest first: to the newest one that did work after its trust job (top, when it ended), and,
-  # when its post job did not fail, on to an older run that did work and whose post job failed, before a run of <task>
-  # that did work. last: when the newest run of the pass among them ended (latest). untrusted: a run passed over to
-  # reach top whose trust job failed or was cancelled (it ran out of time, say), which counts a try.
+  local top="" top_run="" found=""
+  # The runs of the head, newest first: to the newest one that did work after its trust job (top, when it ended, and
+  # top_run, its id), and, when its post job did not fail, on to an older run that did work and whose post job failed,
+  # before a run of <task> that did work. last: when the newest run of the pass among them ended (latest). untrusted: a
+  # run passed over to reach top whose trust job failed or was cancelled (it ran out of time, say), which counts a try.
   while read -r created ended run event task; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
     read -r tried _ post _ early _ _ _ _ _ trust _ <<< "$f"
@@ -1226,7 +1207,7 @@ due_retry() {
         if [ "$trust" = failure ] || [ "$trust" = cancelled ]; then untrusted=1; fi
         continue
       fi
-      top=$ended
+      top=$ended top_run=$run
     elif [ "$early" = stopped ]; then
       continue
     fi
@@ -1239,12 +1220,17 @@ due_retry() {
     print $2, $3, $1, $6, $8 }' "$seen/runs" | sort -r)
   [ -n "$found" ] || return 0
   [ "$post" != cancelled ] || how="was cancelled"
+  # The hour counts from the end of latest, or, with no run of the pass among the runs read here (latest is empty: each
+  # of them is a CI review), from the end of top_run, which can be a newer run than run.
   if [[ ! ${last:-$top} < $hour ]]; then
     if [ -n "$latest" ] && [ "$latest" != "$run" ]; then
       echo "#$number: the post job of run $run $how. Run $latest of $head ended less than an hour ago. The rescreen" \
         "pass tries again later."
+    elif [ -z "$latest" ]; then
+      echo "#$number: the post job of run $run $how. Run $top_run of $head, the newest review run of that head that" \
+        "did work, ended less than an hour ago: tried again later."
     else
-      echo "#$number: the post job of run $run $how, less than an hour ago: tried again later."
+      echo "#$number: the post job of run $run $how, and that run ended less than an hour ago: tried again later."
     fi
     return 0
   fi

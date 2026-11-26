@@ -294,8 +294,9 @@
 # .github/review/rules.py from it. The hold job also sources .github/review/held.sh from it, for the one rule of what
 # counts as a try of a run (try_rule) and the one rule of each writer of a hold comment (replaced_hold). The trust job
 # checks out .github/review/trusted.sh, .github/review/held.sh and .github/review/rules.py alone, at the commit of
-# main whose workflow file runs, sources the first two, and runs rules.py from held.sh alone (relabel_withdraws and
-# holds, the order of the words on a head). The gather job sources .github/review/trusted.sh from its checkout of main.
+# main whose workflow file runs, sources the first two, and runs rules.py from held.sh alone (relabel_withdraws, holds
+# and replaced_hold, the order of the words on a head). The gather job sources .github/review/trusted.sh from its
+# checkout of main.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -4599,7 +4600,7 @@ jobs:
           # hold, or one with no such marker, from when GitHub last changed it (word_time; OSSV-613's architect, round
           # 30, item 1).
           newest=$(python3 .github/review/rules.py holds <<< "$found") \
-            || { echo "::error::the hold comments of #$NUMBER could not be ordered"; exit 1; }
+            || { echo "::error::the hold comments of #$NUMBER could not be ordered."; exit 1; }
           # shellcheck disable=SC2016 # $ENV and the names bound in the filter are jq's
           held=$(W=$work NEWEST=$newest jq -rs 'map(select(.user.login == "github-actions[bot]")
               | {at: (.updated_at // ""), made: (.created_at // .updated_at // ""), body: (.body // "")}) as $ours
@@ -4641,7 +4642,7 @@ jobs:
           # on a head. A hold outranks each verdict, a refusal included, exactly when it outranks a read. A hold at
           # STARTED outranks each of them, which fails closed. No hold stops the labels of a reply.
           stays=$(python3 .github/review/rules.py stays "${HEAD:--}" "$STARTED" "$word" "$work" <<< "$found") \
-            || { echo "::error::the hold comments of #$NUMBER could not be ordered"; exit 1; }
+            || { echo "::error::the hold comments of #$NUMBER could not be ordered."; exit 1; }
           read -r last tried stay <<< "$stays"
           if [ "${TASK:-}" != reply ] && [ "$stay" = true ]; then
             python3 .github/review/rules.py log "$NUMBER" "${HEAD:--}" stay hold "$STARTED" from "$last" || exit 1
@@ -4687,8 +4688,10 @@ jobs:
           # (rules.py import-marker), approved is false, and the decision is gone (rules.py GONE), but for a post job
           # that failed, whose decision stays none. The read asks for every check run of the head (filter=all). When
           # GitHub does not give the check runs, the labels stay, but for a post job that failed: then approved is
-          # false, as for no such check run, so the label comment does not say that the workflow recorded the check,
-          # and it names Sami's step, as it did before this read.
+          # false, as for no such check run, so this step counts no such check run as recorded, and writes no label
+          # comment that says that the workflow recorded the check: for an author whose kind GitHub did not give, the
+          # label rule writes no label comment at all (rules.py set_state), and for an outside author's pass the label
+          # comment names Sami's step, as it did before this read.
           approved=$RECORDED decision=${DECISION:-} unposted=false
           [ "$decision" != hand ] || [ "${STANDING:-}" != true ] || approved=true
           if { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } \
@@ -4708,7 +4711,8 @@ jobs:
               [ "$unposted" = true ] \
                 || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
               echo "#$NUMBER: the import check runs of $HEAD could not be read, and the post job of this run did not" \
-                "succeed, so the label comment does not say that the workflow recorded the check."
+                "succeed, so this step counts no such check run as recorded, and writes no label comment that says" \
+                "that the workflow recorded the check."
               found=""
             fi
             if [ -z "$found" ] && [ "$unposted" = true ]; then
@@ -5551,14 +5555,15 @@ jobs:
           gh api --method POST "repos/$REPO/issues/$NUMBER/labels" -f "labels[]=$HELD_LABEL" --jq '.[].name' > /dev/null
           # The hold comment that this hold replaces, by the one rule of each writer of a hold comment (held.sh
           # replaced_hold), or none, and then this hold posts a new comment. Its work is the task of its marker for a
-          # hold that is tried again (review for a marker with no task), else the work of its title, as the trust job's
-          # works gives it. A hold of other work stays as it is. A hold of the screen (fact screen_held) replaces a hold
-          # of the screen of the same head, or one that is not the screen's. Any other hold never replaces a hold of the
-          # screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws). A hold of the
-          # screen also gets STARTED, which the step checked above: it never replaces a hold of a run that read the item
-          # later, one that counts from a time after STARTED (OSSV-221's architect, 2026-11-24 16:19Z, F4). So the hold
-          # of an older answer of an issue, which reads no newer word first, posts a comment of its own beside a newer
-          # one, and a re-run attempt of this job edits the hold of its first attempt, which names the same STARTED.
+          # hold that is tried again (review for a marker with no task), else the work of its title, as rules.py
+          # hold_work gives it. A hold of other work stays as it is. A hold of the screen (fact screen_held) replaces a
+          # hold of the screen of the same head, or one that is not the screen's. Any other hold never replaces a hold
+          # of the screen: a relabel and a review by hand read it (rules.py verdict, held.sh relabel_withdraws). A hold
+          # of the screen also gets STARTED, which the step checked above: it never replaces a hold of a run that read
+          # the item later, one that counts from a time after STARTED (OSSV-221's architect, 2026-11-24 16:19Z, F4). So
+          # the hold of an older answer of an issue, which reads no newer word first, posts a comment of its own beside
+          # a newer one, and a re-run attempt of this job edits the hold of its first attempt, which names the same
+          # STARTED.
           work=review
           case $TASK in answer|draft|approve) work=$TASK ;; esac
           screen=false

@@ -262,7 +262,7 @@ jobs:
   # reads) and contents (the checkout). It holds no model. It checks out .github/review/trusted.sh,
   # .github/review/held.sh and .github/review/rules.py alone, at the commit of main whose workflow file runs. The step
   # that starts the runs of review.yml sources the first two, and held.sh runs rules.py for the order of the words on a
-  # head (relabel_withdraws and holds, which write nothing): it runs no other file of the repository. Its
+  # head (relabel_withdraws, holds and replaced_hold, which write nothing): it runs no other file of the repository. Its
   # cost: one job of a few seconds for each event, on a standard runner, whose minutes GitHub does not bill in a public
   # repository. A run with a number costs one more such job, the run with no number that it starts.
   rescreen:

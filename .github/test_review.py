@@ -76,8 +76,8 @@ SOURCE_HELD = 'source "$GITHUB_WORKSPACE/.github/review/held.sh"\n'
 TRUSTED_SH = os.path.join(GITHUB_DIR, "review", "trusted.sh")
 SOURCE_TRUSTED = 'source "$GITHUB_WORKSPACE/.github/review/trusted.sh"\n'
 # The checkout of those two files and of .github/review/rules.py, which held.sh runs for the order of the words on a
-# head (relabel_withdraws and holds), alone, at the commit of main whose workflow file runs, in the trust job and the
-# pass's job.
+# head (relabel_withdraws, holds and replaced_hold), alone, at the commit of main whose workflow file runs, in the trust
+# job and the pass's job.
 HELD_CHECKOUT = {"ref": "${{ github.sha }}", "persist-credentials": False,
                  "sparse-checkout": ".github/review/trusted.sh\n.github/review/held.sh\n.github/review/rules.py\n",
                  "sparse-checkout-cone-mode": False}
@@ -476,6 +476,16 @@ def held_sh():
     """The text of .github/review/held.sh."""
     with open(HELD_SH, encoding="utf-8") as f:
         return f.read()
+
+
+# The jq definition of work that held.sh held (works) until the work of a hold comment went to rules.py hold_work
+# (OSSV-613's architect, round 30, item 1): the start of the jq filter of each control that puts an order of the holds
+# in jq back.
+WORK_JQ = (r'def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: '
+           r'(?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)") | .t // "review")'
+           r' // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the '
+           r'import|close and reopen) held[.][*][*](\n|$)") | {"answer": "answer", "reply": "draft", "start of the '
+           r'checks": "approve", "check for the import": "import", "close and reopen": "catchup"}[.t]) // "review"; ')
 
 
 def sourced(run):
@@ -5644,11 +5654,10 @@ class PostLabelTest(Runner):
         so review-held stays on for it. When the screen's run read #7 at 09:05, its hold is the newest, which waits on
         Sami, and review-held comes off. The control, the label step that takes the newest hold of each work by when
         GitHub last changed it again, in jq, takes review-held off in both cases."""
-        works = re.search(r"^works='(.*?)'\n", held_sh(), re.M | re.S).group(1)
         found = step("comment", self.STEP)
         script = found["run"]
         old = 'newest=$(python3 .github/review/rules.py holds <<< "$found") \\\n'
-        new = (f"newest=$(jq -c -s '{works}map(select(.user.login == \"github-actions[bot]\""
+        new = (f"newest=$(jq -c -s '{WORK_JQ}map(select(.user.login == \"github-actions[bot]\""
                ' and ((.body // "") | startswith("<!-- review-held -->"))) | .work = ((.body // "") | work))'
                ' | group_by(.work)[] | max_by(.updated_at // "")\' <<< "$found") \\\n')
         self.assertEqual(script.count(old), 1)
@@ -10776,10 +10785,10 @@ class RescreenJobTest(Held):
         Its step's only writes are the start of a run of review.yml on main and the re-run of the failed jobs of a
         review run (rerun): no label, no comment and no other write of an item. The three files of the repository that
         it runs are .github/review/trusted.sh and .github/review/held.sh, which its step sources, and
-        .github/review/rules.py, which held.sh runs for the order of the words on a head (relabel_withdraws and holds,
-        the commands relabel-withdraws and holds, which only read: OSSV-613's architect, round 30, item 1, and
-        ImportCheckTest checks that they write nothing): its job checks out these three alone. The checks below read
-        the step with the first two in it. No job of review.yml can start a run."""
+        .github/review/rules.py, which held.sh runs for the order of the words on a head (relabel_withdraws, holds and
+        replaced_hold, the commands relabel-withdraws, holds and replaced-hold, which only read: OSSV-613's architect,
+        round 30, item 1, and ImportCheckTest checks that they write nothing): its job checks out these three alone.
+        The checks below read the step with the first two in it. No job of review.yml can start a run."""
         self.assertEqual((WF["permissions"], RESCREEN["permissions"]), ({}, {}))
         job = RESCREEN["jobs"]["rescreen"]
         self.assertEqual(job["permissions"], {"actions": "write", "contents": "read", "issues": "read",
@@ -10794,6 +10803,8 @@ class RescreenJobTest(Held):
         run = sourced(run)
         self.assertEqual(re.findall(r"python3 [^\n]*", run),
                          ['python3 "$GITHUB_WORKSPACE/.github/review/rules.py" holds \\',
+                          'python3 "$GITHUB_WORKSPACE/.github/review/rules.py" replaced-hold "$2" "$3" "${4:--}" '
+                          '"${5:--}"',
                           'python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$1" "$2" '
                           '"$seen/comments-$1"'])
         self.assertEqual(set(re.findall(r"\.github/review/[\w.]+", run)), {".github/review/rules.py"})
@@ -13009,6 +13020,43 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs), (0, want), out)
                 if want:
                     self.assertIn("#7: started relabel (the post job of run 10 failed", out)
+
+    def test_the_apps_retry_that_waits_names_the_run_from_whose_end_the_hour_counts(self):
+        """OSSV-613's architect, 2026-11-26 12:52Z (round 30, item 3): the line of the App's retry that waits says from
+        the end of which run the hour counts. The post job of run 10 of HEAD of mallory's #7 failed at token A's mint.
+        (a) Run 10 is the CI review of HEAD, and it ended 30 minutes ago: with no run of the pass among the runs read,
+        the hour counts from the end of the newest review run that did work, run 10 itself. (b) Run 10, that CI
+        review, ended 140 minutes ago, and the CI review run 11 of HEAD, whose post job succeeded, ended 30 minutes
+        ago: the hour counts from the end of run 11, so the line names run 11, not run 10. (c) Run 10 is a rescreen of
+        HEAD that the pass started, and it ended 30 minutes ago: the hour counts from the end of run 10. In each case
+        the pass starts nothing. Before, each case said that the post job of run 10 failed less than an hour ago, which
+        is false in (b)."""
+        failed = post_job({self.DECIDE: "success", MINT_A: "failure"})
+        done = post_job({self.DECIDE: "success"})
+        screened = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)")]
+        commented = attempt_job("comment")
+        later = "ended less than an hour ago: tried again later."
+        for case, want in (("a CI review", f"#7: the post job of run 10 failed. Run 10 of {HEAD}, the newest review "
+                                            f"run of that head that did work, {later}"),
+                           ("a newer CI review", f"#7: the post job of run 10 failed. Run 11 of {HEAD}, the newest "
+                                                 f"review run of that head that did work, {later}"),
+                           ("a rescreen", f"#7: the post job of run 10 failed, and that run {later}")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
+                if case == "a rescreen":
+                    self.left(10, 30, [*screened, failed, commented])
+                else:
+                    ended = 140 if case == "a newer CI review" else 30
+                    self.ran(10, f"review {HEAD} by mallory", made=ended + 10, ended=ended, event="workflow_run",
+                             jobs=[*screened, failed, commented])
+                if case == "a newer CI review":
+                    self.ran(11, f"review {HEAD} by mallory", made=40, ended=30, event="workflow_run",
+                             jobs=[*screened, done, commented])
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, []), out)
+                self.assertIn(want, out)
 
     def test_an_import_check_that_the_app_could_not_record_is_tried_up_to_review_tries(self):
         """D16: a review or relabel run of the head whose post job failed at the check run itself counts a try of the
@@ -23621,7 +23669,7 @@ class ImportCheckTest(ReaderRunner):
     # held.sh holds with its order before OSSV-613's architect's round 30, item 1: the newest hold of each work by when
     # GitHub last changed it, in jq (max_by), in the place of rules.py holds.
     HOLDS_BY_UPDATED_AT = ('python3 "$GITHUB_WORKSPACE/.github/review/rules.py" holds \\\n',
-                           'jq -c -s "$works"\'map(select(.user.login == "github-actions[bot]"'
+                           "jq -c -s '" + WORK_JQ + 'map(select(.user.login == "github-actions[bot]"'
                            ' and ((.body // "") | startswith("<!-- review-held -->")))'
                            ' | .work = ((.body // "") | work)) | group_by(.work)[] | max_by(.updated_at // "-")\' \\\n')
 
@@ -23666,6 +23714,86 @@ class ImportCheckTest(ReaderRunner):
                          listed=listed, named=HEAD)
         self.assertEqual((got["result"], [c["id"] for c in listed], got["comments"]), ("failure", [901], []))
         self.assertNotIn("the label comment does not say that the workflow recorded the check", got["log"])
+
+    def test_a_label_step_that_cannot_read_the_check_runs_writes_no_label_comment_that_says_recorded(self):
+        """OSSV-613's architect, 2026-11-26 12:52Z (round 30, item 3): the log line of the label step that cannot read
+        the check runs after a post job that did not succeed says what the step does for each author: it counts no
+        such check run as recorded, and writes no label comment that says that the workflow recorded the check. The CI
+        review run 100 of #7 recorded 901, and the label comment says that the workflow recorded the check. Rescreen
+        run 130 then passed HEAD, GitHub refuses the check runs of HEAD, and its post job fails. Its label step writes
+        a label comment that makes no such claim for an outside author and for a writer, and none for an author whose
+        kind GitHub did not give (the tester's red test above). Its log gives the line in each case."""
+        recorded = rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(60), "updated_at": ago(60), "body": recorded}
+        line = (f"#7: the import check runs of {HEAD} could not be read, and the post job of this run did not succeed, "
+                "so this step counts no such check run as recorded, and writes no label comment that says that the "
+                "workflow recorded the check.")
+        for case, outside, kind in (("an outside author", "true", "outsider"), ("a writer", "false", "writer"),
+                                    ("an unknown author", "false", "unknown")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                _first, checks = self.judged([], "100", trust=dict(self.REVIEWED, started=ago(90)))
+                listed = [c for c in checks if c.get("conclusion") == "success"]
+                self.assertEqual([c["id"] for c in listed], [901])
+                self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+                trust = dict(self.REVIEWED, task="rescreen", outside=outside, kind=kind, started=ago(20))
+                got = self.judge(["README.md"], value=self.LPS, trust=trust, event="workflow_dispatch",
+                                 comments=[label], listed=listed, named=HEAD)
+                self.assertEqual(got["result"], "failure", self.logs[-4:])
+                self.assertIn(line, got["log"])
+                self.assertEqual(len(got["comments"]), 0 if kind == "unknown" else 1, got["log"])
+                self.assertFalse(any(rules.says_recorded(body) for body in got["comments"]), got["comments"])
+
+    def replaced_of(self, comments, *args, text=None):
+        """What held.sh replaced_hold gives for #7, whose comments are comments, with args (<work> <screen> <head>
+        [<started>]), from text, a changed copy of held.sh as a control, or else held.sh."""
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{text or held_sh()}\n'
+                                     f"replaced_hold 7 {shlex.join(args)}\n")
+        self.assertEqual(rc, 0, out)
+        return out.strip()
+
+    # held.sh replaced_hold with its order before OSSV-613's architect's round 30, item 1: of the holds that a new hold
+    # may replace, the newest by when GitHub last changed it, in jq (max_by), in the place of rules.py replaced-hold.
+    REPLACED_BY_UPDATED_AT = (
+        'comments "$1" | python3 "$GITHUB_WORKSPACE/.github/review/rules.py" replaced-hold "$2" "$3" "${4:--}" '
+        '"${5:--}"\n',
+        r"""comments "$1" | W=$2 SCREEN=$3 SHA=$4 STARTED=${5:-} jq -rs '""" + WORK_JQ + r"""[.[]
+    | select(.user.login == "github-actions[bot]" and ((.body // "") | startswith("<!-- review-held -->")))
+    | {at: (.updated_at // "-"), id, body: (.body // "")} | select((.body | work) == $ENV.W)
+    | (.body | contains("The automated screen held ")
+        and (test("\n<!-- review-held-(limit|cap|transient) [0-9]+") | not)) as $screen
+    | select(($screen | not) or ($ENV.SCREEN == "true"
+        and ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "") == $ENV.SHA))
+    | select($ENV.SCREEN != "true" or $ENV.STARTED == ""
+        or ((if $screen then (.body | capture("\n<!-- review-held-read (?<t>[0-9]{4}-[0-9]{2}-[0-9]{2}"
+              + "T[0-9]{2}:[0-9]{2}:[0-9]{2}Z) -->(\n|$)") | .t) else null end) // .at) <= $ENV.STARTED)]
+    | if length > 0 then max_by(.at) | .id else empty end'
+""")
+
+    def test_replaced_hold_replaces_the_newest_hold_of_its_work_by_the_time_from_which_it_counts(self):
+        """OSSV-613's architect, round 30, item 1: held.sh replaced_hold, the one rule of each writer of a hold comment,
+        takes the hold comment that a new hold replaces from the one model (rules.py replaced-hold, replaced_hold): a
+        hold of the screen counts from the time when its run read the item, any other hold from when GitHub last
+        changed it (word_time). On #7 the screen of run 120 held an answer that names HEAD, and its hold comment (51)
+        posted 50 minutes ago. The hold of the answer of run 130 (130), which the rescreen pass tries again, posted 60
+        minutes ago. A new hold of the screen of an answer that names HEAD, whose run read #7 40 minutes ago, may
+        replace either. When the run of 51 read #7 70 minutes ago, 130 is the newer hold, and the new hold replaces it;
+        when that run read #7 55 minutes ago, it replaces 51. replaced_hold writes nothing. The control, held.sh whose
+        replaced_hold orders the holds by when GitHub last changed them again, in jq (REPLACED_BY_UPDATED_AT), replaces
+        51 in both cases."""
+        t70, t60, t55, t50, t40 = ago(70), ago(60), ago(55), ago(50), ago(40)
+        tried = limit_hold(130, t60, tries=0, task="answer", comment="900", head=HEAD)
+        control = held_sh().replace(*self.REPLACED_BY_UPDATED_AT)
+        self.assertNotEqual(control, held_sh())
+        for case, read, want in (("an older read", t70, "130"), ("a newer read", t55, "51")):
+            with self.subTest(case=case):
+                comments = [screen_held_answer(120, t50, read), tried]
+                self.assertEqual(rules.replaced_hold(comments, "answer", True, HEAD, t40)["id"], int(want))
+                self.assertEqual(self.replaced_of(comments, "answer", "true", HEAD, t40), want)
+                self.assertEqual(self.replaced_of(comments, "answer", "true", HEAD, t40, text=control), "51")
+        self.assertEqual(writes(self.api), [])
 
     # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
     # job failed or was cancelled (AFTER_FAILURE).
