@@ -20,14 +20,15 @@ labels").
     python3 .github/review/rules.py import-check <files.jsonl> <changed files> <number> <head> <screen> <verdict>
         <hold> <run> <read> <request.json> [<import paths>]
     python3 .github/review/rules.py import-marker <head> [<import paths>]
-    python3 .github/review/rules.py verdict <number> <head> [<checks.jsonl>]
+    python3 .github/review/rules.py verdict <number> <head> [<checks.jsonl>] [own=<verdict> started=<time>]
     python3 .github/review/rules.py own-record <number> <head> <started> <run> <checks.jsonl>
     python3 .github/review/rules.py newer-word <number> <head> <started> <run> [<kind>]
     python3 .github/review/rules.py relabel-withdraws <head> <comments.jsonl>
     python3 .github/review/rules.py words < <comments.jsonl>
     python3 .github/review/rules.py stays <head> <started> <kind> <work> < <words.jsonl>
     python3 .github/review/rules.py outranks <time> <kind> <time> <kind>
-    python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <own> <checks.jsonl>
+    python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <task> <verdict> <kind> <route>
+        <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
         <directory>
     python3 .github/review/rules.py not-approved <number> <head> <why> <run> <read> <request.json> [<import paths>]
@@ -262,6 +263,14 @@ screened or earlier with no <why>, and screened with a <why>: the review of this
 held, and screen for unscreened. For the decision hand, the label step counts an import check run of <head> that still
 stands, for the value of the variable now, as recorded. The comment job's label step reads the check runs again
 before it writes the state import, and writes it only while such a check run stands: else its decision is gone (GONE).
+With own=<verdict> started=<time>, for a review by hand (the decision step's by_hand), a tenth word <owed> follows:
+the why of the output owed that the decision step writes as soon as it reads from the comments why the import check
+runs of <head> are withdrawn (owed_why), or - when it reads none (neither held nor a <why>). <verdict> is the verdict
+of the review of this run, which has not posted yet, and <time> the time when the trust job of this run read the item
+(empty when not known). A blocking finding, the verdict person or a refused review is the own word of this run from
+<time>, and the step that withdraws reads only the words at or before <time> for it (withdraw-word): <owed> is the
+why of the newest of that own word and the word that gives the reason (screen, a hold of the screen, for held; else
+<why>). Any other verdict gives no own word, and <owed> is screen for held, else <why>.
 
 own-record: "<decision> <what> <since> <verdict>" on standard output for <head> of the pull request <number>, for a
 run on the route screen whose own screen and review passed <head> (own_record): whether a newer run held <head>,
@@ -336,25 +345,36 @@ runs of <head> of the pull request <number> to withdraw (withdraw_word): the new
 whichever carrier gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). It reads the comments of github-actions[bot]
 on <number>, and <checks.jsonl>, the import check runs of <head>, {id, conclusion, completed_at, summary} one on each
 line. <started> is the time when the trust job of this run read the item, or - when it is not known, and <run> is the
-id of this run. <own> is the kind of the own word of this run, which has not posted yet: blocking, person or refused,
-of its review (a review, a rescreen, or a review by hand); screen, when its screen held <head>; access, when its review
-passed and GitHub did not say whether the author has write access; pass, when its review passed on the route screen;
-and - for none (a relabel, or a review by hand whose pass ran no screen). The own word counts from <started>, or after
-each time when <started> is -. A word withdraws when it gives a blocking finding, the verdict person or a refused
-review, or when it is a hold of the screen (a hold comment of the screen, the line
-<!-- withdraw-owed <head> screen <run> <read> -->, an import check run for the reason screen, or the own word screen).
-A word lifts when it is a screened pass, an import check run with the conclusion success, or the own word pass. Of
-the words at or before <started>, the newest one that withdraws decides, unless the newest one that lifts outranks
-it, and the own word access (<own> access, on the route screen) is such a word at <started>. With none, or when one
-that lifts outranks it, <own> access-last (the same word of a review by hand) decides: it comes after each other word
-that withdraws. With no word that decides, the line is "- - - - <outranked>": <outranked>
+id of this run. The step gives the facts of this run alone, and this decides the own word of this run, which has not
+posted yet, and where it stands in the order (own_word; OSSV-613's architect, round 30, item 1): <task> is the task
+of this run, <verdict> the verdict of its review, screen when its screen held <head> (an approval, or a run whose
+review job did not run), or - for none, <kind> the trust job's kind (empty when it gave none), and <route> the route
+of this run. A relabel gives no own word. A blocking finding, the verdict person, a refused review and the screen are
+the own word. A pass is the own word access when GitHub did not say whether the author has write access (<kind>
+unknown), as such a pass is no approval (OSSV-221's architect, 2026-11-24 14:29Z, F3): on the route screen it is a
+word at <started>, and for a review by hand it comes after each other word that withdraws (access-last, below). Else a
+pass is the own word pass on the route screen, and no own word for a review by hand, whose pass ran no screen. Any
+other verdict gives no own word. The own word counts from <started>, or after each time when <started> is -. A word
+withdraws when it gives a blocking finding, the verdict person or a refused review, when it is a hold of the screen (a
+hold comment of the screen, the line <!-- withdraw-owed <head> screen <run> <read> -->, an import check run for the
+reason screen, or the own word screen), and when it is the own word access. A word lifts when it is a screened pass or
+the own word pass. A success lifts nothing: a word that withdraws withdraws each success of a read at or before its
+time, and leaves the success of a newer read (withdrawal). A run whose own word counts from <started> reads only the
+words at or before <started>: a newer word is the word of a newer run, which withdraws for it or owes that
+withdrawal. A run with no such word (a relabel, or a review by hand of a pass) reads each word, whatever its time. Of
+the words that it reads, the newest one that withdraws decides, unless one that lifts outranks it. A word that import
+check runs alone carry is a withdrawal that a run finished already (withdrawal_stands): it decides only while a
+success of a read at or before its time stands, and else the newest of the other words that withdraw decides, as it
+does at the same place. With none, or when one that lifts outranks it, the own word access of a review by hand
+(access-last) decides. With no word that decides, the line is "- - - - <outranked>": <outranked>
 is outranked when the line <!-- withdraw-owed <head> <why> <run> <read> --> of a label comment stands and a screened
 review comment of <head> outranks it, and - else. Else <why> is screen for a hold, access for the own word access, and
 the kind of that word else. <kind> is own for the own word, held for a hold comment or a check run for screen, owed
 for the line, and earlier for a review comment or another check run. <source> and <at> are the run of that word and
 the time from which it counts, or - and - when it names no run or no time: then the withdrawal counts from the time
 now, which fails closed. For own, <source> is - and <at> is <started>. <outranked> is - then. The status is 1 when
-GitHub could not give the comments, and 2 when an argument or a line is not one of these.
+GitHub could not give the comments, and 2 when an argument or a line is not one of these: <task> one of the tasks,
+<kind> one of the trust job's kinds.
 
 withdrawal: the requests that withdraw the import check runs of <checks.jsonl> on <head> of the pull request
 <number> (withdrawal), for <why>: blocking or person, the verdict of a review of <head>, refused, a review of <head>
@@ -2715,43 +2735,81 @@ def newer_word(comments, head, started, run, kind="read", checks=()):
     return (found.run, found.kind, found.read) if found else None
 
 
+def own_word(task, verdict, kind="", route=""):
+    """The kind of the own word of a run in the step that withdraws (withdraw_word), which has not posted yet, from the
+    facts that the step gives (OSSV-613's architect, round 30, item 1: no choice of it is left in the shell of the
+    step): task, the run's task; verdict, the verdict of its review, screen when its screen held the head (an approval,
+    or a run whose review job did not run), or anything else for none; kind, the trust job's kind; route, the run's
+    route. A relabel gives none (-): it reads the words of the head, and gives no word of its own. blocking, person,
+    refused and screen are the verdict. A pass of a run in which GitHub did not say whether the author has write access
+    (kind unknown) is no approval (OSSV-221's architect, 2026-11-24 14:29Z, F3): it is access on the route screen, a
+    word at the read of the run, as the tester's red test of round 23, F3, asks (ImportCheckTest, a run whose author
+    kind is unknown is a not-approved word), and access-last for a review by hand, which comes after each other word
+    that withdraws, as the tester's red test asks (KindTableTest, a review by hand withdraws what stands after an
+    earlier blocking review or a newer hold for any author: from none). Else a pass is pass on the route screen, and
+    none for a review by hand, whose pass ran no screen. Any other verdict gives none."""
+    if task == "relabel":
+        return "-"
+    if verdict in ("blocking", "person", "refused", "screen"):
+        return verdict
+    if verdict != "pass":
+        return "-"
+    if kind == "unknown":
+        return "access" if route == "screen" else "access-last"
+    return "pass" if route == "screen" else "-"
+
+
 def withdraw_word(comments, head, checks, started, run, own):
     """(why, kind, source, at, outranked) of the withdrawal of the import check runs of head that the step which finds
     them makes for run, the id of this run, whose trust job read the item at started ("" when not known): the newest
     word that withdraws, whichever carrier gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). comments are the
     item's comments as the API lists them, and checks the import check runs of head (import_checks). own is the kind
-    of this run's own word, which has not posted yet: blocking, person or refused for its review, screen for a hold
-    of its screen, access for a pass of a run in which GitHub did not say whether the author has write access, pass
-    for a screened pass, and - for none (a relabel, or a review by hand whose pass ran no screen). It is a word at
-    started, after each time when started is "". A word withdraws when it is a blocking finding, the verdict person, a
-    refused review, a hold of the screen (screen_hold) or the own word access of a run on the route screen. A word
-    lifts when it is a screened pass, a success or the own word pass. Of the words at or before started (each word
-    when started is ""), X is the newest that withdraws. When there is none, or the newest that lifts outranks it, X is
-    the own word access of a review by hand (own access-last): a pass of such a run is no approval (OSSV-221's
-    architect, 2026-11-24 14:29Z, F3), and it comes after each other word that withdraws, as the tester's red test asks
-    (KindTableTest, a review by hand withdraws what stands after an earlier blocking review or a newer hold for any
-    author: from none). On the route screen the own word access is the newest word, as the tester's red test of round
-    23, F3, asks (ImportCheckTest, a run whose author kind is unknown is a not-approved word). With no X, all are "-"
-    but outranked: "outranked" when
-    the line of OWED of head stands and a screened review comment outranks it, so that the step OWE of the comment job
-    takes the line out (owe), else "-". Else why is screen for a hold, access for the own word access, and the kind of
-    X else. kind is a cause of CAUSES: own for the own word, held for a hold comment or a check run for screen, owed
-    for the line, and earlier for a review comment or another check run. source and at are the run of X and the time
-    of X when X names both (for own, "-" and started), else "-" and "-": the withdrawal then counts from the time now,
-    and withdraws each success, which fails closed."""
+    of this run's own word (own_word), which has not posted yet: blocking, person or refused for its review, screen for
+    a hold of its screen, access for a pass of a run on the route screen in which GitHub did not say whether the author
+    has write access, pass for a screened pass, access-last for such a pass of a review by hand, and - for none (a
+    relabel, or a review by hand whose pass ran no screen). Each but access-last and - is a word at started, after each
+    time when started is "". A word withdraws when it is a blocking finding, the verdict person, a refused review, a
+    hold of the screen (screen_hold) or the own word access. A word lifts when it is a screened pass or the own word
+    pass. A success lifts nothing: a word that withdraws leaves only the success of a newer read (withdraws), so a
+    success of a newer read than the line of OWED stands, and the step still finishes the withdrawal for the line
+    (OSSV-613's architect, round 30, item 5b). A run whose own word is at started reads only the words at or before
+    started: a newer word is a newer run's, which withdraws for it or owes that withdrawal (newer_word). A run with no
+    such word reads each word, whatever its time: a relabel withdraws a success that stands under a hold of the screen
+    newer than its read (item 5a). Of the words that the run reads, X is the newest that withdraws. A word that check
+    runs alone carry is a withdrawal that a run finished already (withdrawal_stands): it is X only while a success that
+    it withdraws stands; else, and when another word that withdraws is at the same place, X is the newest of the other
+    words that withdraw (item 5c: a writer's relabel withdraws nothing again for the check runs of a blocking review
+    once the line of OWED went). When there is no X, or the newest word that lifts outranks it, X is the own word
+    access of a review by hand (own access-last): a pass of such a run is no approval. With no X, all are "-" but
+    outranked: "outranked" when the line of OWED of head stands and a screened review comment outranks it, so that the
+    step OWE of the comment job takes the line out (owe), else "-". Else why is screen for a hold, access for the own
+    word access, and the kind of X else. kind is a cause of CAUSES: own for the own word, held for a hold comment or a
+    check run for screen, owed for the line, and earlier for a review comment or another check run. source and at are
+    the run of X and the time of X when X names both (for own, "-" and started), else "-" and "-": the withdrawal then
+    counts from the time now, and withdraws each success, which fails closed."""
     words = head_words(comments, head, checks)
-    if own not in ("-", "access-last"):
+    placed = own not in ("-", "access-last")
+    if placed:
         kind = {"screen": "hold", "access": "neutral"}.get(own, own)
         words.append(Word(started or NEWEST, kind, run, "own", own, own == "pass", None, None))
-    until = started or None
+    until = (started or None) if placed else None
 
     def withdraws_(word):
         return word.kind in VERDICT_WITHDRAWS or screen_hold(word) or word.carrier == "own" and word.kind == "neutral"
 
     def lifts(word):
-        return word.kind == "pass" and (word.carrier != "review" or word.screened)
+        return word.kind == "pass" and (word.carrier == "own" or word.carrier == "review" and word.screened)
+
+    def since(word):
+        # The time from which the withdrawal for word counts: empty, after each time, when word names no run or time.
+        return word.read if word.run and word.read else ""
 
     found = newest_word(words, until=until, where=withdraws_)
+    if found is not None and found.carrier == "check":
+        other = newest_word(words, until=until, where=lambda word: word.carrier != "check" and withdraws_(word))
+        stands = any(c.get("conclusion") == "success" and withdraws(c, since(found)) for c in checks)
+        if other is not None and not outranks(found[:2], other[:2]) or not stands:
+            found = other
     if found is None or newest_word(words, until=until, over=found[:2], where=lifts):
         if own == "access-last":
             return "access", "own", "-", started or "-", "-"
@@ -2764,6 +2822,28 @@ def withdraw_word(comments, head, checks, started, run, own):
     named = found.run and found.read
     return ("screen" if found.kind == "hold" else found.kind, kind, found.run if named else "-",
             found.read if named else "-", "-")
+
+
+def owed_why(words, state, why, started="", own=""):
+    """The why of the output owed that the decision step writes as soon as it reads from the comments of the item why
+    the import check runs of the head are withdrawn: screen for the state held, else why (review_verdict), or "" when
+    it reads neither (OSSV-613's architect, round 30, item 1: the shell of that step picks no why). words are the words
+    on the head (head_words). own is the verdict of this run's review, which has not posted yet ("" for a relabel,
+    which gives no verdict of its own). A blocking finding, the verdict person or a refused review is the own word of
+    this run at started (after each time when started is ""), and the step that withdraws reads only the words at or
+    before started for it (withdraw_word). So the why is that of the newest of the own word and the words at or before
+    started that give the reason: a hold of the screen (screen_hold) for held, and a word of the kind why else. The own
+    word is the newest unless a hold of the screen at started outranks it. Any other verdict gives no own word."""
+    reason = "screen" if state == "held" else why
+    if not reason or own not in VERDICT_WITHDRAWS:
+        return reason
+
+    def gives(word):
+        return word.carrier == "own" or (screen_hold(word) if state == "held" else word.kind == why)
+
+    mine = Word(started or NEWEST, own, "", "own", own, False, None, None)
+    found = newest_word([*words, mine], until=started or None, where=gives)
+    return "screen" if found.kind == "hold" else found.kind
 
 
 # The work of a hold comment, as the comment job's label step reads it (stays), in the words of the trust job's works:
@@ -3642,11 +3722,18 @@ def main(argv):
         if len(argv) in (2, 3) and argv[0] == "import-marker":
             print(import_marker(argv[1], argv[2] if len(argv) == 3 else None))
             return 0
-        if len(argv) in (3, 4) and argv[0] == "verdict" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
+        # The last two arguments of verdict, own=<verdict> and started=<time>, when it is given them (by_hand).
+        mine = argv[-2:] if (len(argv) in (5, 6) and argv[-2].startswith("own=")
+                             and argv[-1].startswith("started=")) else []
+        if (len(argv) - len(mine) in (3, 4) and argv[0] == "verdict" and NUMBER.fullmatch(argv[1])
+                and HEAD.fullmatch(argv[2])):
+            own, started = (mine[0][len("own="):], mine[1][len("started="):]) if mine else ("", "")
+            if started and not TIME.fullmatch(started):
+                raise ValueError(f"not a time as GitHub gives it: {started!r}")
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
-            checks = check_lines(argv[3]) if len(argv) == 4 else []
+            checks = check_lines(argv[3]) if len(argv) - len(mine) == 4 else []
             verdict, state, why = review_verdict(comments, argv[2], checks)
             words = head_words(comments, argv[2], checks)
             # The run of the newest review comment and the time when that run read the item, from its last two
@@ -3665,8 +3752,9 @@ def main(argv):
                 posted = "posted" if found else "unposted"
             stands = standing_withdrawal(words)
             stood, since = (str(stands.check.get("id") or "-"), stands.read or "") if stands else ("", "")
-            print(f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stood or '-'} {since or '-'} "
-                  f"{record_run or '-'} {record_read or '-'}")
+            reply = (f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stood or '-'} {since or '-'} "
+                     f"{record_run or '-'} {record_read or '-'}")
+            print(f"{reply} {owed_why(words, state, why, started, own) or '-'}" if mine else reply)
             return 0
         if (len(argv) == 6 and argv[0] == "own-record" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
                 and TIME.fullmatch(argv[3]) and NUMBER.fullmatch(argv[4])):
@@ -3703,14 +3791,15 @@ def main(argv):
         if (len(argv) == 5 and argv[0] == "outranks" and all(TIME.fullmatch(t) or t == "" for t in argv[1::2])
                 and all(k in RANKS for k in argv[2::2])):
             return 0 if outranks((argv[1], argv[2]), (argv[3], argv[4])) else 3
-        if (len(argv) == 7 and argv[0] == "withdraw-word" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
-                and (TIME.fullmatch(argv[3]) or argv[3] == "-") and NUMBER.fullmatch(argv[4])
-                and argv[5] in ("blocking", "person", "refused", "screen", "access", "access-last", "pass", "-")):
+        if (len(argv) == 10 and argv[0] == "withdraw-word" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])
+                and (TIME.fullmatch(argv[3]) or argv[3] == "-") and NUMBER.fullmatch(argv[4]) and argv[5] in TASKS
+                and argv[7] in KINDS):
             comments = gh_objects("--paginate", f"repos/{os.environ['REPO']}/issues/{argv[1]}/comments", "--jq",
                                   f".[] | select(.user.login == {json.dumps(BOT)})"
                                   " | {user: {login: .user.login}, body, updated_at} | @json")
             started = "" if argv[3] == "-" else argv[3]
-            print(" ".join(withdraw_word(comments, argv[2], check_lines(argv[6]), started, argv[4], argv[5])))
+            own = own_word(*argv[5:9])
+            print(" ".join(withdraw_word(comments, argv[2], check_lines(argv[9]), started, argv[4], own)))
             return 0
         if (len(argv) == 5 and argv[0] == "stays" and (HEAD.fullmatch(argv[1]) or argv[1] == "-")
                 and TIME.fullmatch(argv[2]) and argv[3] in RANKS and argv[4] in ("review", "answer", "draft")):
