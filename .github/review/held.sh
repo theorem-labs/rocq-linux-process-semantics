@@ -1176,6 +1176,20 @@ due_approve() {
   fi
   owe "$last" approve "$limited" "$head" - "GitHub holds $n runs of $head"
 }
+# refusal_unrecorded <run>: whether, in the newest attempt of <run> ($seen/jobs-<run>, which facts read), the step
+# "Record the withdrawal of a refused review whose post job did not finish" of its comment job failed or was cancelled
+# (OSSV-613's architect, 2026-11-26 22:03Z, item 4). That step runs only for a post job that failed or was cancelled over
+# a review that the fresh reader refused (review.yml, the comment job), and it writes the line
+# <!-- withdraw-owed <head> refused <run> <read> -->, which with a check run of the post job is all that carries the
+# word of such a review: it posts no comment. When the step did not succeed, the run recorded no withdrawal that it owes,
+# and no relabel can read the refusal. The pass reads the step alone, as it cannot read the verdict of a job, and a
+# step that another review gives the verdict to (a post job that failed after it wrote owed, for a blocking finding)
+# is not that step. A step that did not run, or a job whose steps jq cannot read, is not a step that did not succeed.
+refusal_unrecorded() {
+  [ "$(jq -rs 'any(.[] | select(.name == "comment") | .steps[]?;
+      .name == "Record the withdrawal of a refused review whose post job did not finish"
+      and (.conclusion == "failure" or .conclusion == "cancelled"))' "$seen/jobs-$1" 2>/dev/null)" = true ]
+}
 # due_retry <tasks> <task> <work>: the App's retry. When the post job of the newest run of the head of #number
 # of a task of <tasks> failed, at a sign-in or at a write of the App, or was cancelled (it ran out of time, say), the
 # head is due <task> again. A CI run that did nothing after its trust job (early, of facts) is not that newest run: it
@@ -1194,7 +1208,10 @@ due_approve() {
 # counts none (R10), and a failed "Sign in as the OSS Verify App", a failed write of the App or a cancelled post job
 # counts one. So does a run whose trust job failed or was cancelled (it ran out of time, say), but not one that its
 # trust job stopped (OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z). After REVIEW_TRIES of them, the
-# automated <work> of the head is not tried again (head_stopped <work>).
+# automated <work> of the head is not tried again (head_stopped <work>). A run whose post job failed or was cancelled and
+# whose step that records the withdrawal of a refused review did not succeed (refusal_unrecorded) is no run of the retry:
+# a relabel cannot read a refusal that neither a line nor a check run carries, so the retry gives way, and starts none
+# for it. The pass runs its failed jobs again (due_rerun), the post job too.
 due_retry() {
   local created ended run event task f tried post early trust tries how=failed last="" latest="" untrusted=""
   local top="" top_run="" found=""
@@ -1216,6 +1233,12 @@ due_retry() {
       continue
     fi
     if [ "$post" = signin ] || [ "$post" = failure ] || [ "$post" = cancelled ]; then
+      if refusal_unrecorded "$run"; then
+        echo "#$number: the post job of run $run did not succeed, and the step that records the withdrawal of its" \
+          "refused review did not either, so no line and no check run carries that refusal. A relabel cannot read it:" \
+          "the rescreen pass starts none, and runs the failed jobs of run $run again."
+        return 0
+      fi
       found=1
       break
     fi
@@ -1267,7 +1290,9 @@ unclaimed() {
 # Its last step, when it succeeds, leaves no label comment that says that the workflow recorded the check while no such
 # check run stands (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run again (restart, as rerun
 # does): the post job of that run does not run again. The App's retry takes a run whose post job failed or was
-# cancelled (due_retry).
+# cancelled (due_retry), but for a run whose step that records the withdrawal of a refused review did not succeed
+# (refusal_unrecorded): its post job failed or was cancelled too, and no relabel could read its refusal, so the failed
+# jobs of that run, the post job among them, run again, each bound the same (OSSV-613's architect, 2026-11-26 22:03Z).
 # A re-run is one more attempt of the run (its run_attempt, the column 13 of $seen/runs). It starts only while that
 # attempt is below REVIEW_TRIES, and the log gives the number of the attempt that starts. At REVIEW_TRIES attempts the
 # failed jobs do not run again, and the log gives the count. Then unclaimed gives whether the last step of each comment
@@ -1303,14 +1328,18 @@ unclaimed() {
 # already starts a run for, or whose hold the pass tries again (retaken), gets no re-run: that run takes its place.
 due_rerun() {
   local created ended id task f post early commented hold_job run="" which="" how="" attempt work
-  local stood what made relabel stop idle
+  local stood what made relabel stop idle unrecorded=""
   [ -z "$retaken" ] || return 0
   if awk -v n="$number" '$2 == n { found = 1 } END { exit !found }' "$seen/due"; then return 0; fi
   while read -r created ended id task; do
     f=$(facts "$id") || { echo "::error::the jobs of run $id could not be read."; return 1; }
     read -r _ _ post _ early _ commented _ <<< "$f"
     [ "$early" != stopped ] || continue
-    [ "$post" = success ] || [ "$post" = skipped ] || continue
+    unrecorded=""
+    if [ "$post" != success ] && [ "$post" != skipped ]; then
+      refusal_unrecorded "$id" || continue
+      unrecorded=1
+    fi
     hold_job=$(jq -rs 'map(select(.name == "hold")) | first | .conclusion // "-"' "$seen/jobs-$id")
     if [ "$commented" = failure ] || [ "$commented" = cancelled ]; then
       which=comment how=$commented
@@ -1326,6 +1355,11 @@ due_rerun() {
   [ -n "$run" ] || return 0
   [ "$how" != failure ] || how=failed
   [ "$how" != cancelled ] || how="was cancelled"
+  if [ -n "$unrecorded" ]; then
+    echo "#$number: the post job of run $run did not succeed, and the step that records the withdrawal of its refused" \
+      "review did not either, so no line and no check run carries that refusal, and a relabel cannot read it. The failed" \
+      "jobs of run $run, the post job among them, are the retry of the rescreen pass."
+  fi
   if [[ ! $ended < $hour ]]; then
     echo "#$number: the $which job of run $run $how, less than an hour ago: tried again later."
     return 0

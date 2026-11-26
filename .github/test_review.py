@@ -8384,6 +8384,14 @@ def filled(env, ctx, **extra):
     return dict({name: fill(value) for name, value in env.items()}, **extra)
 
 
+def post_outputs(ctx):
+    """The outputs of the post job as GitHub fills them in at its end from ctx, the outputs of its steps among them,
+    and from its env as it was when the job started (key_set is its APP_KEY_SET). The env is given by the job's own
+    secret in ctx (APP_KEY, which run_job gives a stand-in for), as run_job reads it."""
+    env = {f"env.{k}": v for k, v in filled(JOBS["post"]["env"], ctx).items()}
+    return filled(JOBS["post"]["outputs"], {**env, **ctx})
+
+
 def history(sha, parent, suggested=False, message=None):
     """A commit of a head's history as the API lists it (repos/<repo>/commits?sha=<head>): one the author pushed, or
     one that GitHub made from a suggested change (committer web-flow, "Apply suggestion ...")."""
@@ -13562,6 +13570,141 @@ class ScheduleTest(Scheduled):
                     self.assertStopped("head-import", "Automated check for the import held.", text, edited=True)
 
 
+    # The comment job's step that records the withdrawal of a refused review whose post job did not finish (held.sh
+    # refusal_unrecorded), and the step that records what the post job owes in each other case.
+    REFUSED_STEP = "Record the withdrawal of a refused review whose post job did not finish"
+    OWES_STEP = "Record a withdrawal that the post job owes"
+
+    @staticmethod
+    def retry_changed(old, new):
+        """held.sh's due_retry with its text old, which it holds once, replaced by new: the shell text of a control
+        (controlled), which defines due_retry again."""
+        text = held_sh()
+        start = text.index("\ndue_retry() {\n") + 1
+        body = text[start:text.index("\n}\n", start) + 3]
+        assert body.count(old) == 1, old
+        return body.replace(old, new)
+
+    def refused_jobs(self, post="failure", failed=REFUSED_STEP, last="success"):
+        """The jobs after the trust job of a run whose screen passed HEAD and whose review the fresh reader refused: its
+        post job, which failed (post failure) or was cancelled (post cancelled) at its step that finds the import check
+        runs, after it wrote its output owed, and its comment job, which failed at the step failed, with its last step
+        (UNCLAIM) at the conclusion last."""
+        steps = {"Read the author-kind table": "success",
+                 "Write the output owed for the withdrawal of the import check runs": "success",
+                 "Find the import check runs that a later review or screen withdraws":
+                     "failure" if post == "failure" else "cancelled"}
+        comment = self.unclaimed(attempt_job("comment", failed), last)
+        return [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
+                dict(post_job(steps), conclusion=post), comment]
+
+    def test_a_refused_review_whose_post_job_and_record_of_its_refusal_failed_runs_its_failed_jobs_again(self):
+        """OSSV-613's architect, 2026-11-26 22:03Z, round 30, item 4: a run whose comment job failed at the step "Record
+        the withdrawal of a refused review whose post job did not finish" has not recorded a withdrawal that it owes, and
+        its post job failed or was cancelled too: no relabel can read a refusal that neither a line nor a check run
+        carries, so the rescreen pass runs the failed jobs of the run again, the post job among them (one POST of
+        rerun-failed-jobs), and starts no relabel, whether that post job failed at its check runs (try 2) or was
+        cancelled. It does so an hour after the run ended, and not before: under an hour, it starts nothing, and starts
+        no relabel either (due_retry gives way). The controls: held.sh whose refusal_unrecorded says no run is one
+        starts the relabel of due_retry instead and no re-run; held.sh whose due_rerun has no bound of the hour re-runs
+        the run at once."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        relabel = ("7", "relabel", "", HEAD, "")
+        said = ("#7: the post job of run 10 did not succeed, and the step that records the withdrawal of its refused "
+                "review did not either, so no line and no check run carries that refusal, and a relabel cannot read it.")
+        unrecorded_no = "refusal_unrecorded() { return 1; }"
+        hourless = self.rerun_changed("if [[ ! $ended < $hour ]]; then", "if false; then")
+        for case, ended, post, want, line, control, control_want in (
+                ("a failed post job", 61, "failure", [rerun],
+                 f"#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of {self.TRIES}.",
+                 unrecorded_no, ([relabel], [])),
+                ("a cancelled post job", 61, "cancelled", [rerun],
+                 f"#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of {self.TRIES}.",
+                 unrecorded_no, ([relabel], [])),
+                ("under an hour ago", 30, "failure", [],
+                 "#7: the comment job of run 10 failed, less than an hour ago: tried again later.",
+                 hourless, ([], [rerun]))):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.unfinished()
+                self.left(10, ended, self.refused_jobs(post))
+                (rc, out, runs, again), control_got = self.controlled(lambda: (*self.started(), self.reruns()), control)
+                self.assertEqual((rc, runs, again), (0, [], want), out)
+                self.assertIn(line, out)
+                self.assertNotIn("started relabel", out)
+                self.assertEqual((control_got[0], control_got[2], control_got[3]), (0, *control_want), control_got[1])
+                if ended > 60:
+                    self.assertIn(said, out)
+
+    def test_a_refused_review_whose_record_of_its_refusal_failed_gets_no_relabel_under_a_hold_either(self):
+        """OSSV-613's architect, 2026-11-26 22:03Z, round 30, item 4: under a hold of the screen that names HEAD and is
+        not tried again, consider calls the App's retry (due_retry) before the re-run (due_rerun). A run of HEAD whose
+        post job failed and whose comment job failed at the step "Record the withdrawal of a refused review whose post
+        job did not finish" gets the re-run of its failed jobs and no relabel: due_retry gives way to it. The control,
+        held.sh whose due_retry does not give way, starts the relabel first, and no re-run."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 10 -->"}
+        self.item(kind="pr", labels=("review-held",), comments=[review_of(HEAD, at=ago(300)), self.LABELLED, hold])
+        self.serve(rerun, {})
+        self.left(10, 61, self.refused_jobs())
+        unyielding = self.retry_changed('if refusal_unrecorded "$run"; then', "if false; then")
+        (rc, out, runs, again), control = self.controlled(lambda: (*self.started(), self.reruns()), unyielding)
+        self.assertEqual((rc, runs, again), (0, [], [rerun]), out)
+        self.assertNotIn("started relabel", out)
+        self.assertEqual((control[0], control[2], control[3]), (0, [("7", "relabel", "", HEAD, "")], []), control[1])
+
+    def test_a_run_with_a_failed_job_of_any_other_record_keeps_the_relabel_of_the_apps_retry(self):
+        """OSSV-613's architect, 2026-11-26 22:03Z, round 30, item 4: the pass reads one step alone. A run whose post
+        job failed and whose comment job failed at its label step, or at the step "Record a withdrawal that the post job
+        owes" (which also runs for a post job that failed after it wrote owed, for a blocking finding: the pass cannot
+        read the verdict of a job), keeps today's behaviour: the relabel of due_retry an hour after the run ended, and
+        no re-run. The control, held.sh whose refusal_unrecorded says each run is one, runs the failed jobs again."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        for failed in (self.LABEL, self.OWES_STEP):
+            with self.subTest(failed=failed):
+                self.tearDown()
+                self.setUp()
+                self.unfinished()
+                self.left(10, 61, self.refused_jobs(failed=failed))
+                (rc, out, runs, again), control = self.controlled(lambda: (*self.started(), self.reruns()),
+                                                                  "refusal_unrecorded() { return 0; }")
+                self.assertEqual((rc, runs, again), (0, [("7", "relabel", "", HEAD, "")], []), out)
+                self.assertEqual((control[0], control[2], control[3]), (0, [], [rerun]), control[1])
+
+    def test_a_refused_review_whose_record_of_its_refusal_failed_at_review_tries_attempts_stops_the_review(self):
+        """OSSV-613's architect, 2026-11-26 22:03Z, round 30, item 4 (i): the re-run is bounded as every re-run is. Run
+        10 of HEAD, whose post job failed and whose comment job failed at the step "Record the withdrawal of a refused
+        review whose post job did not finish", ended 61 minutes ago at attempt REVIEW_TRIES: its failed jobs do not run
+        again, and the pass starts the stop of the review of HEAD (head-review), whether the last step of the comment
+        job (UNCLAIM) succeeded or did not (round 30, item 2). The comment job of that stop gives #7 waits-on-theorem
+        and a label comment that names Sami's step, not the state recorded and not after-hold. The controls: held.sh
+        whose due_rerun has no bound of the attempts runs the failed jobs again; held.sh whose head_stopped does
+        nothing starts no stop."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        tries = self.TRIES
+        unbound = self.rerun_changed("if (( attempt >= REVIEW_TRIES )); then", "if false; then")
+        for last in ("success", "failure"):
+            for control, control_want in ((unbound, (0, [], [rerun])), ("head_stopped() { return 0; }", (0, [], []))):
+                with self.subTest(last=last, control=control[:20]):
+                    self.tearDown()
+                    self.setUp()
+                    self.unfinished()
+                    self.left(10, 61, self.refused_jobs(last=last), attempt=tries)
+                    (rc, out, runs, again), control_got = self.controlled(lambda: (*self.started(), self.reruns()),
+                                                                          control)
+                    self.assertEqual((rc, runs, again), (1, [("7", "stop", "", HEAD, "head-review")], []), out)
+                    self.assertIn(f"#7: the comment job of run 10 failed. That run is at attempt {tries} of {tries}: its "
+                                  "failed jobs do not run again.", out)
+                    self.assertEqual((control_got[0], control_got[2], control_got[3]), control_want, control_got[1])
+                    self.assertStopped("head-review", "Automated review held.", f"The automated review of the head commit "
+                                       f"{HEAD[:12]} did not finish after {tries} tries. The workflow does not try it "
+                                       "again.", edited=True)
+
+
 # The post job's step that closes and reopens a pull request for a catch-up.
 CATCH_UP = "Close and reopen the pull request"
 
@@ -17270,7 +17413,7 @@ class ImportCheckTest(ReaderRunner):
         if evaluate(JOBS["post"]["if"], ctx):
             got["steps"] = run_post(self, ctx, self.TOKENS, mint)
             got["result"] = "failure" if "failure" in got["steps"].values() else "success"
-            got["post"] = filled(JOBS["post"]["outputs"], ctx)
+            got["post"] = post_outputs(ctx)
         got["writes"] = writes(self.api)
         paired = list(zip([(t, c) for t, c in zip(gh_tokens(self.api), gh_calls(self.api)) if "--input" in c],
                           gh_inputs(self.api)))
@@ -17320,7 +17463,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
                          {"recorded": "true", "decision": "record", "standing": "false", "caught": "", "steering": "",
-                          "no_key": "", "owed": "", "withdrawn": "", "gave_way": ""})
+                          "no_key": "", "owed": "", "withdrawn": "", "gave_way": "", "key_set": "true"})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -19629,7 +19772,8 @@ class ImportCheckTest(ReaderRunner):
         it is cancelled there. GitHub fills in the outputs of such a job, so the jobs after it read that verdict, as for
         a blocking finding. The post job withdraws 901 for the reason refused, from the time when this run read the
         item, and records, approves and decides nothing. When GitHub refuses the withdrawal, its output owed names HEAD
-        and refused, and the comment job's step "Record a withdrawal that the post job owes" writes the line
+        and refused, and the comment job's step "Record the withdrawal of a refused review whose post job did not finish"
+        (OSSV-613's architect, 2026-11-26 22:03Z) writes the line
         <!-- withdraw-owed <head> refused 100 <read> -->. The hold job does not run, so the run is not held for a retry.
         The comment job posts no review, and its label step takes review-held off and gives the state of the refusal,
         which the label comment keeps the line in. The control, the ifs of before that rule (before_refused_ifs): no
@@ -19702,7 +19846,7 @@ class ImportCheckTest(ReaderRunner):
                         os.remove(os.path.join(self.api, refusal))
                     ran, wrote = self.comment_job(dict(ctx), comments, labels=("review-held",))
                     self.assertEqual(ran, {"Run actions/checkout": "success",
-                                           "Record a withdrawal that the post job owes": "success",
+                                           (self.OWE_REFUSED if refused else self.OWE): "success",
                                            self.SKIP: "success", self.LABEL: "success"}, self.logs)
                     marked = rules.with_marker(old["body"], line) if refused else old["body"]
                     self.assertEqual(wrote, ([("PATCH", f"repos/{REPO}/issues/comments/40", marked)] if refused else [])
@@ -23539,8 +23683,9 @@ class ImportCheckTest(ReaderRunner):
         """OSSV-221's architect, 2026-11-25 10:21Z: the withdrawal of a refused review takes the path of a blocking
         finding of the run's own review when GitHub refuses it. Run 100 recorded 901 and posted its screened pass, and
         GitHub refuses run 130's withdrawal of 901. Run 130's post job fails, with an error that names HEAD and 901,
-        and its output owed names HEAD and refused. Its comment job posts no review, and its step "Record a withdrawal
-        that the post job owes" writes the line <!-- withdraw-owed <HEAD> refused 130 <read> -->: run 130 and the time
+        and its output owed names HEAD and refused. Its comment job posts no review, and its step "Record the withdrawal
+        of a refused review whose post job did not finish" writes the line
+        <!-- withdraw-owed <HEAD> refused 130 <read> -->: run 130 and the time
         when it read the item, as for its own blocking finding. Each later write of the label comment keeps the line
         (KEPT), and the rescreen pass reads it (held.sh relabel_withdraws: refused owed). A relabel then withdraws 901
         for the line: for the reason refused of run 130, from that read, and its texts do not say later. It records no
@@ -23560,7 +23705,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.", "\n".join(self.logs))
         outcomes, wrote, bodies = self.refused_comment_job(got, rescreen, "130", [passed, label])
         line = f"<!-- withdraw-owed {HEAD} refused 130 {started} -->"
-        self.assertEqual((outcomes[self.OWE], outcomes[self.REVIEW]), ("success", "skipped"), self.logs[-4:])
+        self.assertEqual((outcomes[self.OWE_REFUSED], outcomes[self.OWE], outcomes[self.REVIEW]),
+                         ("success", "skipped", "skipped"), self.logs[-4:])
         self.assertEqual(bodies[0], rules.with_marker(label["body"], line))
         self.assertNotIn(("POST", f"repos/{REPO}/issues/7/comments"), wrote)
         self.assertIn(line, rules.label_comment("refused-review", bodies[0]).split("\n"))
@@ -23659,6 +23805,323 @@ class ImportCheckTest(ReaderRunner):
         _outcomes, _wrote, labels = self.refused_comment_job(got, rescreen, "130", [dict(passed, id=30)])
         self.assertEqual([b.split("\n")[1] for b in labels],
                          [f"**Next step:** {rules.STATES['refused-review'][1]}"], self.logs[-6:])
+
+    # The steps of the post job that come before the step that writes the output owed of its own review (OWN), and
+    # that step: a post job that ends at one of them leaves neither the output owed nor the output withdrawn.
+    POST_SITES = ("Run actions/checkout", "Read the author-kind table", OWN)
+    # The comment job's step that records the withdrawal of a refused review whose post job did not finish, which runs
+    # the script of the step OWE (OSSV-613's architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4), and the start
+    # of the if that OWE had before that step: the post job gave owed or withdrawn.
+    OWE_REFUSED = "Record the withdrawal of a refused review whose post job did not finish"
+    OWE_BEFORE = "env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')"
+
+    def before_derivation(self, run):
+        """run() with the comment job as before the step OWE_REFUSED: the step OWE with the if that it had, and no step
+        OWE_REFUSED (its if is false), so that a post job that gave neither owed nor withdrawn leaves no line. Its
+        result."""
+        owe, refused = step("comment", self.OWE), step("comment", self.OWE_REFUSED)
+        saved = owe["if"], refused["if"]
+        self.assertTrue(saved[0].startswith(self.OWE_BEFORE), saved[0])
+        owe["if"], refused["if"] = self.OWE_BEFORE, "false"
+        try:
+            return run()
+        finally:
+            owe["if"], refused["if"] = saved
+
+    def refused_contexts(self, trust, event="workflow_dispatch"):
+        """The contexts of the jobs of the run whose trust job gave trust, on the route screen after a screen that
+        passed HEAD: its review job succeeded and the fresh reader refused the review (refused_review), and its post
+        job has not run yet."""
+        review = self.refused_review("pass", trust)
+        self.assertEqual(review, {"head": HEAD, "verdict": "refused", "refused": "review"})
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
+        ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
+                    "github.token": self.RUN_TOKEN, "github.run_id": "100",
+                    "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS, "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                    "needs.trust.result": "success", "needs.gather.result": "success",
+                    "needs.gather.outputs.kind": "pr", "needs.gather.outputs.digest": "0" * 64,
+                    "needs.screen.result": "success", "needs.screen.outputs.verdict": "clean",
+                    "needs.review.result": "success", **{f"needs.review.outputs.{k}": v for k, v in review.items()},
+                    "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                    "needs.review.outputs.body": "", "needs.review.outputs.fix": "", "needs.post.result": "skipped"})
+        return ctx
+
+    def refused_post_job(self, ctx, site, result="cancelled", key=True):
+        """The post job of the run of ctx (refused_contexts) as GitHub ends it at the step site: a cancel of the job
+        (run_job), whose result is cancelled, or with result failure the same end of a step that failed. Its steps
+        before site ran, and no step after it. GitHub fills in the job's outputs from the steps that ran, and from the
+        env that the job started with (post_outputs); the outputs and the result join ctx. With key False, the
+        environment post holds no key of the App. (the outcome of each step, the outputs)."""
+        self.assertTrue(evaluate(JOBS["post"]["if"], ctx))
+        if not key:
+            ctx[APP_KEY] = ""
+        self.forget()
+        steps = run_job(self, "post", ctx, self.TOKENS, cancel=site)
+        self.assertEqual(steps[site], "cancelled", steps)
+        self.assertEqual(writes(self.api), [])
+        posted = post_outputs(ctx)
+        ctx.update({"needs.post.result": result, **{f"needs.post.outputs.{k}": v for k, v in posted.items()}})
+        return steps, posted
+
+    def comment_job_whole(self, ctx, comments, labels=()):
+        """The comment job of ctx whole, as run_job runs it (a step that fails ends it, and its last step runs then),
+        while #7 has the comments comments and the labels labels, which do not change between the steps: (the outcome
+        of each step, each label comment that the job wrote as (method, endpoint, body))."""
+        self.forget()
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
+        self.serve(f"repos/{REPO}/labels/{THEOREM_LABEL}",
+                   {"name": THEOREM_LABEL, "description": rules.LABELS[THEOREM_LABEL][1]})
+        open(self.summary, "w").close()
+        outcomes = run_job(self, "comment", dict(ctx), self.AnyToken(self.TOKENS))
+        return outcomes, label_comments(self.api)
+
+    def refused_scenario(self, site, result="cancelled", control=False, fail=None):
+        """Rescreen run 100 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused its review. Its
+        post job ended at the step site (refused_post_job) before it wrote its output owed. Then its comment job runs
+        (comment_job): with fail, an endpoint that GitHub refuses at first, its step OWE_REFUSED fails, the comment job
+        ends and runs again after GitHub took the call (the re-run of its failed jobs). With control, its steps are as
+        before that step (before_derivation). Then the hold job of answer run 130
+        runs, which read #7 40 minutes ago and whose screen held HEAD (hold_job_after_post). A dict: the line that run
+        100 owes, the post job's outputs, the steps and the label comments of the comment job, and of its first run
+        with fail, and what the hold job wrote: its outcomes, hold comments, label comments, state labels, summary."""
+        passed = review_of(HEAD, at=ago(300))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                 "body": rules.label_comment("change")}
+        trust = dict(self.REVIEWED, task="rescreen", started=ago(20), named=HEAD)
+        ctx = self.refused_contexts(trust)
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": 1})
+        self.serve_files(7, "README.md")
+        _steps, posted = self.refused_post_job(ctx, site, result)
+        self.assertEqual((posted["owed"], posted["withdrawn"], posted["key_set"]), ("", "", "true"))
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+        self.assertFalse(evaluate(JOBS["hold"]["if"], ctx))
+        found = {"line": f"<!-- withdraw-owed {HEAD} refused 100 {trust['started']} -->", "posted": posted,
+                 "first": None}
+        if fail is not None:
+            self.refuse(fail, 502, "Bad Gateway")
+            found["first"] = self.comment_job_whole(ctx, [passed, label], labels=("review-held",))
+            os.remove(os.path.join(self.api, fail.replace("/", "_") + ".fail"))
+
+        def comment():
+            return self.comment_job(dict(ctx), [passed, label], labels=("review-held",))
+        found["ran"], found["wrote"] = self.before_derivation(comment) if control else comment()
+        found["log"] = "\n".join(self.logs)
+        after = [passed, dict(label, body=found["wrote"][-1][2], updated_at=ago(15))]
+        answer = dict(self.REVIEWED, task="answer", started=ago(40), comment="77")
+        self.serve_checks([])
+        found["hold"], _writes = self.hold_job_after_post({"result": "skipped", "post": {}}, answer, after, "130")
+        self.assertNotIn("failure", found["hold"].values(), self.logs[-4:])
+        found["holds"] = self.posted("<!-- review-held -->")
+        found["labels"] = [b for _m, _e, b in label_comments(self.api)]
+        found["states"] = state_labels(self.api)
+        with open(self.summary, encoding="utf-8") as f:
+            found["summary"] = f.read()
+        found["answer"] = answer
+        return found
+
+    def assertRefusalCarried(self, found):
+        """The comment job of refused_scenario wrote the line of the refusal of run 100 (the post job's own output owed,
+        "<head> refused", derived the same), in its label comment of the state refused-review, and the hold job of
+        the older answer gave way to that line: it posted no hold comment and no label comment, and it set no state
+        label."""
+        line, wrote = found["line"], found["wrote"]
+        self.assertEqual(found["ran"], {"Run actions/checkout": "success", self.OWE_REFUSED: "success",
+                                        self.SKIP: "success", self.LABEL: "success"}, found["log"])
+        self.assertEqual([line in b.split("\n") for _m, _e, b in wrote], [True, True], wrote)
+        self.assertIn(f"**Next step:** {rules.STATES['refused-review'][1]}", wrote[-1][2])
+        self.assertIn(f"The fresh reader refused the review of {HEAD}, so this step records the withdrawal that the post "
+                      f"job owes for it: {HEAD} refused.", found["log"])
+        self.assertEqual((found["holds"], found["labels"], found["states"]), ([], [], []), found["summary"])
+        self.assertIn(f"#7 at {HEAD}: decision skip, cause refused, read {found['answer']['started']}, run 100, from "
+                      f"{line.split()[-2]}\n", found["summary"])
+
+    def assertRefusalLost(self, found):
+        """The control of refused_scenario: with no derivation, no line of the refusal of run 100 stands in any label
+        comment, so the hold job of the older answer reads no newer word, posts its hold comment, and writes the
+        label comment of the state after-hold over the label of the refusal (its last label comment: it first
+        records the line of its own screen), which is false for a head whose newest word is that refusal."""
+        line = found["line"]
+        self.assertFalse(any(line in b.split("\n") for _m, _e, b in found["wrote"]), found["wrote"])
+        self.assertEqual(len(found["holds"]), 1, found["summary"])
+        self.assertEqual(found["labels"][-1].split("\n")[1], f"**Next step:** {rules.STATES['after-hold'][1]}",
+                         found["labels"])
+        self.assertFalse(any(line in b.split("\n") for b in found["labels"]))
+
+    def assertDerivedAtSite(self, site):
+        """OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4 (the failure sweep of the refused word: I3 in
+        test_0791_2_runs_orefused1_oanswer0 and test_0812_2_runs_orefusedline1_oanswer0): the post job of rescreen
+        run 100 of mallory's #7, whose review the fresh reader refused, ends at the step site, failed or cancelled,
+        before the step that writes its output owed: its outputs owed and withdrawn are empty, and it wrote no check
+        run, so neither a line nor a check run carries the refusal. A refused review posts no comment. The comment job
+        derives the output owed of the post job itself, "<head> refused", the value that the post job's step
+        "Write the output owed for the withdrawal of the import check runs" gives, under the conditions of that step
+        (the environment post holds the App's key, which the post job's output key_set says, and the author-kind
+        table's withdraw): its step "Record the withdrawal of a refused review whose post job did not finish" writes
+        the line <!-- withdraw-owed <head> refused 100 <read> --> in the label comment, before its label step gives the
+        item the state of the refusal. The hold job of answer run 130, which read #7 40 minutes ago and whose screen
+        held HEAD, runs after it and gives way to that line: it posts no hold comment and writes no label comment. The
+        control, the comment job as before that step, writes no line: the hold job reads no newer word, and writes the
+        label comment of the state after-hold over the label of the refusal."""
+        for result in ("cancelled", "failure"):
+            with self.subTest(site=site, result=result):
+                self.tearDown()
+                self.setUp()
+                self.assertRefusalCarried(self.refused_scenario(site, result))
+                self.tearDown()
+                self.setUp()
+                self.assertRefusalLost(self.refused_scenario(site, result, control=True))
+
+    def test_a_refused_review_whose_post_job_ended_at_its_checkout_gets_its_line_from_the_comment_job(self):
+        """The first site of assertDerivedAtSite: "Run actions/checkout" of the post job."""
+        self.assertDerivedAtSite(self.POST_SITES[0])
+
+    def test_a_refused_review_whose_post_job_ended_at_its_read_of_the_table_gets_its_line_from_the_comment_job(self):
+        """The second site of assertDerivedAtSite: "Read the author-kind table" of the post job."""
+        self.assertDerivedAtSite(self.POST_SITES[1])
+
+    def test_a_refused_review_whose_post_job_ended_at_its_write_of_owed_gets_its_line_from_the_comment_job(self):
+        """The third site of assertDerivedAtSite: "Write the output owed for the withdrawal of the import check runs"
+        of the post job."""
+        self.assertDerivedAtSite(self.POST_SITES[2])
+
+    def test_a_comment_job_whose_step_that_records_the_withdrawal_failed_writes_the_same_line_when_it_runs_again(self):
+        """OSSV-613's architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4: the step "Record the withdrawal of a
+        refused review whose post job did not finish" can fail, at its read of the comments of #7 or at its write of the
+        label comment 40 (GitHub refuses the call). That is a comment job that failed, and its post job did not succeed
+        either: the rescreen pass runs the failed jobs of that run again (held.sh due_rerun, refusal_unrecorded), and
+        the last step of the comment job, "Leave no label that says the workflow recorded the check", runs after the
+        failed step, so the label comment holds no claim that is not true. The post job of rescreen run 100, whose
+        review the fresh reader refused, was cancelled at its checkout. The first run of its comment job writes no
+        label comment; its re-run, after GitHub took the call, derives the same output owed from the same needs and
+        writes the same line <!-- withdraw-owed <head> refused 100 <read> -->, so the hold job of the older answer 130
+        gives way to it. The control, the comment job as before the step, writes no line in the re-run: the hold job
+        writes after-hold. A refused read fails the last step too, which reads the same comments: it leaves the
+        comment as it is."""
+        site = self.POST_SITES[0]
+        for case, call, last in (("read", f"repos/{REPO}/issues/7/comments", "failure"),
+                                 ("write", f"repos/{REPO}/issues/comments/40", "success")):
+            for control in (False, True):
+                with self.subTest(case=case, control=control):
+                    self.tearDown()
+                    self.setUp()
+                    found = self.refused_scenario(site, control=control, fail=call)
+                    ran, wrote = found["first"]
+                    named = ("Run actions/checkout", self.OWE_REFUSED, self.UNCLAIM)
+                    self.assertEqual({k: v for k, v in ran.items() if k in named + (self.OWE, self.SKIP, self.LABEL)},
+                                     {"Run actions/checkout": "success", self.OWE_REFUSED: "failure",
+                                      self.OWE: "skipped", self.SKIP: "skipped", self.LABEL: "skipped",
+                                      self.UNCLAIM: last}, ran)
+                    self.assertEqual({k for k, v in ran.items() if v != "skipped"}, set(named), ran)
+                    # The stand-in gh records a write that it refused, which landed nowhere: the label comment of the
+                    # first run is what the test served.
+                    self.assertEqual(len(wrote), 1 if case == "write" else 0, wrote)
+                    if control:
+                        self.assertRefusalLost(found)
+                    else:
+                        self.assertRefusalCarried(found)
+
+    def test_the_comment_job_derives_no_output_owed_outside_the_conditions_of_the_post_jobs_own_write(self):
+        """OSSV-613's architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4: the comment job derives "<head> refused"
+        only for a post job that failed or was cancelled over a review that the fresh reader refused, and only where the
+        post job's step "Write the output owed for the withdrawal of the import check runs" would have written it. (i)
+        The environment post holds no key of the App (APP_KEY_SET is false, the post job's output key_set): the post
+        job writes no output owed and withdraws nothing, so the step OWE_REFUSED runs and writes no line. (ii) A post
+        job that succeeded with no output owed and none withdrawn: neither step runs. (iii) A review job that gave a
+        blocking finding, whose review comment carries its word: its post job was cancelled before the step, and neither
+        step runs. Each of them leaves no line, and the label step writes its label comment alone."""
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                 "body": rules.label_comment("change")}
+        trust = dict(self.REVIEWED, task="rescreen", started=ago(20), named=HEAD)
+        for case in ("no key", "post succeeded", "blocking review"):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                ctx = self.refused_contexts(trust)
+                self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": 1})
+                self.serve_files(7, "README.md")
+                if case == "blocking review":
+                    ctx.update({"needs.review.outputs.verdict": "blocking", "needs.review.outputs.refused": "",
+                                "needs.review.outputs.body": review_of(HEAD, "blocking", run=100,
+                                                                       read=trust["started"])["body"]})
+                _steps, posted = self.refused_post_job(ctx, self.POST_SITES[0], key=case != "no key")
+                self.assertEqual((posted["owed"], posted["withdrawn"], posted["key_set"]),
+                                 ("", "", "false" if case == "no key" else "true"))
+                if case == "post succeeded":
+                    ctx["needs.post.result"] = "success"
+                self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+                # Only the first case runs a step, OWE_REFUSED, whose script derives nothing: no key. In each other case
+                # neither step runs, as before the rule.
+                runs = evaluate(step("comment", self.OWE_REFUSED)["if"], ctx)
+                self.assertEqual(bool(runs), case == "no key", case)
+                self.assertFalse(evaluate(step("comment", self.OWE)["if"], ctx), case)
+                if runs:
+                    ran, wrote = self.comment_job(ctx, [label], labels=("review-held",))
+                    self.assertEqual((ran[self.OWE_REFUSED], self.OWE in ran), ("success", False), self.logs[-4:])
+                    self.assertNotIn("so this step records the withdrawal", "\n".join(self.logs))
+                    self.assertFalse(any("withdraw-owed" in b for _m, _e, b in wrote), wrote)
+
+    def test_the_two_steps_that_record_what_the_post_job_owes_never_both_run_for_one_run(self):
+        """OSSV-613's architect, 2026-11-26 22:03Z, round 30, item 4 (ii): the step OWE and the step OWE_REFUSED run the
+        one script (a YAML anchor), with the one env, and never both run for a run. For each result of the post job,
+        each output refused of the review job, and each pair of the post job's outputs owed and withdrawn, the step
+        OWE_REFUSED runs exactly for a post job that failed or was cancelled over a review that the fresh reader refused
+        (the rescreen pass reads the conclusion of that step alone, held.sh refusal_unrecorded), and the step OWE runs
+        for every other run that the post job gave owed or withdrawn, as before that step. The label step takes the line
+        from whichever of the two wrote its output line."""
+        owe, refused = step("comment", self.OWE), step("comment", self.OWE_REFUSED)
+        self.assertEqual((owe["id"], refused["id"]), ("owed", "owed_refused"))
+        self.assertEqual((refused["env"], refused["run"]), (owe["env"], owe["run"]))
+        self.assertEqual(step("comment", self.LABEL)["env"]["OWED_LINE"],
+                         "${{ steps.owed.outputs.line || steps.owed_refused.outputs.line }}")
+        for posting in ("true", "false"):
+            for result, refusal, owed, withdrawn in itertools.product(("success", "failure", "cancelled", "skipped"),
+                                                                       ("review", "answer", ""),
+                                                                       ("", f"{HEAD} refused"), ("", HEAD)):
+                ctx = {"env.POST_REVIEW": posting, "needs.post.result": result,
+                       "needs.review.outputs.refused": refusal, "needs.post.outputs.owed": owed,
+                       "needs.post.outputs.withdrawn": withdrawn}
+                first, second = bool(evaluate(owe["if"], ctx)), bool(evaluate(refused["if"], ctx))
+                unfinished = result in ("failure", "cancelled") and refusal == "review"
+                with self.subTest(**ctx):
+                    self.assertFalse(first and second)
+                    self.assertEqual(second, posting == "true" and unfinished)
+                    self.assertEqual(first, posting == "true" and bool(owed or withdrawn) and not unfinished)
+
+    def test_a_writers_refused_review_writes_no_line_and_no_check_run(self):
+        """OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4, ruling (1) choice (b): the order model of
+        test_orders.py leaves a writer's refused review out, with no carrier and no invariant, and this test pins that
+        as a stated rule. The author-kind table gives a writer no state label and no import record, so no approval can
+        stand on a writer's head, and the missing carrier fails closed. The post job of rescreen run 100 of alice's
+        pull request #7 (a writer: the route review, no screen), whose review the fresh reader refused, withdraws no
+        success, as none stands, and records no check run of not-approved, which only the rules that hold back
+        (rules.py holds_back) ask for: no check run is posted or patched. It finishes the withdrawal, so the comment
+        job writes no line <!-- withdraw-owed ... --> in any label comment. The contrast: the same review of
+        mallory's #7 (an outsider) records the check run of not-approved, which carries its refusal."""
+        passed = review_of(HEAD, at=ago(300))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                 "body": rules.label_comment("reviewed")}
+        writer = {"task": "rescreen", "route": "review", "outsider": "", "outside": "false", "kind": "writer",
+                  "number": "7", "head": HEAD, "started": ago(20), "named": HEAD}
+        outsider = dict(self.REVIEWED, task="rescreen", started=ago(20), named=HEAD)
+        for kind, trust in (("writer", writer), ("outsider", outsider)):
+            with self.subTest(kind=kind):
+                self.tearDown()
+                self.setUp()
+                got = self.judge(["README.md"], value=self.LPS, trust=trust, event="workflow_dispatch",
+                                 verdict="refused", refused="review", comments=[passed, label], outside=trust["outside"],
+                                 named=HEAD)
+                self.assertEqual((got["result"], got["post"]["owed"], got["post"]["withdrawn"]),
+                                 ("success", "", HEAD), self.logs[-4:])
+                posts = [c for c in got["writes"] if any(f"repos/{REPO}/check-runs" in a for a in c)]
+                self.assertEqual(got["withdrawn"], [])
+                self.assertEqual(len(posts), 1 if kind == "outsider" else 0, got["writes"])
+                self.assertEqual([body["conclusion"] for _t, body in got["checks"]],
+                                 ["neutral"] if kind == "outsider" else [])
+                outcomes, wrote, bodies = self.refused_comment_job(got, trust, "100", [passed, label])
+                self.assertEqual(outcomes[self.OWE], "success", self.logs[-4:])
+                self.assertEqual([w for w in wrote if "check-runs" in w[1]], [])
+                self.assertFalse(any("withdraw-owed" in b for b in bodies), bodies)
 
     def test_a_relabel_withdraws_an_older_pass_under_the_line_of_a_newer_refusal_behind_an_older_blocking_review(self):
         """The tester's audit of round 28 (G1): a success import check run stands only when the newest word of its head
