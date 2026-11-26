@@ -50,25 +50,29 @@ jobs:
       - run: python3 .github/test_screen.py
 
   # Every order of the jobs of two and three runs of one head, and the end state that each order must reach
-  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 747 combinations run in 30
+  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 1,285 combinations run in 60
   # shards (ORDERS_SHARD), each in 4 processes, so that each shard ends in under 10 minutes (CI rule 3; OSSV-613's
-  # architect, 2026-11-26 02:17Z). Its failure sweep (ORDERS_FAILURES=1) is no job of this workflow: it takes hours of
-  # CPU time, so it runs on demand on the build cluster, and no env here sets ORDERS_FAILURES.
+  # architect, 2026-11-26 02:17Z). The 747 combinations before the refused review of round 30 took 179.6 job-minutes
+  # in 30 shards of 4.3 to 7.9 minutes; at that speed, the 129,813 job runs of the 1,285 (test_orders.py cost; 68,605
+  # for the 747) take about 340, so 60 shards of about 5.7 minutes each. Its failure sweep (ORDERS_FAILURES=1) is no
+  # job of this workflow: it takes hours of CPU time, so it runs on demand on the build cluster, and no env here sets
+  # ORDERS_FAILURES.
   review-workflow-orders:
-    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/30)'
+    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/60)'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
-                28, 29]
+                28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+                54, 55, 56, 57, 58, 59]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - env:
-          ORDERS_SHARD: ${{ matrix.shard }}/30
+          ORDERS_SHARD: ${{ matrix.shard }}/60
         run: python3 .github/parallel_tests.py --processes 4 .github/test_orders.py
 
   # The one check of this workflow to require: it always runs, and passes only
