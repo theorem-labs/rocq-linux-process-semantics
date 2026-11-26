@@ -8,8 +8,9 @@
     [State.init_model] also seeds it with what the kernel reserves for the
     process: the vvar pages and the vDSO text, taken as one unhinted
     [get_unmapped_area] span (Linux v6.18.46, commit 1f99e9ab748f,
-    arch/riscv/kernel/vdso.c:124 [arch_setup_additional_pages]) that a
-    top-down layout answers from the gap just below [mm->mmap_base].
+    arch/riscv/kernel/vdso.c:124 in [__setup_additional_pages], which
+    [arch_setup_additional_pages] calls) that a top-down layout answers
+    from the gap just below [mm->mmap_base].
 
     Two consumers concluded from [img_hi A <= lo] alone that a region above
     the image hull meets no reserved interval, and the pair sits exactly

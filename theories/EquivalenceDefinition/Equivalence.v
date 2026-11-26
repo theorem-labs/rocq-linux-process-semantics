@@ -25,11 +25,11 @@
     The run is a function of the inputs grouped into the
     [State.ProcInput] record — universally quantified (over the
     validity predicates defined with the process model —
-    [Run.valid_argv], [Run.valid_envp], [Fs.valid_fs],
-    [Fs.fs_keys_relative], [Run.valid_creds] — where there is one): the
-    argv strings, the envp strings, the initial file-system image (whose
-    keys are cwd-relative, the premise the device arms rest on — see
-    [Run.valid_input]), the LAUNCHING USER AND GROUP
+    [Run.valid_argv], [Run.valid_envp], [Run.valid_image],
+    [Run.valid_creds] — where there is one): the argv strings, the envp
+    strings, the initial file-system image together with the declared
+    working directory (the image is the whole namespace under absolute
+    keys — see [Run.valid_image]), the LAUNCHING USER AND GROUP
     ([State.in_uid] / [State.in_gid], which the credential syscalls
     report — the model does not know which user started the process, so
     it quantifies over every user it could have been rather than
@@ -56,7 +56,8 @@
     fails, because [State.NetQueue] has no nil: an environment that
     simply never connects cannot be written down, so the quantifier
     ranges over strictly fewer networks than exist.  That is a
-    deliberate under-approximation, and it narrows the theorem
+    deliberate under-approximation, recorded in
+    bugs/accept-queue-cannot-run-out.md, and it narrows the theorem
     rather than weakening it.
     What remains nondeterministic about a read is only how many of the
     available bytes it delivers (short reads); end-of-file is where the
@@ -86,7 +87,10 @@
     stack pointers and break bases are [word = bv 64], argv/envp are
     byte ([bv 8]) string lists, and the fixed a0 seed
     ([Run.init_machine_state]'s x10) is the zero word.  [MemImage]
-    snapshot modules are unchanged ([N]-based; see MemImageType.v). *)
+    snapshot modules are unchanged ([N]-based; see MemImageType.v).
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Run.
@@ -308,14 +312,14 @@ Proof. intros b (H & _). exact H. Qed.
 Lemma error_free_unkilled_bites :
   exists b, error_free b /\ ~ error_free_unkilled b.
 Proof.
-  exists {| bh_traces := fun tr => tr = [] \/ tr = [KillEv (Z_to_bv 64 6) (@nil (Fs.path * list byte))];
+  exists {| bh_traces := fun tr => tr = [] \/ tr = [KillEv (Z_to_bv 64 6) Fs.fs_empty];
             bh_errors := False;
             bh_all_errors := False;
             bh_unmodeled := False |}.
   split.
   - intros H. exact H.
   - intros (_ & Hno). apply Hno.
-    exists [KillEv (Z_to_bv 64 6) (@nil (Fs.path * list byte))], (Z_to_bv 64 6), (@nil (Fs.path * list byte)).
+    exists [KillEv (Z_to_bv 64 6) Fs.fs_empty], (Z_to_bv 64 6), Fs.fs_empty.
     split; [now right | now left].
 Qed.
 
@@ -1305,7 +1309,8 @@ End SPEC_ERROR_FREE.
     [image_brk_satisfiable_entry_va] gives that for every image the
     Sv48 check accepts, and the two [_refuted] lemmas below are the
     theorems.  A checker sealed against [SPEC_SV39] or [SPEC_SV57] cannot
-    be proved until the arms read the declared size, and the surfaces
+    be proved until the arms read the declared size
+    (bugs/va-size-declines-every-non-sv48-run.md), and the surfaces
     exist so that a task on such a kernel is refused by name rather than
     judged against the Sv48 window.  What this does NOT do is gate
     [Run.run]: an obligation written over it directly, outside these
@@ -1458,6 +1463,57 @@ Module Type SPEC_VA_ANY (Source : MemImage) (Target : MemImage).
       (mkImage Source.loaded_segments Source.init_pc Source.phdrs)
       (mkImage Target.loaded_segments Target.init_pc Target.phdrs).
 End SPEC_VA_ANY.
+
+(* =========================================================================
+   SPEC_ON — the statement restricted to inputs an example's own
+   hypothesis admits
+   ========================================================================= *)
+
+(** [strong_universal_T] over the valid inputs that ALSO satisfy [hyp].
+    WHAT IT RELAXES: the inputs [hyp] excludes, and nothing else; every
+    other quantifier and the conclusion are [strong_universal_T]'s.  It
+    exists for the inputs on which the model declines and a binary's
+    statement can therefore not hold: a walk that ends at "proc" or
+    "sys" looked up at the root is outside the model ([Fs.ROutside]).
+    [Run.valid_input] keeps an argv operand's walk away from that
+    lookup (the working folder is not the root, [Run.cwd_off_rootb],
+    and no link body names "proc" or "sys",
+    [Run.links_off_proc_sysb]), but a program's own pathname, such as
+    "/proc/self/status", still leads there on a valid input, and so does
+    an operand a program joins to a path of its own.  It is never a way to drop an
+    input a proof finds inconvenient: the generator
+    ([tools/gen_checker.py]) lets an example ascribe [SPEC_ON] only from
+    an allowlist that names the example, the hypothesis and the reason,
+    and pins the hypothesis's text. *)
+Definition strong_universal_T_on (hyp : ProcInput -> Prop)
+    (source_image target_image : Image) : Prop :=
+  forall en_source en_target inp,
+    valid_entry source_image en_source inp ->
+    valid_entry target_image en_target inp ->
+    valid_input inp ->
+    hyp inp ->
+    strong_equiv source_image target_image en_source en_target inp.
+
+(** The hypothesis, as a functor ARGUMENT of the sealing surface, and
+    with a WITNESS: a valid input it admits.  The witness is what keeps
+    the family from being vacuous -- a [hyp] no valid input satisfies
+    would make every [SPEC_ON] obligation true -- and it is a field of
+    the module type, so a generated Checker that ascribes [SPEC_ON]
+    cannot be built without one.  SEALED like [SPURIOUS_CFG]: the
+    generated Checker instantiates it with the example's named
+    definition, and the ascription fails on a proof made under any other
+    hypothesis. *)
+Module Type INPUT_HYP.
+  Parameter hyp : ProcInput -> Prop.
+  Parameter hyp_witness : exists inp, valid_input inp /\ hyp inp.
+End INPUT_HYP.
+
+Module Type SPEC_ON (H : INPUT_HYP) (Source : MemImage) (Target : MemImage).
+  Parameter strong_universal :
+    strong_universal_T_on H.hyp
+      (mkImage Source.loaded_segments Source.init_pc Source.phdrs)
+      (mkImage Target.loaded_segments Target.init_pc Target.phdrs).
+End SPEC_ON.
 
 (* =========================================================================
    The declared HARDWARE-CAPABILITY word: one statement per word, and the

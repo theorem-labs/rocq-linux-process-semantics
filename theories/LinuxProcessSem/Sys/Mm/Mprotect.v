@@ -73,8 +73,9 @@ Open Scope sys_scope.
       [syscall_spec]'s modeled surface, so VM_SEALED is never set on a
       modeled run.
 
-    An LSM may also fail [security_file_mprotect] (mm/mprotect.c:824), but
-    the default hook returns 0 (include/linux/lsm_hook_defs.h:198). *)
+    [security_file_mprotect] (mm/mprotect.c:976-978, Linux v6.18.46)
+    answers 0: the configuration of record builds no LSM (SCOPE.md), so
+    it is the stub of include/linux/security.h. *)
 Definition mprotect_errnos : list Z := [ENOMEM].
 
 (** [mprotect addr len prot].  Linux decides FOUR things about the

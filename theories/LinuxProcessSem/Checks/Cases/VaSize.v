@@ -13,11 +13,17 @@
     ([Equivalence.SPEC_VA_ANY] and its siblings) says what its name says.
 
     [Checks/Examples.v] keeps what is not per-syscall and
-    re-exports this module. *)
+    re-exports this module.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs State Monad Specs Vdso Run StackLayout MemImageType RiscvSemantics.
+  BvBase Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import
+  Run StackLayout MemImageType RiscvSemantics.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import ExecutableSpecs.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence.
 Import ListNotations.
@@ -201,6 +207,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
+  all: try valid_image_vm.
   all: try valid_urandom_default.
   (* [Run.valid_launch]'s first half: a positional [mkProcInput] gets
      [State.default_execfn], the one-byte relative name "a".  That is a
@@ -258,6 +265,8 @@ Example va_any_splits_each_to_its_own :
       \/ valid_input_sv57 (sized_input Sv57)).
 Proof.
   repeat split; apply valid_input_va_any_splits; apply sized_input_va_any.
+  all: try valid_image_vm.
+  all: try valid_urandom_default.
 Qed.
 
 (** ** The sealed statements, fired

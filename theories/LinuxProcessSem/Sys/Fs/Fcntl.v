@@ -20,7 +20,10 @@
     [open_ignored_flags_clear_of_setfl_current] proves that over
     [Open.wr_create_flags], [Open.is_excl_create] and
     [Open.open_ignored_flags] themselves.  [Fs.Open] importing [Fs.File]
-    and [Fs.ReadWrite] is the same arrangement. *)
+    and [Fs.ReadWrite] is the same arrangement.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -175,7 +178,7 @@ Definition setfl_acted_on : Z :=
 Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
   match e with
   | FdChannel _ => false
-  | FdFile _ _ | FdFileW _ _ | FdFileRW _ _ | FdDir | FdSocket _ =>
+  | FdFile _ _ | FdFileW _ _ | FdFileRW _ _ | FdDir _ | FdSocket _ =>
       Z.eqb (Z.land (bv_unsigned arg) setfl_acted_on) 0
   | FdFileA _ _ => false
       (* AN APPEND FD IS THE CASE THIS ARM WAS WARNED ABOUT, and it is
@@ -220,7 +223,7 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          and from the fact that [null_fops] (drivers/char/mem.c) reads
          none of the bits [setfl] can set; neither is written down
          here, so this declines. *)
-  | FdUrandom => false
+  | FdUrandom _ _ => false
       (* FAIL-CLOSED, for the /dev/null reason: a character device the
          open resolves, whose [f_flags] word the entry does not record.
          [urandom_fops] (drivers/char/random.c, v6.18.46) reads none of
@@ -280,19 +283,6 @@ Definition setfl_noop_on (e : FdEntry) (arg : word) : bool :=
          premise is [Net.Socket.socket_spec]'s datagram arm, which
          declines SOCK_NONBLOCK and mints this kind with [O_RDWR]
          alone *)
-  | FdAnon _ af => if af_append af then false
-                   else Z.eqb (Z.land (bv_unsigned arg) setfl_acted_on) 0
-      (* AN UNNAMED FILE TAKES THE ANSWER OF THE FILE KIND ITS OPEN WAS.
-         Every [State.FdAnon] descends from an open this model admits --
-         an [FdFile], [FdFileW], [FdFileRW] or [FdFileA] whose name was
-         removed ([Namei.unlink_open_tmp_spec]), or a "/proc/self/fd/N"
-         open under O_RDONLY, [Open.wr_create_flags] or
-         [Open.append_create_flags] ([Open.openat_procfd_spec]) -- and
-         [vfs_unlink] leaves [f_flags] alone.  So without O_APPEND its
-         [f_flags] is one of the residues
-         [modeled_open_flags_clear_of_setfl] covers, and the [FdFileRW]
-         rule holds; with O_APPEND it is the [FdFileA] case, whose
-         decline and reason are above *)
   end.
 
 (** The arithmetic half of the argument above, mechanized rather than
@@ -625,15 +615,11 @@ Definition eventfd_setfl (fd : word) (ctx : EventfdCtx) (arg : word)
 Definition getfl_f_flags (e : FdEntry) : option word :=
   match e with
   | FdSocket _ => Some (Z_to_bv 64 socket_f_flags)
-  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdDir => None
+  | FdChannel _ | FdFile _ _ | FdFileW _ _ | FdDir _ => None
   | FdFileRW _ _ => None
       (* the same reason as the four above, and no new one: the answer
          would have to name the O_LARGEFILE and O_CLOEXEC bits the open
          accepted and did not record *)
-  | FdAnon _ _ => None
-      (* the [FdFileRW] reason: every unnamed file descends from an open
-         that accepted O_NONBLOCK, O_LARGEFILE and O_CLOEXEC and recorded
-         none of them, so the word is not a function of the entry *)
   | FdFileA _ _ => None
       (* declined for the [FdFile] reason and one more.  The ignored
          O_NONBLOCK is discarded here exactly as it is for the three
@@ -654,11 +640,11 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
          is recorded too, which is the change the [FdFile] bullet
          names.  Answering without it would report a word the kernel
          does not hold for an open that passed the bit. *)
-  | FdUrandom => None
-      (* DECLINED for the same reason.  The access mode is O_RDONLY by
-         construction, so a real answer would be [O_RDONLY +
-         O_LARGEFILE] plus the O_NONBLOCK the open did not record — the
-         same missing bit, the same decline. *)
+  | FdUrandom _ _ => None
+      (* DECLINED for the same reason.  The entry carries the access
+         mode, so a real answer would be that mode plus O_LARGEFILE plus
+         the O_NONBLOCK the open did not record — the same missing bit,
+         the same decline. *)
   | FdStream _ _ st => Some (Z_to_bv 64 (stream_f_flags st))
       (* the [FdSocket] derivation, with the one bit it lacks recorded:
          see [stream_f_flags] *)
@@ -789,12 +775,14 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
     and third are unreachable because execve and execveat are not
     modeled syscalls.  The fourth is
     unreachable for a different reason worth stating, because it is not
-    about fcntl: [Open.openat_spec] answers a DETERMINISTIC -ENOENT for a
-    path absent from the model's file-system image, and this assumes the
-    image holds no /proc tree — so a program that reads its own fdinfo is
-    REJECTED at the openat, not silently mis-answered here.  That is a
-    standing limit on the whole file-system model, not a hole this arm
-    opens.
+    about fcntl: the model answers no open of an fdinfo file.
+    [Open.openat_spec] answers "/proc/self/fd/N" alone
+    ([Open.proc_self_fd]); every other path through "proc" at the root,
+    "/proc/self/fdinfo/N" among them, goes to the walk, which ends at
+    [Fs.ROutside] there ([Fs.at_outside]), and the open DECLINES it.  So
+    a program that reads its own fdinfo is declined at the openat, not
+    silently mis-answered here.  That is a standing limit on the whole
+    file-system model, not a hole this arm opens.
 
     So no modeled execution is constrained by the difference between
     setting the bit and not: [F_GETFD] admits the same two answers
@@ -902,16 +890,12 @@ Definition getfl_f_flags (e : FdEntry) : option word :=
       utmp helper uses), owner and signal commands, leases, [F_NOTIFY],
       the pipe-size and seal commands: none has any state behind it here.
 
-    One environment condition is outside the modeled resolutions:
-    [security_file_fcntl] runs before [do_fcntl] and an enforcing LSM can
-    fail the call there, receiving the full untruncated [arg].  This spec
-    commits to its answers absolutely rather than offering an
-    [Syscall.errno_from] alternative the way [Open.openat_spec] does, so
-    under such a kernel every modeled arm is a false REJECTION rather
-    than a fail-closed gap.  That is deliberate and matches
-    [Ioctl.ioctl_spec], which faces [security_file_ioctl] and takes the
-    same position; the model describes a kernel with no LSM registering
-    these hooks.  Separately, an O_PATH fd answers -EBADF for any command
+    [security_file_fcntl] runs before [do_fcntl], receiving the full
+    untruncated [arg].  The configuration of record builds no LSM
+    (SCOPE.md), so it is the stub of include/linux/security.h that
+    answers 0, and this spec commits to its answers absolutely, as
+    [Ioctl.ioctl_spec] does for [security_file_ioctl].  Separately, an
+    O_PATH fd answers -EBADF for any command
     outside the allow-list of [check_fcntl_cmd] (Linux v6.10-v6.15,
     fs/fcntl.c: the list gained [F_CREATED_QUERY] at v6.12 and is
     otherwise identical across the range, and the [FMODE_PATH] test that

@@ -13,7 +13,10 @@
     point of saying so: every arm of [Fs.Readdir.getdents64_spec] is
     reachable from a real run, and so is the decline, by giving a
     directory fd a buffer with room in it.  What is left is the two
-    things a real run reveals nothing about. *)
+    things a real run reveals nothing about.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -32,9 +35,9 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
 Definition getdents64_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-      (3, FdFile [102] 7); (4, FdFileW [103] 9); (5, FdDir) ]
+      (3, FdFile 1 7); (4, FdFileW 2 9); (5, FdDir Fs.default_cwd) ]
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [120]); ([103], [121])] None None None.
+    (raw_files [([102], [120]); ([103], [121])]) None None None.
 
 (** One getdents64 call, with [buf] parked at a mapped-looking address
     that no arm below reads: the spec does not take the pointer, so
@@ -69,7 +72,7 @@ Example getdents64_edge_is_the_minimum_reclen :
      decline is the COUNT's doing and not the effect's *)
   /\ check_syscall (getdents64_in 5 24) (mkEffect (Z_to_bv 64 24) [] [])
        getdents64_model = CheckUnmodeled.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE SAME EDGE, ON THE OTHER SIDE OF THE SIGN.  ADMISSION REASON: as
     above — it is where the model reads [count] as
@@ -92,7 +95,7 @@ Example getdents64_count_is_a_signed_int :
   (* the high half is discarded first, so 2^32 | 24 has room again *)
   /\ check_syscall (getdents64_in 5 (2 ^ 32 + 24)) (mkEffect (errno_ret EINVAL) [] [])
        getdents64_model = CheckUnmodeled.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** EVERY ANSWER IS INERT.  ADMISSION REASON: it pins model-internal
     state that no observation reveals.
@@ -120,4 +123,41 @@ Example getdents64_answers_are_inert :
   (* and the injected failure, which leaves the model alone too *)
   /\ check_syscall (getdents64_in 5 0) (mkEffect (errno_ret ENOENT) [] [])
        getdents64_model = CheckOk getdents64_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
+
+(** "f" = "x" (byte 120), inode 1, open O_RDWR at fd 3, and the same file
+    open in APPEND MODE at fd 3, both at offset 0: the two file kinds
+    [getdents64_model] does not hold. *)
+Definition getdents64_rdwr_model : Model :=
+  mkModel [(3, FdFileRW 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (raw_files [([102], [120])]) None None None.
+
+Definition getdents64_append_model : Model :=
+  mkModel [(3, FdFileA 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (raw_files [([102], [120])]) None None None.
+
+(** ...AND THE TWO FILE KINDS [getdents64_model] DOES NOT HOLD ARE
+    -ENOTDIR AND INERT.  ADMISSION REASON: as above, it pins
+    model-internal state that no observation reveals.
+
+    [iterate_dir] (fs/readdir.c:88-91, Linux v6.18.46) answers -ENOTDIR
+    for a file with no [.iterate_shared], and neither O_RDWR nor
+    O_APPEND gives a regular file one.  What a probe cannot see is that
+    the model comes back the SAME model, the offset at 0.  The counts
+    (64 and 256) have room, and on a non-directory the spec reads
+    neither the count nor the buffer, so the -ENOTDIR is the kind's
+    alone.  The second conjunct of each refuses the 0 a directory read
+    to its end would answer. *)
+Example getdents64_rdwr_fd_is_enotdir :
+  check_syscall (getdents64_in 3 64) (mkEffect (errno_ret ENOTDIR) [] [])
+    getdents64_rdwr_model = CheckOk getdents64_rdwr_model []
+  /\ check_syscall (getdents64_in 3 64) (mkEffect (Z_to_bv 64 0) [] [])
+       getdents64_rdwr_model = CheckReject.
+Proof. split_conj; check_eq. Qed.
+
+Example getdents64_append_fd_is_enotdir :
+  check_syscall (getdents64_in 3 256) (mkEffect (errno_ret ENOTDIR) [] [])
+    getdents64_append_model = CheckOk getdents64_append_model []
+  /\ check_syscall (getdents64_in 3 256) (mkEffect (Z_to_bv 64 0) [] [])
+       getdents64_append_model = CheckReject.
+Proof. split_conj; check_eq. Qed.

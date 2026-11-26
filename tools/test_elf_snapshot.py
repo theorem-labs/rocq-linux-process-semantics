@@ -33,6 +33,7 @@ No toolchain or pytest needed:
 Exits non-zero on any failure.
 """
 
+import hashlib
 import os
 import re
 import struct
@@ -1237,6 +1238,41 @@ def main():
             "unaligned segment's head slack must map the file bytes before "
             "p_offset, and its bss tail must be zeroed"
         )
+        # A LOAD ending one byte past a page boundary reserves the page
+        # its last byte opens: the extent runs to round_up(vaddr + memsz),
+        # 0x14000 here, which is where load_elf_binary puts the break
+        # (ELF_PAGEALIGN of elf_brk, the largest vaddr + memsz;
+        # fs/binfmt_elf.c:1240-1242 and :1330, Linux v6.18.46).  Rounding
+        # the LAST BYTE instead -- qemu-user's TARGET_PAGE_ALIGN(hiaddr),
+        # State.v's brk_aslr_max comment -- would stop the extent at
+        # 0x13000, and Run.valid_brk's floor with it.
+        tail_specs = [
+            (5, "r-x", 0x10000, b"\x13\x05\x00\x00", None),
+            (6, "rw-", 0x11000, b"\xca\xfe\xba\xbe", 0x2001),
+        ]
+        tail_path = os.path.join(tmp, "fake_onebyte_tail.elf")
+        with open(tail_path, "wb") as f:
+            f.write(build_elf(tail_specs))
+        _t0, t1, _thdr = _parse_elf(tail_path)["segments"]
+        assert (t1["base"], t1["size"]) == (0x11000, 0x3000), (
+            "a LOAD ending at 0x13001 must reserve through 0x14000; got "
+            "base=0x%x size=0x%x (size 0x2000 is the last-byte rounding)"
+            % (t1["base"], t1["size"])
+        )
+        # The neighbour: a LOAD ending exactly on the boundary reserves no
+        # page past it.
+        edge_specs = [
+            (5, "r-x", 0x10000, b"\x13\x05\x00\x00", None),
+            (6, "rw-", 0x11000, b"\xca\xfe\xba\xbe", 0x2000),
+        ]
+        edge_path = os.path.join(tmp, "fake_page_end.elf")
+        with open(edge_path, "wb") as f:
+            f.write(build_elf(edge_specs))
+        _e0, e1, _ehdr = _parse_elf(edge_path)["segments"]
+        assert (e1["base"], e1["size"]) == (0x11000, 0x2000), (
+            "a LOAD ending exactly at 0x13000 must reserve through 0x13000; "
+            "got base=0x%x size=0x%x" % (e1["base"], e1["size"])
+        )
         # A zero-memsz LOAD segment maps no pages at all.
         empty_specs = [
             (5, "r-x", 0x10000, b"\x13\x05\x00\x00", None),
@@ -1659,6 +1695,131 @@ def main():
         assert rebuild(bad_v, os.path.join(tmp, "never")) == 1
         assert not os.path.exists(os.path.join(tmp, "never"))
         groups_passed.append("--rebuild round trip (fixtures, committed examples; edited/short/dropped/interp/flags/non-snapshot refusals)")
+
+        # -- Group: --lean-namespace writes the Lean image module beside the
+        # .v, from the same parse.  Its chunks must be include_hex of exactly
+        # the .hex files the .v reads, by file name, each with that file's
+        # SHA-256, and its records the .v's; the .v itself must not change.
+        lean_ns = "LinuxProcessSemantics.Examples.fixture_ns"
+        elf_path = os.path.join(tmp, "lean_fixture.elf")
+        with open(elf_path, "wb") as f:
+            f.write(build_elf(SEG_SPECS))
+        plain_out = os.path.join(tmp, "lean_plain")
+        lean_out = os.path.join(tmp, "lean_out")
+        for d in (plain_out, lean_out):
+            os.makedirs(d)
+        plain = snapshot_binary(elf_path, plain_out, prefix="SourceMemImage",
+                                module_name="Source")
+        with_lean = snapshot_binary(elf_path, lean_out, prefix="SourceMemImage",
+                                    module_name="Source", lean_namespace=lean_ns)
+        lean_path = os.path.join(lean_out, "SourceMemImage.lean")
+        assert with_lean["files"][-1] == lean_path, with_lean["files"]
+        assert not any(f.endswith(".lean") for f in plain["files"]), plain["files"]
+        assert not os.path.exists(os.path.join(plain_out, "SourceMemImage.lean"))
+        with open(os.path.join(plain_out, "SourceMemImage.v")) as f:
+            plain_v = f.read()
+        with open(os.path.join(lean_out, "SourceMemImage.v")) as f:
+            lean_v = f.read()
+        assert plain_v == lean_v, "--lean-namespace changed the Rocq module"
+
+        def lean_reading(directory, prefix="SourceMemImage"):
+            with open(os.path.join(directory, prefix + ".lean")) as f:
+                text = f.read()
+            assert text.startswith(elf_snapshot.LEAN_HEADER), text[:200]
+            assert "namespace %s.%s\n" % (lean_ns, prefix) in text
+            assert "theorem" not in text and "String" not in text
+            chunks = re.findall(r'^-- sha256: ([0-9a-f]{64})\nnoncomputable def (\w+) : Chunk := '
+                                r'include_hex "([^"]+)"$', text, re.M)
+            assert len(chunks) == text.count("include_hex \""), text
+            for sha, _name, hex_name in chunks:
+                with open(os.path.join(directory, hex_name), "rb") as f:
+                    assert hashlib.sha256(f.read()).hexdigest() == sha, hex_name
+            records = re.findall(r'^def (\w+) : Segment := \{\n  seg_base  := 0x([0-9a-f]+)\n'
+                                 r'  seg_size  := 0x([0-9a-f]+)\n  seg_perms := "([^"]*)"\n'
+                                 r'  seg_bytes := \[([\w, ]*)\]\n\}$', text, re.M)
+            assert len(records) == text.count(" : Segment :="), text
+            return text, [(n, f) for _, n, f in chunks], records
+
+        snap = elf_snapshot.read_snapshot(os.path.join(lean_out, "SourceMemImage.v"))
+        text, chunks, records = lean_reading(lean_out)
+        rocq_chunks = [(m.group("name"), dict((d.group("dep"), d.group("hex"))
+                        for d in elf_snapshot._DEP_RE.finditer(lean_v))[m.group("dep")])
+                       for m in elf_snapshot._READ_RE.finditer(lean_v)]
+        assert chunks == rocq_chunks, (chunks, rocq_chunks)
+        assert [(int(b, 16), int(z, 16), p) for _, b, z, p, _ in records] == \
+            [(sg["base"], sg["size"], sg["perms"]) for sg in snap["segments"]], records
+        assert "def SourceMemImage_init_pc : Nat := 0x%x\n" % snap["entry"] in text
+        assert ("  ph_addr := 0x%x\n  ph_ent  := %d\n  ph_num  := %d\n"
+                % (snap["phdrs"]["addr"], snap["phdrs"]["ent"], snap["phdrs"]["num"])) in text
+        assert ("namespace Source\nabbrev loaded_segments := SourceMemImage_loaded_segments\n"
+                "abbrev init_pc := SourceMemImage_init_pc\nabbrev phdrs := SourceMemImage_phdrs\n"
+                "def image : Image := Image.mkImage loaded_segments init_pc phdrs\nend Source\n") in text
+
+        # Multi-chunk segments: the Lean module names the same chunk files.
+        cap = elf_snapshot.MAX_CHUNK_BYTES
+        elf_snapshot.MAX_CHUNK_BYTES = 0x400
+        try:
+            split_out = os.path.join(tmp, "lean_split")
+            os.makedirs(split_out)
+            snapshot_binary(elf_path, split_out, prefix="SourceMemImage",
+                            module_name="Source", lean_namespace=lean_ns)
+        finally:
+            elf_snapshot.MAX_CHUNK_BYTES = cap
+        with open(os.path.join(split_out, "SourceMemImage.v")) as f:
+            split_v = f.read()
+        _, split_chunks, _ = lean_reading(split_out)
+        assert any("_chunk_" in f for _, f in split_chunks), split_chunks
+        assert [f for _, f in split_chunks] == re.findall(r'Extra Dependency "([^"]+)"', split_v)
+
+        # The command line: the option writes the module beside the .v (named
+        # after the .v), a bad namespace is refused before anything is
+        # written, and without the option no .lean appears.
+        cli_out = os.path.join(tmp, "lean_cli")
+        os.makedirs(cli_out)
+        tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), "elf_snapshot.py")
+        run = subprocess.run([sys.executable, tool, elf_path, os.path.join(cli_out, "Img.v"),
+                              "--prefix", "SourceMemImage", "--module-name", "Source",
+                              "--lean-namespace", lean_ns], capture_output=True, text=True)
+        assert run.returncode == 0, run.stderr
+        # Named after the Lean module's last component, the prefix, as
+        # snapshot_binary names it, not after the .v.
+        assert sorted(f for f in os.listdir(cli_out) if f.endswith(".lean")) == ["SourceMemImage.lean"], \
+            os.listdir(cli_out)
+        with open(os.path.join(cli_out, "SourceMemImage.lean")) as f:
+            assert f.read() == text
+        for bad in ("1bad", "a..b", "a b", ""):
+            bad_out = os.path.join(tmp, "lean_bad")
+            run = subprocess.run([sys.executable, tool, elf_path, bad_out, "--prefix", "SourceMemImage",
+                                  "--lean-namespace", bad], capture_output=True, text=True)
+            assert run.returncode == 2 and "not a Lean namespace" in run.stderr, (bad, run)
+            assert not os.path.exists(bad_out), bad
+        try:
+            elf_snapshot.render_lean_image("SourceMemImage", lean_ns, [{
+                "base": 0, "size": 1, "perms": "r--",
+                "chunks": [("SourceMemImage_seg_bytes_000", 'x".hex', "0" * 64)]}], 0,
+                {"addr": 0, "ent": 56, "num": 0})
+            raise AssertionError("a chunk path Lean would read differently was rendered")
+        except ValueError as e:
+            assert "unsupported chunk path" in str(e), e
+        # A refusal of the renderer comes before anything is written: no .v,
+        # no .hex, no .lean is left behind.
+        refused_out = os.path.join(tmp, "lean_refused")
+        os.makedirs(refused_out)
+        real_render = elf_snapshot.render_lean_image
+
+        def refusing_render(*args, **kwargs):
+            raise ValueError("refused for the test")
+        elf_snapshot.render_lean_image = refusing_render
+        try:
+            snapshot_binary(elf_path, refused_out, prefix="SourceMemImage",
+                            module_name="Source", lean_namespace=lean_ns)
+            raise AssertionError("a refused rendering was written")
+        except ValueError as e:
+            assert "refused for the test" in str(e), e
+        finally:
+            elf_snapshot.render_lean_image = real_render
+        assert os.listdir(refused_out) == [], os.listdir(refused_out)
+        groups_passed.append("--lean-namespace Lean image module (same parse, same files, hashes, CLI, refusals)")
 
     # -- e_type: the model covers a static non-PIE executable only.
     with tempfile.TemporaryDirectory() as tmp:

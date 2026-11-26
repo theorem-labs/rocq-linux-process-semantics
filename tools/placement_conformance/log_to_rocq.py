@@ -325,7 +325,9 @@ Definition replay_kernel : KernelBuild :=
     (kb_rmem_max default_kernel).
 
 (** The launch.  Nothing below reads the argument vector, the environment,
-    the file system or the credentials, so they are empty or ordinary; the
+    the file system, the working folder or the credentials, so they are
+    empty, the standard root image at the fixture default [Fs.default_cwd],
+    or ordinary; the
     three fields that decide a placement — the reserved ledger, the mmap
     base and the stack pointer — are the log's.  The three trailing
     declarations are [in_channel_reader] and [in_sigpipe_default], both
@@ -336,9 +338,10 @@ Definition replay_kernel : KernelBuild :=
     choice here, and a placement replay has no opinion about any of the
     three. *)
 Definition replay_input : ProcInput :=
-  mkProcInput_full [] [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
+  mkProcInput_full [] [] (Fs.standard_root Fs.default_cwd) Fs.default_cwd IEof
+    (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
     net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] replay_kernel default_execfn true true false.
+    default_urandom replay_kernel default_execfn true true false.
 
 (** The probe's own image, as /proc/self/maps reported it.  The vDSO pair is
     not here: [init_model] appends it from [replay_kernel]. *)

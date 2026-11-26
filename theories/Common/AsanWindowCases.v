@@ -10,8 +10,8 @@
     [Common.AsanWindow], and [Checks/] may not import [Common/]
     ([Checks.Placement]'s header).
 
-    The sizes are the ASan secondary maps of the cURL fuzz target
-    fuzz_bufq: 69,632 bytes (17 pages, the smallest) and 270,336 bytes
+    The sizes are two ASan secondary-map sizes of one program:
+    69,632 bytes (17 pages, the smallest) and 270,336 bytes
     (66 pages, the largest).  Both are below 2 MiB, so the THP path
     never runs for them, whatever the kernel build.
 
@@ -19,9 +19,9 @@
 
     - A, ON A LAUNCH LEDGER: the ledger [execve] gives a process (the
       vdso/vvar pair at the top of the search window), then four family
-      maps of both sizes.  Every premise holds, with the bufq sizes, so
+      maps of both sizes.  Every premise holds, with these two sizes, so
       the lemma is not vacuous there.  The first map is also checked
-      against [check_syscall], the checker of the whole mmap call.
+      against [check_mmap], the checker of the mmap arm.
     - B, A HIGHER GAP: an munmap opens a hole between two maps.  The
       next small map goes into the hole, so its address is not the one
       the same request gets on ledger A, and it is still in the window.
@@ -43,9 +43,8 @@ From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
   BvBase Fs State Monad Specs Run.
 From LinuxProcessSemantics.LinuxProcessSem.Sys.Mm Require Import Mmap.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import
-  ExecutableSpecs Placement Cases.Prelude.
-From LinuxProcessSemantics.LinuxProcessSem.Checks Require MmapTopFrame.
+From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import Placement.
+From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Mm.Mmap.
 From LinuxProcessSemantics.Common Require Import AsanPlacement AsanWindow.
 Import ListNotations.
 Open Scope bv_scope.
@@ -55,7 +54,7 @@ Local Open Scope Z_scope.
    Fixtures
    ========================================================================= *)
 
-(** The two bufq secondary map sizes. *)
+(** The two secondary map sizes. *)
 Definition s_small : Z := 69632.
 Definition s_large : Z := 270336.
 
@@ -95,6 +94,18 @@ Definition no_hint : word := Z_to_bv 64 0.
 Lemma no_hint_address : hint_address no_hint = 0.
 Proof. vm_compute. reflexivity. Qed.
 
+(** The process input of that launch: [Checks.Cases.Prelude.demo_input]
+    over the empty image and an ended standard input, written out here
+    because a file of this library reaches under [Checks/] only the arm
+    checkers it computes with (theories/CHECKS_CLOSURE.txt). *)
+Definition launch_input : ProcInput :=
+  mkProcInput_full [] [] Fs.fs_empty Fs.default_cwd IEof
+                   (Z_to_bv 64 1000) (Z_to_bv 64 1002)
+                   [Z_to_bv 64 27; Z_to_bv 64 1002; Z_to_bv 64 4000]
+                   net_silent default_nofile (Z_to_bv 64 0)
+                   StackLayout.hwcap_rv64gc false Sv48 default_urandom
+                   default_kernel default_execfn true true false.
+
 (** A launch [execve] can really hand a process, the one
     [Checks.Cases.Mm.PlacementHoles] uses: the mmap base at the bottom
     of the band [Run.valid_mmap_base] admits, the stack pointer at the
@@ -102,7 +113,7 @@ Proof. vm_compute. reflexivity. Qed.
     transparent huge pages). *)
 Definition launch_model : Model :=
   init_model [] (Z_to_bv 64 0x11000) (Z_to_bv 64 mmap_base_min)
-    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
+    (Z_to_bv 64 sp_window_lo) target_alloc_limit launch_input.
 
 Definition h0 : VmMaps := m_vmmaps launch_model.
 
@@ -143,16 +154,13 @@ Example caseA_ledger :
                  (Z_to_bv 64 (T0 - 294912), Z_to_bv 64 s_large) ].
 Proof. vm_compute. reflexivity. Qed.
 
-(** THE FIRST MAP IS THE CHECKER'S.  The whole mmap call
+(** THE FIRST MAP IS THE CHECKER'S.  The mmap arm's checker on the call
     [mmap(NULL, 270336, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS,
     -1, 0)] on the launch model, answered at the address [grant] uses,
-    is accepted, and its post-state has the ledger [hA1]. *)
+    accepts it, and its post-state has the ledger [hA1]. *)
 Example caseA_first_map_is_the_checkers :
-  match check_syscall
-          (mkInput (Z_to_bv 64 222)
-             [Z_to_bv 64 0; Z_to_bv 64 s_large; Z_to_bv 64 3; Z_to_bv 64 34;
-              mmap_fd_none; Z_to_bv 64 0]
-             (fun _ => None) (fun _ => None))
+  match check_mmap (Z_to_bv 64 0) (Z_to_bv 64 s_large) (Z_to_bv 64 3)
+          (Z_to_bv 64 34) mmap_fd_none (Z_to_bv 64 0)
           (mkEffect (Z_to_bv 64 (T0 - 294912)) []
              [(Z_to_bv 64 (T0 - 294912), Z_to_bv 64 s_large)])
           launch_model with
@@ -177,7 +185,7 @@ Example caseAB_window : fam_window M_AB s_small s_large W_vdso = 3997684.
 Proof. vm_compute. reflexivity. Qed.
 
 (** EVERY PREMISE HOLDS, for both request sizes: the lemma is not
-    vacuous on a launch ledger with the bufq sizes. *)
+    vacuous on a launch ledger with these two sizes. *)
 Example caseA_premises_large :
   window_premises_b hA s_large famA (vm_reserved h0) M_AB s_small s_large W_vdso = true.
 Proof. vm_compute. reflexivity. Qed.
@@ -555,4 +563,3 @@ Print Assumptions family_place_in_window_b.
 Print Assumptions tight_window_claim_false.
 Print Assumptions caseF_escapes.
 Print Assumptions caseA_first_map_is_the_checkers.
-Print Assumptions MmapTopFrame.mm_ok_keeps_mmap_top.

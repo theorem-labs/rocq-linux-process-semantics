@@ -160,19 +160,20 @@ Proof.
   apply pure_ok.
 Qed.
 
-(** clock_getres: a range [access_ok] refuses is -EFAULT on every
-    supported id — on an alarm id it is the [alt]'s right half — so the
-    witness needs no case on the id there. *)
+(** clock_getres: the NULL destination's bare 0, otherwise the 1 ns
+    resolution [clock_getres_one_ns] admits for every id; a range
+    [access_ok] refuses is -EFAULT; the alarm ids and [CLOCK_SGI_CYCLE]
+    are -EINVAL with no case on the destination. *)
 Definition clock_getres_witness (clkid tp : word) (i : SyscallInput)
     (m : Model) : outcome SyscallEffect :=
   if clock_getres_supported_b clkid then
     if clock_getres_dst_ok_b i tp then
-      if clock_getres_alarm_b clkid then ret_outcome (errno_ret EINVAL) m
-      else if w_is0 tp then ret_outcome (Z_to_bv 64 0) m
+      if w_is0 tp then ret_outcome (Z_to_bv 64 0) m
       else Ok (mkEffect (Z_to_bv 64 0)
                     [(tp, clock_gettime_bytes 1)] []) m []
     else if negb (access_okb tp 16) then ret_outcome (errno_ret EFAULT) m
     else Unmodeled
+  else if clock_getres_alarm_b clkid then ret_outcome (errno_ret EINVAL) m
   else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE
        then ret_outcome (errno_ret EINVAL) m
        else Unmodeled.
@@ -192,18 +193,17 @@ Proof.
   - eapply bind_step; [apply input_ok|]. cbv beta.
     destruct (clock_getres_dst_ok_b i tp).
     2:{ destruct (negb (access_okb tp 16)); [|apply unmodeled_intro].
-        destruct (clock_getres_alarm_b clkid); [apply alt_r|];
-          unfold err_ret, ret_only, ret_outcome; apply pure_ok. }
-    destruct (clock_getres_alarm_b clkid).
-    + apply alt_l. unfold err_ret, ret_only, ret_outcome. apply pure_ok.
-    + unfold clock_getres_result_spec.
-      destruct (w_is0 tp).
-      * unfold ret_only, ret_outcome. apply pure_ok.
-      * eapply bind_step.
-        { apply (choose_ok _ (clock_gettime_bytes 1)).
-          apply clock_getres_one_ns. }
-        apply pure_ok.
-  - destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+        unfold err_ret, ret_only, ret_outcome; apply pure_ok. }
+    unfold clock_getres_result_spec.
+    destruct (w_is0 tp).
+    + unfold ret_only, ret_outcome. apply pure_ok.
+    + eapply bind_step.
+      { apply (choose_ok _ (clock_gettime_bytes 1)).
+        apply clock_getres_one_ns. }
+      apply pure_ok.
+  - destruct (clock_getres_alarm_b clkid).
     + unfold err_ret, ret_only, ret_outcome. apply pure_ok.
-    + apply unmodeled_intro.
+    + destruct (Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE).
+      * unfold err_ret, ret_only, ret_outcome. apply pure_ok.
+      * apply unmodeled_intro.
 Qed.

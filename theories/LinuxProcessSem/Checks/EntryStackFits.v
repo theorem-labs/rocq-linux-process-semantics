@@ -46,7 +46,10 @@
 
     Which of the four reasons at the top of [Checks/Examples.v]: the
     FIRST — every lemma here is a [forall] over admissible entries and
-    inputs — and the THIRD, since the sp window is a model constant. *)
+    inputs — and the THIRD, since the sp window is a model constant.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -365,9 +368,10 @@ Qed.
     an input carrying one would be rejected whatever its argv did, and the
     lemma below would hold for a reason it does not state. *)
 Definition oversized_input : FinProcInput :=
-  mkFinProcInput oversized_argv [] [] [] (Z_to_bv 64 0) (Z_to_bv 64 0) []
+  mkFinProcInput oversized_argv [] Fs.fs_empty Fs.default_cwd [] (Z_to_bv 64 0)
+                 (Z_to_bv 64 0) []
                  net_silent (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-                 [] [] default_kernel default_execfn true true false.
+                 [] default_kernel default_execfn true true false.
 
 (** The band the POINTER ARRAY alone excludes, stated over every [sp],
     argv and envp rather than at the witness: 268435457 argv entries need

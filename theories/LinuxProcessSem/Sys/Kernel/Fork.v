@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -55,14 +58,18 @@ Open Scope sys_scope.
       over-approximates in the safe direction and deliberately abstracts
       the environment's choice rather than pinning one kernel's answer.
 
-    - VERSION RANGE.  The SHAPE of [pid_max] moved inside the plausible
-      window: a single global [int pid_max] through v6.13, and from v6.14
+    - VERSION RANGE.  The SHAPE of [pid_max] moved between v6.13 and
+      v6.14: a single global [int pid_max] through v6.13, and from v6.14
       a per-namespace field ([include/linux/pid_namespace.h]) read as
       [READ_ONCE(tmp->pid_max)].  The BOUND survives that refactor —
       [pid_max <= pid_max_max = PID_MAX_LIMIT] holds in both shapes, and
-      the [pid_min] computation is untouched by it — across v6.12..v6.16.
-      That is what makes [2^22] safe to state here as a constant rather
-      than as one kernel's answer.
+      the [pid_min] computation is untouched by it — across v6.12..v6.16,
+      and the supported kernels, v6.16 to v6.18.46 (SCOPE.md), all have
+      the per-namespace shape: [PID_MAX_LIMIT] ([include/linux/threads.h])
+      and every line of [kernel/pid.c] that sets or reads [pid_max],
+      [pid_max_max] or [pid_min] are the same at v6.16, v6.17 and
+      v6.18.46.  That is what makes [2^22] safe to state here as a
+      constant rather than as one kernel's answer.
 
     Admitting 0 is not a harmless over-approximation: musl 1.2.6
     ([src/exit/exit.c], [exit]) does
@@ -204,7 +211,8 @@ Definition set_tid_address_spec : Sys SyscallEffect :=
     - A TRACER.  A child that survives could [ptrace] the parent and
       write its memory ([PTRACE_POKEDATA]) or its registers
       ([PTRACE_SETREGS]) with [CLONE_VM] clear.  That is an assumption
-      about the ENVIRONMENT (Yama's [ptrace_scope], uid separation);
+      about the ENVIRONMENT (uid separation and capabilities; Yama is not
+      built in the configuration of record);
       declining 220 would not discharge it, since an independently
       started tracer needs no [clone] at all.
     - A SIGNAL.  A child needs no [ptrace] at all to [kill] its parent:
@@ -448,11 +456,16 @@ Definition SIGCHLD : Z := 17.
       only at 6.12.44 — so a 6.12.43 reader has one site and not the
       other.  Every one of these sites answers -EMFILE, which is all
       this list records.
-    - EACCES.  [security_task_alloc] → [selinux_task_alloc]
-      (security/selinux/hooks.c), which is [avc_has_perm(..., PROCESS__FORK,
-      ...)] and answers -EACCES on denial.  AppArmor's and TOMOYO's
-      [task_alloc] both return 0 unconditionally, so SELinux is the only
-      in-tree source.  What [selinux_task_alloc] RETURNS is unchanged in
+    - EACCES, which no supported kernel gives.  [security_task_alloc] →
+      [selinux_task_alloc] (security/selinux/hooks.c), which is
+      [avc_has_perm(..., PROCESS__FORK, ...)], answers -EACCES on denial,
+      and AppArmor's and TOMOYO's [task_alloc] both return 0
+      unconditionally, so SELinux is the only in-tree source; but the
+      configuration of record builds no LSM (SCOPE.md), so there
+      [security_task_alloc] is the stub that answers 0.  The list keeps
+      -EACCES all the same: a priority-2 gap, since it admits an answer
+      no supported kernel gives, and sound, since it leaves out nothing
+      one does.  What [selinux_task_alloc] RETURNS is unchanged in
       mainline v6.6..v7.2 and in stable linux-6.6.y, linux-6.12.y and
       linux-6.17.y: [avc_has_perm]'s verdict.  Its body is not — from
       v6.18 it also copies the task's security blob first (commit
@@ -486,10 +499,10 @@ Definition SIGCHLD : Z := 17.
     userspace.  This is the argument [Mremap.mremap_errnos] makes for its own
     killable lock.
 
-    THREE ENVIRONMENT RESTRICTIONS, stated rather than modeled, in the
-    shape [Kernel.Sys.getpid_spec] uses for the same problem.  Each can make a real
-    kernel answer something outside this list, and none is visible to
-    the model:
+    ONE ENVIRONMENT RESTRICTION, stated rather than modeled, in the
+    shape [Kernel.Sys.getpid_spec] uses for the same problem.  It can make
+    a real kernel answer something outside this list, and it is not
+    visible to the model:
     - a parent holding INHERITABLE PERF EVENTS reaches
       [perf_event_init_task], whose [inherit_group] has an -EINVAL of
       its own plus whatever a PMU's [event_init] returns.
@@ -498,15 +511,14 @@ Definition SIGCHLD : Z := 17.
       [Specs.modeled_sysnos], so a modeled run creates none — but it could
       have INHERITED one from its own parent.  The model describes a
       process that holds none.
-    - a BPF LSM program attached to [task_alloc] may return any errno.
-    - with CONFIG_SCHED_CLASS_EXT and a BPF scheduler attached,
-      [sched_cgroup_fork] (int-returning from v6.12) forwards the
-      scheduler's own task init — [scx_ops_init_task] at v6.12,
-      [scx_init_task] from v6.16, [__scx_init_task] from v7.1, and the
-      file moving from kernel/sched/ext.c to kernel/sched/ext/ext.c at
-      v7.2, which is a SEPARATE change from any of the renames —
-      through
-      [ops_sanitize_err], which passes any value in [-MAX_ERRNO, -1]. *)
+    The two others this list once named are not in the configuration of
+    record (SCOPE.md): a BPF LSM program attached to [task_alloc] needs
+    [CONFIG_BPF_LSM], which depends on [CONFIG_SECURITY] (kernel/bpf/Kconfig),
+    and a BPF scheduler's task init through [sched_cgroup_fork] needs
+    [CONFIG_SCHED_CLASS_EXT], which depends on [CONFIG_DEBUG_INFO_BTF]
+    (kernel/Kconfig.preempt), an option offered only under
+    [CONFIG_DEBUG_INFO] (lib/Kconfig.debug), while
+    testing/vm/kernel.fragment sets [CONFIG_DEBUG_INFO_NONE]. *)
 Definition clone_errnos : list Z := [EAGAIN; ENOMEM; EMFILE; EACCES].
 
 (** The one flag word this model answers: a child that shares nothing,
@@ -574,8 +586,10 @@ Definition clone_fork_flags_b (flags : word) : bool :=
     [FdDir] shares an [f_pos] on a real kernel exactly as a regular file
     does, and the reason it does not close this gate is NOT that the
     model has no position for it — that would be the same defect one
-    line up, read backwards.  It is that no modeled syscall can OBSERVE
-    a directory position: [ReadWrite.lseek_spec] declines [FdDir], and
+    line up, read backwards.  It is that no modeled syscall MOVES a
+    directory position, so every [struct file] the sharing joins is at
+    0 and stays there: [ReadWrite.lseek_spec] declines a directory
+    result above 0 and reports only the 0 the position holds, and
     [Readdir.getdents64_spec] declines every listing while its one
     directory answer — [filldir64]'s -EINVAL for a buffer with no room
     for an entry — is the arm on which the kernel leaves [f_pos]
@@ -616,7 +630,7 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
   forallb (fun e => match snd e with
                     | FdFile _ _ | FdFileW _ _ | FdFileA _ _
                     | FdFileRW _ _ | FdSocket _ => false
-                    | FdChannel _ | FdDir => true
+                    | FdChannel _ | FdDir _ => true
                     (* A PIPE END JOINS THE GATE, fail-closed, and it is
                        the one entry here whose shared object is the
                        POINT of the descriptor rather than a payload it
@@ -658,7 +672,7 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        the parent), so nothing it might read off the device
                        is a consumption the declaration has to account for:
                        the stream is what the device hands THIS process. *)
-                    | FdUrandom => true
+                    | FdUrandom _ _ => true
                     (* A STREAM-PAIR END JOINS THE GATE, fail-closed, for
                        the pipe's reason: the child's copy names the same
                        socket, so a child that reads drains the parent's
@@ -677,21 +691,15 @@ Definition clone_no_shared_file_b (fds : list (word * FdEntry)) : bool :=
                        [Fs.File.dup_modeled_entry]'s reason: one rule for
                        every socket kind. *)
                     | FdDgram _ => false
-                    (* AN UNNAMED FILE JOINS THE GATE: the child's copy
-                       would share the one [struct file] -- its [f_pos]
-                       -- and the inode, so a child's write would move
-                       contents that [State.FdAnon] keeps in this
-                       process's entries alone.  SCOPE.md states that an
-                       unnamed file is this process's only. *)
-                    | FdAnon _ _ => false
                     end) fds.
 
 (** The pids a successful [clone] may report.  Strictly positive, which
     is the never-zero decision above; below [PID_MAX_ENVELOPE], the same
     envelope [set_tid_address_spec] picks the caller's own tid in — so
     the intersection of the two windows applies, and
-    [PID_MAX_ENVELOPE]'s own argument runs v6.12..v6.16, narrower than
-    this section's; and different from that tid, because [alloc_pid]
+    [PID_MAX_ENVELOPE]'s own argument, read across v6.12..v6.16 and the
+    same at v6.17 and v6.18.46, is narrower than this section's; and
+    different from that tid, because [alloc_pid]
     hands out a FREE pid and the caller's own is in use.
 
     THE LAST CONJUNCT IS VACUOUS UNTIL THE TID IS OBSERVED.  [m_tid]

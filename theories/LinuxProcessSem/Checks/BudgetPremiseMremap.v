@@ -14,7 +14,7 @@
     [NoaccessOwned.sys_inv] gives the fit of the live mappings
     ([MapsFit.vm_fit]) and [State.noaccess_pages_owned], hence
     a fresh destination meets no protected byte
-    ([BudgetPremise.fresh_dst_avoids_noaccess]); and with both lazy
+    ([NoaccessOwned.fresh_dst_avoids_noaccess]); and with both lazy
     ledgers ([m_vm_lazy], [m_vm_materialized]) empty the two lazy-ledger
     identities hold by computation. *)
 

@@ -33,7 +33,10 @@
     file's three parameters.
 
     Nothing exhibited here is claimed VALID and nothing is claimed
-    rejected by any classifier. *)
+    rejected by any classifier.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State.
@@ -50,7 +53,7 @@ Open Scope bv_scope.
 Definition file_envp_demo_prog : list byte := [Z_to_bv 8 119; Z_to_bv 8 99].
 Definition file_envp_demo_path : Fs.path :=
   [Z_to_bv 8 47; Z_to_bv 8 105; Z_to_bv 8 110].
-Definition file_envp_demo_fs0 : Fs.Fs := [].
+Definition file_envp_demo_fs0 : Fs.Fs := Fs.fs_empty.
 Definition file_envp_demo_stdin : list byte := [].
 
 Definition file_envp_demo_p : Q := (1 # 8)%Q.
@@ -262,7 +265,7 @@ Qed.
     constant. *)
 Definition file_envp_demo_core_other_argv : FinCore :=
   mkFinCore [[file_envp_demo_a]] [[file_envp_demo_v]]
-    (Fs.fs_set file_envp_demo_fs0 file_envp_demo_path [file_envp_demo_nul])
+    (Fs.fs_create_file file_envp_demo_fs0 file_envp_demo_path [file_envp_demo_nul])
     file_envp_demo_stdin.
 
 Lemma file_envp_demo_off_argv_weighs_nothing :
@@ -295,26 +298,26 @@ Qed.
 Lemma file_envp_demo_misconfiguration_is_invisible :
   ~ argv_names_path file_misconfigured_argv file_example_path
   /\ (0 < cd_weight (file_envp_geometric file_envp_demo_p file_envp_demo_r
-                       file_envp_demo_q file_misconfigured_argv []
+                       file_envp_demo_q file_misconfigured_argv Fs.fs_empty
                        file_example_path []
                        file_envp_demo_p_nonneg file_envp_demo_p_le_1
                        file_envp_demo_r_nonneg file_envp_demo_r_le_1
                        file_envp_demo_q_nonneg file_envp_demo_q_le_1)
-            (file_envp_core file_misconfigured_argv [] file_example_path []
+            (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                [] []))%Q
   /\ (0 < cd_weight (file_envp_geometric file_envp_demo_p file_envp_demo_r
-                       file_envp_demo_q file_misconfigured_argv []
+                       file_envp_demo_q file_misconfigured_argv Fs.fs_empty
                        file_example_path []
                        file_envp_demo_p_nonneg file_envp_demo_p_le_1
                        file_envp_demo_r_nonneg file_envp_demo_r_le_1
                        file_envp_demo_q_nonneg file_envp_demo_q_le_1)
-            (file_envp_core file_misconfigured_argv [] file_example_path []
+            (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                [] [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_envp_core file_misconfigured_argv [] file_example_path []
+       (core_fs (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                    [] []))
      = fs_file file_other_path
-         (core_fs (file_envp_core file_misconfigured_argv []
+         (core_fs (file_envp_core file_misconfigured_argv Fs.fs_empty
                      file_example_path [] [] [Z_to_bv 8 65])).
 Proof.
   exact (file_envp_geometric_needs_argv_to_name_the_path file_envp_demo_p

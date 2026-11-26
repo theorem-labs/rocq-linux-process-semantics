@@ -47,9 +47,10 @@ Definition ordinary_launch : ProcInput :=
 (** The ordinary launch on [kb]: the kernel is the only field that
     differs. *)
 Definition launch_on (kb : KernelBuild) : ProcInput :=
-  mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
+  mkProcInput_full [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                   Fs.default_cwd IEof demo_uid demo_gid demo_groups net_silent
                    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                   default_urandom [] kb default_execfn
+                   default_urandom kb default_execfn
                    true true false.
 
 Lemma ordinary_launch_valid : valid_input ordinary_launch.

@@ -64,7 +64,8 @@
     independently started process, and a child this model does not step
     could equally attach to its parent and [PTRACE_POKEDATA] it with
     [CLONE_VM] clear.  That half is a closed-world assumption about the
-    ENVIRONMENT (Yama's [ptrace_scope], uid separation) — undischarged.
+    ENVIRONMENT (uid separation and capabilities; Yama is not built in
+    the configuration of record) — undischarged.
     What this
     file pins for it is the IN-MODEL half: [prctl]'s tagging option and
     all of 117 are declined, so the traced process cannot enable masking
@@ -1017,7 +1018,7 @@ Proof. vm_compute. reflexivity. Qed.
     installs, which the gate does not close on, and that is what makes
     the accepting examples above non-vacuous. *)
 Definition pc_model_open_file : Model :=
-  with_fds ((Z_to_bv 64 3, FdFile [] (Z_to_bv 64 0)) :: m_fds pc_model)
+  with_fds ((Z_to_bv 64 3, FdFile 1 (Z_to_bv 64 0)) :: m_fds pc_model)
     pc_model.
 
 Example clone_checker_declines_with_a_file_open :

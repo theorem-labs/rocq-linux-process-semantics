@@ -7,13 +7,49 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
 Import ListNotations.
 Open Scope bv_scope.
 Open Scope sys_scope.
+
+(** THE PREFIX EVERY PATH-TAKING ARM OPENS WITH, discharged once.  A
+    spec that begins [i <- input ;; m <- get_model ;; body] admits
+    exactly what [body] admits at the SAME input and model: neither
+    reader can fail, neither emits an event, and neither changes the
+    model, so the two bind steps are transparent.
+
+    It is stated as an iff because both directions are wanted — the
+    soundness proofs build the prefix and the completeness proofs strip
+    it — and it saves every arm under Sys/Fs/ from re-deriving the same
+    four-way existential by hand. *)
+Lemma bind_input_model {A} :
+  forall (k : SyscallInput -> Model -> Sys A) i m o,
+  (i0 <- input ;; m0 <- get_model ;; k i0 m0) i m o <-> k i m i m o.
+Proof.
+  intros k i m o. unfold bind, input, get_model. split.
+  - destruct o as [y m2 evs|].
+    + intros (x & m1 & evs1 & evs2 & H1 & H2 & H3).
+      inversion H1; subst; try clear H1.
+      destruct H2 as (x2 & m3 & evs3 & evs4 & H4 & H5 & H6).
+      inversion H4; subst; try clear H4.
+      exact H5.
+    + intros [H | (x & m1 & evs1 & H1 & H2)]; [discriminate|].
+      inversion H1; subst; try clear H1.
+      destruct H2 as [H | (x2 & m3 & evs3 & H3 & H4)]; [discriminate|].
+      inversion H3; subst; try clear H3. exact H4.
+  - destruct o as [y m2 evs|]; intros H.
+    + exists i, m, [], evs. split; [reflexivity|].
+      split; [|reflexivity].
+      exists m, m, [], evs. split; [reflexivity|]. split; [exact H|reflexivity].
+    + right. exists i, m, []. split; [reflexivity|].
+      right. exists m, m, []. split; [reflexivity|]. exact H.
+Qed.
 
 (** Return [r] with no memory writes. *)
 Definition ret_only (r : word) : Sys SyscallEffect := pure (mkEffect r [] []).

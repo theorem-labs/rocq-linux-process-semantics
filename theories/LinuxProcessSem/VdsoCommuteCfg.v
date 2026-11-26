@@ -50,8 +50,10 @@
     PURE ADDITION: this file changes no existing statement. *)
 
 From Stdlib Require Import ZArith List Bool.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs MemImageType.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase Fs MemImageType Vdso State Monad Specs RiscvSemantics Run
+  State Monad Specs RiscvSemantics Run
   VdsoCommute VdsoCommuteArms VdsoCommuteSys.
 Import ListNotations.
 Open Scope bv_scope.

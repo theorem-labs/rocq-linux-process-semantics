@@ -19,7 +19,10 @@
     [bv_unsigned]; the wrapping [bv] address walks of [wbytes]/[rdn]
     carry the (trivially dischargeable) no-overflow side conditions
     mirroring [rdn_stack]/[rdn_ext]; argv-pointer bytes use
-    [BvBase.word_le8]. *)
+    [BvBase.word_le8].
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.

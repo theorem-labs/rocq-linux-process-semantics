@@ -9,8 +9,7 @@
     WHAT IS TRANSCRIBED.  musl 1.2.6 at commit f21a9653 (v1.2.6-20),
     [src/internal/vdso.c], the whole of [__vdsosym] with its two
     helpers [checkver] and [count_syms_gnu].  static-asan
-    b05061352064 pins that musl (static-asan's README.md, named by
-    docs/building.md in oss-verify-proofs-internal), and
+    b05061352064 pins that musl (static-asan's README.md), and
     [arch/riscv64/syscall_arch.h] there defines [VDSO_CGT_SYM] as
     ["__vdso_clock_gettime"] and [VDSO_CGT_VER] as ["LINUX_4.15"], so
     those two strings are what the first [clock_gettime] of a
@@ -40,7 +39,9 @@
     words are unsigned 32-bit or 64-bit and are kept in [N]. *)
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso RiscvSemantics.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import RiscvSemantics.
 Import ListNotations.
 Local Open Scope Z_scope.
 Local Open Scope bool_scope.

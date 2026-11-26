@@ -25,7 +25,7 @@
     derive:
 
     - [obs_trace] of the run is exactly the prefixes of
-      [[ExitEv (bv_and code (Z_to_bv 64 255)) (in_fs inp)]]  (exit_obs_iff), and
+      [[ExitEv (bv_and code (Z_to_bv 64 255)) (Fs.fs_observe (in_fs inp))]]  (exit_obs_iff), and
     - the run can NEVER take the explicit error transition
       ([~ reaches_error]; exit_no_error_run).
 
@@ -36,7 +36,9 @@
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From Stdlib Require Import FunctionalExtensionality.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence MustExit OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import Run OmniRun.
 From LinuxProcessSemantics.Common Require Import SimInv.
 
 Import ListNotations.
@@ -271,7 +273,7 @@ Lemma sstep_exit_inv : forall ms model x8 evs st,
   ms_svc_pending ms = Some x8 ->
   is_exit_no x8 ->
   sstep segs (mkCfg ms model) evs st ->
-  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)] /\
+  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))] /\
   st = SNext (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)).
 Proof.
   intros ms model x8 evs st Hh Hsvc Hx8 Hss.
@@ -360,7 +362,7 @@ Qed.
 (* ========================================================================= *)
 
 Definition exit_post (fs : Fs.Fs) : post :=
-  fun tr o => tr = [ExitEv (bv_and code (Z_to_bv 64 255)) fs]
+  fun tr o => tr = [ExitEv (bv_and code (Z_to_bv 64 255)) (Fs.fs_observe fs)]
               /\ exits_with (bv_and code (Z_to_bv 64 255)) tr o.
 
 Lemma to_exit_exec : forall ms model,
@@ -373,11 +375,11 @@ Proof.
   induction Hte as [ms x8 Hsvc Hx8 Hgpr | ms ms' Hsvc Hstep Hte IH].
   - (* te_here: the one transition is the exit, into the halted configuration *)
     apply (exec_step_only segs _ _
-             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
              (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))).
-    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
         with ([] ++ [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255))
-                       (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))])
+                       (Fs.fs_observe (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)))])
         by (cbn; reflexivity).
       apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
                (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model) []
@@ -412,7 +414,7 @@ Lemma to_exit_star_only : forall ms model,
   m_vm_lazy model = [] ->
   to_exit ms ->
   forall tr c, star segs (mkCfg ms model) tr c ->
-    tr = [] \/ tr = [ExitEv (bv_and code (Z_to_bv 64 255)) (m_fs model)].
+    tr = [] \/ tr = [ExitEv (bv_and code (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))].
 Proof.
   intros ms model Hh Hlazy Hte tr c Hstar.
   destruct (exec_realizes _ _ _ (exec_star _ _ _ _ _ (to_exit_exec ms model Hh Hlazy Hte) Hstar))
@@ -426,7 +428,7 @@ Lemma to_exit_star_admits : forall ms model,
   m_vm_lazy model = [] ->
   to_exit ms ->
   exists c, star segs (mkCfg ms model)
-              [ExitEv (bv_and code (Z_to_bv 64 255)) (m_fs model)] c.
+              [ExitEv (bv_and code (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))] c.
 Proof.
   intros ms model Hh Hlazy Hte.
   destruct (exec_realizes _ _ _ (to_exit_exec ms model Hh Hlazy Hte))
@@ -708,7 +710,7 @@ Qed.
 Lemma exit_obs_iff : forall segs pc ph sp brk0 mb rnd lim code inp F,
   sim_c (run_segments segs inp sp mb) code F (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) = true ->
   forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
-             <-> is_prefix tr [ExitEv (bv_and code (Z_to_bv 64 255)) (in_fs inp)].
+             <-> is_prefix tr [ExitEv (bv_and code (Z_to_bv 64 255)) (Fs.fs_observe (in_fs inp))].
 Proof.
   intros segs pc ph sp brk0 mb rnd lim code inp F Hsim tr.
   apply exec_obs_iff.

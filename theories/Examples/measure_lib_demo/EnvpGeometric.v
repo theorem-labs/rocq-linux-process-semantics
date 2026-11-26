@@ -62,7 +62,7 @@ Open Scope bv_scope.
    ========================================================================= *)
 
 Definition envp_argv : list (list byte) := [[Z_to_bv 8 119; Z_to_bv 8 99]].
-Definition envp_fs : Fs.Fs := [].
+Definition envp_fs : Fs.Fs := Fs.fs_empty.
 
 Definition envp_p : Q := (1 # 8)%Q.
 Definition envp_r : Q := (1 # 4)%Q.

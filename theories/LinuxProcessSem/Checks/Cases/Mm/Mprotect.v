@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -183,7 +186,7 @@ Example mprotect_lazy_guard_does_not_eagerly_charge :
   m_vm_lazy post = [(65536, 8192)] /\
   m_vm_materialized post = [65536] /\
   vm_backing_used post = 4096%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** ** The read-only downgrade, pinned at the checker
 
@@ -257,4 +260,117 @@ Example mprotect_read_only_zero_length_errno_is_rejected :
     (mkEffect (errno_ret ENOMEM) [] [])
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 16384) noaccess_base)
   = CheckReject.
+Proof. check_eq. Qed.
+
+(** ** The vdso/vvar pair: declined before the ledger is read
+
+    [__setup_additional_pages] (arch/riscv/kernel/vdso.c:110-150, Linux
+    v6.18.46) maps the pair at the top of the mmap search window: the
+    four vvar pages at the base of the span [get_unmapped_area] returns
+    (:120-130, through [vdso_install_vvar_mapping],
+    lib/vdso/datastore.c:99-104, Linux v6.18.46), the text directly above
+    them (vdso.c:134-140).  [mprotect_spec] declines an rw request that
+    meets the pair before it reads [vm_noaccess] or [vm_maps].
+
+    Linux's answers there, on a kernel without
+    CONFIG_MSEAL_SYSTEM_MAPPINGS ([VM_SEALED_SYSMAP] is [VM_NONE],
+    include/linux/mm.h:4402-4406, Linux v6.18.46):
+    - rw over a vvar page is -EACCES at mm/mprotect.c:960-963 (Linux
+      v6.18.46, [do_mprotect_pkey]), before [mprotect_fixup] (:990)
+      charges anything: the vvar pages lack VM_MAYWRITE
+      (lib/vdso/datastore.c:101-103, Linux v6.18.46);
+    - rw over the whole text is 0, or -ENOMEM from [mprotect_fixup]'s
+      accounting (mm/mprotect.c:801-808, Linux v6.18.46): the text
+      carries VM_MAYWRITE (arch/riscv/kernel/vdso.c:139, Linux v6.18.46),
+      every -EINVAL test of [do_mprotect_pkey] passes, and the range is
+      the whole VMA, so [vma_modify] neither merges (mm/vma.c:844-845,
+      Linux v6.18.46) nor splits (:1664, :1672) and
+      [special_mapping_split]'s -EINVAL (mm/mmap.c:1394-1403, Linux
+      v6.18.46) is never asked;
+    - over part of the text the split is asked, and that -EINVAL is
+      Linux's answer; no example below makes that request.
+
+    The ledger below is one no grant produces: it holds the pair's span
+    as a PROT_NONE grant, beside the run's first grant one page under
+    the pair, so the pair's test is the only one between each request
+    and the exposure.  Its budget is zero. *)
+Definition mprotect_vdso_pair_held_noaccess : Model :=
+  with_vmmaps
+    (mkVmMapsFull
+      [(23387528564736, 16384); (23387528581120, 8192)]
+      [(23387528560640, 4096); (23387528564736, 24576)]
+      [(23387528560640, 4096); (23387528564736, 24576)]
+      0 0 0 (Z_to_bv 64 mmap_base_min) demo_sp)
+    noaccess_base.
+
+(** The pair the test reads is the pair [vm_reserved] holds, at the
+    fixture's literal addresses. *)
+Example mprotect_vdso_pair_held_noaccess_holds_the_launch_pair :
+  vdso_reserved (m_kernel mprotect_vdso_pair_held_noaccess)
+    (vdso_top (m_vmmaps mprotect_vdso_pair_held_noaccess))
+  = [(23387528564736, 16384); (23387528581120, 8192)] /\
+  vm_reserved (m_vmmaps mprotect_vdso_pair_held_noaccess)
+  = vdso_reserved (m_kernel mprotect_vdso_pair_held_noaccess)
+      (vdso_top (m_vmmaps mprotect_vdso_pair_held_noaccess)).
+Proof. split_conj; check_eq. Qed.
+
+(** Linux's -EACCES for the vvar page is declined, not admitted. *)
+Example mprotect_vvar_rw_is_unmodeled :
+  check_syscall
+    (mkInput 226 [23387528564736; 4096; 3; 0; 0; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EACCES) [] []) mprotect_vdso_pair_held_noaccess
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** Linux's 0 for the whole text is declined, not admitted. *)
+Example mprotect_vdso_text_rw_is_unmodeled :
+  check_syscall
+    (mkInput 226 [23387528581120; 8192; 3; 0; 0; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] []) mprotect_vdso_pair_held_noaccess
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** An -EINVAL, which Linux does not answer for the whole text, is not
+    admitted either. *)
+Example mprotect_vdso_text_rw_einval_is_unmodeled :
+  check_syscall
+    (mkInput 226 [23387528581120; 8192; 3; 0; 0; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret EINVAL) [] []) mprotect_vdso_pair_held_noaccess
+  = CheckUnmodeled.
+Proof. check_eq. Qed.
+
+(** One page lower, on the run's first grant, the request meets no part
+    of the pair and is an ordinary exposure of a PROT_NONE page: over the
+    zero budget only the charge's -ENOMEM (mm/mprotect.c:801-808, Linux
+    v6.18.46) remains. *)
+Example mprotect_under_the_vdso_pair_over_budget_allows_enomem :
+  check_syscall
+    (mkInput 226 [23387528560640; 4096; 3; 0; 0; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect (errno_ret ENOMEM) [] []) mprotect_vdso_pair_held_noaccess
+  = CheckOk mprotect_vdso_pair_held_noaccess [].
+Proof. check_eq. Qed.
+
+Example mprotect_under_the_vdso_pair_over_budget_rejects_success :
+  check_syscall
+    (mkInput 226 [23387528560640; 4096; 3; 0; 0; 0]
+      (fun _ => None) (fun _ => None))
+    (mkEffect 0 [] [(23387528560640, 4096)]) mprotect_vdso_pair_held_noaccess
+  = CheckReject.
+Proof. check_eq. Qed.
+
+(** The budget mark is false on the vvar page, where the model declines
+    and Linux's -EACCES comes before any charge, and true one page lower,
+    a request that differs in [addr] alone. *)
+Example mprotect_budget_mark_silent_on_the_vvar_pages :
+  mprotect_budget_refused_b 23387528564736 4096 3
+    mprotect_vdso_pair_held_noaccess = false.
+Proof. check_eq. Qed.
+
+Example mprotect_budget_mark_fires_under_the_vdso_pair :
+  mprotect_budget_refused_b 23387528560640 4096 3
+    mprotect_vdso_pair_held_noaccess = true.
 Proof. check_eq. Qed.

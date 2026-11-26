@@ -1,0 +1,1 @@
+conform -- abcdefg   # a 7-byte tail: the source reads past its break into the zero-filled page

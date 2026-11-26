@@ -245,17 +245,19 @@ Qed.
 (* NULL-hint placement: where a kernel-placed grant can land                  *)
 (* ========================================================================= *)
 
-(** What the [choose] guard of a NULL-hint grant says ([Mmap.placement_ok]):
-    the base is at or above [bottomup_floor], or no page-aligned free window
-    of the same size lies between the grant's end and [vm_mmap_base].  The
+(** What the [choose] guard of a NULL-hint grant says ([AsanCeil.placement_ok]):
+    the base is where Linux's search puts the request ([Mmap.linux_place] at
+    hint 0, on either kernel build).  The
     ASan proof needs a LOWER BOUND on such a base (every application address
     must be >= kHighMemBeg = 0x10007fff8000, the end of the high shadow).
     The invariant that yields it: the ledger is SPLIT — every interval
     either ends at or below a low mark [K] or starts at or above a high
-    mark [Y] <= vm_mmap_base — with at least two windows of slack
-    ([K + 2 nZ <= Y]).  Then [Y - nZ, Y) is a free aligned window, so a
-    top-down placement must END above [Y - nZ], i.e. start above
-    [Y - 2 nZ]; a bottom-up one is above the floor anyway.  Adding the
+    mark [Y] <= [mmap_top h] — with at least two windows of slack
+    ([K + 2 nZ <= Y]).  Then [Y - nZ, Y) is a free aligned window below the
+    search's ceiling, so the bottom-up fallback cannot run and the top-down
+    search, which takes the highest fit, starts the grant above
+    [Y - 2 nZ] ([null_hint_grant_above], which also covers the padded
+    search of a THP build).  Adding the
     grant keeps the ledger split with the high mark lowered to
     [min Y a] — so the mark drops by less than twice the total size of the
     NULL-hint grants made, starting from [min bottomup_floor vm_mmap_base]

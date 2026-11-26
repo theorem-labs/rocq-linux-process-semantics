@@ -609,7 +609,7 @@ Lemma to_wexit_nil_exec_aux : forall ms bufs code model,
   to_wexit segs ms bufs code ->
   bufs = [] ->
   OmniRun.exec segs (mkCfg ms model)
-    (fun tr o => tr = [ExitEv code (m_fs model)] /\ exits_with code tr o).
+    (fun tr o => tr = [ExitEv code (Fs.fs_observe (m_fs model))] /\ exits_with code tr o).
 Proof.
   intros ms bufs code model Hh Hlazy Hte.
   induction Hte as
@@ -617,11 +617,11 @@ Proof.
     | ms x8 buf bufs code Hsvc Hno Hg Hr Hok Hnb Hcont IH
     | ms ms' bufs code Hsvc Hstep Hte IH]; intro Hbufs; [| discriminate Hbufs |].
   - apply (exec_step_only segs _ _
-             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
              (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))).
-    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
         with ([] ++ [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255))
-                       (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))])
+                       (Fs.fs_observe (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)))])
         by (cbn; reflexivity).
       apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
                (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model) []
@@ -651,7 +651,7 @@ Lemma to_wexit_nil_exec : forall ms code model,
   m_vm_lazy model = [] ->
   to_wexit segs ms [] code ->
   OmniRun.exec segs (mkCfg ms model)
-    (fun tr o => tr = [ExitEv code (m_fs model)] /\ exits_with code tr o).
+    (fun tr o => tr = [ExitEv code (Fs.fs_observe (m_fs model))] /\ exits_with code tr o).
 Proof.
   intros ms code model Hh Hlazy Hte.
   exact (to_wexit_nil_exec_aux ms [] code model Hh Hlazy Hte eq_refl).
@@ -666,7 +666,7 @@ Lemma to_wallexit_exec : forall bufs code ms model,
   bufs_modeled bufs ->
   to_wallexit bufs code ms ->
   OmniRun.exec segs (mkCfg ms model)
-    (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (m_fs model)]
+    (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))]
                  /\ exits_with code tr o).
 Proof.
   induction bufs as [|buf rest IH]; intros code ms model Hh Hlazy Hfdc Hbm Hw.
@@ -691,7 +691,7 @@ Lemma to_wallexit_star_admits : forall bufs code ms model,
   bufs_modeled bufs ->
   to_wallexit bufs code ms ->
   exists c, star segs (mkCfg ms model)
-              (wevents_ch ch bufs ++ [ExitEv code (m_fs model)]) c.
+              (wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros bufs code ms model Hh Hlazy Hfdc Hbm Hw.
   destruct (exec_realizes _ _ _ (to_wallexit_exec bufs code ms model Hh Hlazy Hfdc Hbm Hw))
@@ -729,7 +729,7 @@ Lemma to_wallexit_trace_unique : forall bufs code ms model,
   fdchan fd ch model ->
   bufs_modeled bufs ->
   to_wallexit bufs code ms ->
-  forall tr', tr' <> wevents_ch ch bufs ++ [ExitEv code (m_fs model)] ->
+  forall tr', tr' <> wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))] ->
   ~ OmniRun.exec segs (mkCfg ms model) (fun tr _ => tr = tr').
 Proof.
   intros bufs code ms model Hh Hlazy Hfdc Hbm Hw tr' Hne Hex.
@@ -760,7 +760,7 @@ Lemma to_wallexit_star_only : forall bufs code ms model,
   bufs_modeled bufs ->
   to_wallexit bufs code ms ->
   forall tr c, star segs (mkCfg ms model) tr c ->
-  is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (m_fs model)]).
+  is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))]).
 Proof.
   intros bufs code ms model Hh Hlazy Hfdc Hbm Hw tr c Hstar.
   destruct (exec_realizes _ _ _
@@ -820,7 +820,7 @@ Lemma wall_omni_run : forall fd ch, fd32 fd = fd ->
   to_wallexit (run_segments segs inp sp mb) fd bufs code
     (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ->
   omni_run (mkImage segs pc ph) lim (mkEntry sp brk0 mb rnd) inp
-    (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]
+    (fun tr o => tr = wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (in_fs inp))]
                  /\ exits_with code tr o).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw.
@@ -839,7 +839,7 @@ Lemma wall_obs_iff : forall fd ch, fd32 fd = fd ->
     (init_machine_state (run_segments segs inp sp mb) pc ph sp mb rnd inp) ->
   forall tr, obs_trace (run_segments segs inp sp mb)
                (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
-             <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (in_fs inp)]).
+             <-> is_prefix tr (wevents_ch ch bufs ++ [ExitEv code (Fs.fs_observe (in_fs inp))]).
 Proof.
   intros fd ch Hfd32 segs pc ph sp brk0 mb rnd lim inp bufs code Hfdc Hbm Hw tr.
   apply exec_obs_iff.

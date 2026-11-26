@@ -1,12 +1,12 @@
 (** * LinuxProcessSem.Checks.Cases.EntryWitness — the two directions of the start-state defect
 
-    Acceptance item A2 of the start-state specification, in one file: a Linux start
+    A2, in one file: a Linux start
     state the model USED NOT TO ADMIT, and a start state it USED TO
     ADMIT that no Linux launch gives.  Each half is a check that FAILS
     on the model as it stood before [Run.entry_launch_ok_va] and passes
     after it; each header below says what it would have shown.
 
-    The fixture is the specification's, without randomization: argv ["a"], no
+    The fixture is A1's ([Checks.Cases.EntryLaunch]), without randomization: argv ["a"], no
     envp, exec file name "a", uid = gid = 1000, AT_HWCAP without V,
     CONFIG_RSEQ on, a guard gap of 256 pages, [vm.mmap_rnd_bits] 18, no
     vector unit, no cache leaves, the first vDSO image.  With those the
@@ -79,9 +79,10 @@ Definition witness_kernel : KernelBuild :=
 Definition witness_argv : list (list byte) := [[Z_to_bv 8 97]].
 
 Definition witness_input : ProcInput :=
-  mkProcInput_full witness_argv [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000)
+  mkProcInput_full witness_argv [] (fst (Fs.migrate_image Fs.default_cwd []))
+    Fs.default_cwd IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000)
     [] net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc false Sv48
-    default_urandom [] witness_kernel default_execfn true true false.
+    default_urandom witness_kernel default_execfn true true false.
 
 (** The launch: the stack VMA ends at STACK_TOP (no draw), sp at the
     top of rule 2 (no [arch_align_stack] pad) and the mmap base of rule
@@ -293,7 +294,7 @@ Qed.
     not finish.  So every state below is a record literal whose fields
     are written out, and each step lemma relates two such literals.
 
-    THE COMPARISON GOES THROUGH [BvBase.bv_eq].  A [bv] carries a
+    THE COMPARISON GOES THROUGH stdpp's [bv_eq].  A [bv] carries a
     well-formedness witness beside its value and two witnesses for one
     value need not be the same term, so a state equality need not close
     by [reflexivity] after [vm_compute].
@@ -756,7 +757,7 @@ Proof.
 Qed.
 
 (** THE SECOND HALF: [high_image] faults at the witness entry, the
-    launch A4's [norandmaps] boot records. *)
+    launch the real-kernel [norandmaps] boot records. *)
 End WithVdsoTail.
 
 Theorem high_image_errors_at_witness : forall lim,

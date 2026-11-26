@@ -590,7 +590,8 @@ Record RawPeer := mkRawPeer {
     condition for extraction to erase.
 
     A RECORD PER MODEL RECORD, which is what [RawPeer] already is for
-    [State.Peer], rather than the flatter shape (eight numbers in one
+    one connection ([State.NConn]: its [State.PeerAddr] and its stream),
+    rather than the flatter shape (eight numbers in one
     row, or a list of them).  The reason is the reader, not the proof:
     the eight components are same-typed neighbours, [cl_assoc] and
     [cl_line] are read by one function ([State.cache_geometry_word])
@@ -629,6 +630,34 @@ Record RawKernelBuild := mkRawKernelBuild {
   rkb_rmem_max     : Z   (* net.core.rmem_max *)
 }.
 
+(** One key of the raw image: a regular file with its bytes, a
+    directory, one of the two character devices the model knows, a
+    SYMBOLIC LINK with its body, or a SECOND NAME of a regular file the
+    image already holds ([Fs.Entry]'s constructors, with the bytes still
+    [Z]s).
+
+    [RawName t] is how a raw image says that two keys are ONE FILE: the
+    key it sits at names the inode the key [t] names, so the two share
+    the bytes and both count in the file's link count ([Fs.fs_ino_nlink]
+    is the names the tree shows).  A [RawFile] is always a fresh inode,
+    so without this constructor no raw image could describe a hard link
+    present at launch.  [t] must name a regular file in the image the
+    entries AFTER it in the list build ([fs_of_raw] builds the list from
+    its end), and anything else -- a missing key, a directory, a device,
+    a link -- is not a value: [vfs_link] refuses a directory
+    ([if (S_ISDIR(inode->i_mode)) return -EPERM;], fs/namei.c:4929-4930,
+    Linux v6.18.46), and a hard link to a device node or to a symbolic
+    link is no file the model describes by identity ([Fs.Entry]: only a
+    regular file has an inode number).  A link's body is any bytes: the
+    walk reads it up to its first NUL ([Fs.ELink]). *)
+Inductive RawEntry :=
+  | RawFile (data : list Z)
+  | RawDir
+  | RawDevNull
+  | RawDevUrandom
+  | RawLink (body : list Z)
+  | RawName (target : list Z).
+
 (** It is built with [State.mkProcInput_full], the record's own
     constructor, and NOT with the thirteen-place [State.mkProcInput]: a
     field added to the end of [ProcInput] must break this file, so that
@@ -638,7 +667,8 @@ Record RawKernelBuild := mkRawKernelBuild {
 Record RawProcInput := mkRawProcInput {
   rpi_argv  : list (list Z);
   rpi_envp  : list (list Z);
-  rpi_image_fs : list (list Z * list Z);  (* (path, contents) *)
+  rpi_image_fs : list (list Z * RawEntry);  (* (absolute key, entry) *)
+  rpi_cwd   : list Z;                     (* the working directory's key *)
   rpi_stdin : list Z;
   rpi_uid   : Z;
   rpi_gid   : Z;
@@ -650,7 +680,6 @@ Record RawProcInput := mkRawProcInput {
   rpi_abort_terminal : bool;
   rpi_va_size : VaSize;
   rpi_urandom : list Z;                   (* the declared prefix; zeros after *)
-  rpi_tmp   : list (list Z * list Z);
   rpi_kernel : RawKernelBuild;            (* the build the launch ran on *)
   rpi_execfn : list Z;                    (* [bprm->filename], without its NUL *)
   rpi_channel_reader : bool;              (* whether the far end of fds 1 and 2
@@ -701,101 +730,227 @@ Fixpoint net_of_raw (ps : list RawPeer) : option NetQueue :=
 Definition bytes_list_of_Z : list (list Z) -> option (list (list byte)) :=
   mapM_opt bytes_of_Z.
 
-(** The file system is kept strictly sorted by [Fs.path_ltb], so the
-    entries are seeded through [Fs.fs_set] rather than consed. *)
-Fixpoint fs_of_raw (l : list (list Z * list Z)) : option Fs.Fs :=
+(** A raw entry, converted, as what it does to an image at a key: a file
+    becomes a fresh inode holding its bytes ([Fs.fs_create_file]), a
+    directory, a device or a link is set at the key, and a second name
+    takes the inode its target already names -- or refuses, when the
+    target is not a regular file of the image built so far.  The outer
+    [option] is the VALUE question for the entry's own bytes, the inner
+    one the target question, which only the image can answer. *)
+Definition entry_of_raw (e : RawEntry)
+    : option (Fs.Fs -> Fs.path -> option Fs.Fs) :=
+  match e with
+  | RawFile d =>
+      match bytes_of_Z d with
+      | Some d' => Some (fun fs p => Some (Fs.fs_create_file fs p d'))
+      | None => None
+      end
+  | RawDir => Some (fun fs p => Some (Fs.fs_set fs p Fs.EDir))
+  | RawDevNull => Some (fun fs p => Some (Fs.fs_set fs p (Fs.EDev Fs.DevNull)))
+  | RawDevUrandom =>
+      Some (fun fs p => Some (Fs.fs_set fs p (Fs.EDev Fs.DevUrandom)))
+  | RawLink b =>
+      match bytes_of_Z b with
+      | Some b' => Some (fun fs p => Some (Fs.fs_set fs p (Fs.ELink b')))
+      | None => None
+      end
+  | RawName t =>
+      match bytes_of_Z t with
+      | Some t' =>
+          Some (fun fs p =>
+                  match Fs.fs_lookup fs t' with
+                  | Some (Fs.EFile i) => Some (Fs.fs_set fs p (Fs.EFile i))
+                  | _ => None
+                  end)
+      | None => None
+      end
+  end.
+
+(** The name tree is kept strictly sorted by [Fs.path_ltb], so the
+    entries are seeded through [Fs.fs_set] rather than consed.  The list
+    is built from its END: the head entry is applied last, so a
+    [RawName] comes before the entry that makes its target. *)
+Fixpoint fs_of_raw (l : list (list Z * RawEntry)) : option Fs.Fs :=
   match l with
-  | [] => Some []
-  | (p, d) :: r =>
-      match bytes_of_Z p, bytes_of_Z d, fs_of_raw r with
-      | Some p', Some d', Some fs => Some (Fs.fs_set fs p' d')
+  | [] => Some Fs.fs_empty
+  | (p, e) :: r =>
+      match bytes_of_Z p, entry_of_raw e, fs_of_raw r with
+      | Some p', Some put, Some fs => put fs p'
       | _, _, _ => None
       end
   end.
 
-(** THE IMAGE DESCRIBES A FILE SYSTEM, the launch condition
-    [Fs.fs_image_real] that [revision/linux-only] added to
-    [Run.valid_input] (and to its nine siblings) over
-    [State.in_image_fs], and that the boundary did not enforce until
-    here: [fs_of_raw] accepts ANY image, so a seed the model's own
-    validity predicate forbids reached [init_model] through
-    [proc_input_of_raw] and was judged by theorems that do not cover
-    it.  The clause arrived on that branch; it is closed on this one.
+(** WHAT A LINK AND A SECOND NAME BUILD, read back from the converted image.
+    A [RawLink] is the link it says, at its key, with its body's bytes;
+    a [RawName] names the inode its target names, so the two keys are
+    one file -- the identity [Fs.fs_ino_nlink] counts and [State.StatId]
+    pins [st_ino] to.  Stated at the head of the list, the entry
+    [fs_of_raw] applies last; an entry applied later at the same key
+    would replace it, as [Fs.fs_set] does any key. *)
+Lemma fs_of_raw_link : forall p b r fs,
+  fs_of_raw ((p, RawLink b) :: r) = Some fs ->
+  exists p' b', bytes_of_Z p = Some p' /\ bytes_of_Z b = Some b'
+                /\ Fs.fs_lookup fs p' = Some (Fs.ELink b').
+Proof.
+  intros p b r fs H. cbn [fs_of_raw entry_of_raw] in H.
+  destruct (bytes_of_Z p) as [p'|]; [|discriminate].
+  destruct (bytes_of_Z b) as [b'|]; [|discriminate].
+  destruct (fs_of_raw r) as [fs0|]; [|discriminate].
+  cbv beta iota in H.
+  injection H as <-. exists p', b'. split; [reflexivity|]. split; [reflexivity|].
+  apply Fs.fs_lookup_set_eq.
+Qed.
 
-    WHAT THE CLAUSE SAYS: every key is canonical, and no key is also a
-    directory another key lives in.  Without it an image with the keys
-    "a" and "a/b" is admitted, which no Linux file system holds -- one
-    name in one directory is one inode -- and the model answers as if
-    "a" were a regular file and a directory at once: a read open hands
-    out the regular file while a write-create answers EISDIR.
+Lemma fs_of_raw_name : forall p t r fs,
+  fs_of_raw ((p, RawName t) :: r) = Some fs ->
+  exists p' t' i fs0,
+    bytes_of_Z p = Some p' /\ bytes_of_Z t = Some t'
+    /\ fs_of_raw r = Some fs0
+    /\ Fs.fs_lookup fs0 t' = Some (Fs.EFile i)
+    /\ Fs.fs_lookup fs p' = Some (Fs.EFile i)
+    /\ (Fs.path_eqb t' p' = false -> Fs.fs_lookup fs t' = Some (Fs.EFile i)).
+Proof.
+  intros p t r fs H. cbn [fs_of_raw entry_of_raw] in H.
+  destruct (bytes_of_Z p) as [p'|]; [|discriminate].
+  destruct (bytes_of_Z t) as [t'|]; [|discriminate].
+  destruct (fs_of_raw r) as [fs0|]; [|discriminate].
+  cbv beta iota in H.
+  destruct (Fs.fs_lookup fs0 t') as [[i| | |]|] eqn:Ht; try discriminate.
+  injection H as <-. exists p', t', i, fs0.
+  split; [reflexivity|]. split; [reflexivity|]. split; [reflexivity|].
+  split; [exact Ht|]. split; [apply Fs.fs_lookup_set_eq|].
+  intros Hne. rewrite Fs.fs_lookup_set_neq by exact Hne. exact Ht.
+Qed.
 
-    ON THE IMAGE ONLY, NOT ON [rpi_tmp].  The two raw fields share
-    [fs_of_raw], so the test is applied in the CALLER and not inside
-    it.  [State.in_tmp] carries no reality condition anywhere in
-    [Run]: [Fs.fs_image_real]'s own comment and [Run.valid_input]'s
-    give the reason -- the declared /tmp entries are seeded into
-    [State.in_fs] under absolute keys by [State.fs_seed_tmp], the
-    declaration itself is unconstrained by ruling, and a clause over
-    it would delete from every theorem the inputs whose declared /tmp
-    names nest ("x" and "x/y") or are not names ("." or "").  So a
-    test inside [fs_of_raw] would refuse seeds the model admits.
+(** And the refusal: a second name whose target is not a regular file of
+    the image built so far converts to nothing, so no seed describes a
+    hard link to a directory, a device, a link or a missing key. *)
+Lemma fs_of_raw_name_refuses : forall p t r t' fs0,
+  bytes_of_Z t = Some t' -> fs_of_raw r = Some fs0 ->
+  (forall i, Fs.fs_lookup fs0 t' <> Some (Fs.EFile i)) ->
+  fs_of_raw ((p, RawName t) :: r) = None.
+Proof.
+  intros p t r t' fs0 Ht Hr Hnot. cbn [fs_of_raw entry_of_raw].
+  rewrite Ht, Hr.
+  destruct (bytes_of_Z p); [|reflexivity].
+  cbv beta iota.
+  destruct (Fs.fs_lookup fs0 t') as [[i| | |]|] eqn:Hl; try reflexivity.
+  exfalso. exact (Hnot i eq_refl).
+Qed.
 
-    AND ON THE CONVERTED IMAGE.  [Fs.fs_image_real] reads the keys as
-    [path]s -- it compares each byte against "/" -- so the question
-    can only be asked after the bytes are [byte]s.  Asking it of the
+(** [Run.valid_image], decided: every clause it states over the image
+    and the working directory has a boolean beside it ([Fs.wf_fsb],
+    [Fs.canonical_key], a lookup, [Run.devices_in_dev_subtreeb], a
+    length test, [Fs.standard_root_presentb] behind
+    [Run.valid_input_requires_standard_root], [Run.localtime_absentb],
+    [Run.outside_proc_sysb], [Fs.files_cappedb], [Fs.dir_rows_okb],
+    [Run.cwd_off_rootb], [Run.links_off_proc_sysb],
+    [Run.links_off_devicesb], [Run.cwd_off_devb]), and
+    [valid_imageb_sound] below is the bridge. *)
+Definition valid_imageb (fs : Fs.Fs) (cwd : Fs.path) : bool :=
+  Fs.wf_fsb fs && Fs.canonical_key cwd
+  && match Fs.fs_lookup fs cwd with Some Fs.EDir => true | _ => false end
+  && devices_in_dev_subtreeb fs
+  && Nat.leb (length cwd + 1) path_max
+  && (if valid_input_requires_standard_root then Fs.standard_root_presentb fs
+      else true)
+  && localtime_absentb fs
+  && outside_proc_sysb cwd
+  && Fs.files_cappedb fs
+  && Fs.dir_rows_okb fs
+  && cwd_off_rootb cwd
+  && links_off_proc_sysb fs
+  && links_off_devicesb fs
+  && cwd_off_devb cwd.
+
+Lemma valid_imageb_sound : forall inp,
+  valid_imageb (in_fs inp) (in_cwd inp) = true -> valid_image inp.
+Proof.
+  intros inp H. unfold valid_imageb in H.
+  repeat rewrite andb_true_iff in H.
+  destruct H as [[[[[[[[[[[[[Hwf Hc] Hd] Hdev] Hlen] Hroot] Hlt] Hout] Hcap] Hdirs]
+                    Hnr] Hlp] Hld] Hcd].
+  unfold valid_image.
+  refine (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _
+           (conj _ (conj _ (conj _ (conj _ _))))))))))))).
+  - apply Fs.wf_fsb_iff. exact Hwf.
+  - exact Hc.
+  - destruct (Fs.fs_lookup (in_fs inp) (in_cwd inp)) as [[d| |dk|lb]|];
+      try discriminate. reflexivity.
+  - exact Hdev.
+  - apply Nat.leb_le. exact Hlen.
+  - unfold standard_root_premise, valid_input_requires_standard_root in *.
+    cbv iota in Hroot |- *.
+    apply Fs.standard_root_presentb_iff. exact Hroot.
+  - exact Hlt.
+  - exact Hout.
+  - exact Hcap.
+  - exact Hdirs.
+  - exact Hnr.
+  - exact Hlp.
+  - exact Hld.
+  - exact Hcd.
+Qed.
+
+(** THE IMAGE DESCRIBES A FILE SYSTEM AND THE WORKING DIRECTORY IS ONE
+    OF ITS FOLDERS: [Run.valid_image], the launch condition every
+    [Run.valid_input*] variant carries, closed at the boundary.
+    [fs_of_raw] accepts ANY list of keys, so without this test a seed the
+    model's own validity predicate forbids would reach [init_model]
+    through [proc_input_of_raw] and be judged by theorems that do not
+    cover it.
+
+    AND ON THE CONVERTED IMAGE.  The clauses read the keys as [path]s --
+    canonicity compares each byte against "/" -- so the question can
+    only be asked after the bytes are [byte]s.  Asking it of the
     [list Z] instead would need a second spelling of canonicity, and
     truncating an out-of-range value into a [byte] would change the
     answer (303 would become "/").
 
-    WHICH REFUSAL HAPPENED, as for the exec file name above: a byte
+    WHICH REFUSAL HAPPENED, as for the exec file name below: a byte
     above 255 says the image is not a VALUE, and this test says it is
-    no image Linux could have mounted.  The two are different news for
-    the reader, so [None] here must not come to mean both.
-    [image_shape_b] is the launch condition on its own and is a root
-    of [Checks/Extraction.v] for that reason, and [fs_of_raw] is a
-    root beside it: a caller asks [fs_of_raw] first -- [None] there is
-    the value question, answered alone -- and then [image_shape_b],
-    whose [false] on an image [fs_of_raw] converted is the launch
-    question, answered alone.  [execfn_shape_b] needs no companion
-    root because its two tests, the length and the NUL, are facts
-    about the [list Z] itself.
-
-    It is NOT named [image_valid_b]: it decides [Run.valid_input]'s
-    [Fs.fs_image_real] conjunct and no other conjunct over the image
-    ([Fs.fs_keys_relative] is a [Prop] this does not decide), and a
-    name claiming the whole predicate would be the kind of claim this
-    file exists to stop. *)
-Definition image_shape_b (l : list (list Z * list Z)) : bool :=
-  match fs_of_raw l with
-  | Some fs0 => Fs.fs_image_real fs0
-  | None => false
+    no launch Linux could have presented.  The two are different news
+    for the reader, so [None] here must not come to mean both.
+    [image_shape_b] is the launch condition on its own and is a root of
+    [Checks/Extraction.v] for that reason, and [fs_of_raw] is a root
+    beside it: a caller asks [fs_of_raw] first -- [None] there is the
+    value question, answered alone -- and then [image_shape_b], whose
+    [false] on an image [fs_of_raw] converted is the launch question,
+    answered alone. *)
+Definition image_shape_b (l : list (list Z * RawEntry)) (cwd : list Z) : bool :=
+  match fs_of_raw l, bytes_of_Z cwd with
+  | Some fs0, Some c => valid_imageb fs0 c
+  | _, _ => false
   end.
 
-Definition image_fs_of_raw (l : list (list Z * list Z)) : option Fs.Fs :=
-  match fs_of_raw l with
-  | Some fs0 => if Fs.fs_image_real fs0 then Some fs0 else None
-  | None => None
+Definition image_of_raw (l : list (list Z * RawEntry)) (cwd : list Z)
+    : option (Fs.Fs * Fs.path) :=
+  match fs_of_raw l, bytes_of_Z cwd with
+  | Some fs0, Some c => if valid_imageb fs0 c then Some (fs0, c) else None
+  | _, _ => None
   end.
 
-(** Every image this converts satisfies the clause, so no seed the
+(** Every image this converts satisfies the clauses, so no seed the
     boundary builds is one [Run.valid_input] forbids on this count. *)
-Theorem image_fs_of_raw_real : forall l fs0,
-  image_fs_of_raw l = Some fs0 -> Fs.fs_image_real fs0 = true.
+Theorem image_of_raw_valid : forall l cwd fs0 c,
+  image_of_raw l cwd = Some (fs0, c) -> valid_imageb fs0 c = true.
 Proof.
-  intros l fs0 H. unfold image_fs_of_raw in H.
+  intros l cwd fs0 c H. unfold image_of_raw in H.
   destruct (fs_of_raw l) as [fs1|]; [|discriminate].
-  destruct (Fs.fs_image_real fs1) eqn:Hr; [|discriminate].
-  injection H as <-. exact Hr.
+  destruct (bytes_of_Z cwd) as [c1|]; [|discriminate].
+  destruct (valid_imageb fs1 c1) eqn:Hr; [|discriminate].
+  injection H as <- <-. exact Hr.
 Qed.
 
 (** The published test and the conversion agree, which is what lets a
     caller read a [None] from [init_model_checked] by asking
     [image_shape_b] rather than by guessing. *)
-Lemma image_fs_of_raw_None_shape : forall l,
-  image_shape_b l = false -> image_fs_of_raw l = None.
+Lemma image_of_raw_None_shape : forall l cwd,
+  image_shape_b l cwd = false -> image_of_raw l cwd = None.
 Proof.
-  intros l H. unfold image_shape_b in H. unfold image_fs_of_raw.
+  intros l cwd H. unfold image_shape_b in H. unfold image_of_raw.
   destruct (fs_of_raw l) as [fs0|]; [|reflexivity].
+  destruct (bytes_of_Z cwd) as [c|]; [|reflexivity].
   rewrite H. reflexivity.
 Qed.
 
@@ -946,24 +1101,23 @@ Qed.
     field and its check, never [mkProcInput] and never a default. *)
 Definition proc_input_of_raw (r : RawProcInput) : option ProcInput :=
   match bytes_list_of_Z (rpi_argv r), bytes_list_of_Z (rpi_envp r),
-        image_fs_of_raw (rpi_image_fs r), bytes_of_Z (rpi_stdin r),
+        image_of_raw (rpi_image_fs r) (rpi_cwd r), bytes_of_Z (rpi_stdin r),
         word_of_Z (rpi_uid r), word_of_Z (rpi_gid r),
         words_of_Z (rpi_groups r), net_of_raw (rpi_net r) with
-  | Some argv, Some envp, Some image_fs, Some stdin,
+  | Some argv, Some envp, Some (image_fs, cwd), Some stdin,
     Some uid, Some gid, Some groups, Some net =>
       match word_of_Z (rpi_nofile r), word_of_Z (rpi_sigmask r),
             word_of_Z (rpi_hwcap r), bytes_of_Z (rpi_urandom r),
-            fs_of_raw (rpi_tmp r), kernel_of_raw (rpi_kernel r),
-            execfn_of_Z (rpi_execfn r) with
-      | Some nofile, Some sigmask, Some hwcap, Some urandom, Some tmp,
+            kernel_of_raw (rpi_kernel r), execfn_of_Z (rpi_execfn r) with
+      | Some nofile, Some sigmask, Some hwcap, Some urandom,
         Some kernel, Some execfn =>
-          Some (mkProcInput_full argv envp image_fs (stream_of_bytes stdin)
+          Some (mkProcInput_full argv envp image_fs cwd (stream_of_bytes stdin)
                   uid gid groups net nofile sigmask hwcap
                   (rpi_abort_terminal r) (rpi_va_size r)
-                  (urandom_of_bytes urandom) tmp kernel execfn
+                  (urandom_of_bytes urandom) kernel execfn
                   (rpi_channel_reader r) (rpi_sigpipe_default r)
                   (rpi_sigpipe_terminal r))
-      | _, _, _, _, _, _, _ => None
+      | _, _, _, _, _, _ => None
       end
   | _, _, _, _, _, _, _, _ => None
   end.
@@ -1001,7 +1155,7 @@ Proof.
     rewrite (proj2 (word_of_Z_refused (rpi_uid r)) Hout).
     destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
     destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-    destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+    destruct (image_of_raw (rpi_image_fs r) (rpi_cwd r)) as [[? ?]|]; [|reflexivity].
     now destruct (bytes_of_Z (rpi_stdin r)). }
   rewrite Hp.
   destruct (pairs_of_Z reserved); [|reflexivity].
@@ -1029,7 +1183,7 @@ Proof.
   { unfold proc_input_of_raw. rewrite Hnet.
     destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
     destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-    destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+    destruct (image_of_raw (rpi_image_fs r) (rpi_cwd r)) as [[? ?]|]; [|reflexivity].
     destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
     destruct (word_of_Z (rpi_uid r)); [|reflexivity].
     destruct (word_of_Z (rpi_gid r)); [|reflexivity].
@@ -1067,7 +1221,7 @@ Proof.
   intros r H. unfold proc_input_of_raw. rewrite H.
   destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
   destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-  destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+  destruct (image_of_raw (rpi_image_fs r) (rpi_cwd r)) as [[? ?]|]; [|reflexivity].
   destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
   destruct (word_of_Z (rpi_uid r)); [|reflexivity].
   destruct (word_of_Z (rpi_gid r)); [|reflexivity].
@@ -1076,8 +1230,7 @@ Proof.
   destruct (word_of_Z (rpi_nofile r)); [|reflexivity].
   destruct (word_of_Z (rpi_sigmask r)); [|reflexivity].
   destruct (word_of_Z (rpi_hwcap r)); [|reflexivity].
-  destruct (bytes_of_Z (rpi_urandom r)); [|reflexivity].
-  now destruct (fs_of_raw (rpi_tmp r)).
+  now destruct (bytes_of_Z (rpi_urandom r)).
 Qed.
 
 Lemma proc_input_of_raw_None_execfn : forall r,
@@ -1086,7 +1239,7 @@ Proof.
   intros r H. unfold proc_input_of_raw. rewrite H.
   destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
   destruct (bytes_list_of_Z (rpi_envp r)); [|reflexivity].
-  destruct (image_fs_of_raw (rpi_image_fs r)); [|reflexivity].
+  destruct (image_of_raw (rpi_image_fs r) (rpi_cwd r)) as [[? ?]|]; [|reflexivity].
   destruct (bytes_of_Z (rpi_stdin r)); [|reflexivity].
   destruct (word_of_Z (rpi_uid r)); [|reflexivity].
   destruct (word_of_Z (rpi_gid r)); [|reflexivity].
@@ -1096,7 +1249,6 @@ Proof.
   destruct (word_of_Z (rpi_sigmask r)); [|reflexivity].
   destruct (word_of_Z (rpi_hwcap r)); [|reflexivity].
   destruct (bytes_of_Z (rpi_urandom r)); [|reflexivity].
-  destruct (fs_of_raw (rpi_tmp r)); [|reflexivity].
   now destruct (kernel_of_raw (rpi_kernel r)).
 Qed.
 
@@ -1401,42 +1553,41 @@ Qed.
    ========================================================================= *)
 
 Lemma proc_input_of_raw_None_image : forall r,
-  image_fs_of_raw (rpi_image_fs r) = None -> proc_input_of_raw r = None.
+  image_of_raw (rpi_image_fs r) (rpi_cwd r) = None -> proc_input_of_raw r = None.
 Proof.
   intros r H. unfold proc_input_of_raw. rewrite H.
   destruct (bytes_list_of_Z (rpi_argv r)); [|reflexivity].
   now destruct (bytes_list_of_Z (rpi_envp r)).
 Qed.
 
-(** THE CLAUSE [revision/linux-only] ADDED, closed at the boundary:
-    an image that describes no file system seeds no model.  It is
-    stated about [init_model_checked] rather than about [fs_of_raw]
-    because what a caller gets is the [None], and about
-    [image_shape_b] because that is the test the caller can run
-    itself. *)
-Theorem init_model_checked_refuses_unreal_image :
+(** [Run.valid_image] closed at the boundary: an image that describes
+    no file system, or a working directory that is not one of its
+    folders, seeds no model.  It is stated about [init_model_checked]
+    rather than about [fs_of_raw] because what a caller gets is the
+    [None], and about [image_shape_b] because that is the test the
+    caller can run itself. *)
+Theorem init_model_checked_refuses_invalid_image :
   forall reserved brk0 mbase sp lim r,
-  image_shape_b (rpi_image_fs r) = false ->
+  image_shape_b (rpi_image_fs r) (rpi_cwd r) = false ->
   init_model_checked reserved brk0 mbase sp lim r = None.
 Proof.
   intros reserved brk0 mbase sp lim r H.
   apply init_model_checked_None_of_input.
   apply proc_input_of_raw_None_image.
-  now apply image_fs_of_raw_None_shape.
+  now apply image_of_raw_None_shape.
 Qed.
 
 (** And the other direction, which is what makes the refusal worth
-    having: every seed the boundary DOES build satisfies the clause,
-    so [Run.valid_input]'s conjunct over [State.in_image_fs] holds of
-    it without the caller being asked for a proof. *)
-Theorem proc_input_of_raw_image_real : forall r inp,
-  proc_input_of_raw r = Some inp ->
-  Fs.fs_image_real (in_image_fs inp) = true.
+    having: every seed the boundary DOES build satisfies
+    [Run.valid_image], so that conjunct of every [Run.valid_input*]
+    variant holds of it without the caller being asked for a proof. *)
+Theorem proc_input_of_raw_valid_image : forall r inp,
+  proc_input_of_raw r = Some inp -> valid_image inp.
 Proof.
   intros r inp H. unfold proc_input_of_raw in H.
   destruct (bytes_list_of_Z (rpi_argv r)); [|discriminate].
   destruct (bytes_list_of_Z (rpi_envp r)); [|discriminate].
-  destruct (image_fs_of_raw (rpi_image_fs r)) as [image_fs|] eqn:Himg;
+  destruct (image_of_raw (rpi_image_fs r) (rpi_cwd r)) as [[image_fs cwd]|] eqn:Himg;
     [|discriminate].
   destruct (bytes_of_Z (rpi_stdin r)); [|discriminate].
   destruct (word_of_Z (rpi_uid r)); [|discriminate].
@@ -1447,9 +1598,8 @@ Proof.
   destruct (word_of_Z (rpi_sigmask r)); [|discriminate].
   destruct (word_of_Z (rpi_hwcap r)); [|discriminate].
   destruct (bytes_of_Z (rpi_urandom r)); [|discriminate].
-  destruct (fs_of_raw (rpi_tmp r)); [|discriminate].
   destruct (kernel_of_raw (rpi_kernel r)); [|discriminate].
   destruct (execfn_of_Z (rpi_execfn r)); [|discriminate].
   injection H as <-.
-  exact (image_fs_of_raw_real _ _ Himg).
+  apply valid_imageb_sound. exact (image_of_raw_valid _ _ _ _ Himg).
 Qed.

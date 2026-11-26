@@ -54,7 +54,7 @@
     and weigh strictly less than the ceiling, so the bound is not
     attained; [base_every_core_positive] is full support itself, and
     [base_unsorted_fs_weighs] pins the seam: a core
-    whose file system is NOT sorted — and so never [Fs.valid_fs] —
+    whose file system is NOT sorted — and so never [Fs.wf_fs] —
     still carries weight.  That is by design (see the family's header
     in [MeasureLib]); it is stated so nobody mistakes the declared mass
     for the mass reachable by valid images.  Nothing exhibited here is
@@ -133,11 +133,12 @@ Proof.
 Qed.
 
 (** The seam, pinned.  This file system lists its two keys in the wrong
-    order, so [Fs.fs_sorted] rejects it and it is never [Fs.valid_fs];
+    order, so [Fs.fs_sorted] rejects it and it is never [Fs.wf_fs];
     the family weighs it anyway.  The declared mass [1] is the mass of
     the LAW, and the mass reachable by valid images is less. *)
 Definition base_unsorted_fs : Fs.Fs :=
-  [([Z_to_bv 8 98], []); ([Z_to_bv 8 97], [Z_to_bv 8 65])].
+  Fs.mkFs [([Z_to_bv 8 98], Fs.EFile 1); ([Z_to_bv 8 97], Fs.EFile 2)]
+    [(1%Z, Fs.mkInode [] 0); (2%Z, Fs.mkInode [Z_to_bv 8 65] 0)] [].
 
 Definition base_unsorted_core : FinCore :=
   mkFinCore [] [] base_unsorted_fs [].
@@ -236,9 +237,11 @@ Qed.
     the free coordinates visible as degrees of freedom the bound
     charges for. *)
 Definition base_core_stop : FinCore :=
-  mkFinCore base_argv [] [(base_pth, [base_nul])] [].
+  mkFinCore base_argv [] (Fs.fs_create_file Fs.fs_empty base_pth [base_nul]) [].
 Definition base_core_ext : FinCore :=
-  mkFinCore base_argv [[base_a]] [([base_a], [base_a]); (base_pth, [base_nul; base_a])]
+  mkFinCore base_argv [[base_a]]
+    (Fs.mkFs [([base_a], Fs.EFile 1); (base_pth, Fs.EFile 2)]
+       [(1%Z, Fs.mkInode [base_a] 0); (2%Z, Fs.mkInode [base_nul; base_a] 0)] [])
     [base_a].
 
 Definition base_fire_list : list FinProcInput :=
@@ -321,7 +324,7 @@ Lemma base_structured_p_le_1 : (base_structured_p <= 1)%Q.
 Proof. apply Qlt_le_weak. reflexivity. Qed.
 
 Definition base_structured : CoreDistribution :=
-  file_geometric_argv1 base_structured_p base_prog [] [] base_pth []
+  file_geometric_argv1 base_structured_p base_prog [] Fs.fs_empty base_pth []
     base_structured_p_nonneg base_structured_p_le_1.
 
 (** The two shares: the base component gets [6 # 100]. *)
@@ -344,7 +347,7 @@ Proof. vm_compute. reflexivity. Qed.
     family's: the template's argv is the fixed one and the file it
     varies is the file at [base_pth]. *)
 Lemma base_structured_fire_in_base_fire : forall c,
-  in_file_cylinder base_argv [] [] base_pth [] base_bs c ->
+  in_file_cylinder base_argv [] Fs.fs_empty base_pth [] base_bs c ->
   core_argv c = base_argv /\ file_at_extends base_pth base_bs c.
 Proof.
   intros c [ext Hc]. rewrite Hc. split; [reflexivity |].
@@ -359,7 +362,7 @@ Qed.
 Lemma base_mixture_fire_bound : forall l,
   List.NoDup (List.map fin_core l) ->
   (forall f, List.In f l ->
-     in_file_cylinder base_argv [] [] base_pth [] base_bs (fin_core f)) ->
+     in_file_cylinder base_argv [] Fs.fs_empty base_pth [] base_bs (fin_core f)) ->
   (core_sum (cd_weight base_mixture) l
      <= 36173932553831 # 11258999068426240)%Q.
 Proof.
@@ -368,7 +371,7 @@ Proof.
   - apply cd_mix2_bound.
     + apply cd_scale_bound.
       unfold base_structured, file_geometric_argv1.
-      apply (file_geometric_bound base_structured_p base_argv [] [] base_pth []
+      apply (file_geometric_bound base_structured_p base_argv [] Fs.fs_empty base_pth []
                base_structured_p_nonneg base_structured_p_le_1 base_bs l Hnd Hfire).
     + apply cd_scale_bound. unfold base_cd.
       apply (full_support_base_argv_file_bound base_half base_half base_half

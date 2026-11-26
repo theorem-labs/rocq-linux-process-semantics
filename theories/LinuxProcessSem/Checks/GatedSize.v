@@ -70,7 +70,10 @@
     exit-1 twin is new, and Part 8's exit-2 twin.  Part 8 needs a second evaluator for the pinned
     reading, [Checks.SpuriousCfg.exits_c_must_exit_at_cfg], which is the
     same [Checks.Examples.exits_c] over [Run.sstep_cfg]; that is the one
-    import this file takes beyond [Checks/Examples.v]. *)
+    import this file takes beyond [Checks/Examples.v].
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString QArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -112,8 +115,9 @@ Definition exit1_image : Image := mkImage exit1_segments 0x100 demo_phdrs.
     the terms those lemmas carry.  [gated_demo_to_proc_input] pins that
     the two agree by computation rather than by the reader's eye. *)
 Definition gated_demo_fin : FinProcInput :=
-  mkFinProcInput [[]] [] [] [] demo_uid demo_gid demo_groups net_silent
-                 default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 [] []
+  mkFinProcInput [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                 Fs.default_cwd [] demo_uid demo_gid demo_groups
+                 net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 []
                  default_kernel default_execfn true true false.
 
 Lemma gated_demo_to_proc_input :
@@ -436,9 +440,10 @@ Qed.
     CORE, so the two cores differ, which is what
     [GatedSize.weight_bound_pred_refutable] asks for. *)
 Definition gated_demo_fin_stdin : FinProcInput :=
-  mkFinProcInput [[]] [] [] [Z_to_bv 8 65] demo_uid demo_gid demo_groups
+  mkFinProcInput [[]] [] (fst (Fs.migrate_image Fs.default_cwd []))
+                 Fs.default_cwd [Z_to_bv 8 65] demo_uid demo_gid demo_groups
                  net_silent default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48
-                 [] [] default_kernel default_execfn true true false.
+                 [] default_kernel default_execfn true true false.
 
 Lemma gated_demo_fin_stdin_valid : valid_fin_input gated_demo_fin_stdin.
 Proof.

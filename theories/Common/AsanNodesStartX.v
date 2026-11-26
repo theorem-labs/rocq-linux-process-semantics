@@ -24,7 +24,7 @@
     machine steps are taken on [restrict (negb ∘ vis) ms]
     ([AsanAcctShape.srz_msteps_restricted_T] with [lazy_cover_vis] /
     [H_off_segments_vis], the [vis]-only twins of APS's lemmas), the loop
-    itself being the image-independent [AsanNodesAux.env_loop] / [pn_loop]. *)
+    itself being the image-independent [AsanStartLoops.env_loop] / [pn_loop]. *)
 
 (* The entry draw ([Run.en_draw]) gives the AT_RANDOM bytes (= at_random_bytes (ed_random draw)) and, in [ed_top], the stack VMA's end; the auxv is 29 pairs / 464 bytes with CONFIG_RSEQ and 27 pairs / 432 bytes without it ([StackLayout.auxv_size]), and AT_HWCAP is its eleventh pair; the mapped image is [Run.entry_stack_image], Linux's whole block from sp to [ed_top]. *)
 From Stdlib Require Import ZArith NArith List Lia Bool.

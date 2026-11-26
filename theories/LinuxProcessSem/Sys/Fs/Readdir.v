@@ -8,7 +8,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -84,37 +87,48 @@ Definition getdents64_no_room (count : word) : bool :=
     THE SUCCESS ARM IS NOT MODELED, AND CANNOT BE FROM WHAT THIS MODEL
     CARRIES.  A successful call fills the buffer with [struct
     linux_dirent64] records — [d_ino], [d_off], [d_reclen], [d_type] and
-    the name — and returns the byte count.  Three INDEPENDENT things
-    stand in the way, and closing any one of them leaves the other two:
+    the name — and returns the byte count.  The names are not what is
+    missing: [State.FdDir] carries the folder's canonical key, and
+    [Fs.fs_tree] holds every entry of every folder, an empty folder
+    included, so the names under the key, "." and "..", and each
+    entry's [d_type] (from its [Fs.Entry] kind) are all derivable.
+    Three INDEPENDENT things stand in the way, and closing any one of
+    them leaves the other two:
 
-    - [State.FdDir] IS NULLARY.  It records that the fd names a
-      directory and nothing else, so the model cannot tell an fd opened
-      on "." from one opened on ".." — the only two paths
-      [Open.path_is_dirref] admits.  Enumerating the working directory
-      for BOTH is a confident wrong answer for one of them, and the
-      model has nothing to branch on.  [Open.openat_spec] answers ".."
-      at all only because nothing the model can then do to the fd tells
-      the two apart — read is -EISDIR for either, close is close, lseek
-      is declined — and this spec is the clause of that argument that
-      names getdents64.  A listing arm would break it, not merely be
-      wrong on its own.
-    - [Fs.Fs] IS A MAP FROM PATH TO CONTENTS and holds no metadata, so
-      [d_ino] and [d_type] are not derivable from it, and neither is the
-      [d_off] cookie, which is the filesystem's own opaque position.
-      That is the same wall [Stat.newfstatat_spec] hits: "A spec that
-      answered the call would be inventing the rest".
-    - THE KEY SET IS NOT THE DIRECTORY.  Even granting the two above,
-      the map's keys do not enumerate the working directory: a real
-      EMPTY subdirectory leaves no key at all, "." and ".." are entries
-      of every real directory and keys of none, and a key "a/b" implies
-      a directory "a" the map cannot hold.  [Namei.unlinkat_spec]'s
-      WORLD paragraph states that correspondence and its hole, a
-      divergence kept rather than fixed.  A listing read off the
-      keys would report a directory Linux would not.
+    - THE ORDER AND THE [d_off] COOKIES ARE THE FILE SYSTEM'S OWN.  On
+      tmpfs [offset_readdir] lists the entries in the order of the
+      folder's dentry list: [offset_iterate_dir] moves from one entry to
+      the next with [find_positive_dentry], that is [d_next_sibling]
+      (fs/libfs.c:450-472, :503-523), and [d_alloc] puts each new dentry
+      at the head of the list (fs/dcache.c:1778), so the newest dentry
+      comes first.  A record's [d_off] is the continuation cookie, the
+      position a later call resumes from, and not the offset
+      [simple_offset_add] gave the record's own name:
+      [offset_iterate_dir] hands each entry's offset to the actor
+      (fs/libfs.c:514-515, Linux v6.18.46), [filldir64] writes it into the PREVIOUS
+      record's [d_off] (fs/readdir.c:373-378), and [getdents64] writes
+      the position it stopped at into the last record (:415-420), which
+      after the folder's last entry is [DIR_OFFSET_EOD] (fs/libfs.c:529);
+      [offset_dir_lookup] reads a cookie only to find where to resume
+      (fs/libfs.c:476-493).  On ramfs [dcache_readdir] walks the same
+      dentry list and counts positions (Linux fs/libfs.c, v6.18.46).
+      [Fs.fs_tree] is sorted by key and
+      records neither the dentry order nor any offset, so a listing
+      would have to choose an order and cookies, and keep the choice for
+      every later call on the folder.
+    - [d_ino] IS THE [st_ino] A STAT REPORTS, and the model holds none.
+      [Fs.Fs] gives a regular file an inode number of the model's own,
+      not Linux's, and a folder, a device node and a link none at all;
+      [Stat.stat_entry_spec] chooses [st_ino] at the first stat of an
+      identity and pins it ([State.StatId], [State.procst_statpins]).  A
+      listing would have to choose a number for every entry and for "."
+      and "..", consistent with every pin and with every later stat.
+    - [State.FdDir] HOLDS NO POSITION.  A listing moves [ctx->pos], and
+      the next call starts where it stopped, so a second call on the
+      same descriptor answers from a position the entry does not have.
 
-    So the enumerate-the-image shape is declined, and the FAILING side —
-    the part of the call that writes nothing — is what is modeled,
-    exactly as [Stat.newfstatat_spec] models its own.
+    So the listing is declined, and the FAILING side — the part of the
+    call that writes nothing — is what is modeled.
 
     [dirent] IS NOT AN ARGUMENT OF THIS SPEC, and its arity is the
     statement that no modeled arm can deliver a byte, and hence that
@@ -176,7 +190,9 @@ Definition getdents64_no_room (count : word) : bool :=
       (Linux include/linux/fs.h, v6.18.46) is the generic opener, and it
       is the FIRST STATEMENT of the readdir every filesystem a modeled
       run can sit on installs: tmpfs's [offset_readdir], reached through
-      [simple_offset_dir_operations] (Linux fs/libfs.c, v6.18.46), and
+      [simple_offset_dir_operations], and ramfs's [dcache_readdir],
+      reached through [simple_dir_operations] (Linux fs/libfs.c,
+      v6.18.46), and
       sysfs's [kernfs_fop_readdir] (Linux fs/kernfs/dir.c, v6.18.46) and
       procfs's [proc_readdir_de] (Linux fs/proc/generic.c, v6.18.46).
       THIS IS THE BOUND WORTH NAMING, in the shape [Sync.fsync_spec]'s
@@ -186,7 +202,8 @@ Definition getdents64_no_room (count : word) : bool :=
     - Every [FdDir] a modeled run can hold IS at position 0.
       [State.FdDir] carries no position field, and nothing modeled gives
       it one: [Open.openat_spec] mints it from a fresh open,
-      [ReadWrite.lseek_spec] DECLINES a directory fd,
+      [ReadWrite.lseek_spec] declines every result above 0 on a
+      directory fd and answers the rest without moving it,
       [ReadWrite.read_spec] answers -EISDIR without moving anything,
       [Fork.clone_spec] shares a [struct file] neither branch can
       advance, and this spec's own only non-declining directory arm does
@@ -200,17 +217,16 @@ Definition getdents64_no_room (count : word) : bool :=
       then have to be conditioned on the position, because a directory
       read to its end answers 0 to the very same call.
 
-    APPROXIMATION, and it is a NARROWING rather than a wrong answer.
-    Two untracked conditions sit between the -ENOTDIR and the -EINVAL —
-    [security_file_permission]'s LSM verdict and [fsnotify_file_perm]'s
-    fanotify permission response — and neither errno is documented for
-    getdents(2), so neither is offered here.  Under an LSM that denies
-    the read, or a fanotify listener that answers FAN_DENY, this spec
-    REJECTS a conforming trace on the directory arm.  ([down_read_killable]'s
-    -EINTR is a third, and is unreachable rather than approximated: it
-    fires only on a fatal signal, which kills the task before any return
-    value reaches userspace.)  The -EBADF and -ENOTDIR arms are behind
-    none of the three and are unconditional.
+    NO DENIAL SITS BETWEEN THE TWO.  [security_file_permission] and
+    [fsnotify_file_perm] run between the -ENOTDIR and the -EINVAL, and
+    the configuration of record builds neither an LSM nor fanotify
+    (SCOPE.md), so both are stubs that answer 0 and no supported kernel
+    answers this arm -EACCES or -EPERM; refusing both is exact.
+    ([down_read_killable]'s -EINTR is a third condition, and is
+    unreachable rather than approximated: it fires only on a fatal
+    signal, which kills the task before any return value reaches
+    userspace.)  The -EBADF and -ENOTDIR arms are behind none of the
+    three and are unconditional.
 
     Nothing is written on any admitted arm, so every effect is a bare
     return with five empty ledgers, and no arm reads user memory either
@@ -219,7 +235,12 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
   m <- get_model ;;
   match fd_lookup (m_fds m) fd with
   | None => err_ret EBADF                  (* fd not open: [fd_empty], before [iterate_dir] *)
-  | Some (FdChannel _) => err_ret ENOTDIR  (* no [.iterate_shared] on any non-directory *)
+  | Some (FdChannel _) => err_ret ENOTDIR  (* no [.iterate_shared] on any non-directory: a
+                                              pipe end ([pipeanon_fops], fs/pipe.c:1257-1266)
+                                              and a socket file ([socket_file_ops],
+                                              net/socket.c:156-173) both lack it, so every far
+                                              end SCOPE.md allows fds 0, 1 and 2 takes
+                                              [iterate_dir]'s -ENOTDIR (fs/readdir.c:88-91) *)
   | Some (FdFile _ _)  => err_ret ENOTDIR
   | Some (FdFileW _ _) => err_ret ENOTDIR
   | Some (FdFileA _ _) => err_ret ENOTDIR  (* append mode changes where a write
@@ -227,9 +248,6 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
                                               [.iterate_shared] *)
   | Some (FdFileRW _ _) => err_ret ENOTDIR (* and neither does the access mode: the
                                               same regular file, opened O_RDWR *)
-  | Some (FdAnon _ _) => err_ret ENOTDIR   (* nor the loss of the name: an unnamed
-                                              file is still a regular file, whose
-                                              table has no [.iterate_shared] *)
   | Some (FdPipe _ _)  => err_ret ENOTDIR
   | Some (FdSocket _)  => err_ret ENOTDIR
   | Some (FdStream _ _ _) => err_ret ENOTDIR (* [socket_file_ops] has no [.iterate_shared] *)
@@ -239,9 +257,9 @@ Definition getdents64_spec (fd count : word) : Sys SyscallEffect :=
   | Some (FdDevNull _ _) => err_ret ENOTDIR (* [null_fops] (drivers/char/mem.c, v6.18.46)
                                               has no [.iterate_shared], so [iterate_dir]
                                               (fs/readdir.c) answers its opening -ENOTDIR *)
-  | Some FdUrandom => err_ret ENOTDIR       (* and [urandom_fops] (drivers/char/random.c) has
+  | Some (FdUrandom _ _) => err_ret ENOTDIR (* and [urandom_fops] (drivers/char/random.c) has
                                               none either: the same -ENOTDIR *)
-  | Some FdDir =>
+  | Some (FdDir _) =>
       if getdents64_no_room count
       then alt (e <- errno_from getdents64_errnos ;; err_ret e)  (* the removed directory *)
                (err_ret EINVAL)                                  (* [filldir64]'s own answer *)

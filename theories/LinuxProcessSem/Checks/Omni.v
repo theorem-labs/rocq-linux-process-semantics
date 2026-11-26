@@ -55,7 +55,10 @@
     [with_mem ms mem] to [with_mem ms' mem] by computation on the
     remaining fields alone.  The syscall step, which does read memory,
     is characterised through [Checks.Cases.Fs.ReadWrite.write_channel_outcome]
-    and the executable checker, both on the real memory. *)
+    and the executable checker, both on the real memory.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -305,7 +308,7 @@ Lemma exits_c_exec : forall segs code fuel ms model,
   m_vm_lazy model = [] ->
   exits_c segs code fuel ms = true ->
   exec segs (mkCfg ms model)
-    (fun tr o => tr = [ExitEv code (m_fs model)] /\ exits_with code tr o).
+    (fun tr o => tr = [ExitEv code (Fs.fs_observe (m_fs model))] /\ exits_with code tr o).
 Proof.
   intros segs code fuel. induction fuel as [|fuel IH]; intros ms model Hh Hlazy Hc;
     [discriminate|].
@@ -323,7 +326,7 @@ Proof.
     set (m' := with_halted v model).
     apply exec_step.
     + cbn [cfg_model]. exact Hh.
-    + exists ([] ++ [ExitEv v (m_fs m')]), (SNext (mkCfg ms m')).
+    + exists ([] ++ [ExitEv v (Fs.fs_observe (m_fs m'))]), (SNext (mkCfg ms m')).
       eapply sstep_exit; [exact Hh | exact Hsvc | | | ].
       * subst m' v. exact (exit_dispatch_admits _ model Hno).
       * subst m' v. reflexivity.
@@ -417,7 +420,7 @@ Lemma exit0_exec : forall sp brk0 mbase rnd lim inp,
   exec (run_segments exit0_segments inp sp mbase)
     (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
        rnd lim inp)
-    (fun tr o => tr = [ExitEv verdict_accept (in_fs inp)]
+    (fun tr o => tr = [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))]
                  /\ exits_with verdict_accept tr o).
 Proof.
   intros. unfold init_config.
@@ -435,7 +438,7 @@ Lemma exit0_obs : forall sp brk0 mbase rnd lim inp tr,
   obs_trace (run_segments exit0_segments inp sp mbase)
     (init_config (run_segments exit0_segments inp sp mbase) 0x100 demo_phdrs sp brk0 mbase
        rnd lim inp) tr
-  <-> is_prefix tr [ExitEv verdict_accept (in_fs inp)].
+  <-> is_prefix tr [ExitEv verdict_accept (Fs.fs_observe (in_fs inp))].
 Proof.
   intros. apply exec_obs_iff.
   eapply exec_conseq; [apply exit0_exec |].

@@ -7,7 +7,10 @@
     [Checks/ExecutableSpecs.v] keeps the dispatcher
     and the four top-level theorems and re-exports this module. The
     checkers here are executable, and their proofs relate them to the
-    relational specs in the matching [Sys] module. *)
+    relational specs in the matching [Sys] module.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -173,22 +176,23 @@ Proof.
   unfold err_ret, ret_only, pure in H. cbv beta in H. discriminate H.
 Qed.
 
-(** ioctl: -EBADF on a closed fd; the eight terminal requests answer
-    -ENOTTY on every open kind but /dev/urandom (an unnamed file among
-    them, as the regular file it is); SIOCGIFINDEX on a
-    datagram socket is [check_siocgifindex], which reads the third
-    argument out of [i]; everything else is unmodeled. *)
+(** ioctl: -EBADF on a closed fd; the terminal requests answer -ENOTTY
+    on every open kind but /dev/urandom, whose driver answers them
+    -EINVAL; SIOCGIFINDEX on a datagram socket is [check_siocgifindex],
+    which reads the third argument out of [i]; everything else is
+    unmodeled. *)
 Definition check_ioctl (i : SyscallInput) (fd req : word) (eff : SyscallEffect)
     (m : Model) : check_result :=
   match fd_lookup (m_fds m) fd with
   | None => check_ret_only eff (errno_ret EBADF) m []
-  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some FdDir
+  | Some (FdChannel _) | Some (FdFile _ _) | Some (FdFileW _ _) | Some (FdDir _)
   | Some (FdSocket _) | Some (FdStream _ _ _) | Some (FdEventfd _) | Some (FdPipe _ _)
-  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _)
-  | Some (FdAnon _ _) =>
+  | Some (FdFileA _ _) | Some (FdFileRW _ _) | Some (FdDevNull _ _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else CheckUnmodeled
-  | Some FdUrandom => CheckUnmodeled
+  | Some (FdUrandom _ _) =>
+      if tty_only_request req then check_ret_only eff (errno_ret EINVAL) m []
+      else CheckUnmodeled
   | Some (FdDgram _) =>
       if tty_only_request req then check_ret_only eff (errno_ret ENOTTY) m []
       else if bv_eqb req SIOCGIFINDEX then check_siocgifindex (in_arg i 2) i eff m

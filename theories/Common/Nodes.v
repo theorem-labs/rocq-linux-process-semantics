@@ -61,8 +61,8 @@ Variable segs : list Segment.
     "no outcome halts" fact and never looks at the event. *)
 Definition halt_ev (m' : Model) (code : word) : event :=
   match m_killed m' with
-  | Some sig => KillEv sig (m_fs m')
-  | None => ExitEv code (m_fs m')
+  | Some sig => KillEv sig (Fs.fs_observe (m_fs m'))
+  | None => ExitEv code (Fs.fs_observe (m_fs m'))
   end.
 
 Lemma sstep_svc_inv : forall ms model x8 e st,

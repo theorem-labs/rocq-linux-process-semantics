@@ -1,0 +1,1 @@
+conform --stdin-hex 610a620a   # "a\nb\n": the last line

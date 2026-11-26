@@ -507,8 +507,9 @@ Definition clockid_percall_b (clkid : word) : bool :=
     IT IS NOT REQUIRED TO ADVANCE, for two separate reasons, which is
     why the model must not demand a strict increase: two reads inside
     one counter tick return the identical value — on riscv the counter
-    is [rdtime], about 10 MHz under qemu-virt, so equal consecutive
-    readings are ordinary rather than a corner case — and the clamp
+    is [rdtime], whose rate is the platform's [timebase-frequency], 1 MHz
+    to 62.5 MHz across the riscv device trees of v6.18.46, so equal
+    consecutive readings are a real case rather than a theoretical one — and the clamp
     above freezes the clock outright while it is in effect.
     [clock_getres] answering 1 ns does not contradict this: that is
     timer-programming granularity, not a promise that two reads differ.
@@ -621,10 +622,9 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
       pure (mkEffect (Z_to_bv 64 0) [(tp, bs)] [])
   end.
 
-(** Positive clock IDs handled by [clock_getres].  IDs 8 and 9 can fail
-    with -EINVAL when no alarm RTC is available.  The CPU clocks (2, 3)
-    have a fixed 1 ns resolution.  For the others Linux returns either
-    [hrtimer_resolution] or [KTIME_LOW_RES]
+(** Positive clock IDs [clock_getres] answers with a resolution.  The
+    CPU clocks (2, 3) have a fixed 1 ns resolution.  For the others Linux
+    returns either [hrtimer_resolution] or [KTIME_LOW_RES]
     ([posix_get_hrtimer_res] and [posix_get_coarse_res],
     kernel/time/posix-timers.c, Linux v6.18.46), and which of the two,
     and the value of [hrtimer_resolution], follow the kernel build and
@@ -632,12 +632,34 @@ Definition clock_gettime_spec (clkid tp : word) : Sys SyscallEffect :=
     subsecond value covers these configurations without fixing the
     kernel's HZ.  This deliberately leaves the exact resolution
     unspecified, like other environment time values in this model.
-    Negative dynamic clock IDs and optional auxiliary clocks remain
-    unmodeled. *)
+    The alarm ids 8 and 9 are not here: [clock_getres_alarm_b] says why
+    they have no resolution to give.  Negative dynamic clock IDs and
+    optional auxiliary clocks remain unmodeled. *)
 Definition clock_getres_supported_b (clkid : word) : bool :=
-  (bv_unsigned clkid <=? CLOCK_BOOTTIME_ALARM)%Z
+  (bv_unsigned clkid <=? CLOCK_BOOTTIME)%Z
   || Z.eqb (bv_unsigned clkid) CLOCK_TAI.
 
+(** The two alarm ids, which answer -EINVAL whatever [tp] is.
+
+    [posix_clocks] maps both to [alarm_clock]
+    (kernel/time/posix-timers.c:1527-1528, Linux v6.18.46), and
+    [alarm_clock]'s [.clock_getres] is [alarm_clock_getres]
+    (kernel/time/alarmtimer.c:608-616), which returns -EINVAL when
+    [alarmtimer_get_rtcdev] answers NULL (:610-611), before it fills
+    [rtn_tp].  The configuration of record (SCOPE.md) has
+    "# CONFIG_RTC_CLASS is not set", and without that option
+    [alarmtimer_get_rtcdev] is the inline stub that returns NULL
+    (include/linux/alarmtimer.h:57-62), so the test fails on every
+    call.  [SYSCALL_DEFINE2(clock_getres)] then skips the copy under
+    its [!error &&] (kernel/time/posix-timers.c:1268), so [tp] is never
+    looked at: a NULL [tp], a writable one, one [access_ok] refuses and
+    one that is mapped nowhere all get the same -EINVAL.  The same text
+    stands at v6.16 and v6.17.
+
+    The resolution [alarm_clock_getres] writes past that test, and the
+    -EFAULT a bad [tp] would then give, belong to a kernel built with
+    CONFIG_RTC_CLASS and an RTC registered; that kernel is not the one
+    this model describes, so neither answer is admitted. *)
 Definition clock_getres_alarm_b (clkid : word) : bool :=
   Z.eqb (bv_unsigned clkid) CLOCK_REALTIME_ALARM
   || Z.eqb (bv_unsigned clkid) CLOCK_BOOTTIME_ALARM.
@@ -705,21 +727,17 @@ Definition clock_getres_result_spec (clkid tp : word) : Sys SyscallEffect :=
     [copy_to_user] of the whole struct, and
     [SYSCALL_DEFINE2(clock_getres)] (kernel/time/posix-timers.c)
     returns its failure as -EFAULT.  A range [access_ok] admits that
-    is not wholly writable is declined.  The alarm ids keep their
-    -EINVAL beside the -EFAULT, because [alarm_clock_getres]
-    (kernel/time/alarmtimer.c) fails without an RTC before the copy,
-    and the [!error &&] then skips it. *)
+    is not wholly writable is declined.  The alarm ids answer -EINVAL
+    with no input read, NULL [tp] included, for the reason
+    [clock_getres_alarm_b] gives, and [CLOCK_SGI_CYCLE] (10) answers
+    -EINVAL because [posix_clocks] has no entry for it, so
+    [clockid_to_kclock] returns NULL (kernel/time/posix-timers.c). *)
 Definition clock_getres_spec (clkid tp : word) : Sys SyscallEffect :=
   if clock_getres_supported_b clkid then
     i <- input ;;
-    if clock_getres_dst_ok_b i tp then
-      if clock_getres_alarm_b clkid
-      then alt (err_ret EINVAL) (clock_getres_result_spec clkid tp)
-      else clock_getres_result_spec clkid tp
-    else if negb (access_okb tp 16) then
-      if clock_getres_alarm_b clkid
-      then alt (err_ret EINVAL) (err_ret EFAULT)
-      else err_ret EFAULT
+    if clock_getres_dst_ok_b i tp then clock_getres_result_spec clkid tp
+    else if negb (access_okb tp 16) then err_ret EFAULT
     else unmodeled
+  else if clock_getres_alarm_b clkid then err_ret EINVAL
   else if Z.eqb (bv_unsigned clkid) CLOCK_SGI_CYCLE then err_ret EINVAL
   else unmodeled.

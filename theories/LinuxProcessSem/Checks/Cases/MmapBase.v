@@ -467,9 +467,10 @@ Qed.
       [STACK_TOP] of the address-space depth [Run.mmap_base_of] takes
       as its [v];
     - its [guard] is [State.stack_guard_gap_bytes kb], the byte count
-      [stack_guard_gap] holds, which [cmdline_parse_stack_guard_gap]
-      (mm/mmap.c:941-954) sets from the boot command line and
-      [Run.mmap_gap] reads off the [State.KernelBuild];
+      [stack_guard_gap] holds (mm/mmap.c:941), which
+      [cmdline_parse_stack_guard_gap] (mm/mmap.c:943-953) sets from the
+      boot command line and [Run.mmap_gap] reads off the
+      [State.KernelBuild];
     - its [randomize] is [State.kb_aslr kb], the [PF_RANDOMIZE] flag
       [arch_pick_mmap_layout] (mm/util.c:465-478) tests;
     - [rnd] is [arch_mmap_rnd]'s draw in bytes (mm/util.c:399-411) in

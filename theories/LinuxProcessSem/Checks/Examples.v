@@ -30,7 +30,10 @@
     Event payload bytes are [bv 8] (so [b < 256] side conditions are
     typed away, and inc-cat's [(b + 1) mod 256] is just wrapping [bv 8]
     addition), channel ids / exit codes are [word = bv 64], and the
-    concrete checker inputs use [word]/[byte] literals. *)
+    concrete checker inputs use [word]/[byte] literals.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -45,7 +48,7 @@ Open Scope bv_scope.
 
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Uaccess VaSize MmapBase Hwcap Brk LinuxOnly EntryLaunch EntryWitness
-  Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
+  Fs.DPath Fs.File Fs.ReadWrite Fs.Open Fs.Stat Fs.Sync Fs.Select
   Fs.Ioctl Fs.Fcntl Fs.Locks Fs.Namei Fs.Readdir Fs.Timerfd Fs.Pipe Fs.EventFd
   Fs.EventPoll
   Mm.Mmap Mm.Mremap Mm.Mprotect Mm.Madvise Mm.PlacementHoles
@@ -76,15 +79,15 @@ Definition error_behavior (T : list event -> Prop) (all : Prop) : behavior :=
 (** If every source execution errors, the target is unconstrained. *)
 Example all_source_traces_error_frees_target :
   equiv (error_behavior (prefixes []) True)
-        (error_behavior (prefixes [ExitEv 7 []]) True).
+        (error_behavior (prefixes [ExitEv 7 Fs.fs_empty]) True).
 Proof. left. exact I. Qed.
 
 (** No existential escape: one source error is not
     enough when the source also has a non-error execution.  Even with
     identical observable prefix sets, an erroring target is rejected. *)
 Example one_source_trace_survives_rejects_erroring_target :
-  ~ equiv (error_behavior (prefixes [ExitEv 0 []]) False)
-          (error_behavior (prefixes [ExitEv 0 []]) False).
+  ~ equiv (error_behavior (prefixes [ExitEv 0 Fs.fs_empty]) False)
+          (error_behavior (prefixes [ExitEv 0 Fs.fs_empty]) False).
 Proof.
   intros [Hall | [_ Htarget]].
   - exact Hall.
@@ -93,8 +96,8 @@ Qed.
 
 (** The same mixed source can still be matched by an error-free target. *)
 Example one_source_trace_survives_accepts_safe_target :
-  equiv (error_behavior (prefixes [ExitEv 0 []]) False)
-        (pure_behavior (prefixes [ExitEv 0 []])).
+  equiv (error_behavior (prefixes [ExitEv 0 Fs.fs_empty]) False)
+        (pure_behavior (prefixes [ExitEv 0 Fs.fs_empty])).
 Proof. right. split; [intro tr; tauto | tauto]. Qed.
 
 (** The operational universal predicate is non-vacuous: it always
@@ -105,8 +108,8 @@ Proof. exact all_traces_error_reaches_error. Qed.
 
 (** Same exit code — provable; different exit codes — disprovable. *)
 Example same_exit_code :
-  equiv (pure_behavior (prefixes [ExitEv 42 []]))
-        (pure_behavior (prefixes [ExitEv 42 []])).
+  equiv (pure_behavior (prefixes [ExitEv 42 Fs.fs_empty]))
+        (pure_behavior (prefixes [ExitEv 42 Fs.fs_empty])).
 Proof.
   unfold equiv. right. split.
   - intro tr. tauto.
@@ -114,13 +117,14 @@ Proof.
 Qed.
 
 Example different_exit_code :
-  ~ equiv (pure_behavior (prefixes [ExitEv 42 []]))
-          (pure_behavior (prefixes [ExitEv 7 []])).
+  ~ equiv (pure_behavior (prefixes [ExitEv 42 Fs.fs_empty]))
+          (pure_behavior (prefixes [ExitEv 7 Fs.fs_empty])).
 Proof.
   intro H. unfold equiv in H.
   destruct H as [H | [H _]]; [exact H|].
-  specialize (H [ExitEv 42 []]). destruct H as [Hf _].
-  assert (HL : is_prefix [ExitEv 42 []] [ExitEv 42 []]) by apply is_prefix_refl.
+  specialize (H [ExitEv 42 Fs.fs_empty]). destruct H as [Hf _].
+  assert (HL : is_prefix [ExitEv 42 Fs.fs_empty] [ExitEv 42 Fs.fs_empty])
+    by apply is_prefix_refl.
   apply Hf in HL. cbn in HL. destruct HL as [Heq _]. discriminate Heq.
 Qed.
 
@@ -128,13 +132,14 @@ Qed.
     termination-as-an-event: the diverging program's prefix set is just
     {[]}, which is missing the [ExitEv] prefix. *)
 Example exit_vs_divergence :
-  ~ equiv (pure_behavior (prefixes [ExitEv 0 []]))
+  ~ equiv (pure_behavior (prefixes [ExitEv 0 Fs.fs_empty]))
           (pure_behavior (prefixes [])).
 Proof.
   intro H. unfold equiv in H.
   destruct H as [H | [H _]]; [exact H|].
-  specialize (H [ExitEv 0 []]). destruct H as [Hf _].
-  assert (HL : is_prefix [ExitEv 0 []] [ExitEv 0 []]) by apply is_prefix_refl.
+  specialize (H [ExitEv 0 Fs.fs_empty]). destruct H as [Hf _].
+  assert (HL : is_prefix [ExitEv 0 Fs.fs_empty] [ExitEv 0 Fs.fs_empty])
+    by apply is_prefix_refl.
   apply Hf in HL. cbn in HL. exact HL.
 Qed.
 
@@ -319,11 +324,11 @@ Theorem checker_ok_is_run_step : forall segs ms model x8 eff model'' evs,
      (SNext (mkCfg (advance_past_svc (apply_effect ms eff)) model'')))
   \/ (exists code,
         m_halted model'' = Some code /\ m_killed model'' = None /\
-        sstep segs (mkCfg ms model) (evs ++ [ExitEv code (m_fs model'')])
+        sstep segs (mkCfg ms model) (evs ++ [ExitEv code (Fs.fs_observe (m_fs model''))])
           (SNext (mkCfg ms model'')))
   \/ (exists sig,
         m_killed model'' = Some sig /\
-        sstep segs (mkCfg ms model) (evs ++ [KillEv sig (m_fs model'')])
+        sstep segs (mkCfg ms model) (evs ++ [KillEv sig (Fs.fs_observe (m_fs model''))])
           (SNext (mkCfg ms model''))).
 Proof.
   intros segs ms model x8 eff model'' evs Hh Hsvc Hchk.
@@ -664,7 +669,7 @@ Proof.
     apply must_exit_at_running.
     + cbn [cfg_model]. exact Hh.
     + exists ([] ++ [ExitEv (bv_and (in_arg (sys_input segs ms x8) 0)
-                                    (Z_to_bv 64 255)) (m_fs m')]),
+                                    (Z_to_bv 64 255)) (Fs.fs_observe (m_fs m'))]),
         (SNext (mkCfg ms m')).
       eapply sstep_exit; [exact Hh | exact Hsvc | | | ].
       * subst m'. exact (exit_dispatch_admits _ model Hno).
@@ -741,7 +746,7 @@ Lemma exit_step_forced : forall segs ms model x8 evs c',
   ms_svc_pending ms = Some x8 ->
   exit_sysno (in_sysno (sys_input segs ms x8)) ->
   sstep segs (mkCfg ms model) evs (SNext c') ->
-  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+  evs = [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
   /\ m_halted (cfg_model c') <> None.
 Proof.
   intros segs ms model x8 evs c' Hh Hsvc Hno Hss.
@@ -785,7 +790,7 @@ Lemma exits_c_star_trace : forall segs code fuel ms model tr c',
   m_vm_lazy model = [] ->
   exits_c segs code fuel ms = true ->
   star segs (mkCfg ms model) tr c' ->
-  tr = [] \/ tr = [ExitEv code (m_fs model)].
+  tr = [] \/ tr = [ExitEv code (Fs.fs_observe (m_fs model))].
 Proof.
   intros segs code fuel. induction fuel as [|fuel IH];
     intros ms model tr c' Hh Hlazy Hc Hstar; [discriminate|].
@@ -889,7 +894,7 @@ Definition undecodable_image : Image :=
     fixture takes the input it is the entry for.
 
     The entry itself is [Run.launch_entry_va]: the launch with no
-    stack draw ([StackLayout.ed_top] at [Run.va_stack_top], the top of
+    stack draw ([StackLayout.ed_top] at [State.va_stack_top], the top of
     the address space), no [arch_align_stack] pad (the stack pointer
     at the high end of rule 2's interval) and no [arch_mmap_rnd] draw.
     [Run.launch_entry_va_valid] discharges all five conjuncts of
@@ -964,6 +969,8 @@ Proof.
   rewrite Z_to_bv_unsigned, bv_wrap_small
     by (unfold bv_modulus; cbn; lia).
   repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  all: try valid_image_vm.
+  all: try valid_urandom_default.
 Qed.
 
 Example demo_entry_valid_undecodable : forall inp,
@@ -978,6 +985,8 @@ Proof.
   rewrite Z_to_bv_unsigned, bv_wrap_small
     by (unfold bv_modulus; cbn; lia).
   repeat split; try lia; vm_compute; try reflexivity; try discriminate.
+  all: try valid_image_vm.
+  all: try valid_urandom_default.
 Qed.
 
 (** [Run.valid_mmap_base]'s cap, pinned from outside (reason 3: the band
@@ -1054,10 +1063,6 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
-    (* [Fs.fs_image_real], the FIFTH conjunct: this fixture's image is
-       the empty one, which has no key to be non-canonical and no key
-       under another, so the boolean computes to [true]. *)
-    try (unfold fs_image_real; vm_compute; reflexivity);
     (* [Run.valid_launch], the LAST conjunct, and the only one
        about the exec file name.  [State.mkProcInput] fills
        [State.in_execfn] with [State.default_execfn], the one-byte
@@ -1087,6 +1092,7 @@ Proof.
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
+  all: try valid_image_vm.
   (* [Run.valid_urandom] is the only COINDUCTIVE conjunct,
      so no computation decides it and the fixture discharges it by
      naming the witness its declaration is: [State.default_urandom],
@@ -1113,9 +1119,11 @@ Example the_random_clause_is_what_the_fixture_carries :
     (mkProcInput [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
                  default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48)
   /\ ~ valid_input
-        (mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups
+        (mkProcInput_full [[]] []
+                          (fst (Fs.migrate_image Fs.default_cwd []))
+                          Fs.default_cwd IEof demo_uid demo_gid demo_groups
                           net_silent default_nofile (Z_to_bv 64 0) demo_hwcap
-                          false Sv48 IEof [] default_kernel default_execfn
+                          false Sv48 IEof default_kernel default_execfn
                           true true false).
 Proof.
   split.
@@ -1345,3 +1353,92 @@ Proof.
   apply run_unmodeled_errors,
     run_of_undecodable_image_is_unmodeled_at_demo_entry.
 Qed.
+
+(** THE RANDOM DEVICE'S PAGE STOPS, which no probe can make happen on
+    demand.  [write_pool_user] (drivers/char/random.c:1437-1439, Linux
+    v6.18.46) and [get_random_bytes_user] (drivers/char/random.c:471-473)
+    stop at a page multiple only while a signal is pending, and the
+    pending bit a freezer sets (kernel/freezer.c:164-175, in [freeze_task],
+    through [fake_signal_wake_up]) is not something a test can time.  So a
+    real run shows one count; the claim is about all of them.
+
+    REASON: UNIVERSALLY QUANTIFIED for the counts lemma (every count a
+    fully readable 8192-byte write may return is 8192 or 4096),
+    and A KERNEL BEHAVING INADMISSIBLY for the two [CheckReject]s: a
+    write that reports 4097 of 8192 bytes, and a read that hands back
+    4097, stop where no block boundary and no page boundary is. *)
+Lemma urandom_write_counts_of_a_full_source : forall r,
+  (0 <= r <= 8192)%Z ->
+  random_write_countb 8192 8192 r = (Z.eqb r 8192 || Z.eqb r 4096)%bool.
+Proof.
+  intros r Hr.
+  assert (H : forallb (fun z => Bool.eqb (random_write_countb 8192 8192 z)
+                                  (Z.eqb z 8192 || Z.eqb z 4096)%bool)
+                (map Z.of_nat (seq 0 (Z.to_nat 8193))) = true) by (vm_compute; reflexivity).
+  rewrite forallb_forall in H.
+  apply Bool.eqb_prop. apply H. apply in_map_iff.
+  exists (Z.to_nat r). split; [lia|]. apply in_seq. lia.
+Qed.
+
+Example urandom_write_4097_of_8192_rejected :
+  check_syscall (mkInput 64 [3; 4096; 8192; 0; 0; 0] (urandom_src 8192) (fun _ => None))
+    (with_copyins [(4096, 4097%nat)] (mkEffect 4097 [] [])) urandom_wr_model
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+Example urandom_read_4097_of_8192_rejected :
+  check_syscall (mkInput 63 [3; 4096; 8192; 0; 0; 0] (fun _ => None) urandom_page_wmem)
+    (mkEffect 4097 [(4096, repeat (Z_to_bv 8 5) 4097)] []) urandom_page_model
+  = CheckReject.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A SEND OVER A RESET OR A TIMEOUT THE KERNEL HAS NOT PROCESSED YET.
+    The connection's script is a lone end at its head, [NRst] or
+    [NTimedOut], and the program cannot see whether Linux has processed
+    it, so [Net.Socket.send_state] gives both scripts [SendGoes].  Not
+    processed, the connection is still ESTABLISHED, inside the state mask
+    of [tcp_sendmsg_locked] (net/ipv4/tcp.c:1159-1164, Linux v6.18.46),
+    with no error stored and no SEND_SHUTDOWN, so its -EPIPE test does not
+    fire (:1193-1195) and the copy loop queues both bytes (:1197 on) and
+    returns their count (:1374-1385).  The checker answers [CheckOk] with
+    one [WriteEv] per byte on the connection's channel 3 and the
+    connection marked [sent] ([State.SockState]); the script is
+    unchanged: the end is still at its head, for the next call to find.
+    Checks/Cases/Net/Socket.v's
+    [send_before_the_end_is_processed_goes_out] states the same two sends
+    beside the other connected-socket cases.
+
+    REASON: THE ENVIRONMENT CANNOT BE MADE TO PRODUCE IT.  The send needs
+    a peer that holds its RST back, or one that stops answering, and the
+    harness has neither.  Its peer (become_peer in testing/vm/tracer.c)
+    closes and exits before the tracer answers the request, with the
+    probe stopped throughout, so the RST is processed before the probe
+    sends; and `--peer` ends a connection with a FIN or a RST, never a
+    timeout (parse_peer in testing/syscall-check/main.ml).  So the reset
+    half is a FORGED case, and no recording of it from the kernel exists:
+    the case `conform --mutate sendto#1:ret=1 --peer :rst -- send-once` of
+    testing/syscall-check/tests/socket_peer_reset.c runs the probe on a
+    kernel that HAS processed the RST (the send answered -ECONNRESET) and
+    tells the checker that the send answered 1, and the record beside it
+    there says why no run can do better.  The timeout half has no case
+    there at all.
+
+    The [CheckReject] is the same reason in its other form, a kernel
+    behaving inadmissibly: 0 for the two-byte request.
+    [Net.Socket.send_bytes] admits a delivered prefix of one byte or
+    more, and [Net.Socket.send_on_socket] beside it only the errors the
+    end can have stored, so 0 is refused; and no kernel answers 0 here,
+    because from ESTABLISHED [tcp_sendmsg_locked] either copies a byte
+    and returns the count, or fails before the first byte and returns the
+    negative errno of [sk_stream_error] (net/ipv4/tcp.c:1387-1405). *)
+Example send_over_an_unprocessed_reset_or_timeout_goes_out :
+  sendto_answering_with (connected_socket_model NRst) 2 [(4096, 2%nat)]
+    = CheckOk (sent_socket_model NRst) [WriteEv 3 97; WriteEv 3 98]
+  /\ sendto_answering_with (connected_socket_model NTimedOut) 2 [(4096, 2%nat)]
+    = CheckOk (sent_socket_model NTimedOut) [WriteEv 3 97; WriteEv 3 98].
+Proof. split; check_eq. Qed.
+
+Example send_over_an_unprocessed_reset_or_timeout_0_of_2_rejected :
+  sendto_answering (connected_socket_model NRst) 0 = CheckReject
+  /\ sendto_answering (connected_socket_model NTimedOut) 0 = CheckReject.
+Proof. split; vm_compute; reflexivity. Qed.

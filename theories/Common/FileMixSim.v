@@ -61,10 +61,13 @@
     [MachineFault] rather than a spec [Unmodeled], DOES supply the clause —
     see [AllocMixSim.tom_no_unmodeled] for the contrast.
 
-    Ergonomic nodes mirror FileSim's: [tfm_open_rd_rec] /
-    [tfm_open_wr_rec] (openat branching with [to_fout_mix]
+    Ergonomic nodes mirror FileSim's: [tfm_open_rd_ns_rec] /
+    [tfm_open_wr_ns_rec] (openat branching with [to_fout_mix]
     continuations).  The error leaf is the generic [tfm_unmodeled]: a silent
-    line into a syscall whose spec is [Unmodeled]. *)
+    line into a syscall whose spec is [Unmodeled].
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import NArith ZArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence OmniEquivalence.
@@ -322,14 +325,16 @@ Qed.
 (* ================================================================= *)
 
 (** Core open node over an abstract success-model builder [mk], with
-    [to_fout_mix] continuations (mirror of [FileSim.tfo_open_core]). *)
+    [to_fout_mix] continuations (mirror of [FileSim.tfo_open_core]),
+    under [getname_flags]' own refusals. *)
 Lemma tfm_open_core : forall ms model (mk : word -> Model) x8 reads
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   ms_svc_pending ms = Some x8 ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall eff, check_syscall (sys_input segs ms x8) eff model
-               = check_open_result_copyins reads eff model mk) ->
+               = check_getname_refusals (sys_input segs ms x8) [] (ms_gpr ms 1) eff model
+                   (check_open_result_copyins reads eff model mk)) ->
   (forall fd, m_halted (mk fd) = None /\ m_vm_lazy (mk fd) = []) ->
   (forall e, In e openat_errnos ->
      to_fout_mix (advance_past_svc
@@ -356,32 +361,32 @@ Proof.
     intro Hspec.
     apply (check_syscall_complete_unmodeled _ _ (mkEffect (Z_to_bv 64 0) [] []))
       in Hspec.
-    rewrite Hchk in Hspec.
+    rewrite Hchk in Hspec. apply check_getname_refusals_unmodeled in Hspec.
     exact (check_open_result_copyins_never_unmodeled _ _ _ _ Hspec).
   - (* receptive: ENOMEM *)
     exists (with_copyins reads (mkEffect (errno_ret ENOMEM) [] [])), model, [].
-    apply check_syscall_ok_iff. rewrite Hchk.
+    apply check_syscall_ok_iff. rewrite Hchk. apply check_getname_refusals_of_ok.
     apply check_open_result_copyins_ok_iff. left. exists ENOMEM.
     repeat split; try reflexivity. apply ENOMEM_in_openat_errnos.
   - (* shape *)
     intros eff model' evs Hspec.
     apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
-    apply check_open_result_copyins_ok_iff in Hspec.
-    destruct Hspec as [ (e & _ & -> & -> & ->)
-                      | (fd & _ & _ & -> & -> & ->) ].
+    apply check_open_result_getname_ok_inv in Hspec.
+    destruct Hspec as [ (e & _ & _ & -> & -> & _)
+                      | (fd & _ & _ & _ & -> & ->) ].
     + repeat split; assumption.
     + destruct (Hmk fd) as [Hhalt Hlazy']. repeat split; assumption.
   - (* continuations *)
     intros eff model' evs Hspec.
     apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
-    apply check_open_result_copyins_ok_iff in Hspec.
-    destruct Hspec as [ (e & HIn & -> & -> & _)
+    apply check_open_result_getname_ok_inv in Hspec.
+    destruct Hspec as [ (e & HIn & Hret & -> & _ & Happ)
                       | (fd & Hlk & Heq & -> & -> & _) ].
     + destruct (openat_errno_range e HIn) as [He1 He2].
-      cbn [eff_ret with_copyins].
+      cbv beta. rewrite Hret.
       rewrite (errno_ret_error_b e He1 He2).
       rewrite (errno_ret_recover e He1 He2).
-      apply Herr; assumption.
+      rewrite (Happ ms). apply Herr; assumption.
     + cbn [eff_ret with_copyins].
       assert (Hne : addr_is_error_b fd = false)
         by (rewrite Heq; apply alloc_fd_not_error_b).
@@ -393,13 +398,13 @@ Proof.
       * destruct (openat_errno_range e HIn) as [He1 He2].
         exists (with_copyins reads (mkEffect (errno_ret e) [] [])), model, [].
         split.
-        { apply check_syscall_ok_iff. rewrite Hchk.
+        { apply check_syscall_ok_iff. rewrite Hchk. apply check_getname_refusals_of_ok.
           apply check_open_result_copyins_ok_iff. left. exists e. auto. }
         { cbn [eff_ret with_copyins]. rewrite (errno_ret_error_b e He1 He2).
           rewrite (errno_ret_recover e He1 He2). exact Ht. }
       * exists (with_copyins reads (mkEffect fd [] [])), (mk fd), [].
         split.
-        { apply check_syscall_ok_iff. rewrite Hchk.
+        { apply check_syscall_ok_iff. rewrite Hchk. apply check_getname_refusals_of_ok.
           apply check_open_result_copyins_ok_iff. right. exists fd. auto. }
         { cbn [eff_ret with_copyins].
           assert (Hne : addr_is_error_b fd = false)
@@ -407,11 +412,11 @@ Proof.
           rewrite Hne. exact Ht. }
     + intros (eff & model' & evs & Hspec & Ht).
       apply check_syscall_ok_iff in Hspec. rewrite Hchk in Hspec.
-      apply check_open_result_copyins_ok_iff in Hspec.
-      destruct Hspec as [ (e & HIn & -> & -> & _)
+      apply check_open_result_getname_ok_inv in Hspec.
+      destruct Hspec as [ (e & HIn & Hret & -> & _ & _)
                         | (fd & Hlk & Heq & -> & -> & _) ].
       * destruct (openat_errno_range e HIn) as [He1 He2].
-        cbn [eff_ret with_copyins] in Ht.
+        cbv beta in Ht. rewrite Hret in Ht.
         rewrite (errno_ret_error_b e He1 He2) in Ht.
         rewrite (errno_ret_recover e He1 He2) in Ht.
         left. exists e. auto.
@@ -422,16 +427,22 @@ Proof.
         right. exists fd. auto.
 Qed.
 
-(** O_RDONLY openat of a present file, at the raw ecall record: errno
-    branch or any free fd, with [to_fout_mix] continuations. *)
-Lemma tfm_open_rd_rec : forall regs pc mem model p d
+(** The read-open node of the mixed family, ON THE INODE THE RESOLVED
+    KEY NAMES.  [FileSim.tfo_open_rd_ns_rec] is the same node for the
+    pure-fs family; the arm contract and the premise shape are shared,
+    so the two stay readable side by side.  The twin is the _ns one,
+    NOT [FileSim.tfo_open_rd_rec], which takes no contract at all. *)
+Lemma tfm_open_rd_ns_rec : forall regs pc mem model p k i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
+  FileSim.openat_arm_read_found ->
   bv_unsigned (getr regs 17) = 56%Z ->
   reg_get regs 10 = AT_FDCWD -> reg_get regs 12 = Z_to_bv 64 0 ->
   read_cstr (mrb segs mem) (reg_get regs 11) = CstrOk p ->
   path_eqb p [] = false ->
-  openat_plain_name p = true ->
-  fs_lookup (m_fs model) p = Some d ->
+  Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
+    = (Fs.RFound k (Fs.EFile i), Fs.LastNorm, false) ->
+  FileSim.open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -441,7 +452,7 @@ Lemma tfm_open_rd_rec : forall regs pc mem model p d
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
                  (with_fds (fd_insert (m_fds model) fd
-                              (FdFile p (Z_to_bv 64 0))) model)
+                              (FdFile i (Z_to_bv 64 0))) model)
                  (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
@@ -452,28 +463,200 @@ Lemma tfm_open_rd_rec : forall regs pc mem model p d
                  ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
               model U.
 Proof.
-  intros regs pc mem model p d Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hfs Hh Hlazy Herr Hok HU.
+  intros regs pc mem model p k i Te Ts U
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
+  assert (Hg2 : ms_gpr ms 2 = Z_to_bv 64 0)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
   apply (tfm_open_core ms model
            (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFile p (Z_to_bv 64 0))) model)
+                                  (FdFile i (Z_to_bv 64 0))) model)
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_rd_check segs ms (getr regs 17) model p d).
+  - intro eff. apply (openat_rd_check_ns segs ms (getr regs 17) model p k i).
+    + exact Harm.
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
       rewrite (ms_read_byte_rec_mrb segs). exact Hpath.
     + exact Hpe.
-    + unfold ms. rewrite record_gpr, arg_reg_2. rewrite H12.
-      vm_compute. reflexivity.
+    + rewrite Hg2. vm_compute. reflexivity.
+    + rewrite Hg2, FileSim.open_walk_mode_rd. exact Hres.
+    + rewrite Hg2. exact Hplain.
+    + exact Hfree.
+  - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
+  - intros e HIn.
+    unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
+  - intros fd Hlk Hlt.
+    unfold ms. rewrite adv_eff_ret_copyins. apply Hok; assumption.
+  - exact HU.
+Qed.
+
+(** The create node of the mixed family.  The file is made where the
+    walk SETTLED, and the premise is [FileSim.resolve_create_target]:
+    the name was absent and a new inode is made there.  An existing
+    destination is not this node's: its open also admits -ETXTBSY
+    ([Open.open_write_existing]), and [FileSim.resolve_create_target]
+    says where such an open is read instead.  See
+    [FileSim.tfo_open_wr_ns_rec], which is the twin. *)
+Lemma tfm_open_wr_ns_rec : forall regs pc mem model p fs' i
+    (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
+  FileSim.openat_arm_create ->
+  bv_unsigned (getr regs 17) = 56%Z ->
+  reg_get regs 10 = AT_FDCWD -> reg_get regs 12 = Z_to_bv 64 577 ->
+  read_cstr (mrb segs mem) (reg_get regs 11) = CstrOk p ->
+  path_eqb p [] = false ->
+  FileSim.resolve_create_target model (Z_to_bv 64 577) p fs' i ->
+  FileSim.open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  (forall e, In e openat_errnos ->
+     to_fout_mix (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4)
+                       mem (seg_rom segs))
+                 model (Te e)) ->
+  (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
+     to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
+                 (with_fds (fd_insert (m_fds model) fd
+                              (FdFileW i (Z_to_bv 64 0)))
+                    (with_fs fs' model))
+                 (Ts fd)) ->
+  (forall o, U o <->
+     ((exists e, In e openat_errnos /\ Te e o)
+      \/ (exists fd, fd_lookup (m_fds model) fd = None
+                     /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
+  to_fout_mix {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                 ms_svc_pending := Some (getr regs 17);
+                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
+              model U.
+Proof.
+  intros regs pc mem model p fs' i Te Ts U
+    Harm H17 H10 H12 Hpath Hpe Hres Hplain Hfree Hh Hlazy Herr Hok HU.
+  set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                ms_svc_pending := Some (getr regs 17);
+                ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
+  assert (Hg2 : ms_gpr ms 2 = Z_to_bv 64 577)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
+  apply (tfm_open_core ms model
+           (fun fd => with_fds (fd_insert (m_fds model) fd
+                                  (FdFileW i (Z_to_bv 64 0)))
+                        (with_fs fs' model))
+           (getr regs 17) (open_copyins ms) Te Ts U).
+  - unfold ms. cbn [ms_svc_pending]. reflexivity.
+  - exact Hh.
+  - exact Hlazy.
+  - intro eff. apply (openat_wr_check_ns segs ms (getr regs 17) model p fs' i).
+    + exact Harm.
+    + exact H17.
+    + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
+    + unfold ms. rewrite record_gpr, arg_reg_1.
+      rewrite (ms_read_byte_rec_mrb segs). exact Hpath.
+    + exact Hpe.
+    + rewrite Hg2. vm_compute. reflexivity.
+    + rewrite Hg2. exact Hres.
+    + rewrite Hg2. exact Hplain.
+    + exact Hfree.
+  - intro fd. split.
+    + rewrite with_fds_halted, with_fs_halted. exact Hh.
+    + exact Hlazy.
+  - intros e HIn.
+    unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
+  - intros fd Hlk Hlt.
+    unfold ms. rewrite adv_eff_ret_copyins. apply Hok; assumption.
+  - exact HU.
+Qed.
+
+(** There is no PATHNAME-shaped error leaf any more: on a flag word the
+    model interprets, every pathname [openat_spec] can be handed gets an
+    answer — the string, a real -ENAMETOOLONG, or a real -EFAULT — so the
+    record-level [tfm_openat_err_rec] that used to sit here (an [Unmodeled] for
+    "this path does not resolve", with no flags hypothesis) is simply
+    false.  The generic [tfm_unmodeled] leaf stays: a branch that runs silently
+    into ANY syscall whose spec is [Unmodeled] — an unmodeled dirfd, an
+    unmodeled open-flag combination (which [openat_spec] now declines
+    BEFORE it fetches the path), an unmodeled syscall number — still
+    survives no outcome. *)
+
+(* ------------------------------------------------------------------ *)
+(* The pre-namespace pair, kept for the reason [FileSim] gives          *)
+(* ------------------------------------------------------------------ *)
+
+(** The two nodes as they were before #1011, RETIRED at the arms merge
+    the way [Common.FileSim]'s "the pre-namespace open family" header
+    describes: each gained the premise that the walk lands on the
+    PATHNAME ITSELF as the key, which is what the old statement assumed
+    without saying so, and each is now proved through its namespace twin
+    at that key.  Under [Fs.wf_fs] nothing can supply that premise --
+    a resolved key is absolute, a plain name is not -- so the pair is
+    kept and true, with no call site outside the retired family.  The
+    pair's own callers, [tfm_open_rd_rec] and [tfm_open_wr_rec], are
+    retired with it and carry the same dead premise, so the call sites a
+    grep turns up are all inside that family. *)
+
+(** O_RDONLY openat of a present file, at the raw ecall record: errno
+    branch or any free fd, with [to_fout_mix] continuations. *)
+Lemma tfm_open_rd_rec : forall regs pc mem model p i
+    (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
+  bv_unsigned (getr regs 17) = 56%Z ->
+  reg_get regs 10 = AT_FDCWD -> reg_get regs 12 = Z_to_bv 64 0 ->
+  read_cstr (mrb segs mem) (reg_get regs 11) = CstrOk p ->
+  path_eqb p [] = false ->
+  openat_plain_name p = true ->
+  fs_lookup (m_fs model) p = Some (EFile i) ->
+  Fs.resolve (Fs.WalkFull true false) (m_fs model) (m_cwd model) p
+    = (Fs.RFound p (Fs.EFile i), Fs.LastNorm, false) ->
+  FileSim.open_walk_plain (Z_to_bv 64 0) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
+  m_halted model = None ->
+  m_vm_lazy model = [] ->
+  (forall e, In e openat_errnos ->
+     to_fout_mix (mkst (regupd regs 10 (errno_ret e)) (v_addi pc 4)
+                       mem (seg_rom segs))
+                 model (Te e)) ->
+  (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
+     to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
+                 (with_fds (fd_insert (m_fds model) fd
+                              (FdFile i (Z_to_bv 64 0))) model)
+                 (Ts fd)) ->
+  (forall o, U o <->
+     ((exists e, In e openat_errnos /\ Te e o)
+      \/ (exists fd, fd_lookup (m_fds model) fd = None
+                     /\ fd = alloc_fd (m_fds model) /\ Ts fd o))) ->
+  to_fout_mix {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                 ms_svc_pending := Some (getr regs 17);
+                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
+              model U.
+Proof.
+  intros regs pc mem model p i Te Ts U
+    H17 H10 H12 Hpath Hpe Hdot Hfs Hres Hplain Hfree Hh Hlazy Herr Hok HU.
+  set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
+                ms_svc_pending := Some (getr regs 17);
+                ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
+  assert (Hg2 : ms_gpr ms 2 = Z_to_bv 64 0)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
+  apply (tfm_open_core ms model
+           (fun fd => with_fds (fd_insert (m_fds model) fd
+                                  (FdFile i (Z_to_bv 64 0))) model)
+           (getr regs 17) (open_copyins ms) Te Ts U).
+  - unfold ms. cbn [ms_svc_pending]. reflexivity.
+  - exact Hh.
+  - exact Hlazy.
+  - intro eff. apply (openat_rd_check segs ms (getr regs 17) model p i).
+    + exact H17.
+    + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
+    + unfold ms. rewrite record_gpr, arg_reg_1.
+      rewrite (ms_read_byte_rec_mrb segs). exact Hpath.
+    + exact Hpe.
+    + rewrite Hg2. vm_compute. reflexivity.
     + exact Hdot.
     + exact Hfs.
+    + rewrite Hg2, FileSim.open_walk_mode_rd. exact Hres.
+    + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split; [rewrite with_fds_halted; exact Hh | exact Hlazy].
   - intros e HIn.
     unfold ms. rewrite adv_eff_ret_copyins. apply Herr; assumption.
@@ -484,10 +667,11 @@ Qed.
 
 (** O_WRONLY|O_CREAT|O_TRUNC openat at the raw ecall record, with
     [to_fout_mix] continuations.  Like [FileSim.tfo_open_wr_rec] it is
-    the create lane only — a plain name nothing lives under; the
-    implied-directory lane (a deterministic -EISDIR) has no mix-flavoured
-    node because no proof on this route reaches one. *)
-Lemma tfm_open_wr_rec : forall regs pc mem model p
+    the create lane only — a plain name nothing lives under; the lane of
+    the R21 implied directory (a deterministic -EISDIR, vacuous under
+    [Fs.wf_fs]) has no mix-flavoured node because no proof on this
+    route reaches one. *)
+Lemma tfm_open_wr_rec : forall regs pc mem model p fs' i
     (Te : Z -> (word * Fs.Fs) -> Prop) (Ts : word -> (word * Fs.Fs) -> Prop) U,
   bv_unsigned (getr regs 17) = 56%Z ->
   reg_get regs 10 = AT_FDCWD -> reg_get regs 12 = Z_to_bv 64 577 ->
@@ -495,6 +679,9 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
   path_eqb p [] = false ->
   openat_plain_name p = true ->
   fs_under (m_fs model) p = false ->
+  resolve_create_target model (Z_to_bv 64 577) p fs' i ->
+  FileSim.open_walk_plain (Z_to_bv 64 577) model p ->
+  fd_lookup (m_fds model) (alloc_fd (m_fds model)) = None ->
   m_halted model = None ->
   m_vm_lazy model = [] ->
   (forall e, In e openat_errnos ->
@@ -503,8 +690,8 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
                  model (Te e)) ->
   (forall fd, fd_lookup (m_fds model) fd = None -> fd = alloc_fd (m_fds model) ->
      to_fout_mix (mkst (regupd regs 10 fd) (v_addi pc 4) mem (seg_rom segs))
-                 (with_fds (fd_insert (m_fds model) fd (FdFileW p (Z_to_bv 64 0)))
-                    (with_fs (fs_set (m_fs model) p []) model)) (Ts fd)) ->
+                 (with_fds (fd_insert (m_fds model) fd (FdFileW i (Z_to_bv 64 0)))
+                    (with_fs fs' model)) (Ts fd)) ->
   (forall o, U o <->
      ((exists e, In e openat_errnos /\ Te e o)
       \/ (exists fd, fd_lookup (m_fds model) fd = None
@@ -514,29 +701,33 @@ Lemma tfm_open_wr_rec : forall regs pc mem model p
                  ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}
               model U.
 Proof.
-  intros regs pc mem model p Te Ts U
-    H17 H10 H12 Hpath Hpe Hdot Hun Hh Hlazy Herr Hok HU.
+  intros regs pc mem model p fs' i Te Ts U
+    H17 H10 H12 Hpath Hpe Hdot Hun Hres Hplain Hfree Hh Hlazy Herr Hok HU.
   set (ms := {| ms_regs := regs; ms_fregs := fp_regs; ms_pc_val := pc;
                 ms_svc_pending := Some (getr regs 17);
                 ms_resv := None; ms_fcsr := fp_csr; ms_mem := mem; ms_rom := seg_rom segs |}).
+  assert (Hg2 : ms_gpr ms 2 = Z_to_bv 64 577)
+    by (unfold ms; rewrite record_gpr, arg_reg_2; exact H12).
   apply (tfm_open_core ms model
            (fun fd => with_fds (fd_insert (m_fds model) fd
-                                  (FdFileW p (Z_to_bv 64 0)))
-                        (with_fs (fs_set (m_fs model) p []) model))
+                                  (FdFileW i (Z_to_bv 64 0)))
+                        (with_fs fs' model))
            (getr regs 17) (open_copyins ms) Te Ts U).
   - unfold ms. cbn [ms_svc_pending]. reflexivity.
   - exact Hh.
   - exact Hlazy.
-  - intro eff. apply (openat_wr_check segs ms (getr regs 17) model p).
+  - intro eff. apply (openat_wr_check segs ms (getr regs 17) model p fs' i).
     + exact H17.
     + unfold ms. rewrite record_gpr, arg_reg_0. exact H10.
     + unfold ms. rewrite record_gpr, arg_reg_1.
       rewrite (ms_read_byte_rec_mrb segs). exact Hpath.
     + exact Hpe.
-    + unfold ms. rewrite record_gpr, arg_reg_2. rewrite H12.
-      vm_compute. reflexivity.
+    + rewrite Hg2. vm_compute. reflexivity.
     + exact Hdot.
     + exact Hun.
+    + rewrite Hg2. exact Hres.
+    + rewrite Hg2. exact Hplain.
+    + exact Hfree.
   - intro fd. split.
     + rewrite with_fds_halted, with_fs_halted. exact Hh.
     + exact Hlazy.
@@ -567,6 +758,7 @@ End WithSegs.
     outcome set [U] is exactly the prefixes of [U]'s outcome traces (an
     erroring branch contributes only the empty trace, which is a prefix
     of every outcome trace). *)
+
 Lemma fout_mix_obs_iff : forall segs pc ph sp brk0 mb rnd lim inp U,
   to_fout_mix segs (init_machine_state segs pc ph sp mb rnd inp)
               (with_vdso (Vdso.vdso_run_init (ed_vdso rnd))

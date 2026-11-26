@@ -7,7 +7,10 @@
     [Checks/ExecutableSpecs.v] keeps the dispatcher
     and the four top-level theorems and re-exports this module. The
     checkers here are executable, and their proofs relate them to the
-    relational specs in the matching [Sys] module. *)
+    relational specs in the matching [Sys] module.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -27,13 +30,12 @@ Definition check_fsync (fd : word) (eff : SyscallEffect) (m : Model)
   | Some (FdEventfd _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdPipe _ _)  => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret EINVAL) m []
-  | Some FdUrandom => check_ret_only eff (errno_ret EINVAL) m []
+  | Some (FdUrandom _ _) => check_ret_only eff (errno_ret EINVAL) m []
   | Some (FdFileA _ _) => check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdFileRW _ _) => check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdFile _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
   | Some (FdFileW _ _) => check_ret_only eff (Z_to_bv 64 0) m []
-  | Some FdDir         => check_ret_only eff (Z_to_bv 64 0) m []
-  | Some (FdAnon _ _)  => check_ret_only eff (Z_to_bv 64 0) m []
+  | Some (FdDir _)     => check_ret_only eff (Z_to_bv 64 0) m []
   end.
 
 Lemma check_fsync_sound_ok : forall fd eff m m' evs i,

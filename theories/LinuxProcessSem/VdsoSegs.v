@@ -20,8 +20,9 @@
     PURE ADDITION: this file changes no existing statement. *)
 
 From Stdlib Require Import ZArith List Bool Lia.
-From LinuxProcessSemantics.LinuxProcessSem Require Import
-  BvBase MemImageType StackLayout Vdso State Run.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType StackLayout.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import State Run.
 Import ListNotations.
 Open Scope bv_scope.
 

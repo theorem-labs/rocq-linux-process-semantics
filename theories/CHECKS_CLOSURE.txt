@@ -1,0 +1,98 @@
+# What theories/Common and theories/Examples may reach under
+# LinuxProcessSem/Checks/.
+#
+# Read by tools/check_checks_closure.py; that file says what each
+# section means and why the bound exists.  In one line: Checks/ is the
+# executable-spec certificate tree, Checks.ExecutableSpecs `Require Export`s
+# all of Checks/Sys/ because check_syscall is defined by the dispatch table
+# over every arm, and one import of it anywhere below puts sixty-four of
+# those modules in front of coqchk for the proof that imports it.
+#
+# Both theories are bounded, not just the library: a proof's coqchk closure
+# is the example's, and an example file importing the whole table directly
+# costs exactly what a library file importing it does.
+#
+# Lines are `allow <Checks module>`, `full <module> <Checks entry point>
+# <reason>`, or `anchor <module> <Checks module>`.  Checks module names are
+# relative to LinuxProcessSemantics.LinuxProcessSem.Checks; the others are
+# relative to LinuxProcessSemantics.
+
+# ---------------------------------------------------------------------------
+# allow: what any module may reach.  Prelude and Uaccess are the floor every
+# arm's checker imports; Fs.ReadWrite and Mm.Mmap are the two arm families
+# the shape files actually compute with -- read and write for the stream and
+# cat shapes, mmap/munmap/brk for the allocator ones.
+#
+# A file that needs an arm imports that arm.  Which arm answers a given
+# syscall number is settled on the SPEC side, by one local lemma per file
+# (Common.CatSim.syscall_spec_write, Common.StreamSim.syscall_spec_read,
+# Common.MmapSim.syscall_spec_mmap / _munmap,
+# Common.AllocSim.syscall_spec_brk): fixing the number settles dispatch's
+# table lookup by conversion, so nothing has to mention check_syscall to
+# know which checker applies.
+#
+# Placement is the placement certificate Checks/Sys/Mm/Mmap.v's checker
+# imports (linux_place_admissible), so it is on the Mm.Mmap arm's floor.
+# ---------------------------------------------------------------------------
+allow Sys.Prelude
+allow Sys.Uaccess
+allow Sys.Fs.ReadWrite
+allow Sys.Mm.Mmap
+allow Placement
+
+# ---------------------------------------------------------------------------
+# full: modules still going through a whole-table entry point.  Each line
+# names that entry point, and the guard holds the module to what THAT entry
+# point drags in: a `full` line is an exception for one import, not a blank
+# cheque for everything under Checks/.  It also has to stay earned -- a
+# module that no longer reaches its entry point fails here rather than
+# leaving a standing licence for the import to return.
+#
+# Emptying this section is the remaining work on #580.
+# ---------------------------------------------------------------------------
+full Common.FileSim ExecutableSpecs states its outcome sets across four arms at once (openat 56, close 57, read 63, write 64) and reasons about the fd-allocation results between them
+full Common.FileMixSim ExecutableSpecs imports Common.FileSim
+full Common.ErrEscape2 ExecutableSpecs imports Common.FileSim
+full Examples.cp_ns.Proof ExecutableSpecs the file-copy example, built on Common.FileSim
+full Examples.cp_ns.cp_ns_defs ExecutableSpecs imports Common.FileSim and Common.FileSimWalk
+full Examples.cp_ns.cp_ns_source ExecutableSpecs imports Common.FileSim, Common.FileSimWalk and Common.FileSimLoop
+full Examples.cp_ns.cp_ns_target ExecutableSpecs same, for the target binary
+full Examples.headcp_ns.Proof ExecutableSpecs the bounded-copy example, built on Common.FileSim
+full Examples.headcp_ns.headcp_ns_defs ExecutableSpecs imports the two below
+full Examples.headcp_ns.headcp_ns_source ExecutableSpecs imports Common.FileSim and Common.FileSimWalk
+full Examples.headcp_ns.headcp_ns_target ExecutableSpecs same, for the target binary
+full Common.Nodes ExecutableSpecs states its per-call nodes against check_syscall, through check_syscall_ok_iff and check_syscall_err_iff
+full Common.ShapeNodes ExecutableSpecs same, for the shape library's nodes
+full Common.RefNodes ExecutableSpecs computes each reference node's answer with check_syscall
+full Common.LibWritev ExecutableSpecs computes the writev answers with check_syscall
+full Common.FileSimWalk ExecutableSpecs reads the open of a walked path off check_syscall, through check_syscall_ok_iff and check_syscall_complete_unmodeled
+full Common.FileSimLoop ExecutableSpecs same, for the copy loop's read and write
+full Common.AsanNodesLibE ExecutableSpecs states the allocator library's nodes against check_syscall, through check_syscall_ok_iff and check_syscall_err_iff
+full Common.AsanNodesMmLib ExecutableSpecs states the mmap library's nodes against check_syscall, through check_syscall_ok_iff
+full Common.AsanNodesMmA ExecutableSpecs imports Common.AsanNodesLibE and Common.AsanNodesMmLib
+full Common.AgentNodes ExecutableSpecs imports Common.Nodes and Common.FileSim
+full Examples.forkwait.ForkwaitSteps ExecutableSpecs imports Common.ShapeNodes
+full Examples.forkwait.Halts ExecutableSpecs imports Common.ShapeNodes
+full Common.AsanNodesMmB ExecutableSpecs imports Common.Nodes and Common.RefNodes
+full Common.WfInvariant NoaccessOwned takes the invariant's first conjunct and each memory arm's preservation of it from Checks.NoaccessOwned, Checks.MapsFit and Checks.VmMapsDisjoint, which state them against the arm checkers and check_syscall
+full Common.CatSimSigpipe Examples pins a whole run's SIGPIPE pair on Checks.Examples' demo launch and exit segment; no proof imports it
+full Examples.patchclassify_demo.Obligations Examples the patch-classifier demo reasons about Checks.Examples' own lemmas, a different entry point from the arms
+full Examples.patchclassify_demo.Traces Examples same
+full Examples.patchclassify_demo.Verdicts Examples same
+full Examples.patchclassify_demo.Sealed Examples imports the three above
+
+# ---------------------------------------------------------------------------
+# anchor: the positive control.  Everything above reports an ABSENCE, and a
+# guard that cannot read the tree reports the same absence, so each of these
+# names a reach that has to be there.  Each is a file computing with the arm
+# its own simulation lemmas are stated against, or an example built on one.
+# ---------------------------------------------------------------------------
+anchor Common.CatSim Sys.Fs.ReadWrite
+anchor Common.StreamSim Sys.Fs.ReadWrite
+anchor Common.DrainSim Sys.Fs.ReadWrite
+anchor Common.MmapSim Sys.Mm.Mmap
+anchor Common.AllocSim Sys.Mm.Mmap
+anchor Common.StepTac Sys.Mm.Mmap
+anchor Common.FileSim ExecutableSpecs
+anchor Examples.cat1024_ns.Proof Sys.Fs.ReadWrite
+anchor Examples.brk_rev_ns.Proof Sys.Mm.Mmap

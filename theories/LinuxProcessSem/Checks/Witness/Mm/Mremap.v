@@ -25,7 +25,7 @@ Definition mremap_witness (old old_size new_size flags : word) (m : Model)
   else if page_align_is0_b new_size
   then ret_outcome (errno_ret EINVAL) m
   else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
-  then ret_outcome (errno_ret EINVAL) m
+  then Unmodeled
   else if page_align_is0_b old_size
   then Unmodeled
   else
@@ -50,7 +50,7 @@ Proof.
     [apply pure_ok|].
   destruct (page_align_is0_b new_size) eqn:Hnew; [apply pure_ok|].
   destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask;
-    [apply pure_ok|].
+    [apply unmodeled_intro|].
   destruct (page_align_is0_b old_size) eqn:Hold; [apply unmodeled_intro|].
   eapply bind_step; [apply get_model_ok|]. cbv beta zeta.
   destruct (negb (mremap_source_b (m_vmmaps m) old

@@ -40,7 +40,10 @@
     can build argument/return values from parsed integers cheaply.  They
     carry erased invariants of their own — a [positive] is at least 1 and
     an [N] is not negative — so no root below takes one from a caller;
-    every width this surface mentions is fixed inside Rocq. *)
+    every width this surface mentions is fixed inside Rocq.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import extraction.ExtrOcamlBasic.
 From Stdlib Require Import extraction.ExtrOcamlZBigInt.
@@ -70,9 +73,8 @@ Require Extraction.
    things about the file-system image the run is launched over --
    [fs_of_raw] answers whether the image is a VALUE (a byte of it no
    [byte] holds refuses it) and [image_shape_b] answers, of an image
-   [fs_of_raw] converted, whether it describes a file system at all,
-   which is [Run.valid_input]'s [Fs.fs_image_real] conjunct that
-   revision/linux-only added; the image needs the two roots because
+   [fs_of_raw] converted, whether it and the working directory are a
+   launch, which is [Run.valid_image]; the image needs the two roots because
    that test reads the keys as paths and so can only be asked after
    the bytes are bytes, while the exec name's two tests are facts
    about the integers themselves, [wmem_ranges], the writable-address
@@ -125,6 +127,21 @@ Extraction "syscall_model.ml"
   wmem_ranges
   word_of_Z
   byte_of_Z
+  (* the namespace's default image, so the harness declares the standard
+     root (the root, /dev, the two devices, /tmp, the chain down to the
+     working directory) from the model rather than spelling it out, and
+     the default working directory itself, which is the guest's *)
+  Fs.standard_root
+  Fs.default_cwd
+  (* the image a run is OBSERVED to leave, as [ExitEv] carries it: what
+     the conformance tester compares against the guest's directory at the
+     end of a run *)
+  Fs.fs_observe
+  (* the launch declarations [State.mkProcInput] denotes the ordinary
+     launch with, which the conformance tester declares for the two
+     fields no trace records *)
+  State.default_kernel
+  State.default_execfn
   fd_lookup
   fs_lookup
   addr_is_error_b

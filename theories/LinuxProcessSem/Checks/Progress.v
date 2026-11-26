@@ -16,11 +16,11 @@
     witness takes the left branch, the right is never evaluated, and
     this theorem still proves.  That is not hypothetical, it is how
     [openat] is built -- [Witness/Fs/Open.v]'s [openat_core_witness]
-    answers from [openat_errnos] on every path it reaches, so
-    [Fs.File.lowest_fd]'s [choose] on the success side is never shown
-    inhabited.  [Sys/Fs/Open.v] says the same thing from the other
-    direction, noting that EMFILE and ENFILE are in that set partly to
-    "keep the spec receptive when no free fd < 2^31 exists".
+    answers from [openat_errnos] on every arm that can hand out a
+    descriptor, so [Fs.File.lowest_fd]'s [choose] on the success side is
+    never shown inhabited.  Where that [choose] is empty, a table with
+    no free slot, [Sys/Fs/Open.v]'s [openat_core_spec] answers before
+    any arm ([Fs.File.unused_fd_none_spec]).
 
     Syscall arguments and returns are [word = bv 64], errnos are [Z],
     and the brk/word choices follow the Z-side predicates of Specs.v.

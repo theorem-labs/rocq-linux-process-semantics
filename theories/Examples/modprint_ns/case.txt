@@ -1,0 +1,1 @@
+conform -- a b c   # argc mod 7 as one digit

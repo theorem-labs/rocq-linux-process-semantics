@@ -335,7 +335,11 @@ Proof.
   cbv beta iota.
   destruct eff as [ret ws zs us cs ci]. destruct ws; [|reflexivity]. destruct zs; [|reflexivity].
   destruct us; [|reflexivity]. destruct cs; [|reflexivity].
-  rewrite Hlen. reflexivity.
+  rewrite Hlen.
+  (* a wholly readable vector has no fault inside its first copy, so the
+     checker's -EFAULT test after a failed range test is [CheckReject] *)
+  unfold fault_in_first_copyb. rewrite Z.ltb_irrefl, andb_false_l, andb_false_r.
+  reflexivity.
 Qed.
 
 (** The node at the pending state: resolutions = delivered lengths. *)

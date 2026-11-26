@@ -9,30 +9,151 @@ this document.
 
 ## Supported systems
 
-- Stable Linux v6.18.46 (commit `1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`),
-  on riscv64.
+- Native Linux on riscv64, stable v6.16 to v6.18.46, in
+  the one kernel configuration named below. A citation without a version
+  is to v6.18.46 (commit `1f99e9ab748fc5c32120de9c4eca31abfe54a4d5`).
 - For instructions: the RISC-V specification (RV64GC).
 
 Bugs in Linux do not count. The model describes one system, so no rule of
 it chooses between two systems' answers, and a source and a target cannot
 answer the same call as if they ran on different machines.
 
-Other stable kernels (v4.17 and later) are a goal. They are not supported
-now. The model does not check claims about them.
+Where v6.16, v6.17 and v6.18.46 answer a shape differently, the model
+declines that shape; "Where Linux versions differ" below lists each one.
+Kernels before v6.16 are not supported, and the model does not check
+claims about them. QEMU user mode is not supported either: where it
+answers otherwise, the model answers as Linux does.
 
-Each configuration choice that the model fixes is an assumption about the
-Linux system. "Assumptions that the model does not check" below lists
-them; `CONFIG_EVENTFD=y` is one, and `eventfd2` therefore answers
-`-EINVAL` for a refused flag word and never `-ENOSYS`. `CONFIG_UNIX=y`
-is another: `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds only on a
-kernel with AF_UNIX registered. The riscv64 defconfig gets it from
-`CONFIG_NET_9P_FD`, which has `imply UNIX` (`net/9p/Kconfig`); the
-generated `.config` has `CONFIG_UNIX=y` and `CONFIG_AF_UNIX_OOB=y`
-(dispatch://OSSV-287/artifact/skb-sizes-md). `CONFIG_IPV6=y` is a third:
-`socket(AF_INET6, SOCK_DGRAM, 0)` succeeds only on a kernel with AF_INET6
-registered. `net/ipv6/Kconfig` gives `IPV6` `default y`, and the same
-generated `.config` has `CONFIG_IPV6=y` (line 961 of `build-nodbg.config`,
-among that artifact's raw files).
+### The configuration of record
+
+The model describes the kernel configuration that the repository's
+agreement checks boot: the `config` asset of the release
+`vm/kernel-v6.18.46-c1f99e9ab-fbe185ef1-t20260515` (sha256
+`5973c2c29f9450827b376cc864f0fd56db9b964c3e9ff94e0d230cce1fa27d68`).
+It is not the plain riscv64 defconfig: `.github/workflows/kernel-image.yml`
+builds it from v6.18.46's `arch/riscv/configs/defconfig`, merges
+`testing/vm/kernel.fragment` over it, and turns off every `=m` symbol
+the fragment does not name. Answers that depend on a configuration
+option follow this configuration. Among them:
+
+- `CONFIG_EVENTFD=y`, so `eventfd2` answers `-EINVAL` for a refused flag
+  word and never `-ENOSYS`.
+- `CONFIG_FUTEX=y`, so `set_robust_list` is answered and never `-ENOSYS`.
+- `CONFIG_UNIX=y`, so `socketpair(AF_UNIX, SOCK_STREAM, 0)` succeeds.
+- `CONFIG_INET=y`, which the fragment names: the riscv64 defconfig gets
+  it only through `NET_9P_FD`'s `imply INET` (`net/9p/Kconfig`), and the
+  fragment turns `CONFIG_NET_9P` off. So `inet_init`
+  (`net/ipv4/af_inet.c`) registers `AF_INET` at boot, and
+  `socket(AF_INET, ...)` reaches `inet_create`, never the absent-family
+  `-EAFNOSUPPORT` of `__sock_create` (`net/socket.c`).
+- `CONFIG_IPV6=y` (`net/ipv6/Kconfig` gives `IPV6` `default y`), so
+  `AF_INET6` is registered and `socket(AF_INET6, SOCK_DGRAM, 0)` hands
+  back a UDPv6 socket (`inet6_create`, `net/ipv6/af_inet6.c`).
+- `CONFIG_SMC` is not set (it needs `CONFIG_INFINIBAND`), so
+  `socket(AF_INET, SOCK_STREAM, 256)` answers `-EPROTONOSUPPORT`.
+  `CONFIG_MPTCP` and `CONFIG_IP_SCTP` are not set either; the model
+  declines protocols 262 and 132 under `SOCK_STREAM` all the same.
+- `CONFIG_COMPAT=y`: `arch/riscv/Kconfig` gives `COMPAT` `default 64BIT`,
+  and neither the riscv64 defconfig nor the fragment turns it off. So
+  `MSG_CMSG_COMPAT` is `0x80000000` (`include/linux/socket.h`), and
+  `sendmsg` and `recvmsg` answer `-EINVAL` for a flag word with bit 31
+  set before they resolve the descriptor (`__sys_sendmsg`,
+  `__sys_recvmsg`, `net/socket.c`). The model declines both shapes, a
+  fail-closed gap that costs priority 3 only.
+- No block device, FUSE, overlayfs or network file system:
+  `CONFIG_BLOCK`, `CONFIG_FUSE_FS`, `CONFIG_OVERLAY_FS` and
+  `CONFIG_NETWORK_FILESYSTEMS` are not set (`testing/vm/kernel.fragment`).
+  `fs/Kconfig` offers ext4, btrfs and xfs, and vfat with the other FAT
+  file systems, only under `CONFIG_BLOCK`, and virtiofs (`VIRTIO_FS`,
+  `fs/fuse/Kconfig`) is a FUSE file system. The file systems built whose
+  regular files hold the bytes written to them are tmpfs
+  (`CONFIG_TMPFS=y`; devtmpfs is a shmem mount) and ramfs, which
+  `fs/Makefile` always builds; rootfs is one of the two (`init_rootfs`,
+  `init/do_mounts.c`). Both set `s_maxbytes` to `MAX_LFS_FILESIZE`,
+  `LLONG_MAX` on riscv64 (`shmem_fill_super`, `mm/shmem.c`;
+  `ramfs_fill_super`, `fs/ramfs/inode.c`), and both look a name up with
+  `simple_lookup` (`fs/libfs.c`), which answers `-ENAMETOOLONG` for a
+  component longer than `NAME_MAX`, 255 bytes.
+- No file system that installs an `f_op->flock` of its own. At v6.18.46
+  those are 9p, AFS, Ceph, FUSE, GFS2, NFS, OCFS2 and the SMB client.
+  `fs/Kconfig` offers NFS, Ceph, SMB, AFS and 9p only under
+  `CONFIG_NETWORK_FILESYSTEMS` and GFS2 and OCFS2 only under
+  `CONFIG_BLOCK`, and the fragment turns off both and `CONFIG_FUSE_FS`.
+  So `SYSCALL_DEFINE2(flock)` (`fs/locks.c`) takes the local path,
+  `locks_lock_file_wait`, whatever file system holds the file, and a
+  lock request by the sole opener is granted whatever its type and the
+  descriptor's access mode.
+- `CONFIG_SECURITY` is not set (`testing/vm/kernel.fragment` turns off
+  what the riscv64 defconfig turns on), so no LSM is built: every LSM,
+  and `BPF_LSM`, IMA and EVM too, depends on it (`security/Kconfig` and
+  the files it sources, `kernel/bpf/Kconfig`). The `security_*` hooks
+  are the inline stubs of `include/linux/security.h`, and
+  `security_file_lock`, `security_file_permission`, `security_task_kill`,
+  `security_task_alloc`, `security_socket_create` and
+  `security_socket_socketpair` among them answer 0, so no LSM denial is
+  an answer any supported kernel gives. `CONFIG_LSM_MMAP_MIN_ADDR`, which
+  depends on SELinux (`security/Kconfig`), does not exist.
+- `CONFIG_FANOTIFY` is not set (`fs/notify/fanotify/Kconfig` gives it
+  `default n`, and neither the riscv64 defconfig nor the fragment sets
+  it), so the fsnotify permission hooks are the stubs of
+  `include/linux/fsnotify.h` and no listener answers a permission event
+  with `FAN_DENY`.
+- `CONFIG_KPROBES` is not set: `arch/Kconfig` gives it no default,
+  neither the riscv64 defconfig nor the fragment sets it, and the one
+  symbol that selects it, `KGDB_HONOUR_BLOCKLIST` (`lib/Kconfig.kgdb`),
+  sits under the unset `CONFIG_KGDB`. So `CONFIG_FUNCTION_ERROR_INJECTION`,
+  which depends on `KPROBES` (`lib/Kconfig.debug`), does not exist, and
+  neither do `CONFIG_BPF_KPROBE_OVERRIDE` (`kernel/trace/Kconfig`) and
+  `CONFIG_FAIL_FUNCTION` (`lib/Kconfig.debug`), which depend on it. The
+  `ALLOW_ERROR_INJECTION` that every system call wrapper emits
+  (`arch/riscv/include/asm/syscall_wrapper.h`) expands to nothing
+  (`include/asm-generic/error-injection.h`), and
+  `within_error_injection_list` is the stub that answers false
+  (`include/linux/error-injection.h`), so `check_attach_modify_return`
+  (`kernel/bpf/verifier.c`) refuses a `BPF_MODIFY_RETURN` program on a
+  wrapper. So no BPF program and no `fail_function` answers a system
+  call in place of its wrapper.
+- `CONFIG_SECCOMP` is not set: `arch/Kconfig` gives it `def_bool y`, and
+  `testing/vm/kernel.fragment` turns it off. So `CONFIG_SECCOMP_FILTER`,
+  which depends on it, does not exist, the `seccomp` system call is not
+  built (`COND_SYSCALL(seccomp)`, `kernel/sys_ni.c`), and
+  `prctl(PR_SET_SECCOMP)` answers `-EINVAL` (`prctl_set_seccomp`,
+  `include/linux/seccomp.h`): no task, the launcher included, can
+  install a filter. `__secure_computing` is the stub of the same file
+  that answers 0, so no seccomp filter answers a system call.
+- `CONFIG_RTC_CLASS` is not set (`testing/vm/kernel.fragment` turns off
+  what the riscv64 defconfig turns on), so `alarmtimer_get_rtcdev` is the
+  stub that returns NULL (`include/linux/alarmtimer.h`) and `clock_getres`
+  answers `-EINVAL` for `CLOCK_REALTIME_ALARM` and `CLOCK_BOOTTIME_ALARM`
+  whatever `tp` is (`alarm_clock_getres`, `kernel/time/alarmtimer.c`).
+- `CONFIG_RSEQ=y`: `init/Kconfig` gives `RSEQ` `default y` where
+  `HAVE_RSEQ` holds, `arch/riscv/Kconfig` selects `HAVE_RSEQ`, and
+  neither the riscv64 defconfig nor the fragment turns it off. So
+  `create_elf_tables` (`fs/binfmt_elf.c`) puts `AT_RSEQ_FEATURE_SIZE`
+  and `AT_RSEQ_ALIGN` in every auxiliary vector, 29 entries in all. The
+  model also admits the 27-entry vector of a build without it ("Known
+  gaps in precision").
+- `CONFIG_TRANSPARENT_HUGEPAGE` is not set: `mm/Kconfig` gives it no
+  default, and neither the riscv64 defconfig nor the fragment sets it.
+  So `__get_unmapped_area` (`mm/mmap.c`) never sends an anonymous
+  request to `thp_get_unmapped_area_vmflags` (`mm/huge_memory.c`) for
+  its padded, 2 MiB-aligned search. The model also admits that
+  placement ("Known gaps in precision").
+
+The Kconfig entries of the options these bullets set or turn off are the
+same text in v6.16, v6.17 and v6.18.46 except for three, and none of the
+three changes an answer the model gives. `FUSE_FS` selects `FS_IOMAP`
+from v6.17 on and v6.18.46 moves a path in its help text; the fragment
+turns it off. `SMC` depends on `INET && INFINIBAND` and
+on `m || ISM != m` in v6.16 and v6.17, and on `INET && INFINIBAND && DIBS`
+in v6.18.46; it is off in all three, because `INFINIBAND`, whose entry
+has no default, is set by none of the three defconfigs and not by the
+fragment. `IP_SCTP` selects `CRYPTO`, `CRYPTO_HMAC` and `CRYPTO_SHA1` in
+v6.16 and v6.17 and `CRYPTO_LIB_SHA1`, `CRYPTO_LIB_SHA256` and
+`CRYPTO_LIB_UTILS` in v6.18.46; it has no default and is off in all
+three. The three riscv64 defconfigs differ only in driver options (SoC,
+sound, MMC, PWM, Ethernet, input, I2C, pin control and DMA drivers),
+none of which changes an answer the model gives.
 
 ## Where QEMU user mode differs
 
@@ -44,7 +165,8 @@ depends on none of them. A `qemu-riscv64` counterexample that depends on
 one of them is not a Linux run.
 
 Each entry reads: what the model answers (Linux's), then what QEMU user
-mode answers. QEMU citations are QEMU 10.0.11.
+mode answers. A QEMU citation with a line number is to QEMU 11.1.1's
+`linux-user/` tree; one without is to QEMU 10.0.11.
 
 ### The machine
 
@@ -70,16 +192,20 @@ mode answers. QEMU citations are QEMU 10.0.11.
 - **Which store breaks a reservation.** The model compares the access base
   address (`Riscv/Sem.v`, `inval_resv`). QEMU user mode compares the
   value: `gen_sc` (`target/riscv/insn_trans/trans_rva.c.inc`) emits a
-  `cmpxchg` of `load_val`. So a same-address same-value rewrite (ABA), or
-  a partly overlapping store, fails the `sc` in the model and can leave
-  it succeeding under qemu-user.
+  `cmpxchg` of `load_val`. So a same-address same-value rewrite (ABA)
+  fails the `sc` in the model and can leave it succeeding under
+  qemu-user, and a partly overlapping store that changes the reserved
+  bytes leaves the `sc` succeeding in the model and fails it under
+  qemu-user. The ISA allows either answer in both cases (`inval_resv`).
 
 ### The start state and the address space
 
 - **The entry block.** The model lays Linux's block, from the entry
-  stack pointer up to the stack VMA's end, with an auxiliary vector of
-  27 entries, or 29 with `CONFIG_RSEQ`
-  (`StackLayout.build_stack_bytes`, `StackLayout.auxv_entries`). QEMU
+  stack pointer up to the stack VMA's end, with the auxiliary vector of
+  29 entries that the configuration of record gives, and also admits
+  the 27 of a build without `CONFIG_RSEQ`, which no supported kernel
+  gives (`StackLayout.build_stack_bytes`, `StackLayout.auxv_entries`;
+  "Known gaps in precision"). QEMU
   user mode builds another one (`create_elf_tables`, `setup_arg_pages`
   and `load_elf_binary` in `linux-user/elfload.c`): 18 auxv entries in
   another order, with `AT_SYSINFO_EHDR` last and pointing at QEMU's own
@@ -136,21 +262,73 @@ mode answers. QEMU citations are QEMU 10.0.11.
   and `-EINVAL` otherwise (`SYSCALL_DEFINE2(set_robust_list)`,
   `kernel/futex/syscalls.c`). QEMU user mode answers `-ENOSYS` for every
   length and pointer (`TARGET_NR_set_robust_list` in `do_syscall1`,
-  `linux-user/syscall.c`), so that guest userspace falls back to a
-  non-robust futex. The model admitted both answers at each call until
-  this revision.
+  `linux-user/syscall.c:13553-13563`), so that guest userspace falls back
+  to a non-robust futex. A kernel built without `CONFIG_FUTEX` answers
+  `-ENOSYS` too (`kernel/sys_ni.c:81`); the configuration of record has
+  it.
 - **`mmap` with a misaligned offset.** The model answers `-EINVAL` for
   every length: `riscv_sys_mmap` (`arch/riscv/kernel/sys_riscv.c`) tests
   the offset before `ksys_mmap_pgoff` reads the length. QEMU user mode
   rounds and tests the length first, so for a length within a page of
-  2^64 it answers `-ENOMEM` (`target_mmap`, `linux-user/mmap.c`).
+  2^64 it answers `-ENOMEM` (`target_mmap`, `linux-user/mmap.c:964`).
 - **`mmap` with a closed fd and no `MAP_ANONYMOUS`.** The model answers
   `-EBADF`: `ksys_mmap_pgoff` (`mm/mmap.c`) runs `fget` before `do_mmap`.
   QEMU user mode never resolves the fd; `target_mmap`
-  (`linux-user/mmap.c`) validates the request itself, so a zero length, a
-  length within a page of 2^64, an invalid `MAP_TYPE`, an unknown prot bit
-  and `MAP_FIXED` at an unaligned address each get QEMU's own `-EINVAL` or
-  `-ENOMEM` before any host call.
+  (`linux-user/mmap.c:964`, `target_mmap__locked` :914) validates the
+  request itself, so a zero length, a length within a page of 2^64, an
+  invalid `MAP_TYPE`, an unknown prot bit and `MAP_FIXED` at an unaligned
+  address each get QEMU's own `-EINVAL` or `-ENOMEM` before any host call.
+- **`mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE` whose page-rounded
+  range reaches 2^64.** The model answers Linux's (`do_mmap` and
+  `__get_unmapped_area`, `mm/mmap.c`; `do_mmap` sets `MAP_FIXED` for
+  `MAP_FIXED_NOREPLACE` at :361-362): an address in `[2^64-4095, 2^64-1]`
+  is handed back as itself (`IS_ERR_VALUE`, :854-855), and every other
+  address is `-ENOMEM` (`addr > TASK_SIZE - len`, :857-858) before the
+  alignment `-EINVAL`. That includes an aligned range that ends exactly
+  at 2^64, such as `(2^64-4096, 4096)`. QEMU user mode tests the alignment
+  first (`target_mmap`, `linux-user/mmap.c:994-997`), so it answers
+  `-EINVAL` for every misaligned address there. Its range test (:999-1001)
+  then accepts the aligned exact-end range: `guest_range_valid_untagged_vaddr`
+  (QEMU 11.1.1 `include/user/guest-host.h:63-66`) accepts a range whose
+  last byte is `guest_addr_max`, and without `-R`, `main` sets
+  `guest_addr_max` to `~0ul` for a riscv64 guest
+  (`linux-user/main.c:847-852`). So qemu-user passes that range to the
+  host. With an identity `guest_base` on a Linux host, the host gives the
+  same `-ENOMEM`; with another `guest_base` the host address can wrap,
+  and qemu-user can answer otherwise.
+- **`mmap` with a `MAP_SHARED_VALIDATE` word that carries a bit outside
+  the legacy set, at length 0 or at a misaligned offset.** The model
+  answers Linux's `-EINVAL`: `riscv_sys_mmap`
+  (`arch/riscv/kernel/sys_riscv.c`) tests the offset first, `do_mmap`
+  (`mm/mmap.c`) tests the zero length, and an anonymous word's type is
+  read only after both. QEMU user mode reads the type first (`do_mmap`,
+  `linux-user/syscall.c:6164-6186`) and answers `-EOPNOTSUPP` for a bit
+  outside `TARGET_LEGACY_MAP_MASK` and `MAP_SYNC` (:6171-6178), such as
+  `MAP_FIXED_NOREPLACE` in the word 0x100023.
+- **`mmap` with `MAP_FIXED_NOREPLACE` over a range that holds no
+  mapping.** The model grants the range or answers `-ENOMEM`: `do_mmap`
+  (`mm/mmap.c`) answers `-EEXIST` only where `find_vma_intersection`
+  finds a VMA. QEMU user mode answers `-EEXIST` on four kinds of free
+  range: a gap between two LOAD segments, which `load_elf_image`
+  (`linux-user/elfload.c:1065-1075`) reserves `PROT_NONE` with the rest
+  of the image's span; the part of its own stack more than 8 MiB below
+  the entry stack pointer, when `-s` or `QEMU_STACK_SIZE` asks for a
+  larger stack (`setup_arg_pages`, `linux-user/elfload.c:395-436`); its
+  own two-page vDSO (`load_elf_vdso`); and, without `-R`, a range that
+  meets a host mapping, because `target_mmap` keeps the flag on the host
+  `mmap` (`mmap_h_eq_g`, `linux-user/mmap.c:612-625`; `mmap_frag` and
+  `mmap_h_gt_g` on a host with 16 or 64 KiB pages). Under `-R`,
+  `target_mmap__locked` answers `-EEXIST` from its own page table
+  (:925-931).
+- **`mmap` with `MAP_FIXED` or `MAP_FIXED_NOREPLACE` at a low address.**
+  The model grants every page-aligned address from 4096 up, or answers
+  `-ENOMEM`: `mmap_min_addr` is 4096 (the `mmap_min_addr` assumption
+  below), and that is the floor `cap_mmap_addr` (`security/commoncap.c`)
+  tests. QEMU user mode without `-R` passes the request to the host
+  `mmap` (`mmap_h_eq_g` and `mmap_h_gt_g`, `linux-user/mmap.c:605-630`
+  and :792-912) and hands back the host's errno, so it answers `-EPERM`
+  below a raised host floor, and on a host with 16 or 64 KiB pages for a
+  request whose first host page is page 0.
 - **`clock_getres` with a NULL `tp`.** The model answers 0 and writes
   nothing, whatever is mapped at address 0: `SYSCALL_DEFINE2(clock_getres)`
   (`kernel/time/posix-timers.c`) skips the copy under `if (!error && tp
@@ -158,63 +336,267 @@ mode answers. QEMU citations are QEMU 10.0.11.
   its result (`TARGET_NR_clock_getres` in `do_syscall1`,
   `linux-user/syscall.c`, whose `host_to_target_timespec` does not test
   for NULL), so under qemu-user the call can write 16 bytes at address 0.
+- **`clock_getres` on the alarm clock ids.** The model answers `-EINVAL`
+  for ids 8 and 9 whatever `tp` is, because in the configuration of
+  record `alarm_clock_getres` (`kernel/time/alarmtimer.c`) has no RTC
+  device to read. QEMU user mode hands the id to the host's
+  `clock_getres` (`TARGET_NR_clock_getres` in `do_syscall1`,
+  `linux-user/syscall.c:13472-13480`), so it gives the host kernel's
+  answer, which on a host with an RTC is 0 and a resolution written at
+  `tp`.
 - **`mremap(MREMAP_MAYMOVE)`: a misaligned `old`, a `new_size` that rounds
   to 0, an equal size, a shrink.** The model answers Linux's `-EINVAL`,
   `ret_only old` and in-place shrink (`mm/mremap.c`,
   `check_mremap_params` and `mremap_at`). QEMU user mode reserves a fresh
   range with `mmap_find_vma` before the host `mremap` (`target_mremap`,
-  `linux-user/mmap.c`), so it gives `-ENOMEM` before `-EINVAL` and
-  relocates the equal and the shrink call.
-- **`ioctl` with a request outside the modeled set.** The model resolves
-  the fd first: `-EBADF` on a closed fd, `-ENOTTY` for a tty-only request
-  on a file, a socket, a pipe or `/dev/null`
-  (`SYSCALL_DEFINE3(ioctl)` and `vfs_ioctl`, `fs/ioctl.c`). QEMU user mode
-  answers before the fd: `do_ioctl` (`linux-user/syscall.c`) returns
-  `-TARGET_ENOTTY` for a request it does not know and `-TARGET_EFAULT`
-  from `lock_user` for an `IOC_W` or `IOC_RW` request.
-- **`readv` and `writev`: a closed fd, an fd of the wrong mode, a raw
-  `iovcnt` over `IOV_MAX` whose low 32 bits are in range.** The model
-  answers Linux's `-EBADF`, and the truncated transfer for the wide count:
-  Linux validates the `unsigned int` count and resolves the fd before it
-  imports the vector (`fs/read_write.c`, `do_readv` and `do_writev`).
-  QEMU user mode validates the raw 64-bit count and locks the vector in
-  `lock_iovec` (`linux-user/syscall.c`) before the fd, so it answers
-  `-EINVAL` or `-EFAULT` there.
+  `linux-user/mmap.c:1194-1209`), so it gives `-ENOMEM` before `-EINVAL`
+  and relocates the equal and the shrink call.
+- **`mremap` grow on a host whose pages are larger than 4 KiB, or under
+  `-R`.** The model answers Linux's in-place grow, fresh move or
+  `-ENOMEM` with nothing changed (`mm/mremap.c`, `mremap_at`). QEMU user
+  mode's `target_mremap` (`linux-user/mmap.c:1194-1209`) hands the host
+  `mremap` a source that is aligned for the guest page and not for the
+  host page, and passes back the host's `-EINVAL` (`check_mremap_params`).
+  Under `-R` it replaces the source with a `PROT_NONE` reservation after
+  a failed host call (`mmap_reserve_or_unmap`, :1206-1208), so the
+  source mapping is gone where Linux leaves it.
+- **`madvise(MADV_DONTNEED)` over a range that ends exactly at 2^64.**
+  The model answers Linux's `-EINVAL`: `is_valid_madvise`
+  (`mm/madvise.c`) refuses a sum that wraps, such as
+  `(2^64 - 4096, 4096)`. QEMU user mode's range test accepts a range
+  whose last byte is `guest_addr_max` (`target_madvise`,
+  `linux-user/mmap.c:1271`), which is `~0ul` without `-R`, and where no
+  guest page lies it skips the host call and answers 0 (:1334-1341), the
+  path its own comment calls wrong (:1303-1307).
+- **`mprotect` with a length of 0.** The model answers 0 for every
+  `prot` except the `PROT_GROWSDOWN|PROT_GROWSUP` pair: `do_mprotect_pkey`
+  (`mm/mprotect.c`) returns on `!len` before `arch_validate_prot`. QEMU
+  user mode validates `prot` first (`target_mprotect` and
+  `validate_prot_to_pageflags`, `linux-user/mmap.c:121-197`), so it
+  answers `-EINVAL` for `PROT_GROWSUP`, for `PROT_GROWSDOWN` outside its
+  stack window, and for any bit of the low 32 outside
+  `PROT_READ|PROT_WRITE|PROT_EXEC|PROT_SEM`. Inside the stack window the
+  syscall entry strips `PROT_GROWSDOWN` and aims the call at the stack
+  below `start` (`linux-user/syscall.c:11203-11216`), so it changes the
+  protection of pages Linux leaves alone. A wrapping range with such a
+  `prot` is `-ENOMEM` on Linux and `-EINVAL` under QEMU user mode.
+- **`ioctl` with a request outside the modeled set, or a NULL argument.**
+  The model resolves the fd first: `-EBADF` on a closed fd, `-ENOTTY` for a
+  tty-only request on a file, a socket, a pipe or `/dev/null`, the
+  argument never read (`SYSCALL_DEFINE3(ioctl)` and `vfs_ioctl`,
+  `fs/ioctl.c`). QEMU user mode answers before the fd: `do_ioctl`
+  (`linux-user/syscall.c:5698-5724`) returns `-TARGET_ENOTTY` for a
+  request it does not know and `-TARGET_EFAULT` from `lock_user` for an
+  `IOC_W` or `IOC_RW` request whose argument is unreadable (`TCSETS`,
+  `TIOCSWINSZ` or `TIOCSPTLCK` with NULL).
+- **`fcntl(F_GETFL)` on a socket.** The model answers `O_RDWR`, 2:
+  `do_fcntl` (`fs/fcntl.c`) returns `f_flags`, and `sock_alloc_file`
+  (`net/socket.c`) sets it to `O_RDWR` with `O_NONBLOCK` only.
+  QEMU user mode built against glibc on an x86_64 host sets
+  `TARGET_O_LARGEFILE` in every `F_GETFL` answer (`do_fcntl`,
+  `linux-user/syscall.c:7508-7517`, and the last row of
+  `fcntl_flags_tbl`, :474-476), so it answers 32770. Built against musl
+  it answers 2.
+- **`fcntl` on a closed fd with a command QEMU does not translate, or
+  with a lock or `F_SETOWN_EX` command whose argument it cannot read.**
+  The model answers `-EBADF`: `SYSCALL_DEFINE3(fcntl)` (`fs/fcntl.c`)
+  resolves the fd before `do_fcntl` reads `cmd`. QEMU user mode
+  translates the command first and answers `-EINVAL` for one it does not
+  know (`do_fcntl` and `target_to_host_fcntl_cmd`,
+  `linux-user/syscall.c:7452-7463` and :7262-7263), and copies a
+  `struct flock` or `struct f_owner_ex` in before the host call
+  (:7466-7471, :7540-7541), so it answers `-EFAULT` or `-EINVAL` there.
+- **`getcwd` with a size the path does not fit.** The model answers
+  `-ERANGE` whatever `buf` is: `SYSCALL_DEFINE2(getcwd)`
+  (`fs/d_path.c`) compares the length before its only `copy_to_user`.
+  QEMU user mode locks `buf` for writing first (`TARGET_NR_getcwd`,
+  `linux-user/syscall.c:12284-12289`), so it answers `-EFAULT` at size 1
+  for a `buf` that is not writable guest memory, at size 0 for an
+  address above `reserved_va` under `-R`, and at `getcwd(NULL, 0)` when
+  `guest_base` is 0, where `lock_user` hands back NULL for guest address
+  0 and the case reads that as a failure.
+- **`getgroups` with a positive size on a process with no supplementary
+  groups, or with a size too small for the list.** The model answers 0
+  or `-EINVAL`: `SYSCALL_DEFINE2(getgroups)` (`kernel/groups.c`) has no
+  upper bound on the size, allocates nothing, and `groups_to_user`
+  writes nothing for an empty list. QEMU user mode
+  (`TARGET_NR_getgroups`, `linux-user/syscall.c:12582-12612`) answers
+  `-EINVAL` for a size above `NGROUPS_MAX` (:12589-12591), `-ENOMEM`
+  when its `g_try_new` copy fails (:12592-12596), and `-EFAULT` when
+  `lock_user` refuses the destination (:12599-12604).
+- **`setgroups` from an unprivileged caller.** The model answers
+  `-EPERM` with nothing read: `SYSCALL_DEFINE2(setgroups)`
+  (`kernel/groups.c`) runs `may_setgroups` first. QEMU user mode
+  (`TARGET_NR_setgroups`, `linux-user/syscall.c:12613-12639`) tests the
+  size first (`-EINVAL` for a negative size or one above `NGROUPS_MAX`,
+  :12620-12621), then allocates (`-ENOMEM`, :12623-12627), locks the list
+  (`-EFAULT`, :12628-12631) and reads every entry (:12633-12635) before
+  the host call in which `may_setgroups` runs, so its `-EPERM` comes
+  after a read of the whole list.
+- **`clone3`.** The model answers one of Linux's answers
+  (`SYSCALL_DEFINE2(clone3)`, `kernel/fork.c`). QEMU user mode has no
+  `clone3` case: `do_syscall1`'s `default` answers `-ENOSYS` with
+  nothing read (`linux-user/syscall.c:14618-14620`).
+- **`prctl` with an option word at or above 2^32.** The model reads the
+  low 32 bits: `SYSCALL_DEFINE5(prctl)` (`kernel/sys.c`) takes an `int`
+  option, so `prctl(2^32 | PR_CAPBSET_READ, 0)` answers 1. QEMU user
+  mode's `do_prctl` switches on the whole 64-bit word
+  (`linux-user/syscall.c:6706-6711`) and answers `-EINVAL` from its
+  `default` (:6860-6863).
+- **`sigaltstack` with `SS_AUTODISARM` set.** The model masks the bit
+  before it tests the mode, as `do_sigaltstack` (`kernel/signal.c`)
+  does, so `ss_flags` of 0x80000000, 0x80000001 and 0x80000002 answer 0.
+  QEMU user mode's `target_restore_altstack` switches on the raw word
+  and answers `-EINVAL` to each (`linux-user/signal.c:317-319`).
+- **`sched_setscheduler` with a negative `policy` or `pid` beside a
+  non-NULL `param`.** The model answers `-EINVAL` with nothing read:
+  `SYSCALL_DEFINE3(sched_setscheduler)` and `do_sched_setscheduler`
+  (`kernel/sched/syscalls.c`) test both before `copy_from_user`. QEMU
+  user mode reads the four-byte `param` first
+  (`linux-user/syscall.c:12091-12104`): `-EFAULT` for one it cannot
+  read, and the host's `-EINVAL` after a read of a readable one.
+- **`readv` and `writev`: a closed fd or an fd of the wrong mode beside a
+  count of 0, a raw `iovcnt` over `IOV_MAX`, an unreadable array or a
+  negative length; a raw `iovcnt` over `IOV_MAX` whose low 32 bits are in
+  range.** The model answers Linux's `-EBADF`, and the truncated transfer
+  for the wide count: Linux resolves the fd, tests the mode, and only then
+  imports the `unsigned int` count (`fs/read_write.c`, `do_readv`,
+  `do_writev`, `vfs_readv`, `vfs_writev`; `lib/iov_iter.c`,
+  `import_iovec`). QEMU user mode runs `lock_iovec` before the host call
+  (`linux-user/syscall.c:3072-3132`; readv :11886-11895, writev
+  :11897-11906): 0 for a count of 0 (:3082-3085), `-EINVAL` for a raw
+  count over `IOV_MAX` (:3086-3089), `-EFAULT` for an unreadable array
+  (:3097-3102) and `-EINVAL` for a negative length (:3113-3115).
 - **`writev` to a regular file from a source that is readable at the
   start and not throughout.** The model answers the short write of the
   gathered prefix. QEMU user mode cuts at the faulting descriptor in
-  `lock_iovec` (`linux-user/syscall.c`).
-- **`sendto` and `sendmsg` with a buffer that `access_ok` passes and the
-  memory does not back.** The model follows Linux: the fd resolves, and
-  the copy faults inside `tcp_sendmsg_locked` (`net/ipv4/tcp.c`) or
-  `sk_stream_wait_connect` (`net/core/stream.c`) answers `-EPIPE` without
-  copying. QEMU user mode locks the whole buffer first and answers
-  `-EFAULT` in both cases (`do_sendto`, `linux-user/syscall.c`).
+  `lock_iovec` (`linux-user/syscall.c:3120-3131`).
+- **`sendto` and `sendmsg`: the order of the buffer, the address, the
+  header and the fd.** The model follows Linux: `__sys_sendto` range-checks
+  the buffer with `import_ubuf` (`access_ok` only), then resolves the fd,
+  reads an address only when one is given, and the copy faults inside
+  `tcp_sendmsg_locked` (`net/ipv4/tcp.c`) or `sk_stream_wait_connect`
+  (`net/core/stream.c`) answers `-EPIPE` without copying; `__sys_sendmsg`
+  resolves the fd before it reads the header (`net/socket.c`). QEMU user
+  mode locks the buffer, the header and the iovec array before the host
+  call (`do_sendto`, `linux-user/syscall.c:3636-3652`; `do_sendrecvmsg`
+  :3445-3450; `lock_iovec` :3072-3132), so it answers `-EFAULT` for an
+  in-range unmapped buffer, header, array or first segment (on a dead
+  socket or a closed fd alike), `-EINVAL` for a negative `addrlen` beside
+  a NULL address and for a negative later length on a closed fd, and the
+  host's answer for a zero-length buffer or segment past `TASK_SIZE`,
+  which Linux refuses with `-EFAULT`.
+  Where both answer `-EFAULT` for a range `access_ok` refuses, QEMU user
+  mode does so only while no guest page lies above `TASK_SIZE`: without
+  `-R` its bound is 2^64 (`linux-user/main.c:847-853`), and it passes a
+  range on such a page to the host. `sendmsg` with a nonzero
+  `msg_iovlen` is `-ENOMEM` under QEMU user mode when `lock_iovec`'s
+  allocation fails (`linux-user/syscall.c:3091-3095`), whatever the
+  model answers. And a buffer, header or array in the model's entry-stack
+  band below the bottom of QEMU user mode's own stack (`setup_arg_pages`,
+  `linux-user/elfload.c:395-436`) is `-EFAULT` there, where the model
+  answers by the fd and the socket.
+- **`recvfrom` and `recvmsg`: the destination, `*addrlen`, the header
+  and the iovec array, against the fd.** The model follows Linux:
+  `__sys_recvfrom` imports the destination with `import_ubuf` first, so
+  a range `access_ok` refuses is `-EFAULT` even at length 0
+  (`lib/iov_iter.c`), then resolves the fd, and touches neither the
+  destination's pages nor `*addrlen` off a socket, so beside a closed or
+  non-socket fd an unmapped, read-only or write-only destination and an
+  unreadable or negative `*addrlen` get that fd's `-EBADF` or `-ENOTSOCK`
+  (`net/socket.c`); `__sys_recvmsg` resolves the fd before
+  `___sys_recvmsg` reads the header. QEMU user mode locks the
+  destination and the header for writing and imports the iovec array
+  before the host call resolves the fd (`do_recvfrom`,
+  `linux-user/syscall.c:3683-3741`; `do_sendrecvmsg` :3439-3454;
+  `lock_iovec` :3072-3132). On a closed or non-socket fd it answers
+  `-EFAULT` for a destination or header it cannot lock, which a
+  read-only or write-only page fails (:3695), `-EFAULT` for an unreadable
+  `*addrlen` and `-EINVAL` for a negative one (:3700-3708), `-EMSGSIZE`
+  for a `msg_iovlen` over `IOV_MAX` (`do_sendrecvmsg_locked`,
+  :3365-3371), `-ENOMEM` when `lock_iovec` cannot allocate (:3091-3095),
+  `-EFAULT` for an array it cannot lock (:3097-3102), `-EINVAL` for a
+  negative `iov_len` (:3113-3115), and 0 for a `msg_iovlen` of 0 without
+  a host call (:3082-3085, :3373-3379). It also lets a zero-length
+  destination past `TASK_SIZE` through its lock (:3692-3699), which
+  Linux refuses with `-EFAULT`.
 - **`socket` and `socketpair` with a type word carrying an unknown flag
-  bit.** The model answers Linux's `-EINVAL`
-  (`__sys_socket_create`, `net/socket.c`). QEMU user mode drops the
-  unknown bits in `target_to_host_sock_type` (`linux-user/syscall.c`), so
-  the call can succeed.
+  bit.** The model answers Linux's `-EINVAL` before anything is written
+  (`__sys_socket_create` and `__sys_socketpair`, `net/socket.c`). QEMU
+  user mode drops the unknown bits in `target_to_host_sock_type`
+  (`linux-user/syscall.c:3183-3215`) and calls the host with the
+  stripped word (`do_socket` :3233, `do_socketpair` :3618-3631), so
+  `socket` can succeed or answer the stripped word's `-EPROTONOSUPPORT`
+  or `-EAFNOSUPPORT`, and `socketpair(AF_INET, ...)` answers
+  `-EOPNOTSUPP` with `usockvec` unwritten.
+- **`socketpair(AF_INET, ...)`.** The model answers as `__sys_socketpair`
+  (`net/socket.c`) does: it stores both descriptor numbers through
+  `usockvec` before it asks the family, so it answers `-EOPNOTSUPP`
+  with both numbers written, and `-EFAULT` for a `usockvec` the stores
+  cannot reach. QEMU user mode writes `usockvec` only after a host call
+  that succeeds (`do_socketpair`, `linux-user/syscall.c:3618-3633`), so
+  it answers `-EOPNOTSUPP` with nothing written, for a `usockvec` it
+  cannot write as well.
+- **`socket(AF_NETLINK, ...)` with a type past `SOCK_MAX` and a protocol
+  other than 9 and 15.** The model answers Linux's `-EINVAL` from
+  `__sock_create`'s type range (`net/socket.c`). QEMU user mode answers
+  its own `-EPROTONOSUPPORT` before the host call (`do_socket`,
+  `linux-user/syscall.c:3243-3249`).
 - **`eventfd2` with a refused flag word.** The model answers `-EINVAL`
   (`SYSCALL_DEFINE2(eventfd2)`, `fs/eventfd.c`). A qemu-user host whose
   target is sparc64, mips or parisc accepts some of those words, because
   its `TARGET_O_NONBLOCK` and `TARGET_O_CLOEXEC` differ
-  (`linux-user/syscall_defs.h`).
+  (`linux-user/syscall_defs.h`; `TARGET_NR_eventfd2`,
+  `linux-user/syscall.c:13865-13876`, clears only the target's masks).
+- **`epoll_create1`, `epoll_ctl` and `epoll_pwait`: the flag word and
+  the copies.** The model answers in Linux's order (`fs/eventpoll.c`):
+  `do_epoll_create` refuses every bit but `EPOLL_CLOEXEC` with
+  `-EINVAL`; `epoll_ctl` narrows `op` to an `int` and copies no event for
+  `EPOLL_CTL_DEL`; `do_epoll_pwait` sets the signal mask first and tests
+  `events` with `access_ok` alone, which reads no mapping. QEMU user mode
+  passes `epoll_create1` a word with the bits `fcntl_flags_tbl` does not
+  carry dropped (`linux-user/syscall.c:13939-13940`), so bit 31, bit 20
+  alone and 3 give a descriptor; compares the full 64-bit `op` with
+  `EPOLL_CTL_DEL` and locks a non-NULL `event` first (:13941-13968), so
+  `op` 2^32 + 2 with an unreadable `event` is `-EFAULT`; and in
+  `epoll_pwait` tests `maxevents` first and locks `events` for writing
+  (:13973-14050), so an out-of-bounds `maxevents` beside an unreadable
+  mask is `-EINVAL` where Linux answers `-EFAULT`, and an `events` range
+  not mapped writable is `-EFAULT` where Linux answers the fd's or the
+  mask's errno.
+- **`timerfd_create` with a flag bit outside `TFD_CLOEXEC|TFD_NONBLOCK`.**
+  The model answers Linux's `-EINVAL` (`SYSCALL_DEFINE2(timerfd_create)`,
+  `fs/timerfd.c`). QEMU user mode passes the host a word with the bits
+  `fcntl_flags_tbl` does not carry dropped (`TARGET_NR_timerfd_create` in
+  `linux-user/syscall.c` at QEMU 11.1.1), so bit 31, 22 or 20, and bit 15
+  on a host whose `O_LARGEFILE` is 0, gives a descriptor.
 - **`epoll_pwait` with a closed `epfd` beside a `maxevents` outside
   `1..EP_MAX_EVENTS`, or an events buffer that `access_ok` refuses.** The
-  model answers `-EBADF`: v6.18.46 resolves the fd first
-  (`do_epoll_wait`, `fs/eventpoll.c`). QEMU user mode checks the count and
-  locks the buffer first (`TARGET_NR_epoll_pwait`,
-  `linux-user/syscall.c`).
+  model answers `-EBADF`: Linux resolves the fd first (`do_epoll_wait`,
+  `fs/eventpoll.c`). QEMU user mode checks the count and locks the buffer
+  first (`TARGET_NR_epoll_pwait`, `linux-user/syscall.c:13973-13994`).
+- **`ppoll` with `nfds` 0 and a `ufds` above `TASK_SIZE`.** The model
+  answers Linux's `-EFAULT` (`Sys/Fs/Select.v`,
+  `ppoll_writeback_access`): `do_sys_poll` (`fs/select.c`) runs
+  `user_write_access_begin` on `ufds` whatever `nfds` is. QEMU user mode
+  reads `ufds` only when `nfds` is not 0 (`do_ppoll`,
+  `linux-user/syscall.c:1544-1570`) and hands the host a NULL array, so
+  it answers 0 once the timeout runs out.
 - **`accept4` with a closed fd beside unknown flags or a non-NULL
   address.** The model answers `-EBADF`: `__sys_accept4` (`net/socket.c`)
   resolves the fd before the flags. QEMU user mode checks the flags and
   validates the address length first (`do_accept4`,
-  `linux-user/syscall.c`).
+  `linux-user/syscall.c:3504-3513`).
 - **Transfers: `read`, `write`, `pread64`, `pwrite64`.** The model
   answers in Linux's order. QEMU user mode locks the whole buffer before
   the host call (`lock_user`, `linux-user/uaccess.c`), so a buffer that is
   readable in part gives a different answer.
+- **A `read` or `write` of more than 0x7ffff000 bytes on a host whose
+  pages are larger than 4 KiB.** The model clamps the count at
+  0x7ffff000 (`State.MAX_RW_COUNT`), riscv64 Linux's `MAX_RW_COUNT`
+  (`include/linux/fs.h`; riscv64 has only 4 KiB pages,
+  `arch/riscv/Kconfig`). QEMU user mode passes the call to the host,
+  whose clamp on a 16 or 64 KiB host is 0x7fffc000 or 0x7fff0000.
 
 The entries above are the ones the model and QEMU user mode are known to
 differ on. The list is maintained by hand; no tool checks that it is
@@ -232,12 +614,43 @@ trace at its first unreproduced verdict and the records after one are never
 judged. The trace count, 4,291, is measured two ways in
 `reports/evidence-corpus-replay-features.md`.
 
-## Where older Linux versions differ
+## Where Linux versions differ
 
-Some shapes are contested for a reason that is not QEMU user mode. The
-model answers v6.18.46's, and an older stable kernel answers otherwise.
-A proof says nothing about those kernels; "Supported systems" above
-already says so. These are the known cases.
+Some shapes are contested for a reason that is not QEMU user mode.
+
+### Within v6.16 to v6.18.46
+
+The supported versions answer these shapes differently, and the model
+declines each one (`unmodeled`).
+
+- **`mremap(MREMAP_MAYMOVE)` whose rounded `new_len` passes
+  `TASK_SIZE`.** From v6.17 `check_mremap_params` tests
+  `new_len > TASK_SIZE` before any VMA is looked up and answers `-EINVAL`
+  (`mm/mremap.c:1775-1776`; v6.17 :1778-1779). v6.16 tests it only in
+  `mremap_to` (`mm/mremap.c:1387-1389`, v6.16), which a call without
+  `MREMAP_FIXED` never reaches, so it answers `-EFAULT` with no VMA at
+  the address and `-ENOMEM` from `expand_vma` otherwise
+  (`Mremap.mremap_spec`).
+- **`getsockname` and `getpeername` on a stream-pair end whose address
+  buffer does not take the whole address.** Each version answers
+  `-EFAULT`, with different stores: v6.18.46's `move_addr_to_user` stores
+  the length before it copies the address (`net/socket.c:276-314`), and
+  v6.16's and v6.17's store it with `__put_user` after the copy
+  (`net/socket.c:276-301`, v6.17), so there the length is not written
+  (`Net.Socket.stream_getname`).
+- **`mmap` with a page-aligned offset at or above 2^63.** v6.16 and v6.17
+  shift a signed `off_t` offset in `riscv_sys_mmap`
+  (`arch/riscv/kernel/sys_riscv.c:11-21`, v6.17), v6.18.46 an
+  `unsigned long` one, so the page offset differs and `do_mmap`'s
+  `-EOVERFLOW` test (`mm/mmap.c:373-374`) can fire on the older two. The
+  model answers no such call: it declines every nonzero offset of an
+  anonymous mapping and every mapping of a live fd (`Mmap.mmap_spec`).
+
+### Before v6.16
+
+The model answers as v6.16 to v6.18.46 do, and an older stable kernel
+answers otherwise. A proof says nothing about those kernels. These are
+the known cases.
 
 - **`flock` with `LOCK_MAND`, or with an unrecognised operation, on a
   closed fd.** The model answers 0 for `LOCK_MAND` and `-EINVAL` for an
@@ -247,16 +660,16 @@ already says so. These are the known cases.
   v5.19 resolve the fd first. QEMU user mode passes the call through to
   the host, so it answers what its host kernel answers; it is not a
   difference of its own.
-- **`flock` granting a lock to the sole opener whose type does not match
-  the fd mode.** The model answers 0. That holds while
-  `f_op->flock` is NULL, which is the case for the file systems the
-  model describes; an NFS mount supplies one and can answer otherwise.
-  This is a file-system difference, not a system one.
-- **`mremap(MREMAP_MAYMOVE)` whose rounded `new_len` passes
-  `TASK_SIZE`.** The model answers `-EINVAL`: from v6.17
-  `check_mremap_params` (`mm/mremap.c`) tests `new_len > TASK_SIZE`
-  unconditionally. Up to v6.16 that test sat inside `mremap_to`, so a
-  MAYMOVE grow reached `-ENOMEM` instead.
+- **`readv` and `writev` on an fd of the wrong mode beside a base that
+  `access_ok` refuses.** The model answers `-EBADF`: `vfs_readv` and
+  `vfs_writev` test the mode before `import_iovec` reads the vector
+  (`fs/read_write.c:999-1004`, `:1037-1042`; the same text in v6.16 and
+  v6.17). An older kernel that imported first answers `-EFAULT`.
+- **`openat` of `"."` or `".."` with `O_WRONLY|O_CREAT|O_EXCL|O_APPEND`.**
+  The model answers `-EEXIST`: `do_open` tests `O_EXCL` against
+  `FMODE_CREATED` first (`fs/namei.c:3931-3987`; the same text in v6.16
+  and v6.17). An older kernel whose `do_last` skipped that test for a
+  directory answers `-EISDIR`.
 - **A `MAP_FIXED` `mmap` at a misaligned address.** The model answers
   v6.18.46's: `__get_unmapped_area` (`mm/mmap.c`) takes
   `mmap_end = arch_get_mmap_end(addr, len, flags)`, which on riscv64 is
@@ -293,6 +706,50 @@ already says so. These are the known cases.
   (`__sys_accept4`, `net/socket.c`; `do_epoll_wait`, `fs/eventpoll.c`),
   and older kernels do not. QEMU user mode also checks first, so these
   two are in the QEMU list above as well.
+- **A `read` or `pread64` of `/dev/urandom` for more than 0x1ffffff
+  bytes.** The model answers the whole clamped count: `urandom_read_iter`
+  loops in `get_random_bytes_user` until the iterator is empty
+  (`drivers/char/random.c`). Kernels before v5.18, and the stable releases
+  before the rewritten random driver reached them (v4.19.249, v5.4.200,
+  v5.10.119, v5.15.44 and v5.17.12 are the first without the cap), cap one
+  call at `INT_MAX >> 6`, 0x1ffffff bytes.
+- **`getrandom` of 0 bytes at a buffer past `TASK_SIZE`.** The model
+  answers `-EFAULT` (or `-EINTR`): `import_ubuf` range-tests the buffer
+  at length 0 (`lib/iov_iter.c`). Kernels before v5.19 run no range test
+  on a zero-length request and answer 0.
+- **A file `write` or `pwrite64` from a source readable at its first byte
+  and not throughout.** The model writes the readable prefix and returns
+  its length (`generic_perform_write`, `mm/filemap.c`). Kernels v4.17 to
+  v5.17 fault each page-sized chunk in before the copy and answer the
+  prefix cut back to a chunk boundary, or `-EFAULT` with the file
+  untouched when that leaves nothing.
+- **`prctl(PR_CAPBSET_READ)` of capability 38, 39 or 40.** The model
+  answers 1: `CAP_LAST_CAP` is 40 (`include/uapi/linux/capability.h`). It
+  was 39 at v5.8 and 37 before, so those kernels answer `-EINVAL`.
+- **`clone3` and `faccessat2`.** The model answers both. A kernel from
+  before riscv64 wired them (`clone3` entered the generic table at v5.3,
+  `faccessat2` at v5.8) answers `-ENOSYS` (`sys_ni_syscall`,
+  `kernel/sys_ni.c`).
+- **A vector with a negative `iov_len` before an unreadable
+  descriptor.** The model answers `-EINVAL`: `copy_iovec_from_user` reads
+  and tests the descriptors in index order (`lib/iov_iter.c`). Kernels
+  before v6.4 copied the whole array first and answer `-EFAULT`.
+- **`setsockopt` with a negative `optlen` on a closed or non-socket fd,
+  and `getsockopt` at an unknown level.** The model answers the fd's
+  `-EBADF` or `-ENOTSOCK`, because `__sys_setsockopt` resolves the fd
+  before `do_sock_setsockopt` tests the length, and records the read of
+  `*optlen` that `do_sock_getsockopt` makes on every call
+  (`net/socket.c`). Kernels before v6.7 test the length first and answer
+  `-EINVAL`; kernels before v6.11, except v6.6.51 and later and v6.10.10
+  and later, read `*optlen` only while a cgroup getsockopt program is
+  attached.
+- **A range between `TASK_SIZE` and 2^63 that `access_ok` tests.** The
+  model answers `-EFAULT` for it (`__access_ok`,
+  `include/asm-generic/access_ok.h`, against riscv64's `TASK_SIZE`).
+  From v6.10 until the revert
+  `890ba5be6335` (first in v6.16-rc4), and on v6.12.y before .36 and
+  v6.15.y before .5, riscv64's `TASK_SIZE_MAX` was `LONG_MAX` and such a
+  range passed, so for example `read(0, 2^60, 0)` answered 0.
 - **`eventfd2` with a refused flag word.** For a riscv64 guest QEMU user
   mode and Linux agree; the entry in the QEMU list above applies only to
   a sparc64, mips or parisc target, whose `TARGET_O_NONBLOCK` and
@@ -310,14 +767,14 @@ them. A proof says nothing about a program in such a case.
 | Address-space size | The system call specifications use Sv48. Thus you cannot prove the Sv39 and Sv57 statements for an image that can run. |
 | Stack limit | The stack limit is 8 MiB. A larger or unlimited `RLIMIT_STACK`, which selects the legacy mmap layout, is outside the model. The model counts the whole entry block against this limit, from the stack VMA's end `StackLayout.ed_top` down, as Linux counts it. |
 | Arguments | `Run.valid_input` requires that the arguments after `argv[0]` do not contain `/` and are not `..`. Thus a proof about `cp src dst` does not apply to `cp /tmp/src dst`. It also bounds the lists (`Run.valid_argv`, `Run.valid_envp`): 1 to 1024 arguments and at most 2 MiB of argument bytes, at most 256 environment variables and at most 128 KiB of environment bytes, and at most 131071 bytes in each string. Each count of bytes includes the terminating NUL of each string. These are the model's own per-list bounds. Linux's own bound is joint, and `Run.valid_launch` carries it: the exec file name, the envp strings and the argv strings with their NULs, plus 8 bytes for each argv and envp pointer, are at most 2 MiB together at the 8 MiB stack limit (`bprm_stack_limits`, `fs/exec.c`). Linux answers `E2BIG` for a larger launch. `Run.valid_launch` also says which exec file names `execve` can present (`State.in_execfn`): a path of 1 to 4095 bytes without a NUL, or `/dev/fd/N`, or `/dev/fd/N/` and such a path that does not start with `/` (`getname_flags` in `fs/namei.c`, `alloc_bprm` in `fs/exec.c`). Both binaries of a pair run under the same exec file name, as they run on the same input. A launch outside these bounds is outside the model. |
-| Standard input and output | The fds 0, 1 and 2 are external channels, and their direction is fixed: 0 is read-only, 1 and 2 are write-only (`State.FdChannel`). The model answers `-EBADF` for the other direction. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. |
+| Standard input and output | The fds 0, 1 and 2 are external channels (`State.FdChannel`), and the model does not know which far end each has; "Assumptions that the model does not check" lists the far ends a launch may give them. Fd 0 is read-only: the model answers `-EBADF` to a write there. Thus a proof says nothing about a program that is handed a connected socket on fd 0, as an inetd-style server is. A `read` or a `readv` on fd 1 or 2 is `unmodeled`: a pipe's write end answers it `-EBADF`, and a socket, which is open for reading, answers it with the read. A `write` of 0 bytes to fd 1 or 2 whose range `access_ok` admits is `unmodeled` on the launch whose reader has gone. |
 | Network | The list of connections is never empty. Thus the model does not include an environment where no peer ever connects. |
 | Memory budgets | The source can allocate 16 GiB and the target 512 GiB (`State.source_alloc_limit`, `State.target_alloc_limit`). The `*_budgets` statements change this premise. The `*_budgets_only` statements have a finer premise for the source: it excludes a first-touch or a cumulative refusal, but not a single request that is larger than the whole budget (`Run.alloc_refuse_reason`). |
-| Files | The file model has no full directory tree, no symbolic links, no device files except `/dev/null` and `/dev/urandom`, and no permissions. |
+| Files | The file model is a tree of folders, regular files, symbolic links and the two devices `/dev/null` and `/dev/urandom`, and every pathname is walked by its full path from `/` or from the working folder (`Fs.resolve`). The walk follows symbolic links as Linux v6.18.46 does: 40 follows and then `-ELOOP`, a walk of 21 links or more also admitting `-ELOOP`, `..` taken from the folder the walk stands on, and a trailing `/` forcing the follow; `openat`, `newfstatat`, `faccessat2` and `readlinkat` follow or not as their flags say, and `unlinkat`, `rmdir` and `mkdirat` act on the link itself. A regular file is an inode: two names of the image may hold one, its link count is its names (`Fs.fs_ino_nlink`), and `st_ino` and `st_dev` are chosen at the first stat of a file, a folder or a device node and then kept for it. A component over 255 bytes admits `-ENAMETOOLONG` beside the answer of a file system with a longer limit, which no supported kernel gives ("Known gaps in precision"). The model answers `getcwd`, `mkdirat` and `rmdir` (`unlinkat` with `AT_REMOVEDIR`). It declines: a pathname whose walk reaches `/proc` or `/sys` (except `/proc/self/fd/N`), through a symbolic link too; `rmdir` of the working folder, of an ancestor of it, or of a folder an open descriptor holds; `rename`, `linkat` and `symlinkat`. It has no file modes or permissions, and no FIFOs or sockets in the image. |
 | Shared memory | The model has no shared mapping. `mmap` with `MAP_SHARED` is `unmodeled`, anonymous requests included. Linux builds an anonymous shared mapping on a shmem file (`mm/vma.c`, `__mmap_new_vma` calls `shmem_zero_setup`), so `vma_is_anonymous` is false for it, its pages survive the zap that `MADV_DONTNEED` performs, and a `fork` shares them instead of copying them. `Sys/Mm/Mmap.v` gives the full reason and what an arm would take. |
 | The vDSO | The model maps the vDSO text and the four vvar pages that `execve` installs, and answers a call to an exported entry with the system call's own specification (`Run.sstep`'s vDSO arm). It does not run the vDSO's instructions. Four cases are `unmodeled`, and a proof says nothing about a program that reaches one: a load from the vvar pages; a fetch at any text address that is not an exported entry; a call to `__vdso_getrandom` or `__vdso_rt_sigreturn`; and an outcome of a call that returns `-EFAULT`. A store to the text or to vvar is a fault, as on Linux: the kernel maps neither with `VM_WRITE`. The text mapping carries no `x` flag in the model, although Linux maps it `PROT_READ\|PROT_EXEC`: the flag says "the model fetches and executes these bytes", and of the vDSO's bytes it does not. |
 | Datagram sockets and eventfds | `socket(AF_INET6 or AF_UNIX, SOCK_DGRAM, 0)` gives a socket (`State.FdDgram`) on which the model answers `close`, `F_GETFL`, an empty `F_SETFL`, the terminal ioctls, `SIOCGIFINDEX` for `lo`, and the errnos of calls that stop before the socket (`-ESPIPE` from `pread64`, `pwrite64` and `lseek`, `-EINVAL` from `fsync` and `ftruncate`, `-ENOTDIR` from `getdents64`); every call that would read or change socket state, and every other protocol or flag of these two families, is `unmodeled`. An eventfd answers `read`, `write`, `select`/`poll`, `fcntl`, the terminal ioctls, `lseek` and `close`; a nonempty `readv` or `writev` on it is `unmodeled`. |
-| Unnamed files | A `/tmp` file whose name `unlinkat` removes while descriptors hold it becomes an unnamed file (`State.FdAnon`), and `openat("/proc/self/fd/N")` opens it again under `O_RDONLY`, `O_WRONLY\|O_CREAT\|O_TRUNC` and `O_WRONLY\|O_CREAT\|O_APPEND`. On it the model answers `read`, `write`, `writev`, `pwrite64`, `pwritev2` (with flags 0 or `RWF_NOAPPEND`, as musl's `pwrite` sends), `lseek`, `ftruncate`, `fstat`, the terminal ioctls, `select`/`poll`, `fsync`, `getdents64`'s `-ENOTDIR`, an empty `F_SETFL` and `close`; `pread64`, `readv`, `F_GETFL`, `flock`, `dup`, `dup3`, `F_DUPFD` and a `clone` that holds one are `unmodeled`. The removal of a name a descriptor holds in the working directory is `unmodeled`. |
+| Unnamed files | A file whose last name `unlinkat` removes while descriptors hold it stays an inode with no name: its descriptors answer every call a named file's descriptors answer, its `fstat` reports `st_nlink` 0, and `openat("/proc/self/fd/N")` opens it again, on the same inode, under `O_RDONLY`, `O_WRONLY\|O_CREAT\|O_TRUNC` and `O_WRONLY\|O_CREAT\|O_APPEND`. |
 
 The entry premises also limit the launches that a statement covers, and
 they limit them to Linux's own. For one input and one kernel build
@@ -327,8 +784,8 @@ v6.18.46 launch gives, and `StackLayout.build_stack_bytes` lays Linux's
 bytes between the stack pointer and that end, except one word on the
 launches R-a below names: there AT_SYSINFO_EHDR is the text base of the
 pair the model maps, which is below Linux's. There is no other band. The
-three rules are `randomize_stack_top` and `setup_arg_pages`
-(`mm/util.c`, `fs/exec.c`) for the end, `create_elf_tables`
+three rules are `randomize_stack_top` (`mm/util.c`) and
+`setup_arg_pages` (`fs/exec.c`) for the end, `create_elf_tables`
 (`fs/binfmt_elf.c`) for the stack pointer, and `mmap_base` with
 `arch_mmap_rnd` (`mm/util.c`) for the base. This closes the residual
 R-d that earlier revisions named, where `sp` and the base were drawn
@@ -337,23 +794,31 @@ its example pair, `sp` = 0x7fffe0000000 with the base at 0x7ffff8000000.
 
 The launch's own facts are therefore premises of each statement:
 whether the launch randomises, the `stack_guard_gap` boot parameter,
-`vm.mmap_rnd_bits`, `CONFIG_RSEQ`, the vector unit's `VLENB`, the
+`vm.mmap_rnd_bits`, the vector unit's `VLENB`, the
 machine's four cache leaves, which vDSO image the build carries, and
 the socket-buffer numbers: `sizeof(struct sk_buff)` and the
 `net.core.wmem_default`, `rmem_default`, `wmem_max` and `rmem_max`
 sysctls. They are fields of `State.KernelBuild`, which is part of the
 input, so both binaries of a pair are launched on one machine by one
-launcher. A build whose `struct sk_buff` is larger than 1 KiB is outside
-the model (`State.skb_head_bytes`).
+launcher. `State.KernelBuild` also says whether the build has
+`CONFIG_RSEQ` (`kb_rseq`) and `CONFIG_TRANSPARENT_HUGEPAGE` (`kb_thp`),
+which are not facts a supported launch can vary: the configuration of
+record has the first and not the second. A build whose `struct
+sk_buff` is larger than 1 KiB is outside the model
+(`State.skb_head_bytes`).
 
 `Run.valid_input`, and every named launch beside it, leaves five of
-those facts free and fixes the other eight (`Run.recorded_kernel`).
+those fields free and fixes the other eight (`Run.recorded_kernel`).
 Free: whether the launch randomises, the guard gap, `vm.mmap_rnd_bits`,
-transparent huge pages and `CONFIG_RSEQ`. The published statements
-covered a range of each, and a fixed value would narrow them: a kernel
-built without `CONFIG_RSEQ` has a 27-pair auxiliary vector instead of
-29, so its entry stack pointer sits 32 bytes higher, and the released
-entry-stack window admitted both. Fixed at `State.default_kernel`'s
+`kb_thp` and `kb_rseq`. The published statements
+covered a range of each, and a fixed value would narrow them. For
+`kb_thp` and `kb_rseq` that is the whole reason: the released placement
+took any free address, the 2 MiB-aligned ones a
+`CONFIG_TRANSPARENT_HUGEPAGE` build gives included, and the released
+entry-stack window admitted the entry stack pointers of both auxv
+layouts, where a build without `CONFIG_RSEQ` has a 27-pair auxiliary
+vector instead of 29, so its entry stack pointer sits 32 bytes higher.
+No supported kernel is either build ("Known gaps in precision"). Fixed at `State.default_kernel`'s
 values: vDSO image 1, `kb_vlenb` 0, no cache leaves, a 224-byte
 `struct sk_buff` and the default socket sysctls. The published
 statements had one answer for each of these. (`kb_vlenb` 0 is the
@@ -366,8 +831,9 @@ an accessor per predicate (`Run.valid_input_vdso`,
 
 These cases stay outside the model:
 
-- QEMU user mode. It builds another entry block entirely; "Where QEMU
-  user mode differs" below gives it.
+- QEMU user mode, which is not a supported implementation. It builds
+  another entry block entirely; "Where QEMU user mode differs" above
+  gives it.
 - A kernel whose vDSO image the model does not hold. `State.KernelBuild`
   names an image, so a statement says nothing about a build whose image
   is not among them.
@@ -422,7 +888,422 @@ not apply.
   files or holds locks on them.
 - `/dev/null` is the null device (major 1, minor 3). `/dev/urandom` is the
   random device (major 1, minor 9).
+- No mount of the launch tree carries `nosymfollow`, and neither does the
+  procfs at `/proc`. On such a mount `pick_link` refuses every follow with
+  `-ELOOP` (`fs/namei.c:1927-1929`, Linux v6.18.46), a single link
+  included, and the model admits `-ELOOP` only beside a walk that counted
+  21 links or more (`Sys.Fs.Namei.eloop_follows`): the kernel walks a name
+  at most twice on one `total_link_count` on tmpfs and ramfs, and refuses
+  only the 41st count (`reserve_stack`, `fs/namei.c:1878-1879`). The case
+  this excludes is a walk through one link (or up to 20) on a
+  `nosymfollow` mount, which Linux answers `-ELOOP` and the model refuses.
+- The far end of descriptors 0, 1 and 2 is a pipe, a TCP stream socket or
+  an AF_UNIX stream socket, open in blocking mode; descriptor 0's is a
+  pipe, since "Standard input and output" above puts a connected socket
+  there outside the model by its direction (a socket is open for both).
+  These are the kinds every arm the model gives an `FdChannel` holds for:
+  where a pipe's write end and a socket answer a call on descriptor 1 or
+  2 differently, the call declines there. The read arms
+  (`Sys/Fs/ReadWrite.v`) admit on descriptor 0 a short read
+  of any nonempty prefix of the input still to come, and 0 once it has
+  ended, and they never answer `-EAGAIN`. On descriptors 1 and 2 `read`
+  and `readv` decline: a pipe's write end is open `O_WRONLY`
+  (`create_pipe_files`, `fs/pipe.c:944-946`), so the `FMODE_READ` test
+  answers `-EBADF` (`vfs_read`, `fs/read_write.c:556-557`; `vfs_readv`,
+  `fs/read_write.c:999-1000`), while a socket is open `O_RDWR`
+  (`sock_alloc_file`, `net/socket.c:483-485`, Linux v6.18.46) and is
+  read: `read(1, buf, 0)` is 0 there (`sock_read_iter`,
+  `net/socket.c:1168-1169`). The write arms admit a short
+  write of any nonempty readable
+  prefix, and an `-EFAULT` with nothing written only for a fault inside
+  `ReadWrite.channel_first_copy_max` (36544 bytes), the largest first copy
+  of those kinds ("Short writes to a channel" below), and they never
+  answer `-EAGAIN`. `lseek`, `pread64` and `pwrite64` answer `-ESPIPE`
+  (`stream_open` clears the seek and positioned modes, `fs/open.c:1658`,
+  Linux v6.18.46), `fsync` answers `-EINVAL` (none of them has an
+  `.fsync`, `fs/sync.c:183-184`), and `ioctl` answers `-ENOTTY` to the
+  terminal requests, on a pipe's write end and a socket alike. The socket
+  calls decline on every channel: on
+  descriptors 1 and 2 `sock_from_file` may find a socket, where Linux
+  runs the call (`Sys/Net/Socket.v`, `bind_spec`). On the launch whose
+  reader has gone (`Run.valid_input_channel_closed`), the far end of
+  descriptors 1 and 2 is a pipe or an AF_UNIX stream socket, not a TCP
+  one. Both raise `SIGPIPE` at a write of one byte or more: a pipe at
+  `anon_pipe_write` (`fs/pipe.c:460-465`), and an AF_UNIX end because
+  its peer's close left it `SEND_SHUTDOWN` (`unix_release_sock`,
+  `net/unix/af_unix.c:707`), which `unix_stream_sendmsg` answers with the
+  signal and `-EPIPE` (`net/unix/af_unix.c:2441-2442`, `:2537-2540`). A
+  TCP socket whose peer has gone does not: after the peer's FIN and
+  before its RST it is in `CLOSE_WAIT`, where `tcp_sendmsg_locked` still
+  sends (`net/ipv4/tcp.c:1159`) and the write returns a count, and after
+  an RST in `ESTABLISHED` the write is `-ECONNRESET` with no signal
+  (`tcp_reset`, `net/ipv4/tcp_input.c:4700-4701`; `sk_stream_error`,
+  `net/core/stream.c:194-195`), where the model
+  answers the `SIGPIPE` death. A write of 0 bytes on that launch whose
+  range `access_ok` admits declines even so: the pipe answers it 0 before its readers test
+  (`fs/pipe.c:454-456`) and the AF_UNIX end with the signal. Every other
+  far end is
+  outside the model, so a run whose descriptor 0, 1 or 2 is one of them
+  is outside what any statement covers:
+  - a terminal: `ioctl` answers `TIOCGWINSZ` with 0 there
+    (`drivers/tty/tty_io.c:2707-2708`), and `TCGETS` too, where the model
+    answers `-ENOTTY` (`Sys/Fs/Ioctl.v` says so in its header);
+  - a regular file (a shell's `< in` on descriptor 0, `> out` on 1): it
+    is opened seekable (`fs/open.c:961`), so `lseek`,
+    `pread64` and `pwrite64` answer there, and tmpfs and ramfs give
+    `fsync` a `noop_fsync` that answers 0 (`mm/shmem.c:5263`,
+    `fs/ramfs/file-mmu.c:45`), where the model answers `-ESPIPE` and
+    `-EINVAL` (`Sys/Fs/Sync.v` says so);
+  - an AF_UNIX datagram or seqpacket socket: its write is one record,
+    copied whole, so a fault anywhere in it answers `-EFAULT` with nothing
+    sent: `unix_dgram_sendmsg` copies the record at
+    `net/unix/af_unix.c:2174-2176`, Linux v6.18.46, and refuses a record
+    only over `sk_sndbuf - 32` (`net/unix/af_unix.c:2147`), so a record
+    may be longer than 36544 bytes, where the model refuses that
+    `-EFAULT`; `unix_seqpacket_sendmsg` sends through it
+    (`net/unix/af_unix.c:2564`);
+  - any other character device: its `write` may copy the whole count at
+    once, or return it without reading a byte, as `/dev/null`'s
+    `write_null` does (`drivers/char/mem.c:418-422`), and on descriptor 0
+    `/dev/null` answers `lseek` through `null_lseek`
+    (`drivers/char/mem.c:561`, `:645`), where the model answers `-ESPIPE`;
+  - a far end in non-blocking mode: an empty pipe then answers a read
+    `-EAGAIN` (`pipe_read`, `fs/pipe.c:374-376`), and a full pipe, socket
+    buffer or terminal a write, which the read and write arms never give.
+- The launch leaves `RLIMIT_FSIZE` at `RLIM_INFINITY`, its initial value
+  (`INIT_RLIMITS`, `include/asm-generic/resource.h:14`, Linux v6.18.46),
+  and a run cannot lower it: the model answers `prlimit64` for
+  `RLIMIT_CORE` only and does not model `setrlimit`. A finite limit makes
+  `generic_write_check_limits` (`fs/read_write.c:1713-1721`, Linux
+  v6.18.46) send `SIGXFSZ` and answer `-EFBIG` at it, or cut the count to
+  it, and the model does neither at such a limit. The other two limits
+  there are facts, not assumptions. Every regular-file descriptor has `O_LARGEFILE`: a run
+  gets one only from an `openat` the model answers, which is never an
+  `O_PATH` one, and a 64-bit kernel sets the flag on every such open
+  (`force_o_largefile`, `include/linux/fcntl.h:25`, applied in
+  `fs/open.c:1466-1467`, Linux v6.18.46), and `F_SETFL` cannot clear it
+  (`SETFL_MASK`, `fs/fcntl.c:37`, Linux v6.18.46), so the 2^31 - 1 limit
+  of `generic_write_check_limits` (`fs/read_write.c:1723-1724`, Linux
+  v6.18.46) never applies. A pipe's descriptors and a socket's have no
+  `O_LARGEFILE` (`create_pipe_files`, `fs/pipe.c:944-946`, and
+  `sock_alloc_file`, `net/socket.c:483-485`, Linux v6.18.46), and no
+  write to either reaches that function. And no smaller `s_maxbytes` occurs: the
+  regular files of a run are on tmpfs or ramfs ("The configuration of
+  record"), and both set it to `MAX_LFS_FILESIZE`, `shmem_fill_super`
+  (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
+  (`fs/ramfs/inode.c:267`, Linux v6.18.46).
+- The launch image has the standard root (`Fs.standard_root_present`,
+  which `Run.valid_input` requires): `/`, `/dev` and `/tmp` are folders,
+  and `/dev/null` and `/dev/urandom` are the two devices.
+- No regular file of the launch image holds more than 2^63 - 1 bytes
+  (`Fs.files_cappedb`, a clause of `Run.valid_image`). Linux
+  guarantees it for every file. The clause narrows the statement in two
+  cases, both rows of the inode table that no run reaches, since it reads
+  every row: a row that `Fs.itab_find` never returns (a later row for an
+  inode number that an earlier row already has), and a row whose inode
+  number no name of the tree holds (an orphan row: at launch no
+  descriptor holds a regular file, since `State.init_model` opens fds 0,
+  1 and 2 only, a file the run creates gets a number above every row,
+  `Fs.fs_fresh_ino`, and `Fs.fs_observe` drops the row). So it refuses an
+  image whose hidden or orphan row is longer than the limit, although no
+  lookup reaches that row. Neither row is a file in Linux. A file's size is a
+  signed 64-bit `loff_t`, and so is a file system's size limit, the
+  `s_maxbytes` (`include/linux/fs.h:1451`, Linux v6.18.46) of its
+  superblock. No file system sets that limit above `MAX_LFS_FILESIZE`
+  (`include/linux/fs.h:1277-1279`, Linux v6.18.46), which is `LLONG_MAX`
+  on 64-bit. `alloc_super` (`fs/super.c:372`, Linux v6.18.46) starts the
+  limit at `MAX_NON_LFS`, and `vfs_get_tree` (`fs/super.c:1796-1803`,
+  Linux v6.18.46) warns when a file system leaves it negative; its comment
+  states the rule. A file grows only up to the limit: a write stops at it
+  (`generic_write_check_limits`, `fs/read_write.c:1709-1732`, Linux
+  v6.18.46), and so do a truncate (`inode_newsize_ok`, `fs/attr.c:254`,
+  Linux v6.18.46) and an `fallocate` (`vfs_fallocate`, `fs/open.c:335`,
+  Linux v6.18.46). The regular files of a launch image are on tmpfs or
+  ramfs ("The configuration of record"), and rootfs and devtmpfs are each
+  one of the two (`rootfs_init_fs_context`, `init/do_mounts.c:499-505`,
+  and `devtmpfs_init_fs_context`, `drivers/base/devtmpfs.c:91-98`, Linux
+  v6.18.46). Both set the limit to `MAX_LFS_FILESIZE`: `shmem_fill_super`
+  (`mm/shmem.c:5118`, Linux v6.18.46) and `ramfs_fill_super`
+  (`fs/ramfs/inode.c:267`, Linux v6.18.46).
+- Every row of the launch image's folder table holds link counts a kernel
+  gives (`Fs.dir_rows_okb`, the last clause of `Run.valid_image`): the row
+  names a folder of the tree, its counting count is the one the image
+  implies (`Fs.fs_tree_count`), and its fixed count is 1. On tmpfs and
+  ramfs a folder starts at 2, the 1 of `inode_init_always_gfp`
+  (`fs/inode.c:242`, Linux v6.18.46) and the `inc_nlink` of
+  `__shmem_get_inode` (`mm/shmem.c:3133-3134`, Linux v6.18.46) or of
+  `ramfs_get_inode` (`fs/ramfs/inode.c:77-82`, Linux v6.18.46), and each
+  subfolder adds one (`shmem_mkdir`, `mm/shmem.c:3952`, and `ramfs_mkdir`,
+  `fs/ramfs/inode.c:122-127`, Linux v6.18.46). `generic_fillattr` reports
+  the count (`fs/stat.c:91`, Linux v6.18.46). The image holds every name
+  of a folder outside `/proc` and `/sys` but `/proc` and `/sys`
+  themselves, which are folders of the root file system, not symbolic
+  links, by the premises below. So the root's count is two, plus one per
+  subfolder the tree shows, plus one for each of `/proc` and `/sys` that
+  the tree does not hold as a folder (`Fs.root_unheld_dirs`), and every
+  other folder's count outside `/proc` and `/sys` is two plus one per
+  subfolder the tree shows: a larger one would count a subfolder that
+  `rmdir` does not see, where Linux answers `-ENOTEMPTY` (`simple_rmdir`,
+  `fs/libfs.c:799-807`, and `shmem_rmdir`, `mm/shmem.c:4032-4035`, Linux
+  v6.18.46). A folder with no row has that count too
+  (`Fs.fs_dir_links`). At or below `/proc` and `/sys`
+  (`Fs.in_proc_sys_subtree`) the count is at least that: procfs and sysfs
+  count folders of their own that an image need not hold, and no modeled
+  call reads or changes a row there. Without the clause a row could give
+  an empty folder the counts 0 and 0, and `stat` of it would answer an
+  `st_nlink` of 0. Refusing a row a lookup reaches, whose count no kernel
+  gives the folder, narrows no launch a supported kernel makes: it
+  removes images no launch has. The clause narrows the statement in two
+  cases, both rows no lookup reaches: a later row for a key an earlier
+  row already has, and a row at a key that is no folder.
+- The image describes `/dev` completely at launch, and no device node is
+  made during the run. A name under `/dev` that the image does not hold
+  is therefore `-ENOENT`. In Linux v6.18.46 devtmpfs makes a node when a
+  driver-core device is registered (`devtmpfs_create_node`,
+  `drivers/base/devtmpfs.c:129-154`), and a pty open makes one under
+  `/dev/pts` (`devpts_pty_new`, `fs/devpts/inode.c:512-547`). A run in
+  which a device appears makes this assumption false. A node of the null
+  or urandom device at a key other than the device's own name opens as
+  the device (`Fs.Open.open_devnull`, `Fs.Open.open_urandom`), and a stat
+  of its descriptor holds the node's members under the device's own name
+  when the node there is the image's one node of the kind, and under the
+  descriptor otherwise (`Fs.Stat.fstat_devfd_spec`):
+  this answers the open `bugs/valid-image-excludes-a-device-outside-dev.md`
+  names as declined, though `Run.valid_image` still keeps every device
+  node under `/dev`.
+- No inode of the launch file system carries the append-only or the
+  immutable attribute (`FS_APPEND_FL`, `FS_IMMUTABLE_FL`, which
+  `chattr +a` and `chattr +i` set; with tmpfs built in, devtmpfs is a
+  shmem mount, `drivers/base/devtmpfs.c:68-69`, and shmem turns both into
+  `S_APPEND` and `S_IMMUTABLE`, `mm/shmem.c:3050-3053`).
+  The model has no such attribute, so it never gives the refusals they
+  cause in Linux v6.18.46: `may_open`'s `-EPERM` on a write open without
+  `O_APPEND`, or an `O_TRUNC` open, of an append-only inode
+  (`fs/namei.c:3572-3577`); `inode_permission`'s `-EPERM` on a write open
+  of an immutable inode (`fs/namei.c:577-582`); and `kiocb_set_rw_flags`'
+  `-EPERM` on a `pwritev2` with `RWF_NOAPPEND` through an `O_APPEND`
+  descriptor of an append-only inode (`include/linux/fs.h:3890-3894`,
+  reached from `fs/read_write.c:819-821`). A run on such an inode makes
+  this assumption false.
+- The image holds no `/etc/localtime` (`Run.localtime_absent`): the walk
+  of `/etc/localtime` from `/`, following links as an open without
+  `O_NOFOLLOW` does, ends at a name the folder it reaches does not hold
+  or at a folder that is absent (`Fs.RMissing`, `Fs.RAbsent`). A
+  dangling link at `/etc/localtime` or at `/etc` is inside the premise;
+  a regular file at `/etc`, or a file or folder at `/etc/localtime`, is
+  outside it. So every open of it without `O_CREAT` that follows a link
+  at its last name is `-ENOENT`. Under `O_NOFOLLOW` a dangling link at
+  `/etc/localtime` is `-ELOOP` (`may_open`, `fs/namei.c:3538-3539`), or
+  `-ENOTDIR` with `O_DIRECTORY` (`do_open`, `fs/namei.c:3958-3959`).
+- The working folder is outside `/proc` and `/sys` (`Run.outside_proc_sysb`,
+  which `Run.valid_input` requires): it is neither folder and lies below
+  neither. The model declines `proc` and `sys` only where a walk looks them
+  up at `/`, and a relative walk starts at the working folder (`path_init`,
+  `fs/namei.c:2590-2604`), so from a working folder inside `/proc` the image
+  would answer for procfs (`proc_root_lookup`, `fs/proc/root.c:409-415`). A
+  process started in `/proc` or `/sys` is outside the statements.
+- The working folder is not `/` (`Run.cwd_off_rootb`, which `Run.valid_input`
+  requires). An argv operand is a plain name looked up first at the working
+  folder, and at `/` the operand `proc` or `sys` is the lookup the model
+  declines (`Fs.ROutside`), where Linux opens procfs. On main at e469081d a
+  run at `/` already broke the model's premise that "the working directory
+  holds only what the input's map holds" (`docs/faithfulness-audit.md:545`
+  at that commit) and got a wrong `-ENOENT`; the clause makes that
+  assumption formal. A process started at `/` is outside the statements
+  (`bugs/valid-image-refuses-root-cwd-and-links-to-proc-or-devices.md`).
+- No symbolic link of the image has a body with a component `proc` or `sys`
+  (`Run.links_off_proc_sysb`). A starting link such as `/tmp/x ->
+  /proc/self/fd/0` is followed by an open that names it, and the walk then
+  declines at `proc`, where Linux opens procfs. The test reads the body's
+  text, not a walk, because a folder the program makes or removes later
+  can change where a body such as `a/../../proc` leads; so it also refuses
+  a harmless `x -> sub/proc`.
+- No symbolic link of the image leads to a device or into `/dev`, and no
+  link body has a `..` component (`Run.links_off_devicesb`). OSSV-551's zlib
+  seats found that a starting `/tmp/minigzip_fuzzer.out -> /dev/urandom`
+  makes minigzip's compress loop run forever, as on Linux, and that its
+  `.gz` name linked there makes an assert fire, whose abort `Run.valid_input`
+  declines (`State.in_abort_terminal` is pinned off); a link at argv[1]'s
+  input file reaches the same. A link to a folder of `/dev` would lead a
+  fixed name such as `/tmp/d/urandom` to a device. A body with `..` is
+  refused, harmless ones such as `x -> ../a` included, because a folder the
+  program makes later can change where it leads (`/tmp/a/../../dev/null`
+  reaches `/dev/null` once the program makes `/tmp/a`); a body without `..`
+  that leads to no device at launch leads to none later, since no arm makes
+  a link or a device.
+- The working folder is not `/dev` nor a folder under it
+  (`Run.cwd_off_devb`, which `Run.valid_input` requires). An argv operand
+  is a plain name looked up first at the working folder, so from `/dev` the
+  operand `urandom` is the random device; OSSV-551's zlib round-trip agent
+  found this road (its finding F7). The reason for the assumption: every
+  device sits under `/dev` (`Run.devices_in_dev_subtreeb`), argv's names
+  hold no `/`, and no starting link leads to a device or into `/dev`, so
+  with the working folder outside `/dev` no plain name a harness takes from
+  its input reaches a device. A process started in `/dev` is outside the
+  statements
+  (`bugs/valid-image-refuses-root-cwd-and-links-to-proc-or-devices.md`).
+- The launch file system is one tree, with no bind mount inside it, of a
+  folder or of a regular file. So a folder has one name and `..` of a
+  folder is the folder whose key is its key's parent, after a symbolic
+  link as anywhere else (`follow_dotdot`'s `dget_parent`,
+  `fs/namei.c:2083`); and two keys the image shows for one inode are two
+  hard links, each counted in the `st_nlink` a stat asserts
+  (`Fs.fs_ino_nlink`). A bind mount of a file shows it under a second
+  name without raising its link count (`setup_mnt`,
+  `fs/namespace.c:1156-1160`, takes the existing dentry;
+  `generic_fillattr` reports the unchanged `i_nlink`, `fs/stat.c:91`), so
+  a stat of it there would answer a count the model rejects.
+- Every folder of the launch tree outside `/proc` and `/sys` is on tmpfs
+  or ramfs: no other file system is mounted on a folder of the tree there.
+  devtmpfs at `/dev` counts as tmpfs, since it is a shmem mount
+  (`drivers/base/devtmpfs.c:68-69`). The model has no file-system type,
+  and its arms answer with the operations tmpfs and ramfs install. Another
+  file system installs other operations, and the answers change:
+  - An mqueue folder has no `->mkdir` (`mqueue_dir_inode_operations`,
+    `ipc/mqueue.c:1613-1617`), so `mkdirat` there is `vfs_mkdir`'s
+    `-EPERM` (`fs/namei.c:4444-4446`).
+  - A name created in an mqueue folder is a queue (`mqueue_create`,
+    `ipc/mqueue.c:612-616`), not an empty regular file. Its `i_size` is 80
+    (`mqueue_get_inode`, `:307-312`; `FILENT_SIZE`, `:53`), which `fstat`
+    reports (`generic_fillattr`, `fs/stat.c:95`), and its
+    `mqueue_file_operations` have no `.write` (`:1619-1624`), so a write
+    through it is `-EINVAL` (`do_dentry_open`, `fs/open.c:973-975`;
+    `vfs_write`, `fs/read_write.c:672-673`).
+  - A second procfs instance can be mounted anywhere (`proc_get_tree`,
+    `fs/proc/root.c:310-313`). Mounted with `hidepid=1`, it answers
+    `-EPERM` for the folder of a process the caller may not inspect, an
+    F_OK `faccessat` included (`proc_pid_permission`,
+    `fs/proc/base.c:745-771`).
+  - A procfs, sysfs or kernfs folder has no `.fsync`
+    (`proc_dir_operations`, `fs/proc/generic.c:346-350`; `kernfs_dir_fops`,
+    `fs/kernfs/dir.c:1924-1929`), so `fsync` of it is `-EINVAL`
+    (`vfs_fsync_range`, `fs/sync.c:183-184`).
+
+  The walk declines the NAMES `proc` and `sys` at `/` (`Fs.at_outside`),
+  not a file system, so this premise is what keeps such a mount anywhere
+  else out of the statements. The launch environment of the agreement
+  checks meets it. The initramfs gives the rootfs, which is tmpfs or ramfs
+  (`init_rootfs`, `init/do_mounts.c`), the folders `cases`, `dev`, `proc`,
+  `sys`, `tmp` and `work` (`testing/vm/mkinitramfs.py:19`). At boot the
+  tracer mounts procfs on `/proc`, sysfs on `/sys` and devtmpfs on `/dev`
+  (`testing/vm/tracer.c:2312-2314`). For each case it mounts a fresh tmpfs
+  on `/work` and `/tmp` (`:935-936`) and on each top-level folder a seed
+  names (`:1287`), and in the case's own mount namespace a tmpfs on `/dev`
+  (`:978-979`). It mounts nothing else. A run with any other file system
+  mounted on a folder of the tree outside `/proc` and `/sys`, such as an
+  mqueue mount at `/dev/mqueue`, makes this assumption false.
+- Every mount point of the launch tree is a top-level folder, a child of
+  `/`. The model holds no mount table, and a mount point answers `rmdir`
+  with `-EBUSY` where the same folder unmounted is removed or answers
+  `-ENOTEMPTY`: `do_rmdir` looks the last name up in its parent without
+  following the mount (`fs/namei.c:4600-4607`), and `vfs_rmdir` tests
+  `is_local_mountpoint` before it calls `->rmdir`
+  (`fs/namei.c:4543-4546`, `:4552`). So `unlinkat` with `AT_REMOVEDIR`
+  declines a top-level folder (`Fs.Namei.rmdir_spec`). Below the top
+  level the premise leaves no mount point, and the bind-mount premise
+  above leaves no file or link one, so no other `unlinkat` answers that
+  `-EBUSY` (`vfs_unlink`, `fs/namei.c:4669`). `rmdir("/")` is still the
+  `-EBUSY` `do_rmdir` gives `LAST_ROOT` (`fs/namei.c:4590-4592`). The
+  launch of the agreement checks meets it: each mount the previous
+  premise lists is on a top-level folder, `/proc`, `/sys`, `/dev`,
+  `/work`, `/tmp`, or a seed root, which `write_seed` mounts only for a
+  seed folder whose name has one component (`testing/vm/tracer.c:1306`,
+  `:1318`). A run with a mount lower in the tree, such as `/dev/pts`,
+  makes this assumption false.
+- A write to `/dev/urandom` changes nothing the model holds. Linux mixes
+  the bytes into the input pool and credits no entropy
+  (`write_pool_user`, `drivers/char/random.c:1420-1446`). The bytes a
+  later read takes are the run's declared stream
+  (`State.in_urandom`), which is an input over all byte
+  streams, so a stream that the write changed in Linux is still one of
+  the launches the statements cover.
 - No tracer (`ptrace`) or other outside agent changes the process.
+- No cgroup refuses a call of the process or changes its answer: the
+  process runs in no cgroup whose BPF program at any hook, or whose v1
+  devices controller, refuses one of its calls, and no cgroup BPF program
+  rewrites a call's arguments or its answer. The hooks are the device
+  hook, `sock_create`, `bind`, `connect`, `getsockname` and `getpeername`,
+  `sendmsg` and `recvmsg`, `getsockopt` and `setsockopt`, and the others
+  `include/linux/bpf-cgroup.h` names. It is one premise for every hook
+  because one fact of the launch, below, keeps every program out. Two
+  kinds of call rest on it:
+  - The opens of a node of the null or urandom device, wherever its
+    name. The model's opens of such a node, at any key
+    (`Fs.Open.open_devnull`,
+    `Fs.Open.open_urandom`) answer the descriptor or a refusal Linux gives
+    without the device cgroup (`Fs.Open.openat_errnos`, the walk's own
+    refusals, and `do_open`'s -EEXIST for `O_CREAT|O_EXCL` and -ENOTDIR
+    for `O_DIRECTORY`, `fs/namei.c:3949-3950`, `:3958-3959`, which come
+    before `may_open`), and nothing a device cgroup alone would answer.
+    Linux v6.18.46 asks the device
+    cgroup on every open that reaches `may_open`'s permission check, which
+    every open that hands out a descriptor does but an `O_PATH` one, which
+    the model never answers: `may_open` (`fs/namei.c:3527-3567`)
+    asks `inode_permission` (`fs/namei.c:568-602`), which asks
+    `devcgroup_inode_permission` at `:597`
+    (`include/linux/device_cgroup.h:17-39`), which asks
+    `devcgroup_check_permission` (`security/device_cgroup.c:860-865`).
+    That returns the answer of the cgroup BPF device programs
+    (`__cgroup_bpf_check_dev_permission`, `kernel/bpf/cgroup.c:1774`):
+    `-EPERM` from a program that refuses (`:110`), or any value a
+    program sets through `bpf_set_retval` (`:1839-1846`). Only when that
+    answer is 0 does it ask the v1 devices controller
+    (`devcgroup_legacy_check_permission`,
+    `security/device_cgroup.c:832-854`), which answers `-EPERM` for a
+    device its list does not allow.
+  - The socket calls. `inet_create` and `inet6_create` answer `socket`
+    with the refusal of a `sock_create` program
+    (`BPF_CGROUP_RUN_PROG_INET_SOCK`, `net/ipv4/af_inet.c:391-395` and
+    `net/ipv6/af_inet6.c:264-268`), and `inet_bind_sk`
+    (`net/ipv4/af_inet.c:459-462`) answers `bind` with the refusal of a
+    `bind` program, which it runs before `__inet_bind`.
+    `__inet_stream_connect` runs a `connect` program through
+    `pre_connect` (`net/ipv4/af_inet.c:673-677`), `inet_getname` lets a
+    program rewrite the address it returns (`:816-817`, `:824-825`), and
+    `do_sock_setsockopt` and `do_sock_getsockopt` run the option
+    programs, which may rewrite the arguments or answer themselves
+    (`net/socket.c:2343`, `:2427`). The model answers these calls as
+    Linux does when no program runs (`Net.Socket.socket_spec`,
+    `Net.Socket.bind_spec`, `Net.Socket.connect_spec`,
+    `Net.Socket.setsockopt_spec`, `Net.Socket.getsockopt_spec`).
+
+  Each hook's macro runs a program only under `cgroup_bpf_enabled`, a
+  static key of the hook (`include/linux/bpf-cgroup.h:78`; for example
+  `:216-226`, `:263-281`, `:354-363`, `:376-403`), and only an attach
+  turns a key on (`kernel/bpf/cgroup.c:905`). The configuration of
+  record builds the programs and the v1 controller: its `config` asset
+  sets `CONFIG_CGROUP_DEVICE=y`,
+  `CONFIG_CGROUP_BPF=y` and `CONFIG_BPF_SYSCALL=y`, as
+  `arch/riscv/configs/defconfig` does (lines 17, 20 and 5 at v6.18.46),
+  and `testing/vm/kernel.fragment` names none of the three. The launch
+  of the agreement checks meets the premise. It mounts no cgroup file
+  system: the tracer mounts procfs, sysfs and devtmpfs at boot and
+  tmpfs for each case (`testing/vm/tracer.c:2312-2314`, `:935-936`,
+  `:979`, `:1287`; the premise on file systems above lists them), and
+  nothing else. So the process stays in the root cgroup, where the
+  first process starts (`cgroup_init_subsys`,
+  `kernel/cgroup/cgroup.c:6315-6319`): moving a process to another
+  cgroup, attaching a program at any hook and changing a v1 list each
+  need a cgroup folder or a file in one, and only a mounted cgroup file
+  system has them (an attach takes a descriptor of a cgroup folder,
+  `cgroup_get_from_fd` in `kernel/bpf/cgroup.c:1370`, and
+  `css_tryget_online_from_dir` refuses any other,
+  `kernel/cgroup/cgroup.c:7134-7137`). No program is attached
+  anywhere, so no hook runs one: `BPF_CGROUP_RUN_PROG_DEVICE_CGROUP`
+  answers 0 (`include/linux/bpf-cgroup.h:354-363`), and each socket
+  hook's macro hands back the call's own answer, untouched. And the root's v1 list
+  allows every device: `devcgroup_online` gives a cgroup with no
+  parent the default `DEVCG_DEFAULT_ALLOW`
+  (`security/device_cgroup.c:196-197`), and `devcgroup_css_alloc`
+  gives it an empty list of exceptions (`:229`), so
+  `match_exception_partial` finds none and the access is allowed
+  (`:840-843`). The model answers no `mount` and no `bpf`, so no run
+  inside the statements changes this. The premise covers every call,
+  an `F_OK` `faccessat` of a device too: it asks the device hook for an
+  empty access set, which a device program could refuse alone while it
+  lets every open through. The model still declines that call
+  (`Fs.Open.faccessat_errnos`), a decline the premise no longer needs:
+  it costs precision only.
 - The binary is a static executable (`ET_EXEC`). `tools/elf_snapshot.py`
   refuses an image whose `e_type` is not `ET_EXEC`, so a snapshot cannot
   carry a PIE. The model needs this twice. For a static PIE (`ET_DYN` with
@@ -464,6 +1345,24 @@ not apply.
   from `State.KernelBuild`, which a launch states once; `Run.valid_input`
   fixes them at `State.default_kernel`'s values. Another process that writes
   `/proc/sys/net/core/*` during the run makes this assumption false.
+- The server half of TCP Fast Open is off. The `net.ipv4.tcp_fastopen`
+  sysctl does not have both `TFO_SERVER_ENABLE` (2) and
+  `TFO_SERVER_WO_SOCKOPT1` (0x400) set (`include/net/tcp.h:273`, `:282`).
+  Its default is `TFO_CLIENT_ENABLE`, 1 (`tcp_sk_init`,
+  `net/ipv4/tcp_ipv4.c:3667`). The only other way to turn the server half
+  on is the listener's `TCP_FASTOPEN` socket option, and
+  `Net.Socket.setsockopt_spec` declines it. So `__inet_listen_sk`
+  (`net/ipv4/af_inet.c:212-217`) gives a listener no Fast Open queue,
+  `tcp_try_fastopen` (`net/ipv4/tcp_fastopen.c:365-370`) makes no
+  connection before the handshake ends, and a connection that `accept`
+  hands over has nothing in flight until the program sends
+  (`Net.Socket.end_more_errnos`). With both bits set, `accept` can hand
+  over a connection whose SYN-ACK the peer has not acknowledged. The
+  retransmit timer can then end that connection
+  (`tcp_fastopen_synack_timer`, `net/ipv4/tcp_timer.c:458-475`), and the
+  program's first send can answer `-ETIMEDOUT`, which the model refuses.
+  An administrator who sets both bits before or during the run makes
+  this assumption false.
 - A send on a stream-pair end never fails with `-ENOBUFS`. Linux's
   `sock_alloc_send_pskb` returns it when the kernel cannot allocate an
   skb, under memory pressure; the model leaves that answer out of
@@ -481,22 +1380,46 @@ not apply.
   `/proc/self` names this process. The model answers
   `openat(AT_FDCWD, "/proc/self/fd/N", ...)` on that assumption
   (`Fs.Open.openat_procfd_spec`); with no procfs there, Linux answers
-  `-ENOENT` where the model opens the file again.
-- A hard link to a `/tmp` file is outside the model, so a program that
-  makes one, or that runs where something outside it made one, has no
-  statement here. The model has no `link` or `linkat` arm, and it treats
-  the run's private `/tmp` (`State.in_tmp`) as holding regular files
-  whose one name is their name in `/tmp`. That is why a file whose
-  `/tmp` name the run removes while descriptors hold it has link count 0
-  afterwards, and its `fstat` reports `st_nlink` 0
-  (`Uapi.stat_pin_unlinked`, `Fs.Stat.fstat_anon_spec`).
-- An unnamed file (`State.FdAnon`) is used by this process only. `dup`,
-  `dup3`, `F_DUPFD` and a `clone` holding one of its descriptors are
-  declined, so no other process or descriptor table shares it. Its
-  contents live in its descriptors' entries, so the exit event's file
-  system does not include it, as Linux's does not. Its contents are
-  replicated, one copy per descriptor, and the model answers no call
-  that reads them unless every copy agrees (`State.anon_agree`).
+  `-ENOENT` where the model opens the file again. `/proc` is a folder of
+  the root file system, not a symbolic link, and procfs is mounted on
+  that folder. The kernel does not make this so: `mount` follows a
+  symbolic link at the mount point (`do_mount` resolves it with
+  `LOOKUP_FOLLOW`, `fs/namespace.c:4048`, Linux v6.18.46), so procfs can
+  be mounted through a `/proc` link on a folder the link names, and then
+  the root file system holds no folder `/proc`. So the root's link count
+  counts a folder `/proc` whether or not the image holds one
+  (`Fs.root_unheld_dirs`), and an image that holds a file or a link at
+  `/proc` contradicts this assumption. The launch of the agreement checks
+  meets it: the initramfs makes `proc` a folder
+  (`testing/vm/mkinitramfs.py:19`, `:38-39`) and the tracer mounts procfs
+  on it (`testing/vm/tracer.c:2312`). A run whose `/proc` is a symbolic
+  link makes this assumption false: there Linux answers `stat` of `/`
+  with one link fewer than the model.
+- `/sys` is a folder of the root file system, not a symbolic link, and
+  the root's link count counts it whether or not the image holds one
+  (`Fs.root_unheld_dirs`); an image that holds a file or a link at `/sys`
+  contradicts this assumption. The model never walks into `/sys`
+  (`Fs.at_outside`), so the folder matters only to the root's count:
+  `stat` of `/` answers two, plus one per subfolder the image shows, plus
+  one for each of `/proc` and `/sys` the image does not hold as a folder.
+  The launch of the agreement checks meets it: the initramfs makes `sys`
+  a folder (`testing/vm/mkinitramfs.py:19`, `:38-39`) and the tracer
+  mounts sysfs on it (`testing/vm/tracer.c:2313`), and every image the
+  harness declares holds `/proc` and `/sys` as folders
+  (`guest_root_folders`, `testing/syscall-check/main.ml:1293`). A run
+  whose root file system has no folder `/sys`, or whose `/sys` is a
+  symbolic link, makes this assumption false: there Linux answers `stat`
+  of `/` with one link fewer than the model.
+- A hard link of a regular file that the image does not show, a name in
+  a folder of the same file system that only another mount of it
+  reaches, still counts in the file's link count, and the image says
+  how many there are (`Fs.ino_outside`). A bind mount is not such a
+  name: it shows a name that exists already and raises no count
+  (`setup_mnt`, `fs/namespace.c:1156-1160`; `generic_fillattr` reports
+  the unchanged `i_nlink`, `fs/stat.c:91`), and the launch tree holds
+  none (the premise on bind mounts above). The model has no `link` or
+  `linkat` arm, so the run makes no new name for a file; the names the
+  image holds are the only ones it removes.
 - The network namespace's loopback device is named `lo`. The model
   answers `ioctl(fd, SIOCGIFINDEX, &ifr)` on an `AF_UNIX` or `AF_INET6`
   datagram socket only for the name `lo`, and answers it with index 1
@@ -545,7 +1468,9 @@ not apply.
   statement that means both readings asks for
   `Run.valid_input_channel_either`. The model pins the reader, and
   names the reader-gone launch so a proof can ask for it, the shape
-  the abort declaration already has.
+  the abort declaration already has. That launch's far end on
+  descriptors 1 and 2 is a pipe or an AF_UNIX stream socket, not a TCP
+  one (the far-end bullet above says why).
   A reader that goes away PART WAY
   through the output is a third thing the model has no term for, and a
   program whose reader goes away mid-output is outside the model.
@@ -564,10 +1489,12 @@ not apply.
   answers `-EPERM` for a fixed mapping below it, and the model admits
   the mapping. Linux takes the larger of the `vm.mmap_min_addr` sysctl and
   `CONFIG_LSM_MMAP_MIN_ADDR` (`security/min_addr.c`,
-  `update_mmap_min_addr`). That option depends on SELinux and its default
-  is 65536 (`security/Kconfig`, `LSM_MMAP_MIN_ADDR`). A kernel built with
-  SELinux, which the riscv64 defconfig is, therefore has
-  `mmap_min_addr` = 65536 and is outside this assumption. The same
+  `update_mmap_min_addr`). The configuration of record has no such
+  option, since it builds no LSM, so the value is the sysctl's, which
+  boots at `CONFIG_DEFAULT_MMAP_MIN_ADDR`, 4096 in
+  `testing/vm/kernel.fragment`. A run after a writer with
+  `CAP_SYS_RAWIO` raised the sysctl (`mmap_min_addr_handler`,
+  `security/min_addr.c`) is outside this assumption. The same
   setting moves one length bound: a `MAP_FIXED` call at an error-valued
   address (`2^64-4095` and up) returns that address unless the rounded
   length exceeds `TASK_SIZE - mmap_min_addr` (`mm/mmap.c`,
@@ -602,10 +1529,10 @@ not apply.
   fails only when it alone passes `totalram_pages() + total_swap_pages`,
   and `OVERCOMMIT_ALWAYS` = 1 never fails. The model holds neither the
   machine's memory nor its commit limit, so its budget is a parameter of
-  the run (`Run.mi_alloc_limit`) and not a reading of any of those
-  settings. Each refusal the budget forces is also admissible under the
-  errno `alt` of its arm, so the budget narrows which runs a statement
-  covers rather than claiming an answer Linux does not give.
+  the run (`mi_alloc_limit`, a variable of `Run.WithMemImage`) and not a
+  reading of any of those settings. Each refusal the budget forces is also
+  admissible under the errno `alt` of its arm, so the budget narrows which
+  runs a statement covers rather than claiming an answer Linux does not give.
 - The process uses the top-down mmap layout. The process does not have
   the `ADDR_COMPAT_LAYOUT` personality (`setarch -L`), and
   `vm.legacy_va_layout` is 0. (An unlimited `RLIMIT_STACK` also selects
@@ -633,8 +1560,9 @@ not apply.
   caller passed (`fs/exec.c`, `alloc_bprm`).
 - The launch is not a secure exec. The binary has no set-user-id bit,
   no set-group-id bit and no file capability, and no LSM asks for
-  secure mode (`cap_bprm_creds_from_file` in `security/commoncap.c`,
-  `security/selinux/hooks.c`). `AT_SECURE` is therefore 0. The model
+  secure mode: `cap_bprm_creds_from_file` (`security/commoncap.c`) is
+  the only hook the configuration of record builds, which has no LSM.
+  `AT_SECURE` is therefore 0. The model
   also cannot express such a launch: `State.ProcInput` has no effective
   id, so `State.init_model` derives the effective and saved ids from
   the real ones.
@@ -642,15 +1570,28 @@ not apply.
   (`arch/riscv/kernel/cacheinfo.c`) reads the CPU that runs the
   `execve`, and `State.KernelBuild` holds one `State.CacheView`. The
   kernel's own comment says the interface assumes a homogeneous view.
-- A file system limits each name component, for example to 255 bytes on
-  ext4 and 1024 on FUSE. `Run.valid_execfn` bounds the whole name and
-  does not look at components, so it admits an exec file name that some
-  file system refuses.
+- No component of the exec file name is longer than 255 bytes
+  (`NAME_MAX`). tmpfs and ramfs, the file systems of the configuration
+  of record whose regular files hold the bytes written to them ("The
+  configuration of record"), refuse a longer component at
+  `simple_lookup` (`fs/libfs.c`), so no supported launch's exec file
+  there has one. `Run.valid_execfn` bounds the whole name and does not
+  look at components, so it admits such a name.
 - The file that `AT_EXECFN` names holds the image. On Linux the name
   resolves to the file `execve` loaded. The model holds the image's
   segments, not its file, so `State.in_fs` need not hold a file at that
   name and a program that opens its own `AT_EXECFN` gets the file
-  system's answer.
+  system's answer. `execve` denies write access to that file
+  (`exe_file_deny_write_access`, `fs/exec.c:798`), so a write open of it
+  is `-ETXTBSY` (`get_write_access` in `do_dentry_open`,
+  `fs/open.c:925-928`) and empties nothing. The model cannot tell which
+  file of the image that is, so it admits `-ETXTBSY` beside every write
+  open of an existing regular file no descriptor of the model already
+  writes (`Sys.Fs.Open.open_write_existing`; a writer keeps the inode's
+  write count positive, which no deny can then be taken against,
+  `include/linux/fs.h:3217-3222`): the real answer is admitted, and on
+  files nothing executes the admission is a trace no supported kernel
+  gives.
 - The vDSO image of the kernel that launched the process is one of the
   measured images in `Vdso.vdso_images`. The model holds the bytes of
   one `vdso.so` per kernel build it describes, read out of a build this
@@ -818,6 +1759,16 @@ and R-b record.
   takes a page table entry with no `_PAGE_READ`, so the hardware may
   fault there as the model does. The entry below says what would settle
   it.
+- **A store-conditional the hart fails although the reservation holds.**
+  The model's `Sc` arm (`theories/Riscv/Sem.v`) makes an `sc` whose
+  address is the reserved one store and write 0 to `rd`, with no other
+  outcome. The ISA gives success only necessary conditions ("An SC may
+  succeed only if ...", Zalrsc), so a conforming hart may fail that `sc`
+  and Linux passes the failure to the program. That run is a behavior a
+  supported implementation can give and the model does not, so a proof
+  does not cover it. Whether the model will admit the failure, or
+  declare a premise about the hart instead, is open
+  (`bugs/riscv-sc-never-fails-spuriously.md`).
 
 ## Known gaps in precision
 
@@ -839,12 +1790,50 @@ serious half.
   "Assumptions that the model does not check" above pins each
   configuration the model does fix. This holds for the system calls. It
   does not hold for the start state: the launch's randomisation mode, its
-  guard gap, its `vm.mmap_rnd_bits`, its `CONFIG_RSEQ`, its vector unit,
-  its caches and its vDSO image are fields of `State.KernelBuild`, which
+  guard gap, its `vm.mmap_rnd_bits`, its vector unit, its caches, its
+  vDSO image and the `kb_thp` and `kb_rseq` flags (the next two
+  entries) are fields of `State.KernelBuild`, which
   the two binaries of a pair share, so there the model does carry a
   parameter for the machine and both binaries read the same one.
   `Run.valid_input` fixes the vector unit, the caches, the vDSO image and
   the socket numbers, and leaves the other five free.
+- **An auxiliary vector without the rseq pair.** `Run.valid_input`
+  leaves `kb_rseq` free, so beside the 29-entry vector every supported
+  kernel lays ("The configuration of record") the model admits the
+  27-entry vector of a build without `CONFIG_RSEQ`, with its entry stack
+  pointer 32 bytes higher (`StackLayout.auxv_count`). No supported kernel
+  gives that block, so a statement that compares sets of behaviors can
+  count a launch no supported kernel makes. Nothing Linux gives is left
+  out, so the model stays sound; the flag stays free because the
+  published statements' entry-stack window admitted both layouts
+  (`Run.recorded_kernel`).
+- **A 2 MiB-aligned anonymous placement.** `Run.valid_input` leaves
+  `kb_thp` free, so beside the placement every supported kernel gives
+  ("The configuration of record") the model admits the padded,
+  2 MiB-aligned search a `CONFIG_TRANSPARENT_HUGEPAGE` build runs for an
+  anonymous request with no hint whose length is a multiple of 2 MiB
+  (`thp_get_unmapped_area_vmflags`, `mm/huge_memory.c`; `Sys/Mm/Mmap.v`,
+  `thp_align`). No supported kernel runs that search, so the model can
+  name an address no supported kernel gives. Nothing Linux gives is left
+  out, so the model stays sound; the flag stays free because the
+  published statements' placement admitted any free address
+  (`Run.recorded_kernel`).
+- **A folder whose link count stays 1.** Beside the counting rule of
+  tmpfs and ramfs, the file systems of the configuration of record,
+  under which a folder starts at 2 and gains one for each subfolder,
+  `Fs.DirLinks` admits btrfs's fixed rule, under which every folder's
+  `st_nlink` is 1 (`Sys/Fs/Stat.v`, `dir_nlink_ok`); the first `stat`
+  that tells the two apart chooses one for the folder. No supported
+  kernel builds btrfs, so the model can report a count no supported
+  kernel gives. Nothing Linux gives is left out, so the model stays
+  sound.
+- **A component over 255 bytes.** `simple_lookup` (`fs/libfs.c`), the
+  lookup of tmpfs and ramfs, answers `-ENAMETOOLONG` for a component
+  longer than `NAME_MAX`. The walk admits that answer, and beside it
+  the answer of a file system with a longer limit (`Fs.comp_too_long`,
+  `Fs.wr_long`): an `-ENOENT`, a new descriptor or a removal that no
+  supported kernel gives. Nothing Linux gives is left out, so the model
+  stays sound.
 - **Clock resolution.** For supported non-CPU clock IDs, `clock_getres`
   accepts any positive nanosecond value below one second. Linux returns
   1 ns or a tick-based resolution (`posix_get_hrtimer_res` and
@@ -974,7 +1963,7 @@ serious half.
   no mapped pages keeps its single answer 0: Linux returns there in
   `do_vmi_munmap` (`mm/vma.c`) before any allocation.
 - **Random bytes.** The bytes of `/dev/urandom` are an input
-  (`State.ProcInput.in_urandom`): the source and the target see the same
+  (`State.in_urandom`): the source and the target see the same
   stream. The bytes of `getrandom` are a free choice at each call: the source
   and the target choose them independently. Thus "equivalent" means a
   different thing for each API. Two programs that print the same random
@@ -987,15 +1976,23 @@ serious half.
   it or fails, so the positive short return that the model admits here is
   a behavior no supported system gives. The write arm of
   `Sys/Fs/ReadWrite.v` names it a known soundness gap. The model
-  classifies fds 1 and 2 as channels without knowing whether the far end
-  is a pipe, a terminal or a file, so it admits the short return for all
-  three.
+  classifies fds 1 and 2 as channels without knowing which of the far
+  ends that "Assumptions that the model does not check" allows is on
+  them, so it admits the short return for all of them. Beside it, a
+  source readable at its first byte but not throughout may be `-EFAULT`
+  with nothing written, when its first unreadable byte lies inside the
+  largest first copy any of those far ends makes in the configuration of
+  record (`ReadWrite.channel_first_copy_max`, 36544 bytes: an AF_UNIX
+  stream socket's first skb, which beats a TCP socket's 32768-byte
+  fragment and a pipe's page): a pipe answers a
+  short copy with nothing counted `-EFAULT` however many readable bytes
+  came before the hole, and the model cannot see which far end it is.
 - **A channel with no reader — fixed, and what it cost.** This used to
   be a gap: the write arm could not see whether fds 1 and 2 still had a
   reader, so a write to a stdout whose reader was gone got a count,
   where Linux raises `SIGPIPE` and kills the process. The model now has
   a death that is not an exit, and the launch says which case it is
-  (`State.ProcInput.in_channel_reader`). `Run.valid_input` pins that
+  (`State.in_channel_reader`). `Run.valid_input` pins that
   field present, so every ordinary statement is about the run whose
   standard output is read; the writing end of `prog | head -1` is
   `Run.valid_input_channel_closed`, named the way
@@ -1005,7 +2002,7 @@ serious half.
   proof can ask for it.
   What is left is NOT the
   SIGPIPE disposition: that was an unstated premise and is now a
-  declaration (`State.ProcInput.in_sigpipe_default`), which
+  declaration (`State.in_sigpipe_default`), which
   `Run.valid_input` leaves FREE — both starts are covered, because the
   write that would raise the signal declines under each while the
   death is undeclared — with
@@ -1097,7 +2094,7 @@ serious half.
   `Run.valid_input_sigpipe_kills` and `Run.valid_input_channel_closed`
   name) — the write returns `-EPIPE` and the program runs on — is
   exercised only by the fixtures in
-  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2911-2999`, and by
+  `theories/LinuxProcessSem/Checks/Cases/Fs/ReadWrite.v:2977-3065`, and by
   no recorded run, until a re-recorded corpus holds such a trace.
   Under `Run.valid_input` the death is undeclared and the write declines
   at either disposition, so that arm is not reached there at all.
