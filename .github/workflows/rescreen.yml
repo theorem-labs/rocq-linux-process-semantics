@@ -389,10 +389,11 @@ jobs:
           # trusted <login>: 0 for write access or one of the APPS, 1 for neither, 2 when GitHub could not say.
           source "$GITHUB_WORKSPACE/.github/review/trusted.sh"
           source "$GITHUB_WORKSPACE/.github/review/held.sh"
-          # restart <run>: the failed jobs of <run> run again (rerun).
+          # restart <run>: the failed jobs of <run> run again (rerun and due_rerun). Each caller says what follows a
+          # refusal.
           restart() {
             gh api --method POST "repos/$REPO/actions/runs/$1/rerun-failed-jobs" > /dev/null && return 0
-            echo "::warning::#$number: GitHub refused to run the failed jobs of run $1 again: a new run instead."
+            echo "::warning::#$number: GitHub refused to run the failed jobs of run $1 again."
             return 1
           }
           declare -A used=() paced=() begun=()

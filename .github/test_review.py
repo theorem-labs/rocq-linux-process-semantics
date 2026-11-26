@@ -284,7 +284,8 @@ def evaluate(expression, ctx):
     """A GitHub Actions expression, with or without ${{ }}, as GitHub evaluates it for what these tests need: string,
     whole number, boolean and null literals, contexts looked up whole in ctx (a missing one is null), == and !=
     (strings compared without case), !, && and || (which give an operand, not a boolean), parentheses, and the
-    functions endsWith, format, cancelled and always. ctx["cancelled"] is cancelled()'s answer (False when absent)."""
+    functions endsWith, format, cancelled, failure and always. ctx["cancelled"] is cancelled()'s answer and
+    ctx["failure"] is failure()'s (each False when absent)."""
     text = expression.strip()
     if text.startswith("${{") and text.endswith("}}"):
         text = text[3:-2]
@@ -341,8 +342,8 @@ def evaluate(expression, ctx):
             if t == "format":
                 return re.sub(r"\{(\d+)\}", lambda m: "" if args[1 + int(m.group(1))] is None
                               else str(args[1 + int(m.group(1))]), args[0])
-            if t == "cancelled":
-                return bool(ctx.get("cancelled", False))
+            if t in ("cancelled", "failure"):
+                return bool(ctx.get(t, False))
             if t == "always":
                 return True
             raise AssertionError("no such function here: " + t)
@@ -13094,18 +13095,20 @@ class ScheduleTest(Scheduled):
                     self.assertEqual((rc, runs, self.reruns()), want, out)
                     self.assertIn(f"#7: the comment job of run 10 failed. {said}", out)
 
-    def test_the_failed_jobs_of_a_run_run_again_only_for_the_newest_run_with_work_and_no_other_run_of_its_head(self):
-        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b): the pass runs the failed jobs of the newest run of HEAD
-        again only when that run did work after its trust job, its post job succeeded or was skipped, its comment job
-        or its hold job failed or was cancelled, and no other run takes HEAD in this pass. Rescreen run 10 of
-        mallory's #7 ended 61 minutes ago, and its comment job failed after its post job succeeded: its failed jobs
-        run again, the control of each case below. (a) Its post job failed at the record of the import check run: the
-        App's retry owns that run (due_retry) and starts a relabel of HEAD, and no failed job runs again. (b) Its
-        comment job succeeded: nothing runs again and nothing starts. (c) Rescreen run 11 of HEAD, newer, did no work
-        after its trust job: the failed jobs of run 10 run again, and nothing of run 11. (d) Run 11 is newer, and its
-        comment job succeeded: run 11 wrote all it owed, so nothing runs again. (e) GitHub refuses the re-run of run
-        10: the pass exits 0, its log holds the warning of the refusal, and it starts nothing for #7. (f) GitHub holds
-        runs of HEAD, so the pass starts the approval of HEAD, which takes the place of a re-run."""
+    def test_the_failed_jobs_run_again_for_the_newest_run_that_left_a_failed_job_and_when_no_run_takes_the_head(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b): the pass runs again the failed jobs of the newest run of
+        HEAD that did work after its trust job, whose post job succeeded or was skipped and whose comment job or hold
+        job failed or was cancelled, when no other run takes HEAD in this pass. Rescreen run 10 of mallory's #7 ended
+        61 minutes ago, and its comment job failed after its post job succeeded: its failed jobs run again, the control
+        of each case below. (a) Its post job failed at the record of the import check run: the App's retry owns that
+        run (due_retry) and starts a relabel of HEAD, and no failed job runs again. (b) Its comment job succeeded:
+        nothing runs again and nothing starts. (c) Rescreen run 11 of HEAD, newer, did no work after its trust job:
+        the failed jobs of run 10 run again, and nothing of run 11. (d) Run 11 is newer, and its comment job
+        succeeded: the failed jobs of run 10 still run again. GitHub made run 10 earlier, but run 10 can have read #7
+        later, so its word can be the newest one; when it is not, the step of its comment job that skips its posts
+        gives way. (e) GitHub refuses the re-run of run 10: the pass exits 0, its log holds the warning of the
+        refusal, and it starts nothing for #7. (f) GitHub holds runs of HEAD, so the pass starts the approval of HEAD,
+        which takes the place of a re-run."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
         failed = self.commented_jobs()
         recorded = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "failure"})
@@ -13118,9 +13121,10 @@ class ScheduleTest(Scheduled):
                 ("a newer run that did no work after its trust job", failed, self.stopped_jobs(), True, False,
                  (0, [], [rerun]), "#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of"),
                 ("a newer run whose comment job succeeded", failed, self.commented_jobs("success"), True, False,
-                 (0, [], []), None),
+                 (0, [], [rerun]), "#7: the comment job of run 10 failed. Its failed jobs run again: try 2 of"),
                 ("GitHub refuses the re-run", failed, None, False, False, (0, [], [rerun]),
-                 "::warning::#7: GitHub refused to run the failed jobs of run 10 again: a new run instead."),
+                 "::warning::#7: GitHub refused to run the failed jobs of run 10 again.\n"
+                 "#7: the next rescreen pass tries the failed jobs of run 10 again.\n"),
                 ("an approval that this pass starts", failed, None, True, True,
                  (0, [("7", "approve", "mallory", HEAD, "")], []), None)):
             with self.subTest(case=case):
@@ -13136,6 +13140,54 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, runs, self.reruns()), want, out)
                 if said:
                     self.assertIn(said, out)
+
+    def test_the_failed_jobs_run_again_under_a_hold_that_is_not_tried_again_and_for_an_answer(self):
+        """OSSV-613's architect, 2026-11-25 23:02Z (item 3b), and the failure sweep of test_orders.py at 07d93929 (F2
+        and F3): a hold that is not tried again and names HEAD ends each App write of HEAD but a withdrawal. It ends no
+        re-run of a comment job or a hold job that failed: such a job left the item with only a part of what its run
+        owed. And the run of an answer, whose name gives no head, runs again as a run of HEAD does. The screen of a
+        run of #7 held HEAD, and the hold job of that run posted the hold comment of the screen, which names HEAD.
+        Then that job failed at its last write, 61 minutes ago. The run is rescreen run 10 of HEAD of mallory's #7
+        (F3), answer run 10 of mallory's #7, or answer run 10 of alice's #7, a writer's pull request, which consider
+        takes on the path of a writer (F2). At attempt 1, the pass runs the failed jobs of run 10 again and starts no
+        run. At attempt REVIEW_TRIES, nothing runs again, and the pass starts no stop: the hold of the screen names
+        HEAD already, and the pass answers a comment that still waits by itself (due_answer). The pass exits 0. The
+        control, held.sh whose due_rerun takes nothing, runs nothing again at attempt 1. At 07d93929, due_rerun took
+        no answer run, and consider did not call it in the branch of a hold that is not tried again."""
+        rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
+        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                        "request, so the automated review did not run. You do not need to do anything.\n\n"
+                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 10 -->"}
+        asked = {"id": 900, "user": {"login": "mallory"}, "created_at": ago(80), "updated_at": ago(80),
+                 "body": "Is this change right?"}
+        failed = attempt_job("hold", "Remove the line of a withdrawal that the posted hold records")
+        skipped = {"name": "post", "status": "completed", "conclusion": "skipped"}
+        jobs = [attempt_job("gather"), self.screened(), failed, skipped]
+        for task, author in (("rescreen", "mallory"), ("answer", "mallory"), ("answer", "alice")):
+            for attempt in (1, self.TRIES):
+                with self.subTest(task=task, author=author, attempt=attempt):
+                    self.tearDown()
+                    self.setUp()
+                    comments = [review_of(HEAD, at=ago(300)), self.LABELLED, dict(asked, user={"login": author}), hold]
+                    self.item(kind="pr", author=author, labels=("review-held",), comments=comments)
+                    self.serve(rerun, {})
+                    if task == "answer":
+                        self.ran(10, f"answer #7 for 900 by {author}", made=71, ended=61, event="issue_comment",
+                                 jobs=jobs, attempt=attempt)
+                    else:
+                        self.left(10, 61, jobs, attempt=attempt)
+                    (rc, out, runs, again), control = self.controlled(lambda: (*self.started(), self.reruns()),
+                                                                      "due_rerun() { return 0; }")
+                    said = "#7: the hold job of run 10 failed. "
+                    if attempt == 1:
+                        self.assertEqual((rc, runs, again), (0, [], [rerun]), out)
+                        self.assertIn(f"{said}Its failed jobs run again: try 2 of {self.TRIES}.", out)
+                        self.assertEqual((control[0], control[2], control[3]), (0, [], []), control[1])
+                    else:
+                        self.assertEqual((rc, runs, again), (0, [], []), out)
+                        self.assertIn(f"{said}That run is at attempt {attempt} of {self.TRIES}: its failed jobs do "
+                                      "not run again.", out)
 
 
 # The post job's step that closes and reopens a pull request for a catch-up.
@@ -23355,6 +23407,43 @@ class ImportCheckTest(ReaderRunner):
                 self.forget()
                 rc, out, _ = self.run_script(script, NUMBER=number)
                 self.assertEqual((rc, out, self.calls()), (1, f"::error::not a number: {number}\n", []))
+
+    def test_a_comment_job_whose_post_job_failed_keeps_the_record_of_a_run_of_the_same_read(self):
+        """The failure sweep of test_orders.py at 07d93929 (F1; OSSV-613's architect, 2026-11-26 02:25Z): the label
+        comment says that the workflow recorded the check exactly when a success import check run stands (I2). The
+        screened CI review run 100 and rescreen run 110 of mallory's #7 each read the item 40 minutes ago, and each
+        passed HEAD. GitHub refuses the POST of run 100's check run (502), so its post job fails and records nothing.
+        Then run 110's post job records 901, and its comment job writes the label comment of the state import. Then
+        run 100's comment job runs: two passes of the same read, so it does not give way, and its label step writes.
+        901 stands, so its label comment still says that the workflow recorded the check (the state import). Before
+        the fix, that step read a post job that did not succeed as no record, and wrote the state decide over the
+        state import while 901 stood. The control: with no success standing (901 withdrawn by a later run), the same
+        step writes the state decide, whose text does not say that the workflow recorded the check."""
+        ci = dict(self.REVIEWED, started=ago(40))
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
+        self.refuse(f"repos/{REPO}/check-runs", 502, "Bad Gateway")
+        # The refused POST lands nothing: HEAD still has no check run after it.
+        failed, _refused = self.judged([], "100", trust=ci)
+        self.assertEqual(failed["result"], "failure", self.logs[-4:])
+        os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs.fail"))
+        passed, checks = self.judged([], "110", trust=rescreen, event="workflow_dispatch", named=HEAD)
+        self.assertEqual((passed["result"], self.successes(checks)), ("success", [901]), self.logs[-4:])
+        self.serve_checks(checks)
+        before = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                  "body": rules.label_comment("change")}
+        outcomes, wrote, bodies, theirs = self.comment_job_after_post(passed, rescreen, "pass", [before], "110")
+        self.assertTrue(bodies and rules.says_recorded(bodies[-1]),
+                        ({k: v for k, v in outcomes.items() if v != "skipped"}, wrote, self.logs[-3:]))
+        label = dict(before, updated_at=ago(5), body=bodies[-1])
+        after = [dict(theirs, id=30), label]
+        for case, served, recorded in (("901 stands", checks, True),
+                                       ("901 withdrawn", [dict(c, conclusion="neutral") for c in checks], False)):
+            with self.subTest(case=case):
+                self.serve_checks(served)
+                outcomes, _wrote, bodies, _mine = self.comment_job_after_post(failed, ci, "pass", after, "100")
+                self.assertNotIn("failure", outcomes.values(), self.logs[-3:])
+                final = bodies[-1] if bodies else label["body"]
+                self.assertEqual(rules.says_recorded(final), recorded, (final, self.logs[-2:]))
 
     # The call of newer_word that reads each carrier of a word on HEAD (head_words), and the filter of its words.
     NEWER_WORDS = "head_words(comments, head, checks), run=run"

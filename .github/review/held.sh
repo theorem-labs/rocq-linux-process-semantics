@@ -1233,41 +1233,46 @@ due_retry() {
   fi
   owe "$ended" "$2" "" "$head" - "the post job of run $run $how"
 }
-# due_rerun: the comment job or the hold job of the newest run of the head failed or was cancelled, while its post job
-# succeeded or was skipped (OSSV-613's architect, 2026-11-25 23:02Z, item 3b). The newest run is the newest one, by
-# when GitHub made it, of a review, a rescreen, a relabel or an approval that did work after its trust job: a run that
-# its trust job stopped did none. That run wrote only a part of what it owed on the item (a review comment, a hold
-# comment, a label, a label comment). Its last step left no label comment that says that the workflow recorded the
-# check while no such check run stands (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run
-# again (restart, as rerun does): the post job of that run does not run again. The App's retry takes a run whose post
-# job failed or was cancelled (due_retry). A re-run is one more attempt of the run (its run_attempt, the column 13 of
-# $seen/runs). It starts only while that attempt is below REVIEW_TRIES, and the log gives the number of the attempt
-# that starts. At REVIEW_TRIES attempts the work is not tried again (head_stopped: review for a review or a rescreen,
-# approval for an approval, import for a relabel), and the log gives the count. When GitHub refuses the re-run,
-# nothing is taken, and a later reason may start a new run, as for rerun. A head that this pass already starts a run
-# for, or whose hold the pass tries again (retaken), gets no re-run: that run takes its place.
+# due_rerun: the comment job or the hold job of a run of #number failed or was cancelled, while its post job succeeded
+# or was skipped (OSSV-613's architect, 2026-11-25 23:02Z, item 3b). The run is the newest such run, by when GitHub
+# made it, of the reviews, rescreens, relabels and approvals of the head and of the answers of #number (the name of an
+# answer gives no head) that did work after their trust jobs: a run that its trust job stopped did none. A newer run
+# that wrote all it owed does not hide it: a run that GitHub made earlier can read the item later, so its word can be
+# the newest one, and the step of its failed job that skips its posts gives way when it is not (rules.py newer-word).
+# That run wrote only a part of what it owed on the item (a review comment, a hold comment, a label, a label comment).
+# Its last step left no label comment that says that the workflow recorded the check while no such check run stands
+# (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run again (restart, as rerun does): the post
+# job of that run does not run again. The App's retry takes a run whose post job failed or was cancelled (due_retry).
+# A re-run is one more attempt of the run (its run_attempt, the column 13 of $seen/runs). It starts only while that
+# attempt is below REVIEW_TRIES, and the log gives the number of the attempt that starts. At REVIEW_TRIES attempts the
+# failed jobs do not run again, and the log gives the count. Then the work is not tried again (head_stopped: review for
+# a review or a rescreen, approval for an approval, import for a relabel), unless a hold that is not tried again names
+# the head already (a hold of the screen, or the stop of an earlier pass), and but for an answer, whose comment the
+# pass answers again by itself (due_answer). When GitHub refuses the re-run, nothing is taken and no run starts in
+# its place: the next pass tries the re-run again. A head that this pass already starts a run for, or whose hold the
+# pass tries again (retaken), gets no re-run: that run takes its place.
 due_rerun() {
-  local created ended id run="" task="" f post early commented hold_job which how attempt work
+  local created ended id task f post early commented hold_job run="" which="" how="" attempt work
   [ -z "$retaken" ] || return 0
   if awk -v n="$number" '$2 == n { found = 1 } END { exit !found }' "$seen/due"; then return 0; fi
   while read -r created ended id task; do
     f=$(facts "$id") || { echo "::error::the jobs of run $id could not be read."; return 1; }
     read -r _ _ post _ early _ commented _ <<< "$f"
     [ "$early" != stopped ] || continue
+    [ "$post" = success ] || [ "$post" = skipped ] || continue
+    hold_job=$(jq -rs 'map(select(.name == "hold")) | first | .conclusion // "-"' "$seen/jobs-$id")
+    if [ "$commented" = failure ] || [ "$commented" = cancelled ]; then
+      which=comment how=$commented
+    elif [ "$hold_job" = failure ] || [ "$hold_job" = cancelled ]; then
+      which=hold how=$hold_job
+    else
+      continue
+    fi
     run=$id
     break
-  done < <(awk -v n="$number" -v h="$head" '$7 == n && $9 == h && $8 ~ /^(review|rescreen|relabel|approve)$/ {
-    print $2, $3, $1, $8 }' "$seen/runs" | sort -r)
+  done < <(awk -v n="$number" -v h="$head" '$7 == n && ($8 == "answer" ||
+    ($9 == h && $8 ~ /^(review|rescreen|relabel|approve)$/)) { print $2, $3, $1, $8 }' "$seen/runs" | sort -r)
   [ -n "$run" ] || return 0
-  [ "$post" = success ] || [ "$post" = skipped ] || return 0
-  hold_job=$(jq -rs 'map(select(.name == "hold")) | first | .conclusion // "-"' "$seen/jobs-$run")
-  if [ "$commented" = failure ] || [ "$commented" = cancelled ]; then
-    which=comment how=$commented
-  elif [ "$hold_job" = failure ] || [ "$hold_job" = cancelled ]; then
-    which=hold how=$hold_job
-  else
-    return 0
-  fi
   [ "$how" != failure ] || how=failed
   [ "$how" != cancelled ] || how="was cancelled"
   if [[ ! $ended < $hour ]]; then
@@ -1283,15 +1288,18 @@ due_rerun() {
   case $task in
     approve) work=approval ;;
     relabel) work=import ;;
+    answer) work="" ;;
     *) work=review ;;
   esac
   if (( attempt >= REVIEW_TRIES )); then
     echo "#$number: the $which job of run $run $how. That run is at attempt $attempt of $REVIEW_TRIES: its failed jobs" \
       "do not run again."
+    [ -n "$work" ] || return 0
+    [ -z "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ] || return 0
     head_stopped "$work" "$attempt"
     return 0
   fi
-  restart "$run" || return 0
+  restart "$run" || { echo "#$number: the next rescreen pass tries the failed jobs of run $run again."; return 0; }
   echo "#$number: the $which job of run $run $how. Its failed jobs run again: try $((attempt + 1)) of $REVIEW_TRIES."
   taken=1
 }
@@ -1434,7 +1442,7 @@ rerun() {
     echo "#$number: run $1 is at attempt ${attempt:-none}, past 50 re-runs: a new run instead."
     return 1
   fi
-  restart "$1" || return 1
+  restart "$1" || { echo "#$number: a new run instead."; return 1; }
   echo "#$number: the screen of run $1 passed and its review could not sign in: its failed jobs run again."
   taken=1
 }
@@ -1598,10 +1606,10 @@ due_variable() {
     "the value of REPO_PAIRS_IMPORT_PATHS recorded for $head is not the value now"
 }
 # consider [<merge>]: the runs that #number is due, by each reason above (due_*), in order. An export pull request
-# (exported) is due none. A writer's pull request gets only the work that its holds name and the review of a head that
-# a run left with no review. A read that fails for it leaves it for the next run, and this run fails at its end. Once
-# a reason took the head (taken), no later one takes it in this run. hold is the newest hold of each work of the item
-# (holds).
+# (exported) is due none. A writer's pull request gets only the work that its holds name, the review of a head that a
+# run left with no review, and the re-run of a comment job or a hold job that failed (due_rerun). A read that fails for
+# it leaves it for the next run, and this run fails at its end. Once a reason took the head (taken), no later one takes
+# it in this run. hold is the newest hold of each work of the item (holds).
 # <merge> is the mergeable_state of the pull request #number that a run of the pass with a number read
 # (rescreen.yml). With it, consider gives only the work that such a run does, for an outside pull request
 # alone: the conflict of its head when <merge> is dirty (due_conflict), else the approval of the runs of its
@@ -1687,7 +1695,9 @@ consider() {
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
   # and the hold of that stop, which names the head, ends the retry. While a relabel of the head can record an import
-  # check run, no App write of the head is tried again.
+  # check run, no App write of the head is tried again. A comment job or a hold job that failed or was cancelled still
+  # runs again (due_rerun), when the App's retry takes no run. Of the App's writes, only a hold job makes any: a
+  # withdrawal, and the check run that says that the head is not approved for the import.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
@@ -1709,12 +1719,15 @@ consider() {
         fi
         echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of the import" \
           "check runs. It does so only after a run whose post job failed or was cancelled."
-        due_retry 'review|rescreen|relabel|approve' relabel import
+        due_retry 'review|rescreen|relabel|approve' relabel import || return 1
+        [ -z "$taken" ] || return 0
+        due_rerun
         return
       fi
     fi
     echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
-    return 0
+    due_rerun
+    return
   fi
   for reason in catchup old unreviewed variable rerun; do
     "due_$reason" || return 1

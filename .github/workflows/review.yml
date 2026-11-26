@@ -4696,12 +4696,21 @@ jobs:
           fi
           # approved: the post job recorded the import check run at the head, or, for its decision hand, one that an
           # earlier run recorded still stands (STANDING). The label rule reads it as its fact recorded, which gives the
-          # state import while the variable is set. So just before that, this reads the import check runs of the head
-          # again: with no check run of the OSS Verify App for this pull request (external_id <number>:<head>) with
-          # conclusion success and the marker line of the value (rules.py import-marker), approved is false, and the
-          # decision is gone (rules.py GONE). The read asks for every check run of the head (filter=all).
-          approved=$RECORDED decision=${DECISION:-}
+          # state import while the variable is set. A post job of a review or a rescreen that failed or was cancelled
+          # gave no decision and recorded nothing, but the record of another run of the head can stand all the same (a
+          # run of the same read, or an earlier one). The label comment says that the workflow recorded the check
+          # exactly when such a check run stands (I2 of .github/test_orders.py; OSSV-613's architect, 2026-11-26 02:25Z,
+          # the failure sweep). So for such a run, this step looks for one as for the decision hand. So just before it
+          # writes, this reads the import check runs of the head again: with no check run of the OSS Verify App for this
+          # pull request (external_id <number>:<head>) with conclusion success and the marker line of the value
+          # (rules.py import-marker), approved is false, and the decision is gone (rules.py GONE), but for a post job
+          # that failed, whose decision stays none. The read asks for every check run of the head (filter=all).
+          approved=$RECORDED decision=${DECISION:-} unposted=false
           [ "$decision" != hand ] || [ "${STANDING:-}" != true ] || approved=true
+          if { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } \
+            && { [ "${TASK:-}" = review ] || [ "${TASK:-}" = rescreen ]; }; then
+            approved=true unposted=true
+          fi
           if [ "$approved" = true ] && [ -n "$paths" ]; then
             marker=$(python3 .github/review/rules.py import-marker "$HEAD" "$paths") || exit 1
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -4712,10 +4721,14 @@ jobs:
                          and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success"
                          and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id') \
               || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
-            if [ -z "$found" ]; then
+            if [ -z "$found" ] && [ "$unposted" = true ]; then
+              approved=false
+            elif [ -z "$found" ]; then
               python3 .github/review/rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED" || exit 1
               approved=false decision=gone
             fi
+          elif [ "$unposted" = true ]; then
+            approved=false
           fi
           will_fix=false fix_stop=false fix_posted=false verdict=$VERDICT
           # A review that the fresh reader refused has the verdict refused, which is no verdict of the label rule

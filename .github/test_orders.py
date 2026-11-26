@@ -83,13 +83,15 @@ The checks at the end of a hurt order, after its retry: I1, I2, I3 and I5 as abo
 names Sami's step (the step of a state whose label is waits-on-theorem); and I0 for each job but the one that the
 failure ended. Four more findings come from the retry. PASS: a pass fails and starts no stop (each stop fails its
 pass). RETRY: the last pass still starts something. START <task>: a pass starts a run that the sweep does not model (a
-review, a rescreen, an approval, a catch-up, an answer). STOP: the trust job of a stop does not take it. Each finding
-fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl one line for each
-finding of a job, a kind of failure and a site, with its count of orders and its first order, and one line of its
-counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed nothing, which are
-plain orders and run no further), the passes, and the seconds. Two hurt worlds of one shape (the same text but for the
-times, of which only the order counts) share the jobs, the passes and the checks after them. The sweep does not run
-two failures in one order, a failure in a job of the retry, in the trust, gather, screen or review job, or in the pass.
+review, a rescreen, an approval, a catch-up). An answer that a pass starts is modelled: a new answer run of comment 77
+whose screen holds it again, read now, so its word, answer, is the newest one. STOP: the trust job of a stop does not
+take it. Each finding fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl
+one line for each finding of a job, a kind of failure and a site, with its count of orders and its first order, and
+one line of its counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed
+nothing, which are plain orders and run no further), the passes, and the seconds. Two hurt worlds of one shape (the
+same text but for the times, of which only the order counts) share the jobs, the passes and the checks after them. The
+sweep does not run two failures in one order, a failure in a job of the retry, in the trust, gather, screen or review
+job, or in the pass.
 """
 
 import copy
@@ -594,11 +596,12 @@ class OrderTest(T.ReaderRunner):
     def hurt_end(self, runs, by_id, w):
         """The end of a hurt order, w: the retry when its failure ended a job, then the checks (the module's text).
         (Each pass and each job of the retry, what broke.)"""
-        done, broke = [], []
+        done, broke, made = [], [], []
         if w["hurt"]:
-            w = self.retry(runs, by_id, w, done, broke)
+            w = self.retry(runs, by_id, w, done, broke, made)
         sami = self.names_sami(w)
-        broke += [b for b in self.broken(runs, w) if not (b[0] == "I4" and sami)]
+        words = runs + [r for r in made if r["word"]]
+        broke += [b for b in self.broken(words, w) if not (b[0] == "I4" and sami)]
         return done, broke
 
     @staticmethod
@@ -611,14 +614,13 @@ class OrderTest(T.ReaderRunner):
                      if line.startswith("**Next step:** ")), "")
         return any(rules.STATES[state][0] == rules.THEOREM for state in STEPS.get(step, ()))
 
-    def retry(self, runs, by_id, w, done, broke):
+    def retry(self, runs, by_id, w, done, broke, made):
         """w after the rescreen pass, run as it runs an hour or more after each run ended, and after what it started,
-        again until a pass starts nothing, at most TRIES + 2 passes. done gets each pass, with its log lines of what it
-        started, and each job that ran after it; broke each finding: PASS, a pass that fails and starts no stop;
-        RETRY, the last pass still starts something; START <task>, a start that the sweep does not model; STOP, a stop
-        that its own trust job does not take."""
+        again until a pass starts nothing, at most TRIES + 2 passes. made gets each run that a pass started; done each
+        pass, with its log lines of what it started, and each job that ran after it; broke each finding: PASS, a pass
+        that fails and starts no stop; RETRY, the last pass still starts something; START <task>, a start that the
+        sweep does not model; STOP, a stop that its own trust job does not take."""
         true = "writer" if any(r["kind"] == "writer" for r in runs) else "outsider"
-        made = []
         for n in range(1, TRIES + 3):
             kept = self.served()
             try:
@@ -663,6 +665,12 @@ class OrderTest(T.ReaderRunner):
                     made.append(run)
                     w = self.job("comment", run, self.job("post", run, w))
                     done += [f"post {run['id']} relabel", f"comment {run['id']} relabel"]
+                elif start[0] == "answer" and true == "outsider":
+                    # A new answer of comment 77, whose screen holds it again: the word answer, read now.
+                    run = {"id": str(900 + len(made)), "task": "answer", "kind": true, "word": "answer", "minutes": 0}
+                    made.append(run)
+                    w = self.job("hold", run, w)
+                    done.append(f"hold {run['id']} answer")
                 elif start[0] != "stop":
                     broke.append((f"START {start[0]}", said))
                     return w
