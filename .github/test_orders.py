@@ -573,6 +573,7 @@ class OrderTest(T.ReaderRunner):
 
         walk(interleavings(runs), self.world(), [])
         if REPORT:
+            os.makedirs(REPORT, exist_ok=True)
             with open(os.path.join(REPORT, f"{os.getpid()}.jsonl"), "a", encoding="utf-8") as f:
                 for (invariant, name, task, kind, site), entry in found.items():
                     f.write(json.dumps({"combination": self._testMethodName, "invariant": invariant, "job": name,
