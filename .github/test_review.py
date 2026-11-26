@@ -12677,8 +12677,9 @@ class ScheduleTest(Scheduled):
         """Ruling 2 of OSSV-221's architect: the retry of a withdrawal after a held screen stops as the App's retry
         does. After REVIEW_TRIES review and relabel runs of HEAD whose post jobs failed at the withdrawal, the head gets
         the stop head-import, whose hold comment names HEAD, and the pass fails. Once that hold is there, the pass
-        starts nothing for the head. A review comment whose run screened HEAD, newer than the screen's hold, leaves the
-        head not held: a relabel would then record the check run, so the pass tries no App write of the head again."""
+        starts nothing for the head. A review comment whose run screened HEAD and passed it, newer than the screen's
+        hold, outranks that hold: the App's retry then takes the run whose post job failed, as for any head, and its
+        relabel decides by R12 (OSSV-613's architect, 2026-11-26 07:36Z, C1 of the failure sweep)."""
         hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(450), "updated_at": ago(450),
                 "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
                         "request, so the automated review did not run. You do not need to do anything.\n\n"
@@ -12708,9 +12709,10 @@ class ScheduleTest(Scheduled):
         self.ran(10, f"review {HEAD} by mallory", made=101, ended=61, event="workflow_run", jobs=[
             attempt_job("gather"), self.screened(), attempt_job("hold"), refused])
         rc, out, runs = self.started()
-        self.assertEqual((rc, runs), (0, []), out)
-        self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not tried again.",
-                      out)
+        self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+        self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the import check "
+                      f"runs of {HEAD} stands. So the rescreen pass tries the App's writes of {HEAD} again as for any "
+                      "head, after a run whose post job failed or was cancelled.", out)
 
     def test_a_refused_withdrawal_is_tried_again_whenever_a_relabel_of_the_head_withdraws(self):
         """Fresh reader round 10 (N-M3): the errors of a refused withdrawal say that the rescreen pass tries it again,
@@ -12721,8 +12723,9 @@ class ScheduleTest(Scheduled):
         the screen that names HEAD is older than a review whose run screened and passed HEAD (Sami's rescreen by hand,
         say), and the later review asks for a change: one relabel too. (c) As (a), and then a review by hand with no
         screen passed HEAD: the relabel still withdraws, for the blocking finding (OSSV-221's architect, 2026-11-20
-        22:21Z), so one relabel too. When a newer review of HEAD passed in a run that screened it, a relabel would
-        record the check run: the pass tries no App write of HEAD again."""
+        22:21Z), so one relabel too. When a newer review of HEAD passed in a run that screened it, no reason to withdraw
+        stands, and the App's retry takes the run as for any head: one relabel too, which decides by R12 (OSSV-613's
+        architect, 2026-11-26 07:36Z, C1 of the failure sweep)."""
         refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
                             MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
         last_try = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
@@ -12747,7 +12750,7 @@ class ScheduleTest(Scheduled):
                 ("(c)", [recorded, review_of(HEAD, "blocking", at=ago(300), id_=31, screened=False),
                          review_of(HEAD, at=ago(250), id_=32, screened=False), last_try], "blocking", relabel),
                 ("a newer review passed", [screen_hold, review_of(HEAD, "blocking", at=ago(300), id_=31),
-                                           review_of(HEAD, at=ago(200), id_=32, run=20)], None, [])):
+                                           review_of(HEAD, at=ago(200), id_=32, run=20)], None, relabel)):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
@@ -12761,8 +12764,10 @@ class ScheduleTest(Scheduled):
                                   f"{why[verdict]}. So of the App's writes of {HEAD}, the rescreen pass tries again "
                                   "only the withdrawal of the import check runs.", out)
                 else:
-                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
-                                  "tried again.", out)
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the "
+                                  f"import check runs of {HEAD} stands. So the rescreen pass tries the App's writes of "
+                                  f"{HEAD} again as for any head, after a run whose post job failed or was cancelled.",
+                                  out)
 
     def test_a_refused_withdrawal_whose_line_stands_is_tried_again_whatever_the_newest_review_says(self):
         """Round 13, item 2 (OSSV-221's architect, 2026-11-21 04:57Z): the rescreen pass reads the line
@@ -12772,8 +12777,9 @@ class ScheduleTest(Scheduled):
         comment holds the line. The newest review comment of HEAD is a pass with no screen, which gives no reason to
         withdraw, and the last try of a review names HEAD. The newest run of HEAD failed at the withdrawal too. While
         the line stands, the pass starts one relabel of HEAD an hour after that run ended, and its log says that the
-        reason is the line, not a review (round 13, part B, M2). With no line, a relabel of HEAD would withdraw nothing,
-        so the pass tries no App write of HEAD again."""
+        reason is the line, not a review (round 13, part B, M2). With no line, no reason to withdraw stands, and the
+        App's retry takes the run as for any head: one relabel too, which decides by R12 (OSSV-613's architect,
+        2026-11-26 07:36Z, C1 of the failure sweep)."""
         refused = post_job({"Find the import check runs that a later review or screen withdraws": "success",
                             MINT_A: "success", "Withdraw the import check runs of the head": "failure"})
         last_try = {"id": 50, "user": {"login": BOT}, "created_at": ago(100), "updated_at": ago(100),
@@ -12788,7 +12794,8 @@ class ScheduleTest(Scheduled):
         marked = dict(label, body=rules.with_marker(label["body"], line))
         for case, comments, why, want in (("the line stands", [passed, last_try, marked], "blocking",
                                            [("7", "relabel", "", HEAD, "")]),
-                                          ("no line", [passed, last_try, label], "", [])):
+                                          ("no line", [passed, last_try, label], "",
+                                           [("7", "relabel", "", HEAD, "")])):
             with self.subTest(case=case):
                 self.tearDown()
                 self.setUp()
@@ -12805,8 +12812,10 @@ class ScheduleTest(Scheduled):
                                   "import check runs. It does so only after a run whose post job failed or was "
                                   "cancelled.", out)
                 else:
-                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}: the App's writes of it are not "
-                                  "tried again.", out)
+                    self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the "
+                                  f"import check runs of {HEAD} stands. So the rescreen pass tries the App's writes of "
+                                  f"{HEAD} again as for any head, after a run whose post job failed or was cancelled.",
+                                  out)
 
     def test_a_refused_withdrawal_whose_line_is_of_a_refused_review_is_tried_again(self):
         """OSSV-221's architect, 2026-11-25 10:21Z: a review that the fresh reader refused withdraws as a blocking
@@ -12855,6 +12864,38 @@ class ScheduleTest(Scheduled):
                     post_job({self.DECIDE: "success", MINT_A: "failure"})])
                 self.ran(20, f"review {HEAD} by eve", made=ended + 1, ended=ended, event="workflow_run",
                          jobs=self.stopped_jobs())
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
+
+    def test_a_hold_that_a_newer_screened_pass_outranks_leaves_the_apps_retry_to_a_relabel(self):
+        """OSSV-613's architect, 2026-11-26 07:36Z (C1 of the failure sweep at 735357f6; I2 and I3 in
+        OrderTest.test_0464_3_runs_oheld0_opass1_opass2 and test_0482_3_runs_oanswer0_opass1_opass2): a screen held
+        HEAD of mallory's #7 (a review, or an answer whose hold names HEAD), and that hold is not tried again.
+        Later, rescreen runs 11 and 12 screened and passed HEAD. Run 12 read #7 last, and its post job failed before it
+        decided, so its comment job wrote the state decide; then run 11's post job recorded 901, and its comment job
+        gave way to run 12's newer word. 901 stands under a label comment that names Sami's step. The hold no longer
+        gives a reason to withdraw (relabel_withdraws), so the App's retry takes run 12 as for any head: one relabel of
+        HEAD, an hour after run 12 ended, whose post job decides by R12. Before, this branch started no App write while
+        a relabel could record. The control: a newer hold of the screen than each screened review gives the reason
+        screen, and the retry starts its relabel too."""
+        failed = post_job({"Read the author-kind table": "success", self.DECIDE: "failure"})
+        done = post_job({self.DECIDE: "success", MINT_A: "success", self.RECORD: "success"})
+        screened = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)")]
+        comment = attempt_job("comment")
+        for case, held_at, title in (("a held review", 400, "review"), ("a held answer", 400, "answer"),
+                                     ("the control: a newer held screen", 60, "review")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                heading = "Automated answer held." if title == "answer" else "Automated review held."
+                hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(held_at), "updated_at": ago(held_at),
+                        "body": f"<!-- review-held -->\n**{heading}**\n\nThe automated screen held this pull request. "
+                                f"You do not need to do anything.\n\n<!-- review-held-head {HEAD} -->"}
+                reviews = [review_of(HEAD, at=ago(290), id_=31, run=11, read=ago(300)),
+                           review_of(HEAD, at=ago(190), id_=32, run=12, read=ago(200))]
+                self.item(kind="pr", labels=("review-held",), comments=[*reviews, hold, self.LABELLED])
+                self.left(11, 180, [*screened, done, comment])
+                self.left(12, 61, [*screened, failed, comment])
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
 
@@ -23440,6 +23481,25 @@ class ImportCheckTest(ReaderRunner):
                 self.forget()
                 rc, out, _ = self.run_script(script, NUMBER=number)
                 self.assertEqual((rc, out, self.calls()), (1, f"::error::not a number: {number}\n", []))
+
+    def test_a_relabel_records_over_the_screened_pass_of_a_run_of_kind_unknown_only_when_it_reads_an_outsider(self):
+        """OSSV-613's architect, 2026-11-26 07:36Z (B1 of the failure sweep at 735357f6): a pass under the kind unknown
+        is no approval, so the post job of such a run withdraws and records the check run that says not approved. When
+        that post job failed, the review comment of the run stands alone: a screened pass of HEAD, whose route was the
+        screen and whose screen passed. A relabel that reads mallory as an outsider then records the check run over it
+        (R12 and the author-kind table's R: a relabel reads the marker of the screen and finds no newer hold). A
+        relabel that reads the kind as unknown again records nothing: its own word is no approval. Rescreen run 110
+        read #7 30 minutes ago with the kind unknown and passed HEAD; the relabel runs now."""
+        passed = review_of(HEAD, at=ago(25), run=110, read=ago(30), screened=True)
+        for case, kind, outside in (("outsider", "outsider", "true"), ("unknown", "unknown", "false")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                trust = dict(self.RELABEL, started=ago(5), kind=kind, outside=outside)
+                got = self.judge(["README.md"], value=self.LPS, trust=trust, event="workflow_dispatch",
+                                 comments=[passed])
+                recorded = [b for _t, b in got["checks"] if b.get("conclusion") == "success"]
+                self.assertEqual(len(recorded), 1 if kind == "outsider" else 0, (got["checks"], self.logs[-3:]))
 
     def test_a_comment_job_whose_post_job_failed_keeps_the_record_of_a_run_of_the_same_read(self):
         """The failure sweep of test_orders.py at 07d93929 (F1; OSSV-613's architect, 2026-11-26 02:25Z): the label

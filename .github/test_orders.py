@@ -15,7 +15,12 @@ waits-on-author, and no import check run. At the end of each order it checks:
 
   I1  a success stands (an import check run repo-pairs/import-approved of HEAD with the conclusion success) only when
       the newest word by read time is a pass of a run that read the author as an outsider; at a tie of read times a
-      verdict or a hold outranks a pass.
+      verdict or a hold outranks a pass. One exception (OSSV-613's architect, 2026-11-26 07:36Z, B1 of the failure
+      sweep): a success that a relabel recorded, which read the author as an outsider, over a pass of a run that read
+      the kind as unknown, whose route was the screen and whose screen passed at HEAD. A pass under the kind unknown is
+      no approval, so the post job of such a run withdraws and records that HEAD is not approved. When that post job
+      failed, a relabel that reads the true kind finds a screened pass of an outside author's head, which R12 and the
+      author-kind table's R approve.
   I2  the label comment says that the workflow recorded the check exactly when a success stands.
   I3  the state of the label comment is the state of the newest word, when that word is of a run that read the
       author's kind (outsider or writer). A run that could not read it (kind unknown) changes no label, so I3 does
@@ -218,7 +223,7 @@ class OrderTest(T.ReaderRunner):
                              {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
                               "body": rules.label_comment("change")}],
                 "labels": ["waits-on-author"], "checks": [], "next": 50, "posts": {}, "withdrawals": [], "failed": [],
-                "hurt": [], "jobs": {}}
+                "hurt": [], "jobs": {}, "makers": {}}
 
     def serve_world(self, w, run, attempt=1):
         """GitHub's answers while #7 is w, for a job of run at its attempt attempt."""
@@ -327,6 +332,7 @@ class OrderTest(T.ReaderRunner):
             with open(os.path.join(self.api, "inject"), "w") as f:
                 f.write(f"{kind} {n}\n")
             self.armed, self.hit = True, None
+        known = {c["id"] for c in w["checks"]}
         self.live = (w, run, attempt)
         try:
             outcomes = run_job(self, name, ctx, tokens, cancel=n if kind == "cancel" else None)
@@ -347,6 +353,9 @@ class OrderTest(T.ReaderRunner):
                         if self.hit is not None and s.get("run") == self.hit), "-")
             self.where = f"{hit} | {call}"
         self.record(w, name, run, outcomes, ctx, attempt, hurt=kind in ("read", "write", "cancel"))
+        # The run that recorded each success, by its task and the kind it read (I1's exception).
+        w["makers"].update({str(c["id"]): [run["task"], run["kind"]] for c in w["checks"]
+                            if c["id"] not in known and c.get("conclusion") == "success"})
         return w
 
     def stand_in(self, record):
@@ -466,7 +475,14 @@ class OrderTest(T.ReaderRunner):
         success = [c for c in w["checks"] if c.get("name") == NAME and c.get("conclusion") == "success"]
         newest = self.newest(runs)
         if success and not all(r["word"] == "pass" and r["kind"] == "outsider" for r in newest):
-            found.append(("I1", [c["id"] for c in success]))
+            # The exception of I1 (the module's text): each newest word is a pass of an outsider's read, or of a read
+            # of the kind unknown on the route screen with a screen that passed (trust, contexts), and a relabel that
+            # read the author as an outsider recorded each success.
+            screened = all(r["word"] == "pass" and (r["kind"] == "outsider" or (
+                r["kind"] == "unknown" and self.trust(r)["route"] == "screen")) for r in newest)
+            relabelled = all(w["makers"].get(str(c["id"])) == ["relabel", "outsider"] for c in success)
+            if not (screened and relabelled):
+                found.append(("I1", [c["id"] for c in success]))
         labels = [c for c in w["comments"] if c["body"].startswith(rules.FIRST)]
         label = labels[-1]["body"] if labels else ""
         if (RECORDED in label) != bool(success):

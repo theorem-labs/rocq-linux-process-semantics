@@ -1309,8 +1309,8 @@ due_rerun() {
     *) work=review ;;
   esac
   if (( attempt >= REVIEW_TRIES )); then
-    echo "#$number: the $which job of run $run $how. That run is at attempt $attempt of $REVIEW_TRIES: its failed jobs" \
-      "do not run again."
+    echo "#$number: the $which job of run $run $how. That run is at attempt $attempt of $REVIEW_TRIES: its failed" \
+      "jobs do not run again."
     [ -n "$work" ] || return 0
     [ -z "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ] || return 0
     head_stopped "$work" "$attempt"
@@ -1703,18 +1703,21 @@ consider() {
   head_of || return 1
   due_conflict || return 1
   [ -z "$taken" ] || return 0
-  # A hold that is not tried again names the head: of the App's writes of the head, only the withdrawal of its import
-  # check run is tried again, and only while a relabel of the head withdraws it (relabel_withdraws): a screen held the
-  # head after each review that screened it, a label comment holds the line
+  # A hold that is not tried again names the head: of the App's writes of the head, the withdrawal of its import check
+  # run is tried again while a relabel of the head withdraws it (relabel_withdraws): a screen held the head after each
+  # review that screened it, a label comment holds the line
   # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes and no newer screened review of
   # the head outranks it, the newest screened review of the head does not pass, or a review newer than it
   # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's retry
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
-  # and the hold of that stop, which names the head, ends the retry. While a relabel of the head can record an import
-  # check run, no App write of the head is tried again. A comment job or a hold job that failed or was cancelled still
-  # runs again (due_rerun), when the App's retry takes no run. Of the App's writes, only a hold job makes any: a
-  # withdrawal, and the check run that says that the head is not approved for the import.
+  # and the hold of that stop, which names the head, ends the retry. When relabel_withdraws gives no reason to
+  # withdraw (a newer screened review that passes outranks a hold of the screen, say), the App's retry takes such a run
+  # all the same: its relabel decides by R12 as for any head, so that the label comment ends true for its case
+  # (OSSV-613's architect, 2026-11-26 07:36Z, C1 of the failure sweep). A hold of the stop of the import (head_stopped
+  # import) ends each App write of the head. A comment job or a hold job that failed or was cancelled still runs again
+  # (due_rerun), when the App's retry takes no run. Of the App's writes, only a hold job makes any: a withdrawal, and
+  # the check run that says that the head is not approved for the import.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
@@ -1736,11 +1739,15 @@ consider() {
         fi
         echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of the import" \
           "check runs. It does so only after a run whose post job failed or was cancelled."
-        due_retry 'review|rescreen|relabel|approve' relabel import || return 1
-        [ -z "$taken" ] || return 0
-        due_rerun
-        return
+      else
+        echo "#$number: a hold that is not tried again names $head, and no reason to withdraw the import check runs" \
+          "of $head stands. So the rescreen pass tries the App's writes of $head again as for any head, after a run" \
+          "whose post job failed or was cancelled."
       fi
+      due_retry 'review|rescreen|relabel|approve' relabel import || return 1
+      [ -z "$taken" ] || return 0
+      due_rerun
+      return
     fi
     echo "#$number: a hold that is not tried again names $head: the App's writes of it are not tried again."
     due_rerun
