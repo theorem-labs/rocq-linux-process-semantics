@@ -1712,12 +1712,13 @@ consider() {
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
   # and the hold of that stop, which names the head, ends the retry. When relabel_withdraws gives no reason to
-  # withdraw (a newer screened review that passes outranks a hold of the screen, say), the App's retry takes such a run
-  # all the same: its relabel decides by R12 as for any head, so that the label comment ends true for its case
-  # (OSSV-613's architect, 2026-11-26 07:36Z, C1 of the failure sweep). A hold of the stop of the import (head_stopped
-  # import) ends each App write of the head. A comment job or a hold job that failed or was cancelled still runs again
-  # (due_rerun), when the App's retry takes no run. Of the App's writes, only a hold job makes any: a withdrawal, and
-  # the check run that says that the head is not approved for the import.
+  # withdraw (a newer screened review that passes outranks a hold of the screen, say), the App's retry takes a review,
+  # a rescreen or a relabel all the same, as for any head (an approval's failures end at the stop of the approval): its
+  # relabel decides by R12, so that the label comment ends true for its case (OSSV-613's architect, 2026-11-26 07:36Z,
+  # C1 of the failure sweep). A hold of the stop of the import (head_stopped import) ends each App write of the head. A
+  # comment job or a hold job that failed or was cancelled still runs again (due_rerun), when the App's retry takes no
+  # run. Of the App's writes, only a hold job makes any: a withdrawal, and the check run that says that the head is not
+  # approved for the import.
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
@@ -1739,12 +1740,13 @@ consider() {
         fi
         echo "$said So of the App's writes of $head, the rescreen pass tries again only the withdrawal of the import" \
           "check runs. It does so only after a run whose post job failed or was cancelled."
+        due_retry 'review|rescreen|relabel|approve' relabel import || return 1
       else
         echo "#$number: a hold that is not tried again names $head, and no reason to withdraw the import check runs" \
-          "of $head stands. So the rescreen pass tries the App's writes of $head again as for any head, after a run" \
-          "whose post job failed or was cancelled."
+          "of $head stands. So the rescreen pass tries the App's writes of $head again as for any head, after a" \
+          "review, a rescreen or a relabel whose post job failed or was cancelled."
+        due_retry 'review|rescreen|relabel' relabel import || return 1
       fi
-      due_retry 'review|rescreen|relabel|approve' relabel import || return 1
       [ -z "$taken" ] || return 0
       due_rerun
       return

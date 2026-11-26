@@ -12712,7 +12712,7 @@ class ScheduleTest(Scheduled):
         self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
         self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the import check "
                       f"runs of {HEAD} stands. So the rescreen pass tries the App's writes of {HEAD} again as for any "
-                      "head, after a run whose post job failed or was cancelled.", out)
+                      "head, after a review, a rescreen or a relabel whose post job failed or was cancelled.", out)
 
     def test_a_refused_withdrawal_is_tried_again_whenever_a_relabel_of_the_head_withdraws(self):
         """Fresh reader round 10 (N-M3): the errors of a refused withdrawal say that the rescreen pass tries it again,
@@ -12766,8 +12766,8 @@ class ScheduleTest(Scheduled):
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the "
                                   f"import check runs of {HEAD} stands. So the rescreen pass tries the App's writes of "
-                                  f"{HEAD} again as for any head, after a run whose post job failed or was cancelled.",
-                                  out)
+                                  f"{HEAD} again as for any head, after a review, a rescreen or a relabel whose post "
+                                  "job failed or was cancelled.", out)
 
     def test_a_refused_withdrawal_whose_line_stands_is_tried_again_whatever_the_newest_review_says(self):
         """Round 13, item 2 (OSSV-221's architect, 2026-11-21 04:57Z): the rescreen pass reads the line
@@ -12814,8 +12814,8 @@ class ScheduleTest(Scheduled):
                 else:
                     self.assertIn(f"#7: a hold that is not tried again names {HEAD}, and no reason to withdraw the "
                                   f"import check runs of {HEAD} stands. So the rescreen pass tries the App's writes of "
-                                  f"{HEAD} again as for any head, after a run whose post job failed or was cancelled.",
-                                  out)
+                                  f"{HEAD} again as for any head, after a review, a rescreen or a relabel whose post "
+                                  "job failed or was cancelled.", out)
 
     def test_a_refused_withdrawal_whose_line_is_of_a_refused_review_is_tried_again(self):
         """OSSV-221's architect, 2026-11-25 10:21Z: a review that the fresh reader refused withdraws as a blocking
