@@ -1191,34 +1191,51 @@ due_approve() {
 # relabel, a run of the pass that did nothing after its trust job is not that newest run either: a relabel that its
 # trust job stopped (GitHub had not computed the merge state yet, say), or whose trust job failed or was cancelled,
 # wrote nothing, so it ends no retry of a withdrawal that GitHub refused (ruling 2 of OSSV-221's architect, 2026-11-20
-# 07:33Z). The retry comes once an hour after the end of the newest run of the pass among that newest run and the runs
-# after it, or after the end of that newest run when it is a CI run and no run of the pass came after it. When that
-# newest run counts a try (tried, of facts), or a run passed over to reach it had a trust job that failed or was
-# cancelled, the runs of the head whose post job did not succeed count the tries of the head (failures): a failed "Sign
-# in as the OSS Verify App to approve" counts none (R10), and a failed "Sign in as the OSS Verify App", a failed write
-# of the App or a cancelled post job counts one. So does a run whose trust job failed or was cancelled (it ran out of
-# time, say), but not one that its trust job stopped (OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z).
-# After REVIEW_TRIES of them, the automated <work> of the head is not tried again (head_stopped <work>).
+# 07:33Z). When the post job of that newest run succeeded, an older run that did work and whose post job failed or was
+# cancelled is due the retry all the same, while no run of <task> did work after it: the post job of a run that GitHub
+# made later can have run before the older run's post job failed, so it did not do the older run's work (the failure
+# sweep of test_orders.py, OSSV-613's architect, 2026-11-26 02:25Z). The retry comes once an hour after the end of the
+# newest run of the pass among the runs read here, or after the end of the newest run that did work when it is a CI
+# run and no run of the pass came after it. When the run due the retry counts a try (tried, of facts), or a run passed
+# over to reach the newest run that did work had a trust job that failed or was cancelled, the runs of the head whose
+# post job did not succeed count the tries of the head (failures): a failed "Sign in as the OSS Verify App to approve"
+# counts none (R10), and a failed "Sign in as the OSS Verify App", a failed write of the App or a cancelled post job
+# counts one. So does a run whose trust job failed or was cancelled (it ran out of time, say), but not one that its
+# trust job stopped (OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z). After REVIEW_TRIES of them, the
+# automated <work> of the head is not tried again (head_stopped <work>).
 due_retry() {
-  local created ended run event f tried post early trust tries how=failed last="" latest="" untrusted=""
-  # The runs of the head, newest first, to the newest one that did work after its trust job. last: when the newest run
-  # of the pass among them ended (latest). untrusted: a run passed over here whose trust job failed or was cancelled
-  # (it ran out of time, say), which counts a try.
-  while read -r created ended run event; do
+  local created ended run event task f tried post early trust tries how=failed last="" latest="" untrusted=""
+  local top="" found=""
+  # The runs of the head, newest first: to the newest one that did work after its trust job (top, when it ended), and,
+  # when its post job did not fail, on to an older run that did work and whose post job failed, before a run of <task>
+  # that did work. last: when the newest run of the pass among them ended (latest). untrusted: a run passed over to
+  # reach top whose trust job failed or was cancelled (it ran out of time, say), which counts a try.
+  while read -r created ended run event task; do
     f=$(facts "$run") || { echo "::error::the jobs of run $run could not be read."; return 1; }
     read -r tried _ post _ early _ _ _ _ _ trust _ <<< "$f"
     if [ "$event" != workflow_run ] && [ -z "$last" ]; then last=$ended latest=$run; fi
-    if [ "$early" != stopped ] || { [ "$event" != workflow_run ] && [ "$2" != relabel ]; }; then break; fi
-    if [ "$trust" = failure ] || [ "$trust" = cancelled ]; then untrusted=1; fi
+    if [ -z "$top" ]; then
+      if [ "$early" = stopped ] && { [ "$event" = workflow_run ] || [ "$2" = relabel ]; }; then
+        if [ "$trust" = failure ] || [ "$trust" = cancelled ]; then untrusted=1; fi
+        continue
+      fi
+      top=$ended
+    elif [ "$early" = stopped ]; then
+      continue
+    fi
+    if [ "$post" = signin ] || [ "$post" = failure ] || [ "$post" = cancelled ]; then
+      found=1
+      break
+    fi
+    [ "$task" != "$2" ] || return 0
   done < <(awk -v n="$number" -v re="^($1)\$" -v h="$head" '$7 == n && $8 ~ re && $9 == h {
-    print $2, $3, $1, $6 }' "$seen/runs" | sort -r)
-  [ -n "${run:-}" ] || return 0
-  [ "$post" = signin ] || [ "$post" = failure ] || [ "$post" = cancelled ] || return 0
+    print $2, $3, $1, $6, $8 }' "$seen/runs" | sort -r)
+  [ -n "$found" ] || return 0
   [ "$post" != cancelled ] || how="was cancelled"
-  if [[ ! ${last:-$ended} < $hour ]]; then
+  if [[ ! ${last:-$top} < $hour ]]; then
     if [ -n "$latest" ] && [ "$latest" != "$run" ]; then
-      echo "#$number: the post job of run $run $how. Run $latest of $head did no work after its trust job, and it" \
-        "ended less than an hour ago. The rescreen pass tries again later."
+      echo "#$number: the post job of run $run $how. Run $latest of $head ended less than an hour ago. The rescreen" \
+        "pass tries again later."
     else
       echo "#$number: the post job of run $run $how, less than an hour ago: tried again later."
     fi

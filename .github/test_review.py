@@ -12858,6 +12858,39 @@ class ScheduleTest(Scheduled):
                 rc, out, runs = self.started()
                 self.assertEqual((rc, runs), (0, [("7", "relabel", "", HEAD, "")]), out)
 
+    def test_an_older_run_whose_post_job_failed_gets_a_relabel_while_no_relabel_did_work_after_it(self):
+        """The failure sweep of test_orders.py at 735357f6 (OSSV-613's architect, 2026-11-26 02:25Z; I1 and I2 in
+        OrderTest.test_0015_2_runs_oblocking0_opass0 and its kin): the post job of run 10, the workflow_run review of
+        mallory's #7, gave a blocking finding and failed at the withdrawal of check run 901 (GitHub refused the PATCH).
+        Rescreen run 11 of HEAD, which GitHub made later and which read #7 at the same time, passed HEAD, and its post
+        job succeeded: it ran before the post job of run 10, so it did not do run 10's work, and 901 stands under a
+        blocking verdict that outranks the pass. The App's retry looked only at the newest run of the head, run 11, so
+        no run ever withdrew 901. An hour after run 11 ended, the head now gets one relabel run, which withdraws for the
+        blocking verdict. The control: once relabel run 12 did work after run 10, the head gets no relabel; and a run 10
+        whose post job succeeded gets none."""
+        refused = post_job({self.DECIDE: "success", MINT_A: "success",
+                            "Find the import check runs that a later review or screen withdraws": "success",
+                            "Withdraw the import check runs of the head": "failure"})
+        done = post_job({self.DECIDE: "success"})
+        commented = attempt_job("comment")
+        screened = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)")]
+        for case, post, relabel, want in (("no relabel after run 10", refused, False, [("7", "relabel", "", HEAD, "")]),
+                                          ("a relabel after run 10", refused, True, []),
+                                          ("run 10's post job succeeded", done, False, [])):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.item(kind="pr", comments=[self.REVIEWED, self.LABELLED])
+                self.ran(10, f"review {HEAD} by mallory", made=150, ended=140, event="workflow_run",
+                         jobs=[*screened, post, commented])
+                self.left(11, 61, [*screened, done, commented])
+                if relabel:
+                    self.left(12, 30, [done, commented], task="relabel")
+                rc, out, runs = self.started()
+                self.assertEqual((rc, runs), (0, want), out)
+                if want:
+                    self.assertIn("#7: started relabel (the post job of run 10 failed", out)
+
     def test_an_import_check_that_the_app_could_not_record_is_tried_up_to_review_tries(self):
         """D16: a review or relabel run of the head whose post job failed at the check run itself counts a try of the
         head. At REVIEW_TRIES the head gets the hold comment of D16 (c) for the import check, which names the head,
