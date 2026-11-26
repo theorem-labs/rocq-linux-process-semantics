@@ -368,8 +368,20 @@ def check_text(text, name):
     if live is None:
         return ["%s: a comment holds a `\"`, which can keep it open across "
                 "a `*)` and hide text from Coq" % name]
+    # Every example declares `Module Checked` once and names
+    # `Checked.strong_universal` once (in its audit block), in the SPEC
+    # form and in the SPEC_ON form.  An alias such as `Definition su :=
+    # Checked.strong_universal.` is a second occurrence, and is refused.
+    if len(MODULE_CHECKED.findall(live)) != 1:
+        problems.append(
+            "%s: `Module Checked` must occur exactly once (a second one "
+            "would shadow the ascribed module)" % name)
+    if len(CHECKED_SU.findall(live)) != 1:
+        problems.append(
+            "%s: `Checked.strong_universal` must occur exactly once (in the "
+            "audit block)" % name)
     if name in SPEC_ON:
-        return check_text_on(text, live, name)
+        return problems + check_text_on(text, live, name)
     if SPEC_ON_WORD.search(live):
         problems.append(
             "%s: ascribes Equivalence.SPEC_ON / INPUT_HYP, which only the "
@@ -388,14 +400,6 @@ def check_text(text, name):
         problems.append(
             "%s: the Require lines for Equivalence and the example's "
             "Proof are missing or altered" % name)
-    if len(MODULE_CHECKED.findall(live)) != 1:
-        problems.append(
-            "%s: `Module Checked` must occur exactly once (a second one "
-            "would shadow the ascribed module)" % name)
-    if len(CHECKED_SU.findall(live)) != 1:
-        problems.append(
-            "%s: `Checked.strong_universal` must occur exactly once (in the "
-            "audit block)" % name)
     for pattern, what in FORBIDDEN:
         if pattern.search(live.replace(requires, "")):
             problems.append("%s: contains %s" % (name, what))
@@ -438,7 +442,9 @@ ON_TAGS = ("<strong_universal>", "</strong_universal>",
 def check_text_on(text, live, name):
     """check_text for an example in SPEC_ON: the pinned SPEC_ON ascription
     (hypothesis, witness and theorem named exactly), the hypothesis's text
-    printed in the file, and the same census as the SPEC form."""
+    printed in the file, and the same census as the SPEC form.  check_text
+    does the once-checks of `Module Checked` and `Checked.strong_universal`
+    before it calls this function."""
     hyp, hyp_text = SPEC_ON[name]
     problems = []
     asc = ON_ASCRIPTION.format(name=name, hyp=hyp, hyp_text=indent_comment(hyp_text),
