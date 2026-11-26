@@ -50,10 +50,10 @@ failed jobs of a run that the sweep's retry starts. The sweep runs under ORDERS_
 
 That is 747 combinations: 417 of 2 runs (2,112 orders, 6,198 job runs, and a relabel of 2 job runs after each order:
 10,422 job runs) and 330 of 3 runs (19,458 orders, 58,183 job runs; the orders of one combination share their first
-jobs). Each combination is one test method, which runs every
-order of its jobs; ORDERS_SHARD=<k>/<n> (0 <= k < n) keeps the
-methods whose index is k modulo n, for a matrix of review-tests.yml. Run it as python3 .github/parallel_tests.py
---processes 4 .github/test_orders.py.
+jobs). Each combination is one test method, which runs every order of its jobs. ORDERS_SHARD=<k>/<n> (0 <= k < n)
+keeps the methods of shard k of n, for a matrix of review-tests.yml: the shards share the job runs of the plain orders
+about equally (shard_of), so that each of the 30 shards of review-tests.yml ends in under 10 minutes (OSSV-613's
+architect, 2026-11-26 02:25Z). Run it as python3 .github/parallel_tests.py --processes 4 .github/test_orders.py.
 
 The failure sweep (OSSV-613, round 29, item 3). ORDERS_FAILURES=1 runs it in each test method, in the place of its
 plain orders: the walk still runs the jobs of each plain order, but it checks no plain order. review-tests.yml never
@@ -840,6 +840,30 @@ def leaves_of(tree):
     return sum(leaves_of(sub) for _job, sub in tree) if tree else 1
 
 
+def cost(combination):
+    """The job runs of the plain orders of combination: one for each node of its tree of orders (interleavings), and
+    the two of the relabel after each order of two runs."""
+    runs = run_specs(combination)
+    tree = interleavings(runs)
+
+    def nodes(subtree):
+        return sum(1 + nodes(sub) for _job, sub in subtree)
+    return nodes(tree) + (2 * leaves_of(tree) if len(runs) == 2 else 0)
+
+
+def shard_of(found, n):
+    """The shard of each combination of found, by its index, of n shards: the dearest combination first (cost), each
+    to the shard with the least cost so far, the lower shard at a tie. So each shard gets about the same cost, and the
+    same combination always gets the same shard."""
+    costs = [cost(c) for c in found]
+    load, shards = [0] * n, {}
+    for i in sorted(range(len(costs)), key=lambda i: (-costs[i], i)):
+        k = min(range(n), key=lambda k: (load[k], k))
+        load[k] += costs[i]
+        shards[i] = k
+    return shards
+
+
 def method(combination):
     def test(self):
         if FAILURES:
@@ -852,8 +876,10 @@ def method(combination):
 
 SHARD = os.environ.get("ORDERS_SHARD", "0/1")
 _k, _n = (int(x) for x in SHARD.split("/"))
-for _i, _c in enumerate(combinations()):
-    if _i % _n == _k:
+_all = combinations()
+_shards = shard_of(_all, _n) if _n > 1 else {}
+for _i, _c in enumerate(_all):
+    if _shards.get(_i, 0) == _k:
         _name = "_".join(f"{k[0]}{w}{r}" for k, w, r in _c)
         setattr(OrderTest, f"test_{_i:04d}_{len(_c)}_runs_{_name}", method(_c))
 
