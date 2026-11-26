@@ -4704,7 +4704,10 @@ jobs:
           # writes, this reads the import check runs of the head again: with no check run of the OSS Verify App for this
           # pull request (external_id <number>:<head>) with conclusion success and the marker line of the value
           # (rules.py import-marker), approved is false, and the decision is gone (rules.py GONE), but for a post job
-          # that failed, whose decision stays none. The read asks for every check run of the head (filter=all).
+          # that failed, whose decision stays none. The read asks for every check run of the head (filter=all). When
+          # GitHub does not give the check runs, the labels stay, but for a post job that failed: then approved is
+          # false, as for no such check run, so the label comment does not say that the workflow recorded the check,
+          # and it names Sami's step, as it did before this read.
           approved=$RECORDED decision=${DECISION:-} unposted=false
           [ "$decision" != hand ] || [ "${STANDING:-}" != true ] || approved=true
           if { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } \
@@ -4714,13 +4717,19 @@ jobs:
           if [ "$approved" = true ] && [ -n "$paths" ]; then
             marker=$(python3 .github/review/rules.py import-marker "$HEAD" "$paths") || exit 1
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
-            found=$(SHA=$HEAD MARKER=$marker gh api --method GET --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+            if ! found=$(SHA=$HEAD MARKER=$marker gh api --method GET --paginate \
+              "repos/$REPO/commits/$HEAD/check-runs" \
               -f check_name=repo-pairs/import-approved -f filter=all -F per_page=100 --jq '.check_runs[]
                 | select(.name == "repo-pairs/import-approved" and .head_sha == $ENV.SHA
                          and (.app.id | tostring) == $ENV.OSS_VERIFY_APP_ID
                          and .external_id == "\($ENV.NUMBER):\($ENV.SHA)" and .conclusion == "success"
-                         and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id') \
-              || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
+                         and (.output.text // "" | split("\n") | any(. == $ENV.MARKER))) | .id'); then
+              [ "$unposted" = true ] \
+                || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
+              echo "#$NUMBER: the import check runs of $HEAD could not be read, and the post job of this run did not" \
+                "succeed, so the label comment does not say that the workflow recorded the check."
+              found=""
+            fi
             if [ -z "$found" ] && [ "$unposted" = true ]; then
               approved=false
             elif [ -z "$found" ]; then
