@@ -23339,6 +23339,18 @@ class ImportCheckTest(ReaderRunner):
         got = self.relabel_withdraws([passed])
         self.assertEqual(got.split()[:1], ["refused"], got)
 
+    def test_stays_reads_only_the_holds_of_its_own_head(self):
+        """The tester's round 29 (F1), by OSSV-613's architect's ruling of 2026-11-26 12:52Z: stays reads only the words
+        of its own head. A hold comment of the screen of run 120 read #7 20 minutes ago, after this run's read 40
+        minutes ago. When it names HEAD it stops the labels of this run; when it names another head it stops
+        nothing."""
+        t40, t20 = ago(40), ago(20)
+        own = dict(self.screen_held(120, ago(5), t20), word=t20)
+        other = dict(own, body=own["body"].replace(f"<!-- review-held-head {HEAD} -->",
+                                                   f"<!-- review-held-head {OTHER_HEAD} -->"))
+        self.assertEqual(rules.stays([own], HEAD, t40, "pass", "review"), (t20, False, True))
+        self.assertEqual(rules.stays([other], HEAD, t40, "pass", "review"), ("", False, False))
+
     # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
     # job failed or was cancelled (AFTER_FAILURE).
     UNCLAIM = "Leave no label that says the workflow recorded the check"
