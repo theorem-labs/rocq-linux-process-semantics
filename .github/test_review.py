@@ -23328,6 +23328,17 @@ class ImportCheckTest(ReaderRunner):
                 facts = rules.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks)
                 self.assertEqual(facts.get("refused"), "review", facts)
 
+    def test_relabel_withdraws_reads_a_refusal_that_only_a_check_run_of_the_head_carries(self):
+        """The tester's round 29 (F1), by OSSV-613's architect's ruling of 2026-11-26 12:52Z: held.sh relabel_withdraws
+        reads the check runs of the head, so a refusal that only a check run carries counts. The screened pass of run
+        100 read #7 60 minutes ago. Rescreen run 130 read it 30 minutes ago, the fresh reader refused its review, and
+        its post job recorded the check run of not-approved for the reason refused; its withdrawal needed no line, so
+        #7 holds none. relabel_withdraws must give the reason refused, not -."""
+        passed = review_of(HEAD, at=ago(55), run=100, read=ago(60))
+        self.serve_checks([self.not_approved_check("refused", "130", ago(30))])
+        got = self.relabel_withdraws([passed])
+        self.assertEqual(got.split()[:1], ["refused"], got)
+
     # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
     # job failed or was cancelled (AFTER_FAILURE).
     UNCLAIM = "Leave no label that says the workflow recorded the check"
