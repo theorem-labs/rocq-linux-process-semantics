@@ -44,8 +44,9 @@ not say), and one author has one true kind:
           with at least one pass and one other word; the reads of the three in one of the patterns a<b<c, a=b<c,
           a<b=c and a=b=c, and in a group of runs with the same read, one order of their (kind, word) alone.
 What it does not run (the architect's pruning of 14:42Z): 3 runs with the word person, with a writer, with two or three
-unknown reads, or with no pass or only passes; any failure of GitHub; relabels, catch-ups, approvals and runs by hand;
-more than one head; a run's re-run attempt.
+unknown reads, or with no pass or only passes; any failure of GitHub but the one of the failure sweep (below);
+relabels, catch-ups, approvals and runs by hand; more than one head; a run's re-run attempt but the re-run of the
+failed jobs of a run that the sweep's retry starts. The sweep runs under ORDERS_FAILURES=1 alone.
 
 That is 747 combinations: 417 of 2 runs (2,112 orders, 6,198 job runs, and a relabel of 2 job runs after each order:
 10,422 job runs) and 330 of 3 runs (19,458 orders, 58,183 job runs; the orders of one combination share their first
@@ -53,18 +54,57 @@ jobs). Each combination is one test method, which runs every
 order of its jobs; ORDERS_SHARD=<k>/<n> (0 <= k < n) keeps the
 methods whose index is k modulo n, for a matrix of review-tests.yml. Run it as python3 .github/parallel_tests.py
 --processes 4 .github/test_orders.py.
+
+The failure sweep (OSSV-613, round 29, item 3). ORDERS_FAILURES=1 runs it in each test method, in the place of its
+plain orders: the walk still runs the jobs of each plain order, but it checks no plain order. review-tests.yml never
+sets the switch: the sweep runs on the build cluster. Each order runs again with one failure of GitHub in one of its
+jobs, which starts from the state that the plain walk reached before that job. A failure is one of three kinds. In a
+read, the n-th read of GitHub that the job makes fails as a 502 does. In a write, the n-th write of the job fails so,
+and it does not land. In a cancel, a cancel of the job ends a step that it ran: that step is cancelled, the steps after
+it are skipped, and the step whose if is failure() || cancelled() runs. The stand-in gh counts the reads and the
+writes of a job across its steps, in the order in which the job makes them (FAKE_GH, $FAKE_GH/inject). Of two runs,
+each read, each write and each step that ran of each job of each order fails in turn. Of three runs, each job of each
+order gets one failure: at each node of the walk that reaches a job of a run, the next item of the list of that job
+(its reads, then its writes, then its steps) fails, so that over the orders each item fails in some order. No failure
+falls in the relabel after an order of two runs, and that relabel does not run after a hurt order.
+
+The retry. A failure that ended no job (the job went on after the failed call) gets none. Else, after the last job of
+the order, the rescreen pass runs (test_review.schedule), as it runs an hour or more after each run ended. It reads
+what GitHub would give then: the open pull request #7 with the labels, the comments and the check runs that the order
+left, and mallory's comment 77 that an answer answers; mallory's permission of the true kind (none for an outsider,
+write for a writer); one CI run of HEAD that ended, and no held run; and review.yml's runs that ran a job, a lower id
+made earlier, each made and ended over an hour ago, with its name, its newest attempt and its jobs. Then the jobs of
+what the pass started run, against what the plain jobs read. A relabel runs its post job and its comment job (runs
+900, 901 and on). A re-run of the failed jobs of a run runs again each job of that run whose newest result is failure
+or cancelled, at the next attempt. A stop runs its trust job, which reads what the pass read, and its comment job
+(test_review.write_stop). The pass runs again until it starts nothing, REVIEW_TRIES + 2 times at most.
+
+The checks at the end of a hurt order, after its retry: I1, I2, I3 and I5 as above; I4, or the newest label comment
+names Sami's step (the step of a state whose label is waits-on-theorem); and I0 for each job but the one that the
+failure ended. Four more findings come from the retry. PASS: a pass fails and starts no stop (each stop fails its
+pass). RETRY: the last pass still starts something. START <task>: a pass starts a run that the sweep does not model (a
+review, a rescreen, an approval, a catch-up, an answer). STOP: the trust job of a stop does not take it. Each finding
+fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl one line for each
+finding of a job, a kind of failure and a site, with its count of orders and its first order, and one line of its
+counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed nothing, which are
+plain orders and run no further), the passes, and the seconds. Two hurt worlds of one shape (the same text but for the
+times, of which only the order counts) share the jobs, the passes and the checks after them. The sweep does not run
+two failures in one order, a failure in a job of the retry, in the trust, gather, screen or review job, or in the pass.
 """
 
 import copy
 import datetime
 import itertools
+import json
 import os
+import re
 import sys
+import time
 import unittest
 
 import test_review as T
-from test_review import BOT, HEAD, JOBS, REPO, WF, ago, evaluate, filled, gh_calls, gh_inputs, review_of, rules, \
-    run_job, writes
+from test_review import BOT, BRANCH, FORK_ID, HEAD, JOBS, REPO, WF, ago, evaluate, filled, gh_calls, gh_inputs, \
+    review_of, rules, run_job, run_name, writes
 
 WORDS = ("pass", "blocking", "person", "held", "answer")
 WRITER_WORDS = ("pass", "blocking", "person")
@@ -80,6 +120,21 @@ for _state, (_label, _step, _text) in rules.STATES.items():
 for _step in (rules.APPROVE, rules.COPY, rules.REVIEW_AGAIN):
     STEPS.setdefault(_step, set()).add("decide")
 NAME = "repo-pairs/import-approved"
+# The failure sweep (the module's text): ORDERS_FAILURES=1 runs it in the place of the plain orders, and ORDERS_REPORT
+# names the directory of its report lines.
+FAILURES = os.environ.get("ORDERS_FAILURES") == "1"
+REPORT = os.environ.get("ORDERS_REPORT")
+TRIES = int(WF["env"]["REVIEW_TRIES"])
+# The files in which the stand-in gh records its calls and its injection (FAKE_GH): no part of what GitHub serves.
+RECORDS = {"calls", "args", "inputs", "tokens", "sleeps", "inject", "inject.read", "inject.write", "injected"}
+TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def result_of(outcomes):
+    """A job's result as GitHub gives it from the outcomes of its steps: cancelled when a step was cancelled, else
+    failure when a step failed, else success."""
+    values = set(outcomes.values())
+    return "cancelled" if "cancelled" in values else "failure" if "failure" in values else "success"
 
 
 def run_specs(runs):
@@ -146,6 +201,8 @@ class OrderTest(T.ReaderRunner):
     def setUp(self):
         super().setUp()
         self.live = None
+        # The failure sweep's injection (job): whether it is armed, and the script of the step whose call it failed.
+        self.armed, self.hit = False, None
         self.serve(f"repos/{REPO}/check-runs", {"id": 901})
         self.serve(f"repos/{REPO}/labels", {"name": T.THEOREM_LABEL})
         self.serve(f"repos/{REPO}/issues/7/labels/review-held", [])
@@ -159,10 +216,10 @@ class OrderTest(T.ReaderRunner):
                              {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
                               "body": rules.label_comment("change")}],
                 "labels": ["waits-on-author"], "checks": [], "next": 50, "posts": {}, "withdrawals": [], "failed": [],
-                "jobs": {}}
+                "hurt": [], "jobs": {}}
 
-    def serve_world(self, w, run):
-        """GitHub's answers while #7 is w, for a job of run."""
+    def serve_world(self, w, run, attempt=1):
+        """GitHub's answers while #7 is w, for a job of run at its attempt attempt."""
         self.serve(f"repos/{REPO}/pulls/7/files", [{"filename": "README.md", "previous_filename": None}])
         self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": 1})
         self.serve(f"repos/{REPO}/pulls/7/reviews", [])
@@ -176,14 +233,16 @@ class OrderTest(T.ReaderRunner):
         for check in w["checks"]:
             self.serve(f"repos/{REPO}/check-runs/{check['id']}", {"id": check["id"], "conclusion": check["conclusion"]})
         self.serve(f"repos/{REPO}/check-runs", {"id": 901 + len(w["checks"])})
-        # The jobs of each run as GitHub lists them once they ran, each step ended when its job ran (line_written).
+        # The jobs of each run as GitHub lists them once they ran, each step ended when its job ran (line_written): the
+        # newest attempt of each job.
         for rid, jobs in w["jobs"].items():
-            self.serve(f"repos/{REPO}/actions/runs/{rid}/jobs", {"total_count": len(jobs), "jobs": [
-                {"name": name, "run_id": int(rid), "run_attempt": 1, "status": "completed",
-                 "conclusion": "failure" if "failure" in outcomes.values() else "success",
-                 "steps": [{"name": n, "status": "completed", "conclusion": c, "started_at": at, "completed_at": at}
-                           for n, c in outcomes.items()]} for name, outcomes, at in jobs]})
-        self.serve(f"repos/{REPO}/actions/runs/{run['id']}/attempts/1/jobs",
+            newest = {name: (outcomes, at, n) for name, outcomes, at, n in jobs}
+            self.serve(f"repos/{REPO}/actions/runs/{rid}/jobs", {"total_count": len(newest), "jobs": [
+                {"name": name, "run_id": int(rid), "run_attempt": n, "status": "completed",
+                 "conclusion": result_of(outcomes),
+                 "steps": [{"name": s, "status": "completed", "conclusion": c, "started_at": at, "completed_at": at}
+                           for s, c in outcomes.items()]} for name, (outcomes, at, n) in newest.items()]})
+        self.serve(f"repos/{REPO}/actions/runs/{run['id']}/attempts/{attempt}/jobs",
                    {"jobs": [T.attempt_job("trust"), T.attempt_job("gather"),
                              T.attempt_job("screen", name="screen mallory")]})
 
@@ -204,13 +263,13 @@ class OrderTest(T.ReaderRunner):
                 "kind": kind, "number": "7", "head": HEAD, "named": HEAD, "started": self.read(run),
                 "account": "mallory", "origin": "", "tries": "0", "comment": "77" if run["task"] == "answer" else ""}
 
-    def contexts(self, run, trust, post):
-        """The contexts that GitHub gives each job of run: its trust job's outputs, its event, and its post job's result
-        and outputs (post; the post job of an answer is skipped)."""
+    def contexts(self, run, trust, post, attempt=1):
+        """The contexts that GitHub gives each job of run at its attempt attempt: its trust job's outputs, its event,
+        and its post job's result and outputs (post; the post job of an answer is skipped)."""
         event = "workflow_dispatch" if run["task"] == "rescreen" else "workflow_run"
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
-                    "github.token": self.RUN_TOKEN, "github.run_id": run["id"], "github.run_attempt": "1",
+                    "github.token": self.RUN_TOKEN, "github.run_id": run["id"], "github.run_attempt": str(attempt),
                     "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS, "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
                     "needs.trust.result": "success", "needs.gather.result": "success",
                     "needs.gather.outputs.kind": "pr", "needs.gather.outputs.outside": trust["outside"]})
@@ -235,44 +294,90 @@ class OrderTest(T.ReaderRunner):
                         **{f"needs.post.outputs.{k}": v for k, v in post["post"].items()}})
         return ctx
 
-    def job(self, name, run, w):
-        """w after the job name of run, as GitHub runs it while #7 is w."""
+    def job(self, name, run, w, site=None, attempt=1):
+        """w after the job name of run, as GitHub runs it while #7 is w, at the attempt attempt of run
+        (github.run_attempt). site is a failure of GitHub in the job (the failure sweep): ("read", n) or ("write", n),
+        the n-th read or write of GitHub that the job makes fails (FAKE_GH's injection); ("cancel", <step>), a cancel
+        of the job ends that step; ("none", 0) only counts the reads and the writes; None injects and counts nothing.
+        A failure or a cancel that ends the job goes to w["hurt"], any other failure to w["failed"]. After the job,
+        self.sites is each site of it for ("none", 0): each read, each write and each step that ran, in that order;
+        and self.where says where the failure of a site hit: "<step> | <METHOD endpoint>", or the step of a cancel."""
         w = copy.deepcopy(w)
         trust = w["posts"].setdefault("trust " + run["id"], self.trust(run))
         post = None if name == "post" else w["posts"].get(run["id"], {"result": "skipped", "post": {}})
-        ctx = self.contexts(run, trust, post)
-        self.serve_world(w, run)
+        ctx = self.contexts(run, trust, post, attempt)
+        self.serve_world(w, run, attempt)
         self.forget()
         self.logs = []
         open(self.summary, "w").close()
         self.env["GITHUB_STEP_SUMMARY"] = self.summary
+        self.sites, self.where = [], ""
         if not evaluate(JOBS[name]["if"], ctx):
             if name == "post":
                 w["posts"][run["id"]] = {"result": "skipped", "post": {}}
             return w
         tokens = self.TOKENS if name == "post" else self.AnyToken(self.TOKENS)
-        self.live = (w, run)
+        kind, n = site or (None, None)
+        if kind in ("none", "read", "write"):
+            for record in ("inject.read", "inject.write", "injected"):
+                if os.path.exists(os.path.join(self.api, record)):
+                    os.remove(os.path.join(self.api, record))
+            with open(os.path.join(self.api, "inject"), "w") as f:
+                f.write(f"{kind} {n}\n")
+            self.armed, self.hit = True, None
+        self.live = (w, run, attempt)
         try:
-            outcomes = run_job(self, name, ctx, tokens)
+            outcomes = run_job(self, name, ctx, tokens, cancel=n if kind == "cancel" else None)
         finally:
             self.live = None
-        w["jobs"].setdefault(run["id"], []).append((name, outcomes, ago(0)))
-        if "failure" in outcomes.values():
-            w["failed"].append(f"{name} of run {run['id']}: {[k for k, v in outcomes.items() if v == 'failure']} "
-                               f"{self.logs[-1][-300:] if self.logs else ''}")
-        if name == "post":
-            w["posts"][run["id"]] = {"result": "failure" if "failure" in outcomes.values() else "success",
-                                     "post": filled(JOBS["post"]["outputs"], ctx)}
+            if self.armed:
+                os.remove(os.path.join(self.api, "inject"))
+                self.armed = False
+        if kind == "none":
+            reads, wrote = (int(self.stand_in(f"inject.{k}") or 0) for k in ("read", "write"))
+            self.sites = ([("read", i) for i in range(1, reads + 1)] + [("write", i) for i in range(1, wrote + 1)]
+                          + [("cancel", s) for s, outcome in outcomes.items() if outcome != "skipped"])
+        elif kind == "cancel":
+            self.where = n
+        elif kind in ("read", "write"):
+            call = self.stand_in("injected").partition(" ")[2].strip() or f"no {kind} {n} in the job"
+            hit = next((s.get("name") or "Run " + s["uses"].split("@")[0] for s in JOBS[name]["steps"]
+                        if self.hit is not None and s.get("run") == self.hit), "-")
+            self.where = f"{hit} | {call}"
+        self.record(w, name, run, outcomes, ctx, attempt, hurt=kind in ("read", "write", "cancel"))
         return w
+
+    def stand_in(self, record):
+        """The text of the stand-in gh's file record (RECORDS), empty when there is none."""
+        path = os.path.join(self.api, record)
+        if not os.path.exists(path):
+            return ""
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def record(self, w, name, run, outcomes, ctx, attempt, hurt=False):
+        """w after the job name of run ran with outcomes at the attempt attempt in the contexts ctx: its jobs, its
+        failures (w["hurt"] for the job that the failure of a site ended), and the result and outputs of a post job."""
+        w["jobs"].setdefault(run["id"], []).append((name, outcomes, ago(0), attempt))
+        result = result_of(outcomes)
+        if result != "success":
+            w["hurt" if hurt else "failed"].append(
+                f"{name} of run {run['id']}: {[k for k, v in outcomes.items() if v in ('failure', 'cancelled')]} "
+                f"{self.logs[-1][-300:] if self.logs else ''}")
+        if name == "post":
+            w["posts"][run["id"]] = {"result": result, "post": filled(JOBS["post"]["outputs"], ctx)}
 
     def run_script(self, script, **env):
         """Runner.run_script, and then, in a job (live), GitHub's answers change with the writes of the step: a later
-        step of the job reads #7 as this step left it, as it does on GitHub."""
+        step of the job reads #7 as this step left it, as it does on GitHub. While the injection is armed (job), the
+        script whose call failed is self.hit."""
         found = super().run_script(script, **env)
+        if self.armed and self.hit is None and os.path.exists(os.path.join(self.api, "injected")):
+            self.hit = script
         if getattr(self, "live", None):
-            w, run = self.live
+            w, run, attempt = self.live
             self.apply(w, run)
-            self.serve_world(w, run)
+            self.serve_world(w, run, attempt)
             self.forget()
         return found
 
@@ -411,14 +516,328 @@ class OrderTest(T.ReaderRunner):
         self.assertEqual(failures, [], f"{','.join(names)} in {len({tuple(o) for o, _b in failures})} orders of "
                                        f"{describe(runs)}: {failures[:3]}")
 
+    # --- the failure sweep (ORDERS_FAILURES) ------------------------------------------------------------------------
+
+    def sweep(self, combination):
+        """The failure sweep of combination (the module's text): each order again with one failure of GitHub in one of
+        its jobs, which starts from the plain walk's state before that job, then the rescreen pass's retry and the
+        checks at the end of the hurt order. Of two runs, every site of every job of every order fails in turn; of
+        three runs, one site of each job of each order, in turn (self.sites). Each broken invariant fails the test,
+        and ORDERS_REPORT gets a line of each, and a line of the counts. The walk shares the first jobs of the orders,
+        and two worlds of one shape (shape) share what comes after them."""
+        runs = run_specs(combination)
+        self.start = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        by_id = {r["id"]: r for r in runs}
+        began, self.passes = time.monotonic(), 0
+        ran, turns, found, memo = {"read": 0, "write": 0, "cancel": 0}, {}, {}, {}
+        counts = {"leaves": 0, "unchanged": 0}
+
+        def below(tree, w):
+            """Each order of the jobs of tree from w, with no failure: (its jobs and its retry, what broke at its
+            end)."""
+            key = (id(tree) if tree else None, self.shape(w))
+            if key not in memo:
+                memo[key] = ([self.hurt_end(runs, by_id, w)] if not tree else
+                             [([f"{name} {rid}"] + jobs, broke) for (name, rid), sub in tree
+                              for jobs, broke in below(sub, self.job(name, by_id[rid], w))])
+            return memo[key]
+
+        def walk(tree, w, order):
+            for (name, rid), sub in tree:
+                run = by_id[rid]
+                plain = self.job(name, run, w, site=("none", 0))
+                sites, same = self.sites, None
+                if len(runs) == 3 and sites:
+                    turn = turns.get((name, rid), 0)
+                    turns[(name, rid)] = turn + 1
+                    sites = [sites[turn % len(sites)]]
+                for site in sites:
+                    hurt = self.job(name, run, w, site=site)
+                    ran[site[0]] += 1
+                    where, hurt_order = self.where, order + [f"{name} {rid} {site[0]} {site[1]}"]
+                    if not hurt["hurt"]:
+                        same = self.shape(plain) if same is None else same
+                        if self.shape(hurt) == same:
+                            # The failure changed nothing: each order below is a plain one.
+                            counts["unchanged"] += leaves_of(sub)
+                            continue
+                    for jobs, broke in below(sub, hurt):
+                        counts["leaves"] += 1
+                        for invariant, detail in broke:
+                            entry = found.setdefault((invariant, name, run["task"], site[0], where), {
+                                "orders": 0, "first": hurt_order + jobs, "detail": str(detail)[:300]})
+                            entry["orders"] += 1
+                walk(sub, plain, order + [f"{name} {rid}"])
+
+        walk(interleavings(runs), self.world(), [])
+        if REPORT:
+            with open(os.path.join(REPORT, f"{os.getpid()}.jsonl"), "a", encoding="utf-8") as f:
+                for (invariant, name, task, kind, site), entry in found.items():
+                    f.write(json.dumps({"combination": self._testMethodName, "invariant": invariant, "job": name,
+                                        "task": task, "kind": kind, "site": site, **entry}) + "\n")
+                f.write(json.dumps({"combination": self._testMethodName, "ran": ran,
+                                    "leaves": counts["leaves"] + counts["unchanged"],
+                                    "unchanged": counts["unchanged"], "passes": self.passes,
+                                    "seconds": round(time.monotonic() - began, 1)}) + "\n")
+        names = sorted({key[0] for key in found})
+        self.assertEqual(len(found), 0, f"{','.join(names)} in {sum(e['orders'] for e in found.values())} hurt orders "
+                                        f"of {describe(runs)}: {list(found.items())[:3]}")
+
+    @staticmethod
+    def shape(w):
+        """w as text, each time in it replaced by its rank among its times, and its failures by their count: two worlds
+        of one shape give the same jobs, passes and checks after them."""
+        text = json.dumps({k: v for k, v in w.items() if k not in ("failed", "hurt")}, sort_keys=True)
+        rank = {t: str(i) for i, t in enumerate(sorted(set(TIME.findall(text))))}
+        return f"{TIME.sub(lambda m: rank[m.group(0)], text)} {len(w['failed'])} {len(w['hurt'])}"
+
+    def hurt_end(self, runs, by_id, w):
+        """The end of a hurt order, w: the retry when its failure ended a job, then the checks (the module's text).
+        (Each pass and each job of the retry, what broke.)"""
+        done, broke = [], []
+        if w["hurt"]:
+            w = self.retry(runs, by_id, w, done, broke)
+        sami = self.names_sami(w)
+        broke += [b for b in self.broken(runs, w) if not (b[0] == "I4" and sami)]
+        return done, broke
+
+    @staticmethod
+    def names_sami(w):
+        """Whether the newest label comment of w names Sami's step: the step of a state whose label is
+        waits-on-theorem."""
+        labels = [c for c in w["comments"] if c["body"].startswith(rules.FIRST)]
+        label = labels[-1]["body"] if labels else ""
+        step = next((line[len("**Next step:** "):] for line in label.split("\n")
+                     if line.startswith("**Next step:** ")), "")
+        return any(rules.STATES[state][0] == rules.THEOREM for state in STEPS.get(step, ()))
+
+    def retry(self, runs, by_id, w, done, broke):
+        """w after the rescreen pass, run as it runs an hour or more after each run ended, and after what it started,
+        again until a pass starts nothing, at most TRIES + 2 passes. done gets each pass, with its log lines of what it
+        started, and each job that ran after it; broke each finding: PASS, a pass that fails and starts no stop;
+        RETRY, the last pass still starts something; START <task>, a start that the sweep does not model; STOP, a stop
+        that its own trust job does not take."""
+        true = "writer" if any(r["kind"] == "writer" for r in runs) else "outsider"
+        made = []
+        for n in range(1, TRIES + 3):
+            kept = self.served()
+            try:
+                self.serve_pass(runs, w, made, true)
+                self.forget()
+                rc, log, _ = T.schedule(self, variable=self.LPS)
+                self.passes += 1
+                starts = self.starts()
+                said = [line for line in log.split("\n")
+                        if line.startswith("#7: ") and ("started" in line or "run again:" in line)]
+                done.append(f"pass {n}: {' '.join(said) or 'starts nothing'}")
+                stop = next((s for s in starts if s[0] == "stop"), None)
+                if rc != 0 and stop is None:
+                    broke.append(("PASS", log[-600:]))
+                    return w
+                if not starts:
+                    return w
+                if n == TRIES + 2:
+                    broke.append(("RETRY", said))
+                    return w
+                if stop is not None:
+                    # The trust job of a stop decides it again from what the pass read.
+                    w = self.run_stop(w, stop, made, done, broke)
+                    if broke and broke[-1][0] == "STOP":
+                        return w
+            finally:
+                self.restore(kept)
+            for start in starts:
+                if start[0] == "rerun":
+                    run = by_id.get(start[1]) or next((r for r in made if r["id"] == start[1]), None)
+                    if run is None or run["task"] == "stop":
+                        broke.append(("START rerun", said))
+                        return w
+                    newest = {name: (result_of(outcomes), k) for name, outcomes, _at, k in w["jobs"][run["id"]]}
+                    attempt = max(k for _result, k in newest.values()) + 1
+                    for name, _rid in jobs_of(run):
+                        if newest.get(name, ("",))[0] in ("failure", "cancelled"):
+                            w = self.job(name, run, w, attempt=attempt)
+                            done.append(f"{name} {run['id']} attempt {attempt}")
+                elif start[0] == "relabel":
+                    run = dict(RELABEL, id=str(900 + len(made)), kind=true, account=start[1])
+                    made.append(run)
+                    w = self.job("comment", run, self.job("post", run, w))
+                    done += [f"post {run['id']} relabel", f"comment {run['id']} relabel"]
+                elif start[0] != "stop":
+                    broke.append((f"START {start[0]}", said))
+                    return w
+        return w
+
+    def starts(self):
+        """What the pass started, in order: ("rerun", <run>), the failed jobs of a run run again, or (<task>,
+        <account>, <head>, <comment>), a run of review.yml."""
+        found = []
+        for call in gh_calls(self.api):
+            if call[:2] != ["--method", "POST"] or len(call) < 3:
+                continue
+            if call[2].endswith("/rerun-failed-jobs"):
+                found.append(("rerun", call[2].split("/")[-2]))
+            elif call[2] == f"repos/{REPO}/actions/workflows/review.yml/dispatches":
+                f = dict(a.split("=", 1) for a in call[3:] if a != "-f")
+                found.append(tuple(f[f"inputs[{k}]"] for k in ("task", "account", "head", "comment")))
+        return found
+
+    def run_stop(self, w, start, made, done, broke):
+        """w after the run of the stop start that the pass started, while what the pass read is still served: its trust
+        job, which must take it (else the finding STOP), and its comment job (T.write_stop)."""
+        run = {"id": str(900 + len(made)), "task": "stop", "kind": "", "word": "", "minutes": 0, "head": start[2],
+               "comment": start[3]}
+        made.append(run)
+        w = copy.deepcopy(w)
+        self.forget()
+        self.logs = []
+        open(self.summary, "w").close()
+        self.env["GITHUB_STEP_SUMMARY"] = self.summary
+        self.live = (w, run, 1)
+        try:
+            _trust, outcomes = T.write_stop(self, start[3], head=start[2], run=run["id"], variable=self.LPS)
+        except AssertionError as e:
+            broke.append(("STOP", str(e)[-600:]))
+            return w
+        finally:
+            self.live = None
+        self.record(w, "comment", run, outcomes, {}, 1)
+        done.append(f"stop {run['id']} {start[3]}")
+        return w
+
+    def served(self):
+        """What the stand-in gh serves now: the bytes of each of its files but its records (RECORDS)."""
+        found = {}
+        for name in os.listdir(self.api):
+            if name not in RECORDS:
+                with open(os.path.join(self.api, name), "rb") as f:
+                    found[name] = f.read()
+        return found
+
+    def restore(self, kept):
+        """The stand-in gh serves kept (served) again, and forgets its calls."""
+        for name in os.listdir(self.api):
+            if name not in RECORDS and name not in kept:
+                os.remove(os.path.join(self.api, name))
+        for name, data in kept.items():
+            with open(os.path.join(self.api, name), "wb") as f:
+                f.write(data)
+        self.forget()
+
+    def serve_pass(self, runs, w, made, true):
+        """What the rescreen pass reads while #7 is w, an hour or more after each run ended (the module's text): the
+        open pull request #7 of mallory at HEAD into main, with the labels, the comments and the check runs of w, and
+        mallory's comment 77 that an answer of runs answers, made a minute before the first answer read #7; mallory's
+        permission as the true kind of the combination gives it; one CI run of HEAD that ended, and no held run; and
+        review.yml's runs that ran a job, those of runs and those that the passes started (made), each made and ended
+        over an hour ago, a lower id earlier, with its jobs (listed_jobs)."""
+        labels = [{"name": n} for n in w["labels"]]
+        opened = ago(24 * 60)
+        self.serve(f"repos/{REPO}/issues", [{"number": 7, "state": "open", "user": {"login": "mallory"},
+                                             "created_at": opened, "labels": labels, "pull_request": {}}])
+        self.serve_prs((7, "mallory", HEAD))
+        self.serve(f"repos/{REPO}/pulls/7", {
+            "number": 7, "state": "open", "user": {"login": "mallory"}, "merged": False, "draft": False,
+            "base": {"ref": "main"}, "created_at": opened, "labels": labels,
+            "head": {"sha": HEAD, "ref": BRANCH, "repo": {"id": FORK_ID}}, "mergeable": True,
+            "mergeable_state": "clean"})
+        self.serve(f"repos/{REPO}/pulls/7/reviews", [])
+        self.serve(f"repos/{REPO}/pulls/7/comments", [])
+        self.serve(f"repos/{REPO}/issues/7", {
+            "number": 7, "state": "open", "user": {"login": "mallory"}, "draft": False, "labels": labels,
+            "pull_request": {"url": f"https://api.github.com/repos/{REPO}/pulls/7"}})
+        comments = list(w["comments"])
+        answers = [r for r in runs if r["task"] == "answer"]
+        if answers:
+            asked = (self.start - datetime.timedelta(minutes=max(r["minutes"] for r in answers) + 1)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ")
+            comments.append({"id": 77, "user": {"login": "mallory"}, "created_at": asked, "updated_at": asked,
+                             "body": "Is it fixed now?"})
+            comments.sort(key=lambda c: c["created_at"])
+        T.Scheduled.comments(self, 7, *comments)
+        self.serve(f"repos/{REPO}/issues/7/labels", labels)
+        self.serve(f"repos/{REPO}/commits/{HEAD}/check-runs", {"check_runs": w["checks"]})
+        self.permissions(mallory="write" if true == "writer" else "none")
+        self.serve("graphql", T.closed_pulls())
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/dispatches", {})
+        listed = sorted((r for r in runs + made if r["id"] in w["jobs"]), key=lambda r: int(r["id"]))
+        rows = []
+        for i, run in enumerate(listed):
+            made_at = 70 + 10 * (len(listed) - 1 - i)
+            jobs = self.listed_jobs(run, w)
+            event, title, actor = self.titled(run)
+            rows.append({"id": int(run["id"]), "event": event, "display_title": title, "status": "completed",
+                         "conclusion": "failure" if any(j["conclusion"] in ("failure", "cancelled") for j in jobs)
+                         else "success", "created_at": ago(made_at), "updated_at": ago(made_at - 5),
+                         "actor": {"login": actor}, "run_attempt": max(k for *_job, k in w["jobs"][run["id"]])})
+            self.serve(f"repos/{REPO}/actions/runs/{run['id']}/jobs", {"total_count": len(jobs), "jobs": jobs})
+            self.serve(f"repos/{REPO}/actions/runs/{run['id']}/rerun-failed-jobs", {})
+        self.serve(f"repos/{REPO}/actions/workflows/review.yml/runs",
+                   {"total_count": len(rows), "workflow_runs": rows[::-1]})
+        ended = 70 + 10 * len(listed) + 5
+        self.serve(f"repos/{REPO}/actions/runs", {"total_count": 1, "workflow_runs": [{
+            "id": 70, "status": "completed", "conclusion": "success", "event": "pull_request", "head_sha": HEAD,
+            "path": ".github/workflows/ci.yml", "head_branch": BRANCH, "head_repository": {"id": FORK_ID},
+            "created_at": ago(ended + 40), "updated_at": ago(ended), "actor": {"login": "mallory"}}]})
+
+    def titled(self, run):
+        """(event, name, actor) of run as GitHub lists it, its name as run-name gives it: a CI review, an answer, or a
+        run that the pass started (a rescreen of the account mallory but for a writer, a relabel, a stop)."""
+        if run["task"] == "review":
+            ctx = {"github.event_name": "workflow_run", "github.event.workflow_run.head_sha": HEAD,
+                   "github.actor": "mallory"}
+        elif run["task"] == "answer":
+            ctx = {"github.event_name": "issue_comment", "github.event.issue.number": 7, "github.event.comment.id": 77,
+                   "github.event.comment.user.login": "mallory"}
+        else:
+            account = run.get("account", "")
+            if run["task"] == "rescreen":
+                account = "" if run["kind"] == "writer" else "mallory"
+            ctx = {"github.event_name": "workflow_dispatch", "inputs.task": run["task"], "inputs.number": 7,
+                   "inputs.head": run.get("head", HEAD), "inputs.comment": run.get("comment", ""),
+                   "inputs.account": account}
+        event = ctx["github.event_name"]
+        return event, run_name(**ctx), BOT if event == "workflow_dispatch" else "mallory"
+
+    def listed_jobs(self, run, w):
+        """The jobs of run as GitHub lists them for its newest attempt: trust; gather, screen and review, each with its
+        result for run (contexts); then post, comment and hold with the outcomes of the steps of their newest run, or
+        skipped. A stop's trust job alone ran before its comment job."""
+        def skipped(name):
+            return {"name": name, "status": "completed", "conclusion": "skipped", "steps": []}
+
+        found = [T.attempt_job("trust")]
+        if run["task"] == "stop":
+            found += [skipped(name) for name in ("gather", "screen mallory", "review")]
+        else:
+            ctx = self.contexts(run, w["posts"]["trust " + run["id"]], None)
+            review = "review (screened)" if ctx["needs.trust.outputs.route"] == "screen" else "review"
+            for job, name in (("gather", "gather"), ("screen", "screen mallory"), ("review", review)):
+                ran = ctx[f"needs.{job}.result"] == "success"
+                found.append(T.attempt_job(job, name=name) if ran else skipped(name))
+        newest = {name: outcomes for name, outcomes, _at, _n in w["jobs"].get(run["id"], [])}
+        for name in ("post", "comment", "hold"):
+            found.append({"name": name, "status": "completed", "conclusion": result_of(newest[name]),
+                          "steps": [{"name": s, "status": "completed", "conclusion": c}
+                                    for s, c in newest[name].items()]} if name in newest else skipped(name))
+        return found
+
 
 def describe(runs):
     return "; ".join(f"run {r['id']} {r['task']} {r['kind']} {r['word']} read {r['minutes']} min ago" for r in runs)
 
 
+def leaves_of(tree):
+    """The count of the orders of a tree (interleavings)."""
+    return sum(leaves_of(sub) for _job, sub in tree) if tree else 1
+
+
 def method(combination):
     def test(self):
-        self.check_orders(combination)
+        if FAILURES:
+            self.sweep(combination)
+        else:
+            self.check_orders(combination)
     test.__doc__ = describe(run_specs(combination))
     return test
 

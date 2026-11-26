@@ -130,10 +130,29 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments and revi
 # time now as completed_at, and a PATCH of one (repos/<repo>/check-runs/<id>) changes it there, when a test serves the
 # check runs of that commit: a later read of them sees the write.
 # gh pr view <n> and gh issue view <n> answer the --json fields from $FAKE_GH/pr_view_<n>.json or issue_view_<n>.json.
+# When $FAKE_GH/inject exists, it holds "<kind> <n>": read 3, write 1, or none 0, which only counts. The failure sweep
+# of test_orders.py (ORDERS_FAILURES) writes it. Each call is then a read or a write, as writes tells them (gh api
+# graphql, gh pr view and gh issue view read), and $FAKE_GH/inject.read or inject.write keeps the count of its kind.
+# The n-th call of kind <kind> fails as GitHub's 502 does: it appends "<kind> <method> <endpoint>" to $FAKE_GH/injected,
+# prints "gh: Bad Gateway (HTTP 502)" and exits 1, before calls, args, tokens and inputs list it and before any effect,
+# so a refused write does not land. Runner.forget keeps these files. Without $FAKE_GH/inject, a call costs one test
+# of that file more.
 FAKE_GH = r"""#!/usr/bin/env bash
+inject() {
+  local want n count=0
+  read -r want n < "$FAKE_GH/inject"
+  [ ! -f "$FAKE_GH/inject.$1" ] || read -r count < "$FAKE_GH/inject.$1"
+  count=$((count + 1))
+  echo "$count" > "$FAKE_GH/inject.$1"
+  [ "$want" = "$1" ] && [ "$count" = "$n" ] || return 0
+  echo "$1 $2 $3" >> "$FAKE_GH/injected"
+  echo "gh: Bad Gateway (HTTP 502)" >&2
+  exit 1
+}
 if [ "$1" = pr ] || [ "$1" = issue ]; then
   kind=$1 number=$3 fields=
   [ "$2" = view ] || { echo "gh: only api, pr view and issue view are served here: $*" >&2; exit 9; }
+  [ ! -f "$FAKE_GH/inject" ] || inject read GET "$kind view $number"
   echo "$kind view $number" >> "$FAKE_GH/calls"
   printf '%s\0' "$@" >> "$FAKE_GH/args"; printf '\1' >> "$FAKE_GH/args"
   printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
@@ -159,6 +178,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 endpoint=${endpoint%%\?*}
+if [ -f "$FAKE_GH/inject" ]; then
+  sent=$method
+  [ -n "$sent" ] || { [ ${#fields[@]} = 0 ] && [ -z "$input" ] && sent=GET || sent=POST; }
+  if [ "$endpoint" = graphql ] || [ "$sent" = GET ]; then
+    inject read "$sent" "$endpoint"
+  else
+    inject write "$sent" "$endpoint"
+  fi
+fi
 echo "$endpoint" >> "$FAKE_GH/calls"
 printf '%s\0' "${all[@]}" >> "$FAKE_GH/args"; printf '\1' >> "$FAKE_GH/args"
 printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
@@ -648,9 +676,9 @@ class Runner(unittest.TestCase):
             else {"filename": p[0], "previous_filename": p[1]} for p in paths])
 
     def run_trust(self, event, author="", actor="", number="7", task="", screen="", account="", comment="", head="",
-                  head_repository="", title=None, reply="", pulls=None, variable=None, head_branch=None):
-        """The trust step, with the event and the inputs as GitHub gives them. A run by hand has run 100's name:
-        the one run-name gives its inputs, or title. pulls: the pull requests that a CI run names
+                  head_repository="", title=None, reply="", pulls=None, variable=None, head_branch=None, run="100"):
+        """The trust step of run <run> (100 when not given), with the event and the inputs as GitHub gives them. A run
+        by hand has the name that run-name gives its inputs, or title. pulls: the pull requests that a CI run names
         (workflow_run.pull_requests; named_pr), None for an event that names none. head_branch: a CI run's head branch
         (BRANCH when not given; GitHub gives none for another event). variable: the variable REPO_PAIRS_IMPORT_PATHS
         (None: not set, so GitHub gives an empty value), which the check of a stop reads."""
@@ -659,15 +687,15 @@ class Runner(unittest.TestCase):
                 title = run_name(**{"github.event_name": event, "inputs.task": task or "review",
                                     "inputs.number": int(number) if number else None, "inputs.head": head,
                                     "inputs.comment": comment, "inputs.account": account})
-            self.serve(f"repos/{REPO}/actions/runs/100",
-                       {"id": 100, "event": event, "display_title": title, "actor": {"login": actor}})
+            self.serve(f"repos/{REPO}/actions/runs/{run}",
+                       {"id": int(run), "event": event, "display_title": title, "actor": {"login": actor}})
         if head_branch is None:
             head_branch = BRANCH if event == "workflow_run" else ""
         s = step("trust", TRUST)
         (name,) = [k for k, v in s["env"].items() if v == "${{ vars.REPO_PAIRS_IMPORT_PATHS }}"]
         return self.run_script(s["run"], EVENT=event, AUTHOR=author, ACTOR=actor, NUMBER=number,
                                TASK=task, SCREEN=screen, ACCOUNT=account, COMMENT=comment, HEAD=head,
-                               HEAD_REPOSITORY=head_repository, HEAD_BRANCH=head_branch, REPLY=reply, RUN_ID="100",
+                               HEAD_REPOSITORY=head_repository, HEAD_BRANCH=head_branch, REPLY=reply, RUN_ID=run,
                                PULLS="" if pulls is None else json.dumps(pulls),
                                **{name: "" if variable is None else variable},
                                **{k: WF["env"][k] for k in ("OUTSIDE_HOURLY_LIMIT", "HELD_LABEL", "REVIEW_TRIES",
@@ -10106,17 +10134,19 @@ def schedule(test, post_review=None, variable=None, number=None):
     return rc, out, runs
 
 
-def write_stop(test, stop, number="7", head=""):
+def write_stop(test, stop, number="7", head="", run=None, variable=None):
     """The run of review.yml that the rescreen pass started for a stop (-f task=stop -f comment=<stop>), as the API says
     of #number now: its trust job, of github-actions[bot], which must take it, then, after the stand-in gh forgot its
-    calls, the comment job's steps: the trust job's outputs, and the outcome of each step."""
-    rc, out, trust = test.run_trust("workflow_dispatch", actor=BOT, number=number, task="stop", head=head, comment=stop)
+    calls, the comment job's steps: the trust job's outputs, and the outcome of each step. run: the id of that run
+    (github.run_id; None: run 100 of run_trust, and no github.run_id). variable: REPO_PAIRS_IMPORT_PATHS (run_trust)."""
+    rc, out, trust = test.run_trust("workflow_dispatch", actor=BOT, number=number, task="stop", head=head, comment=stop,
+                                    variable=variable, **({} if run is None else {"run": run}))
     test.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "stop", "review"), out)
     test.forget()
     ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
     ctx.update({"needs.trust.result": "success", "github.event_name": "workflow_dispatch",
                 "github.ref": "refs/heads/main", "github.repository": REPO, "github.token": ApproveTest.RUN_TOKEN,
-                "env.POST_REVIEW": WF["env"]["POST_REVIEW"]})
+                "env.POST_REVIEW": WF["env"]["POST_REVIEW"], **({} if run is None else {"github.run_id": run})})
     ctx.update({f"needs.{job}.result": "skipped" for job in ("gather", "screen", "review", "post")})
     test.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
     test.logs = getattr(test, "logs", [])
