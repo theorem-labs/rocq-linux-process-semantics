@@ -76,7 +76,8 @@ SOURCE_HELD = 'source "$GITHUB_WORKSPACE/.github/review/held.sh"\n'
 TRUSTED_SH = os.path.join(GITHUB_DIR, "review", "trusted.sh")
 SOURCE_TRUSTED = 'source "$GITHUB_WORKSPACE/.github/review/trusted.sh"\n'
 # The checkout of those two files and of .github/review/rules.py, which held.sh runs for the order of the words on a
-# head (relabel_withdraws), alone, at the commit of main whose workflow file runs, in the trust job and the pass's job.
+# head (relabel_withdraws and holds), alone, at the commit of main whose workflow file runs, in the trust job and the
+# pass's job.
 HELD_CHECKOUT = {"ref": "${{ github.sha }}", "persist-credentials": False,
                  "sparse-checkout": ".github/review/trusted.sh\n.github/review/held.sh\n.github/review/rules.py\n",
                  "sparse-checkout-cone-mode": False}
@@ -5603,6 +5604,71 @@ class PostLabelTest(Runner):
                 self.assertEqual(self.take_off(HEAD, HEAD, comments=[held_review, late], TASK=task, **facts), [])
                 self.assertEqual(state_labels(self.api), labels)
 
+    # rules.py whose stays reads the holds of each head, as before OSSV-613's architect's round 30, item 1.
+    EACH_HEAD = ('                (named.group(1) if named else "") == head\n                and (work == "answer"',
+                 '                (work == "answer"')
+
+    def test_only_a_hold_of_its_own_head_stops_the_labels_of_a_run(self):
+        """OSSV-613's architect, round 30, item 1: the label step reads only the holds of its own head (rules.py stays,
+        as head_words reads a hold comment: by the head that it names). This rescreen of mallory's #7 at HEAD started at
+        STARTED. A hold of the screen of run 120, which read #7 30 minutes after STARTED, names HEAD: it stops the labels
+        of this run, so review-held stays on. When it names another head, it stops nothing, and review-held comes off.
+        (A hold of an issue names no head, and it stops the labels of a run of that issue:
+        test_a_hold_after_this_run_started_leaves_the_label.) The control, rules.py whose stays reads the holds of each
+        head again (EACH_HEAD), keeps review-held on for the hold of the other head too."""
+        def held(head):
+            return {"id": 50, "user": {"login": BOT}, "created_at": "2026-11-02T10:31:00Z",
+                    "updated_at": "2026-11-02T10:31:00Z",
+                    "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                            "request, so the automated review did not run. You do not need to do anything.\n\n"
+                            f"<!-- review-held-head {head} -->\n<!-- review-held-read 2026-11-02T10:30:00Z -->\n"
+                            "<!-- review-held-run 120 -->"}
+
+        for case, head, off in (("its own head", HEAD, False), ("another head", OTHER_HEAD, True)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(HEAD, HEAD, comments=[held(head)], TASK="rescreen"),
+                                 [self.DELETE] if off else [])
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.changed_rules(*self.EACH_HEAD, lambda: self.take_off(
+                    HEAD, HEAD, comments=[held(head)], TASK="rescreen")), [])
+
+    def test_the_newest_hold_of_each_work_is_the_newest_by_the_time_from_which_it_counts(self):
+        """OSSV-613's architect, round 30, item 1: the label step takes the newest hold of each work from the one model
+        (rules.py holds), not from when GitHub last changed it: a hold of the screen counts from the time when its run
+        read the item. This rescreen of mallory's #7 at HEAD started at STARTED, and no answer posted since. The screen
+        of run 120 held an answer: its run read #7 at 08:50, and its hold comment posted at 09:10. The hold of the
+        answer of run 130, which the rescreen pass tries again, posted at 09:00: it is the newest hold of the answer,
+        so review-held stays on for it. When the screen's run read #7 at 09:05, its hold is the newest, which waits on
+        Sami, and review-held comes off. The control, the label step that takes the newest hold of each work by when
+        GitHub last changed it again, in jq, takes review-held off in both cases."""
+        works = re.search(r"^works='(.*?)'\n", held_sh(), re.M | re.S).group(1)
+        found = step("comment", self.STEP)
+        script = found["run"]
+        old = 'newest=$(python3 .github/review/rules.py holds <<< "$found") \\\n'
+        new = (f"newest=$(jq -c -s '{works}map(select(.user.login == \"github-actions[bot]\""
+               ' and ((.body // "") | startswith("<!-- review-held -->"))) | .work = ((.body // "") | work))'
+               ' | group_by(.work)[] | max_by(.updated_at // "")\' <<< "$found") \\\n')
+        self.assertEqual(script.count(old), 1)
+        tried = limit_hold(130, "2026-11-02T09:00:00Z", tries=0, task="answer", comment="900", head=HEAD)
+        for case, read, off in (("an older read", "2026-11-02T08:50:00Z", False),
+                                ("a newer read", "2026-11-02T09:05:00Z", True)):
+            comments = [screen_held_answer(120, "2026-11-02T09:10:00Z", read), tried]
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(HEAD, HEAD, comments=comments, TASK="rescreen"),
+                                 [self.DELETE] if off else [])
+                self.tearDown()
+                self.setUp()
+                found["run"] = script.replace(old, new)
+                try:
+                    self.assertEqual(self.take_off(HEAD, HEAD, comments=comments, TASK="rescreen"), [self.DELETE])
+                finally:
+                    found["run"] = script
+
     def test_a_posted_review_ends_the_conflict_state(self):
         """The author resolved the conflict and pushed, and the review of the new head posted: waits-on-author comes
         off, and the label comment loses the conflict-state line, keeps its other markers, and gets the marker line of
@@ -9677,6 +9743,16 @@ def screen_hold(at=OLD, user=BOT):
             "body": "<!-- review-held -->\n**Automated review held.**\n\nThe screen did not pass it."}
 
 
+def screen_held_answer(run, at, read):
+    """The hold comment of the screen of the answer of run on a pull request, which names HEAD, last changed at at, with
+    the marker <!-- review-held-read <read> -->, as the hold job writes it: of the work answer, by its title."""
+    return {"id": 51, "user": {"login": BOT}, "created_at": at, "updated_at": at,
+            "body": "<!-- review-held -->\n**Automated answer held.**\n\nThe automated screen held your comment, so the "
+                    "workflow wrote no answer. You do not need to do anything.\n\n"
+                    f"<!-- review-held-head {HEAD} -->\n<!-- review-held-read {read} -->\n"
+                    f"<!-- review-held-run {run} -->"}
+
+
 def closed_pulls(*pulls):
     """The closed pull requests that are not merged, as the rescreen job's GraphQL query gives them: (number, author,
     the time of its newest close, the account that closed it[, the id of its head repository, its head branch]), with
@@ -10700,9 +10776,10 @@ class RescreenJobTest(Held):
         Its step's only writes are the start of a run of review.yml on main and the re-run of the failed jobs of a
         review run (rerun): no label, no comment and no other write of an item. The three files of the repository that
         it runs are .github/review/trusted.sh and .github/review/held.sh, which its step sources, and
-        .github/review/rules.py, which held.sh runs for the order of the words on a head (relabel_withdraws, the
-        command relabel-withdraws): its job checks out these three alone. The checks below read the step with the
-        first two in it. No job of review.yml can start a run."""
+        .github/review/rules.py, which held.sh runs for the order of the words on a head (relabel_withdraws and holds,
+        the commands relabel-withdraws and holds, which only read: OSSV-613's architect, round 30, item 1, and
+        ImportCheckTest checks that they write nothing): its job checks out these three alone. The checks below read
+        the step with the first two in it. No job of review.yml can start a run."""
         self.assertEqual((WF["permissions"], RESCREEN["permissions"]), ({}, {}))
         job = RESCREEN["jobs"]["rescreen"]
         self.assertEqual(job["permissions"], {"actions": "write", "contents": "read", "issues": "read",
@@ -10716,7 +10793,8 @@ class RescreenJobTest(Held):
         self.assertEqual((run.count(SOURCE_TRUSTED), run.count(SOURCE_HELD)), (1, 1))
         run = sourced(run)
         self.assertEqual(re.findall(r"python3 [^\n]*", run),
-                         ['python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$2" '
+                         ['python3 "$GITHUB_WORKSPACE/.github/review/rules.py" holds \\',
+                          'python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$1" "$2" '
                           '"$seen/comments-$1"'])
         self.assertEqual(set(re.findall(r"\.github/review/[\w.]+", run)), {".github/review/rules.py"})
         # Every call of gh api, with its continued lines joined: a method other than GET (quoted endpoint or not)
@@ -20821,9 +20899,13 @@ class ImportCheckTest(ReaderRunner):
 
     def relabel_withdraws(self, comments, workspace=None):
         """What held.sh relabel_withdraws gives for HEAD of #7, whose comments are comments: why the relabel that the
-        rescreen pass starts withdraws, or -. It runs rules.py from GITHUB_WORKSPACE: workspace, a directory with a
-        changed copy as a control (changed_workspace), or else the root of this repository."""
+        rescreen pass starts withdraws, or -. It reads the import check runs of HEAD too: GitHub lists none of them
+        unless the test served them (serve_checks). It runs rules.py from GITHUB_WORKSPACE: workspace, a directory with
+        a changed copy as a control (changed_workspace), or else the root of this repository."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        if not os.path.exists(os.path.join(self.api, f"repos/{REPO}/commits/{HEAD}/check-runs".replace("/", "_")
+                                           + ".json")):
+            self.serve_checks([])
         rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{held_sh()}\n'
                                      f"relabel_withdraws 7 {HEAD}\n",
                                      **({"GITHUB_WORKSPACE": workspace} if workspace else {}))
@@ -23457,6 +23539,113 @@ class ImportCheckTest(ReaderRunner):
                                                    f"<!-- review-held-head {OTHER_HEAD} -->"))
         self.assertEqual(rules.stays([own], HEAD, t40, "pass", "review"), (t20, False, True))
         self.assertEqual(rules.stays([other], HEAD, t40, "pass", "review"), ("", False, False))
+
+    # The order of the review side of relabel_facts before OSSV-613's architect's round 30, item 1: review comments last
+    # at a tie, so that a review comment outranks a refusal at the same place, as no other reader orders them.
+    REVIEWS_LAST = ("    said = newest_word(words, kinds=",
+                    '    said = newest_word([*(word for word in words if word.carrier != "review"),\n'
+                    '                        *(word for word in words if word.carrier == "review")], kinds=')
+
+    def test_relabel_facts_takes_a_refusal_at_the_same_place_as_a_review_by_the_one_model(self):
+        """OSSV-613's architect, round 30, item 1: relabel_facts takes the review side in the order of the words on the
+        head (head_words, newest_word), as review_verdict and newer_word do: at the same place, a refusal of the line
+        or of a check run comes after a review comment. The review of run 120 (blocking, or the verdict person) read #7
+        30 minutes ago, and the fresh reader refused the review of run 121, which read #7 at the same time: its line or
+        its check run of not-approved carries the refusal. Each case gives the state refused-review, and review_verdict
+        the why refused. A review that read #7 later than the refusal gives its own verdict. The control, rules.py
+        whose relabel_facts puts the review comments last at a tie again (REVIEWS_LAST), gives the verdict of the
+        review in each case of the same place."""
+        t = ago(30)
+        control = self.changed_module(*self.REVIEWS_LAST)
+        for verdict in ("blocking", "person"):
+            review = review_of(HEAD, verdict, at=ago(25), run=120, read=t)
+            for carrier, extra, checks in (("the line", [self.owed_label("refused", "121", t)], []),
+                                           ("the check run", [], [self.not_approved_check("refused", "121", t)])):
+                with self.subTest(verdict=verdict, carrier=carrier):
+                    comments = [review, *extra]
+                    self.assertEqual(rules.review_verdict(comments, HEAD, checks)[2], "refused")
+                    self.assertEqual(rules.newer_word(comments, HEAD, ago(40), "100", "pass", checks)[:2],
+                                     ("121", "refused"))
+                    self.assertEqual(rules.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks),
+                                     {"refused": "review"})
+                    self.assertEqual(control.relabel_facts(comments, lambda: [], HEAD, lambda: [], checks),
+                                     {"verdict": verdict, "will_fix": False, "fix_posted": False, "fix_stop": False})
+                    later = [review_of(HEAD, verdict, at=ago(5), run=120, read=ago(20)), *extra]
+                    self.assertEqual(rules.relabel_facts(later, lambda: [], HEAD, lambda: [], checks),
+                                     {"verdict": verdict, "will_fix": False, "fix_posted": False, "fix_stop": False})
+
+    # The read of relabel-withdraws before OSSV-613's architect's round 30, item 1: no import check run of the head.
+    NO_CHECK_RUNS = ("review_verdict(comments, argv[2], import_checks(argv[1], argv[2]))",
+                     "review_verdict(comments, argv[2])")
+
+    def test_relabel_withdraws_reads_the_import_check_runs_of_the_head_and_writes_nothing(self):
+        """OSSV-613's architect, round 30, item 1: held.sh relabel_withdraws gives the why of the rule that the post job
+        of a relabel reads (rules.py verdict), so it reads the import check runs of HEAD as that job does (rules.py
+        import_checks: filter=all, of the OSS Verify App, external_id 7:<head>). The screened pass of run 100 read #7 60
+        minutes ago. Run 130 read it 30 minutes ago, and its post job recorded the check run of not-approved for the
+        reason refused (its fresh reader refused the review) or screen (its screen held HEAD), with no comment and no
+        line that gives that reason. relabel_withdraws gives that reason, and - for such a check run of another pull
+        request of the head or of another App. It writes nothing. When GitHub refuses the read of the check runs, it
+        fails, and rules.py says why. The control, rules.py whose relabel-withdraws reads no check run again
+        (NO_CHECK_RUNS), gives - for each check run."""
+        passed = review_of(HEAD, at=ago(55), run=100, read=ago(60))
+        workspace = self.changed_workspace(self.NO_CHECK_RUNS)
+        refused, held = self.not_approved_check("refused", "130", ago(30)), self.not_approved_check("screen", "130",
+                                                                                                    ago(30))
+        for case, check, want in (("a refusal", refused, "refused"), ("a hold of the screen", held, "screen"),
+                                  ("another pull request", dict(refused, external_id=f"8:{HEAD}"), "-"),
+                                  ("another App", dict(refused, app={"id": VERIFY_APP_ID + 1}), "-")):
+            with self.subTest(case=case):
+                self.serve_checks([check])
+                self.assertEqual(self.relabel_withdraws([passed]), want)
+                self.assertEqual(self.relabel_withdraws([passed], workspace), "-")
+        reads = [c for c in gh_calls(self.api) if f"repos/{REPO}/commits/{HEAD}/check-runs" in c]
+        self.assertTrue(reads)
+        self.assertTrue(all("filter=all" in c for c in reads), reads)
+        self.assertEqual(writes(self.api), [])
+        self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{held_sh()}\n'
+                                     f"relabel_withdraws 7 {HEAD}\n")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("::error::rules.py: gh: Bad Gateway (HTTP 502)", out)
+
+    def holds_of(self, comments, text=None):
+        """What held.sh holds gives for #7, whose comments are comments, from text, a changed copy of held.sh as a
+        control, or else held.sh."""
+        self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{text or held_sh()}\n'
+                                     "holds 7\n")
+        self.assertEqual(rc, 0, out)
+        return out.strip().split("\n")
+
+    # held.sh holds with its order before OSSV-613's architect's round 30, item 1: the newest hold of each work by when
+    # GitHub last changed it, in jq (max_by), in the place of rules.py holds.
+    HOLDS_BY_UPDATED_AT = ('python3 "$GITHUB_WORKSPACE/.github/review/rules.py" holds \\\n',
+                           'jq -c -s "$works"\'map(select(.user.login == "github-actions[bot]"'
+                           ' and ((.body // "") | startswith("<!-- review-held -->")))'
+                           ' | .work = ((.body // "") | work)) | group_by(.work)[] | max_by(.updated_at // "-")\' \\\n')
+
+    def test_holds_gives_the_newest_hold_of_each_work_by_the_time_from_which_it_counts(self):
+        """OSSV-613's architect, round 30, item 1: held.sh holds takes the newest hold comment of each work from the one
+        model (rules.py holds, newest_holds): a hold of the screen counts from the time when its run read the item, any
+        other hold from when GitHub last changed it (word_time). On #7 the screen of run 120 held an answer: its run
+        read #7 70 minutes ago, and its hold comment posted 50 minutes ago. The hold of the answer of run 130, which
+        the rescreen pass tries again (OUTSIDE_HOURLY_LIMIT), posted 60 minutes ago: it is the newest hold of the
+        answer, in the form that each caller reads. When the screen's run read #7 55 minutes ago, its hold is the
+        newest. holds writes nothing. The control, held.sh whose holds orders the holds by when GitHub last changed them
+        again (HOLDS_BY_UPDATED_AT), gives the hold of the screen in both cases."""
+        t70, t60, t55, t50 = ago(70), ago(60), ago(55), ago(50)
+        tried = limit_hold(130, t60, tries=0, task="answer", comment="900", head=HEAD)
+        control = held_sh().replace(*self.HOLDS_BY_UPDATED_AT)
+        self.assertNotEqual(control, held_sh())
+        screen = f"answer {t50} - - - - - 51 {HEAD}"
+        for case, read, want in (("an older read", t70, f"answer {t60} 130 0 limit answer 900 130 {HEAD}"),
+                                 ("a newer read", t55, screen)):
+            with self.subTest(case=case):
+                comments = [screen_held_answer(120, t50, read), tried]
+                self.assertEqual(self.holds_of(comments), [want])
+                self.assertEqual(self.holds_of(comments, control), [screen])
+        self.assertEqual(writes(self.api), [])
 
     def test_a_label_step_that_cannot_read_the_check_runs_says_nothing_false_of_the_label_comment_it_leaves(self):
         """The tester's round 29 (F3), by OSSV-613's architect's ruling of 2026-11-26 12:52Z: the log line of the label

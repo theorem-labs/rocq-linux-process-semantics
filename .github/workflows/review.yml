@@ -294,8 +294,8 @@
 # .github/review/rules.py from it. The hold job also sources .github/review/held.sh from it, for the one rule of what
 # counts as a try of a run (try_rule) and the one rule of each writer of a hold comment (replaced_hold). The trust job
 # checks out .github/review/trusted.sh, .github/review/held.sh and .github/review/rules.py alone, at the commit of
-# main whose workflow file runs, sources the first two, and runs rules.py from held.sh alone (relabel_withdraws, the
-# order of the words on a head). The gather job sources .github/review/trusted.sh from its checkout of main.
+# main whose workflow file runs, sources the first two, and runs rules.py from held.sh alone (relabel_withdraws and
+# holds, the order of the words on a head). The gather job sources .github/review/trusted.sh from its checkout of main.
 #
 # The sign-ins are admitted by rules outside this repository that name this file, main and its events. Until those
 # rules admit the events workflow_run and issue_comment, the screen and review jobs of such runs fail at sign-in, and
@@ -4581,15 +4581,6 @@ jobs:
             answer) work=answer ;;
             draft|reply) work=draft ;;
           esac
-          # works: the start of a jq filter that defines work, the work that a hold comment's body holds, as the trust
-          # job's works gives it: the task of the marker of a hold that is tried again (review for a marker with no
-          # task), else the title's.
-          works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0-9]+(?: (?<t>answer|draft|approve)(?: [1-9][0-9]*)?)?)? -->(\n|$)")
-              | .t // "review")
-            // (capture("^<!-- review-held -->\n[*][*]Automated (?<t>answer|reply|start of the checks|check for the import|close and reopen) held[.][*][*](\n|$)")
-              | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
-                 "close and reopen": "catchup"}[.t])
-            // "review"; '
           # What the hold comments of github-actions[bot] say, as "<pending> <unsettled> <own>".
           # pending: true when the newest hold of another work than this run's is one that the rescreen pass tries again
           # and that work posted nothing since: no review that names the head of the hold (its marker
@@ -4602,10 +4593,18 @@ jobs:
           found=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[] | @json' \
             | python3 .github/review/rules.py words) \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
+          # The newest hold comment of each work, one on each line with its work in the field work, as the trust job's
+          # holds reads it (.github/review/rules.py holds): in the order of the words, so a hold of the screen counts
+          # from the time when its run read the item (its marker <!-- review-held-read <time> -->), and any other
+          # hold, or one with no such marker, from when GitHub last changed it (word_time; OSSV-613's architect, round
+          # 30, item 1).
+          newest=$(python3 .github/review/rules.py holds <<< "$found") \
+            || { echo "::error::the hold comments of #$NUMBER could not be ordered"; exit 1; }
           # shellcheck disable=SC2016 # $ENV and the names bound in the filter are jq's
-          held=$(W=$work jq -rs "$works"'map(select(.user.login == "github-actions[bot]")
+          held=$(W=$work NEWEST=$newest jq -rs 'map(select(.user.login == "github-actions[bot]")
               | {at: (.updated_at // ""), made: (.created_at // .updated_at // ""), body: (.body // "")}) as $ours
-            | [$ours[] | select(.body | startswith("<!-- review-held -->")) | .work = (.body | work)
+            | [$ENV.NEWEST | split("\n")[] | select(. != "") | fromjson
+                | {work: .work, at: (.updated_at // ""), body: (.body // "")}
                 | .tried = (.body | test("\n<!-- review-held-(limit|cap|transient) [0-9]+ "))
                 | .head = ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "")]
               as $holds
@@ -4617,10 +4616,10 @@ jobs:
                     and ($h.head == ""
                          or (.body | startswith("<!-- review -->\n<!-- review-head " + $h.head + " -->\n"))))
                   end;
-              ($holds | group_by(.work) | map(max_by(.at) | select(.work != $ENV.W))) as $others
+              ($holds | map(select(.work != $ENV.W))) as $others
               | [any($others[]; .tried and (posted | not)),
                  any($others[]; (.work | IN("review", "answer", "draft", "approve")) and (posted | not)),
-                 ($holds | map(select(.work == $ENV.W)) | max_by(.at) | .tried // false)]
+                 any($holds[]; .work == $ENV.W and .tried)]
               | map(tostring) | join(" ")' <<< "$found") \
             || { echo "::error::the hold comments of #$NUMBER could not be read"; exit 1; }
           read -r pending unsettled own <<< "$held"

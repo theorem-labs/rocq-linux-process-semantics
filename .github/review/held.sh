@@ -8,7 +8,7 @@
 #   counts as a try of a run, and calls replaced_hold, the one rule of each writer of a hold comment.
 # Before each of the first two steps, its job checks out this file, trusted.sh and rules.py, the files beside it, alone,
 # at the commit whose workflow file runs (github.sha, a commit of main). The hold job checks out main's .github/. So a
-# file of main runs, and never a file of a pull request. relabel_withdraws runs rules.py from that checkout
+# file of main runs, and never a file of a pull request. relabel_withdraws and holds run rules.py from that checkout
 # ($GITHUB_WORKSPACE/.github/review/rules.py): the order of the words on a head is written once, in rules.py.
 # Before the source line, each step sets seen, a directory that the step makes for itself. The first two steps also
 # source trusted.sh, which defines the function trusted, before it, and define restart after it, which rerun calls.
@@ -43,8 +43,13 @@ works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0
     | {"answer": "answer", "reply": "draft", "start of the checks": "approve", "check for the import": "import",
        "close and reopen": "catchup"}[.t])
   // "review"; '
-# holds <number>: the newest hold comment of each work (works) on <number>, one on each line: "<work> <time>
-# <run> <tries> <kind> <task> <comment> <id> <head>". For a hold that the rescreen pass tries again (its
+# holds <number>: the newest hold comment of each work on <number>, one on each line: "<work> <time>
+# <run> <tries> <kind> <task> <comment> <id> <head>". rules.py holds picks it, by the one model of the order
+# of the words (OSSV-613's architect, round 30, item 1): a hold of the screen counts from the time when its
+# run read the item (its marker <!-- review-held-read <time> -->), any other hold, or one with no such marker,
+# from when GitHub last changed it (rules.py word_time), and of holds at the same time the later as GitHub
+# lists them is the newest. Its work is the one of works (rules.py hold_work). <time> is when GitHub last
+# changed it. For a hold that the rescreen pass tries again (its
 # marker <!-- review-held-<kind> <run> <tries>[ <task>[ <comment>]] -->): <kind> is limit
 # (OUTSIDE_HOURLY_LIMIT), cap (SCREENED_HOURLY_CAP) or transient (a screened review, answer or draft that
 # failed or ran out of time, or a run whose gather or screen job failed), <run> the run of
@@ -55,14 +60,11 @@ works='def work: (capture("\n<!-- review-held-(limit|cap|transient) [0-9]+(?: [0
 # tried again (the screen held it, or its tries are used up). <id> is the id of the comment, and <head> the
 # head that the hold names (- for none). Only github-actions[bot]'s comments count.
 holds() {
-  comments "$1" | jq -rs "$works"'map(select(.user.login == "github-actions[bot]"
-      and ((.body // "") | startswith("<!-- review-held -->")))
-      | {at: (.updated_at // "-"), id, body: (.body // "")} | .work = (.body | work))
-    | group_by(.work)[] | max_by(.at)
-    | "\(.work) \(.at) \((.body
+  comments "$1" | python3 "$GITHUB_WORKSPACE/.github/review/rules.py" holds \
+    | jq -r '(.body // "") as $b | "\(.work) \(.updated_at // "-") \(($b
         | capture("\n<!-- review-held-(?<kind>limit|cap|transient) (?<run>[0-9]+)(?: (?<tries>[0-9]+)(?: (?<task>answer|draft|approve)(?: (?<comment>[1-9][0-9]*))?)?)? -->(\n|$)")
         | "\(.run) \(.tries // "0") \(.kind) \(.task // "rescreen") \(.comment // "-")") // "- - - - -") \(
-      .id) \((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "-")"'
+      .id) \(($b | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "-")"'
 }
 # limit_hold <number> <work>: the newest hold comment of <work> on <number> (holds), as "<time> <run> <tries>
 # <kind> <task> <comment> <id> <head>". Nothing when <work> has no hold comment.
@@ -80,8 +82,8 @@ limit_hold() {
 # issue. A relabel and a review by hand read it (rules.py verdict, relabel_withdraws). So only a new hold of the screen
 # that names the same head (or none, as it does) replaces it. A hold of the screen of another head posts a comment of
 # its own, and so does each hold of another kind. Each other hold of <work> is replaced by any new hold of <work>. Of
-# the holds of <work> that the new hold may replace, it replaces the newest (by when GitHub last changed it, as holds
-# reads them). A hold of other work stays as it is. <started> is the time when the trust job of the run of a new hold of
+# the holds of <work> that the new hold may replace, it replaces the newest (by when GitHub last changed it). A hold of
+# other work stays as it is. <started> is the time when the trust job of the run of a new hold of
 # the screen read the item (the hold job gives it; halt gives none). Such a hold never replaces a hold of a run that
 # read the item later (OSSV-221's architect, 2026-11-24 16:19Z, F4, by A3 of 09:43Z): a hold that counts from a time
 # after <started>, the time of its marker <!-- review-held-read <time> --> for a hold of the screen that has one, else
@@ -242,25 +244,30 @@ no_key_of() {
     | startswith("<!-- review-label -->") and test("\n<!-- review-no-key " + $ENV.SHA + " -->(\n|$)")))'
 }
 # relabel_withdraws <number> <head>: why a relabel of <head> withdraws the import check run of <head>, from the
-# comments of <number>, by the rule that the post job of that relabel reads (rules.py verdict, its why): rules.py
-# relabel-withdraws, which orders the words on <head> by the one model of rules.py (word_key, outranks; OSSV-221's
-# architect, 2026-11-24 14:29Z to 14:40Z). Each review comment and each hold comment of the screen counts from the time
-# when its run read the item (rules.py word_time), and at the same time a verdict or a hold outranks a pass. screen when
-# a hold comment of the screen that names <head> outranks each review comment of <head> whose run screened it: the
-# state held. Else "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> <read> -->
+# comments of <number> and the import check runs of <head>, by the rule that the post job of that relabel reads
+# (rules.py verdict, its why): rules.py relabel-withdraws, which orders the words on <head> by the one model of rules.py
+# (word_key, outranks; OSSV-221's architect, 2026-11-24 14:29Z to 14:40Z). rules.py reads those check runs as that
+# post job does (import_checks: every check run of <head>, filter=all, of the OSS Verify App, for this pull request,
+# external_id <number>:<head>): a refused review posts no comment, so only its check run or its line gives its word
+# (OSSV-613's architect, round 30, item 1). Each review comment and each hold comment of the screen counts from the
+# time when its run read the item (rules.py word_time), a check run from the time that its summary names, and at the
+# same time a verdict or a hold outranks a pass. screen when a hold of the screen of <head> (its hold comment, or a
+# check run for the reason screen) outranks each review comment of <head> whose run screened it: the state held. Else
+# "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> <read> -->
 # of a withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason
 # yet), and the newest review comment of <head> whose run screened it does not outrank that line: the line is a word
 # from <read> (rules.py owed_reason; OSSV-221's architect, 2026-11-25 01:13Z, G1), whatever the newest review says
 # else. Only a run that finished the withdrawal of <head> takes that line out, and only while a comment of
-# github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking or person, of the newest review
-# comment of <head> newer than the newest screened one (of any, when none is screened) that gives one, or of the
-# newest screened review comment when it does not pass. Else -: then a relabel of <head> withdraws nothing. It
+# github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking, person or refused, of the
+# newest word of <head> that gives one (a review comment, or a check run of not-approved for that reason) when the
+# newest screened review comment of <head> does not outrank it. Else -: then a relabel of <head> withdraws nothing. It
 # records an import check run only when the newest review comment of <head> holds the marker
 # <!-- review-screened <head> --> and passes, with no withdraw-owed line of <head>, and no withdrawal of the newest
-# read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands).
+# read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands). It fails
+# when GitHub could not give the comments or the check runs: gh's error, or rules.py's for the check runs, says which.
 relabel_withdraws() {
   comments "$1" > /dev/null || return 1
-  python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$2" "$seen/comments-$1"
+  python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$1" "$2" "$seen/comments-$1"
 }
 # gave_up <number>: true when a hold comment of github-actions[bot] on <number> says that the workflow closed
 # it and could not reopen it. The catch-up then tries nothing more on it.
@@ -1722,7 +1729,7 @@ consider() {
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
-        || { echo "::error::the comments of #$number could not be read."; return 1; }
+        || { echo "::error::the comments of #$number or the import check runs of $head could not be read."; return 1; }
       read -r withdraws from <<< "$withdraws"
       case $withdraws in
         screen) because="a screen held $head" ;;

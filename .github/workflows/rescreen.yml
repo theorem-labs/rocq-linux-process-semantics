@@ -258,10 +258,11 @@ jobs:
   # the App's key). A run that this token starts starts no run of another workflow when it ends, and none needs to: an
   # approval and a reopen start CI with the App's token, in the post job. Beside it, the token only reads: issues and
   # pull-requests (the items, their comments and reviews, and the pull requests), checks (the check runs of a head: the
-  # value of REPO_PAIRS_IMPORT_PATHS that the import check recorded) and contents (the checkout). It holds no model. It
-  # checks out .github/review/trusted.sh, .github/review/held.sh and .github/review/rules.py alone, at the commit of
-  # main whose workflow file runs. The step that starts the runs of review.yml sources the first two, and held.sh runs
-  # rules.py for the order of the words on a head (relabel_withdraws): it runs no other file of the repository. Its
+  # value of REPO_PAIRS_IMPORT_PATHS that the import check recorded, and the import check runs that relabel_withdraws
+  # reads) and contents (the checkout). It holds no model. It checks out .github/review/trusted.sh,
+  # .github/review/held.sh and .github/review/rules.py alone, at the commit of main whose workflow file runs. The step
+  # that starts the runs of review.yml sources the first two, and held.sh runs rules.py for the order of the words on a
+  # head (relabel_withdraws and holds, which write nothing): it runs no other file of the repository. Its
   # cost: one job of a few seconds for each event, on a standard runner, whose minutes GitHub does not bill in a public
   # repository. A run with a number costs one more such job, the run with no number that it starts.
   rescreen:
