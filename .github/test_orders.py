@@ -15,12 +15,15 @@ waits-on-author, and no import check run. At the end of each order it checks:
 
   I1  a success stands (an import check run repo-pairs/import-approved of HEAD with the conclusion success) only when
       the newest word by read time is a pass of a run that read the author as an outsider; at a tie of read times a
-      verdict or a hold outranks a pass. One exception (OSSV-613's architect, 2026-11-26 07:36Z, B1 of the failure
-      sweep): a success that a relabel recorded, which read the author as an outsider, over a pass of a run that read
-      the kind as unknown, whose route was the screen and whose screen passed at HEAD. A pass under the kind unknown is
-      no approval, so the post job of such a run withdraws and records that HEAD is not approved. When that post job
-      failed, a relabel that reads the true kind finds a screened pass of an outside author's head, which R12 and the
-      author-kind table's R approve.
+      verdict or a hold outranks a pass. One exception (OSSV-613's architect, 2026-11-26 07:36Z and 08:46Z, B1 of the
+      failure sweep): a success over a pass of a run that read the kind as unknown, whose route was the screen, whose
+      screen passed at HEAD and whose post job did not succeed, when the run that recorded the success read the author
+      as an outsider (a relabel, or a review or a rescreen that records its own screened pass), and each newest word
+      is such a pass or a pass of an outsider's read, so that no blocking, person or refused word stands over it. A
+      pass under the kind unknown is no approval, so the post job of such a run withdraws (its word access) and
+      records that HEAD is not approved. When that post job did not succeed, that word was never written, and a run
+      that reads the author as an outsider finds a screened pass of an outside author's head, which R12 and the
+      author-kind table's R approve. Outside that exception, a failure of I1 stays a failure.
   I2  the label comment says that the workflow recorded the check exactly when a success stands.
   I3  the state of the label comment is the state of the newest word, when that word is of a run that read the
       author's kind (outsider or writer). A run that could not read it (kind unknown) changes no label, so I3 does
@@ -476,12 +479,15 @@ class OrderTest(T.ReaderRunner):
         newest = self.newest(runs)
         if success and not all(r["word"] == "pass" and r["kind"] == "outsider" for r in newest):
             # The exception of I1 (the module's text): each newest word is a pass of an outsider's read, or of a read
-            # of the kind unknown on the route screen with a screen that passed (trust, contexts), and a relabel that
-            # read the author as an outsider recorded each success.
-            screened = all(r["word"] == "pass" and (r["kind"] == "outsider" or (
-                r["kind"] == "unknown" and self.trust(r)["route"] == "screen")) for r in newest)
-            relabelled = all(w["makers"].get(str(c["id"])) == ["relabel", "outsider"] for c in success)
-            if not (screened and relabelled):
+            # of the kind unknown on the route screen with a screen that passed (trust, contexts) and a post job that
+            # did not succeed (its word access was never written); and a run that read the author as an outsider
+            # recorded each success.
+            def lost(r):
+                return (r["kind"] == "unknown" and self.trust(r)["route"] == "screen"
+                        and w["posts"].get(r["id"], {}).get("result") != "success")
+            passes = all(r["word"] == "pass" and (r["kind"] == "outsider" or lost(r)) for r in newest)
+            outsiders = all((w["makers"].get(str(c["id"])) or [None, None])[1] == "outsider" for c in success)
+            if not (passes and outsiders):
                 found.append(("I1", [c["id"] for c in success]))
         labels = [c for c in w["comments"] if c["body"].startswith(rules.FIRST)]
         label = labels[-1]["body"] if labels else ""
