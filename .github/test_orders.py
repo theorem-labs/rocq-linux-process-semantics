@@ -3,7 +3,8 @@
 architect, 2026-11-24 14:36Z and 14:42Z, for round 24 of OSSV-613; the relabel after each order of two runs, 2026-11-25
 01:13Z, for round 25; the refused review, OSSV-613's architect, 2026-11-26 12:52Z, round 30, item 4; the refused review
 of a writer, left out of the model, and the line that the comment job derives for a post job that died before it wrote
-its output owed, 2026-11-26 20:57Z, round 30, item 4).
+its output owed, 2026-11-26 20:57Z, round 30, item 4; the re-run of a run whose comment job died before it recorded what
+the run owes, 2026-11-27 00:24Z, choice (a)).
 
 The jobs of a pull request that write its import check run, its label comment and its review and hold comments share
 one concurrency group (write-<n>), so GitHub runs them one at a time, each whole. A run of the review workflow on HEAD
@@ -67,11 +68,13 @@ finish", for a post job that failed or was cancelled over a review that the fres
 output refused=review), runs the script of the step "Record a withdrawal that the post job owes" (the two never both
 run), which takes "HEAD refused" as the output owed when the post job gave none, under the conditions of the post
 job's own write (its output key_set, which test_review.post_outputs fills in from the post job's env, and the table's
-withdraw). So that step writes the line, and the older answer's hold job gives way to it. When that step fails or is
-cancelled (the sweep fails its reads and its writes, and cancels it, after a refusal of refusedline too), the run
-recorded no withdrawal that it owes, and the retry below runs the failed jobs of the run again, the post job among
-them, in the place of a relabel, which could not read the refusal (held.sh refusal_unrecorded, due_rerun and
-due_retry). Run 0 is a CI review (workflow_run), each other run a rescreen (workflow_dispatch), and
+withdraw). So that step writes the line, and the older answer's hold job gives way to it. When the comment job of a run
+whose post job did not succeed fails or is cancelled before it records what the run owes, of any word (at its
+checkout, at that step, or at the step "Record a withdrawal that the post job owes": the sweep fails their reads and
+their writes, and cancels them, after a refusal of refusedline too), the run recorded neither its line nor its review
+comment, and the retry below runs the failed jobs of the run again, the post job among them, in the place of a
+relabel, which could not read its word (held.sh unrecorded, due_rerun and due_retry; OSSV-613's architect, 2026-11-27
+00:24Z, choice (a)). Run 0 is a CI review (workflow_run), each other run a rescreen (workflow_dispatch), and
 an answer is an answer. Each run reads the author as its true kind or as unknown (GitHub did not say), and one author
 has one true kind:
   2 runs: the true kind outsider (each run reads outsider or unknown) or writer (each run reads writer or unknown, not
@@ -128,9 +131,10 @@ write for a writer); one CI run of HEAD that ended, and no held run; and review.
 made earlier, each made and ended over an hour ago, with its name, its newest attempt and its jobs. Then the jobs of
 what the pass started run, against what the plain jobs read. A relabel runs its post job and its comment job (runs
 900, 901 and on). A re-run of the failed jobs of a run runs again each job of that run whose newest result is failure
-or cancelled, at the next attempt (the post job of a refused review that did not finish, too). A stop runs its trust
-job, which reads what the pass read, and its comment job
-(test_review.write_stop). The pass runs again until it starts nothing, REVIEW_TRIES + 2 times at most.
+or cancelled, at the next attempt: the post job too, for a run whose post job did not succeed and whose comment job
+died before it recorded what the run owes (at its checkout or at either step that records a withdrawal; held.sh
+unrecorded). A stop runs its trust job, which reads what the pass read, and its comment job (test_review.write_stop).
+The pass runs again until it starts nothing, REVIEW_TRIES + 2 times at most.
 
 The checks at the end of a hurt order, after its retry: I1, I2, I3 and I5 as above; I4, or the newest label comment
 names Sami's step (the step of a state whose label is waits-on-theorem, but refused-review, the state of a refusal
@@ -142,8 +146,7 @@ again, read now, so its word, answer, is the newest one. STOP: the trust job of 
 fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl one line for each
 finding of a job, a kind of failure and a site, with its count of orders and its first order, and one line of its
 counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed nothing, which are
-plain orders and run no further; excepted: those that the one exception to I3 below covers), the passes, the seconds,
-and sites, each site that a failure of the sweep hit as
+plain orders and run no further), the passes, the seconds, and sites, each site that a failure of the sweep hit as
 {job, task, kind, site, count}: site is the text where of a finding's line ("<step> | <METHOD endpoint>" of a read or
 a write, "no <kind> <n> in the job" when the job made no such call, or the step of a cancel), and count the failures
 of the sweep there. Two hurt worlds of one shape (the same text but for the times, of which only the order counts)
@@ -151,18 +154,13 @@ share the jobs, the passes and the checks after them. The sweep does not run two
 order of refusedline, whose refused write is one of its plain orders), a failure in a job of the retry, in the trust,
 gather, screen or review job, or in the pass.
 
-One exception to I3 (OSSV-613's architect, 2026-11-26 22:30Z, round 30, item 4): a hurt order of refusedline whose
-refused run's comment job is cancelled at its first step, "Run actions/checkout", so before its step "Record the
-withdrawal of a refused review whose post job did not finish" runs (excepted, below). It needs two independent
-failures of GitHub, the refused write that the order of refusedline spends and the death of the comment job before
-that step, and it fails closed: no line, no check run and no comment carries the refusal, so no App write follows and
-no import check run records a success over it, and the label comment sends the item to Sami, though to the wrong step
-(after-hold, not the step of a refusal), until the next run of the head. The pass cannot tell that comment job from
-one that had no step to run (it cannot read the verdict of a job), so its retry starts a relabel, which cannot read
-the refusal. The field excepted of the counts line gives the number of hurt orders that the exception covers, so that
-the sweep of record shows no finding outside it. It is that narrow: any other failure of I3, at any other site, in any
-other combination, or any other invariant at that site, stays a finding. test_refusedline_with_the_comment_job_
-cancelled_at_its_checkout_records_no_success pins the end of those orders (in shard 0 alone).
+The checks above have no exception for a site or a combination. A hurt order of refusedline whose refused run's comment
+job is cancelled at its first step, "Run actions/checkout", so before either of its steps that record a withdrawal
+runs, ends with the re-run of that run's failed jobs, in the place of a relabel: its post job again, whose write lands
+at the second attempt, and its comment job again, which writes the line, so that I1, I3 and I4 hold after it
+(OSSV-613's architect, 2026-11-27 00:24Z, choice (a), which withdraws the exception to I3 of 2026-11-26 22:30Z).
+test_refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal pins the end of
+those orders (in shard 0 alone).
 """
 
 import copy
@@ -674,7 +672,7 @@ class OrderTest(T.ReaderRunner):
         by_id = {r["id"]: r for r in runs}
         began, self.passes = time.monotonic(), 0
         ran, turns, found, memo, failed = {"read": 0, "write": 0, "cancel": 0}, {}, {}, {}, {}
-        counts = {"leaves": 0, "unchanged": 0, "excepted": 0}
+        counts = {"leaves": 0, "unchanged": 0}
 
         def below(tree, w):
             """Each order of the jobs of tree from w, with no failure: (its jobs and its retry, what broke at its
@@ -710,9 +708,6 @@ class OrderTest(T.ReaderRunner):
                     for jobs, broke in below(sub, hurt):
                         counts["leaves"] += 1
                         for invariant, detail in broke:
-                            if excepted(invariant, name, run, site):
-                                counts["excepted"] += 1
-                                continue
                             entry = found.setdefault((invariant, name, run["task"], site[0], where), {
                                 "orders": 0, "first": hurt_order + jobs, "detail": str(detail)[:300]})
                             entry["orders"] += 1
@@ -727,8 +722,7 @@ class OrderTest(T.ReaderRunner):
                                         "task": task, "kind": kind, "site": site, **entry}) + "\n")
                 f.write(json.dumps({"combination": self._testMethodName, "ran": ran,
                                     "leaves": counts["leaves"] + counts["unchanged"],
-                                    "unchanged": counts["unchanged"], "excepted": counts["excepted"],
-                                    "passes": self.passes,
+                                    "unchanged": counts["unchanged"], "passes": self.passes,
                                     "seconds": round(time.monotonic() - began, 1),
                                     "sites": [{"job": name, "task": task, "kind": kind, "site": site, "count": n}
                                               for (name, task, kind, site), n in failed.items()]}) + "\n")
@@ -987,16 +981,8 @@ def describe(runs):
     return "; ".join(f"run {r['id']} {r['task']} {r['kind']} {r['word']} read {r['minutes']} min ago" for r in runs)
 
 
-# The comment job's step that the cancel of the exception to I3 comes before (the module's text), and the site of that
-# cancel: the first step of the job.
+# The site of a cancel of the sweep at the first step of the comment job, its checkout (the module's text).
 CHECKOUT = ("cancel", "Run actions/checkout")
-
-
-def excepted(invariant, name, run, site):
-    """Whether the failure of the sweep at site of the job name of run that broke the invariant is the one exception to
-    I3 (the module's text): the comment job of a run of refusedline cancelled at its first step. Nothing else is."""
-    return invariant == "I3" and name == "comment" and run["word"] == "refusedline" and site == CHECKOUT
-
 
 
 def leaves_of(tree):
@@ -1048,15 +1034,16 @@ def method(combination):
     return test
 
 
-def refusedline_with_the_comment_job_cancelled_at_its_checkout_records_no_success(self):
-    """The end of the orders that the exception to I3 covers (the module's text; OSSV-613's architect, 2026-11-26
-    22:30Z). Run 100 of refusedline (read 30 minutes ago) spends its refused write in its post job, and its comment job
-    is cancelled at its first step, so that its step "Record the withdrawal of a refused review whose post job did not
-    finish" never runs; answer run 110 (read 40 minutes ago) holds HEAD, whatever the order of the jobs. After the
-    retry of the pass (a relabel, which cannot read the refusal): no import check run with the conclusion success
-    stands, and no run recorded one, the relabel included (the exception fails closed); the label comment names Sami's
-    step; and I3 is the only invariant that breaks. The exception is that narrow: it covers no other invariant, no
-    other job, no run of another word, and no other site."""
+def refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal(self):
+    """The end of the orders that the exception to I3 of OSSV-613's architect, 2026-11-26 22:30Z, covered, which choice
+    (a) of 2026-11-27 00:24Z withdraws (the module's text). Run 100 of refusedline (read 30 minutes ago) spends its
+    refused write in its post job, and its comment job is cancelled at its first step, so that neither of its steps that
+    record a withdrawal runs; answer run 110 (read 40 minutes ago) holds HEAD, whatever the order of the jobs. The retry
+    of the pass runs the failed jobs of run 100 again, its post job (whose write lands at attempt 2) and its comment job
+    (which writes the line <!-- withdraw-owed HEAD refused 100 <read> -->), and starts no relabel, which could not read
+    the refusal. After it: no import check run with the conclusion success stands, and no run recorded one; the
+    refusal is on the item; the label comment gives the state of the refusal (refused-review); and no invariant breaks,
+    with no waiver of I4 for a label comment that names Sami's step."""
     combination = (("outsider", "refusedline", 1), ("outsider", "answer", 0))
     runs = run_specs(combination)
     self.start = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -1067,10 +1054,8 @@ def refusedline_with_the_comment_job_cancelled_at_its_checkout_records_no_succes
         if not tree:
             done, broke, made = [], [], []
             end = self.retry(runs, by_id, w, done, broke, made)
-            sami = self.names_sami(end)
-            broke += [b for b in self.broken(runs + [r for r in made if r["word"]], end)
-                      if not (b[0] == "I4" and sami)]
-            ends.append((order, end, done, broke, sami))
+            broke += self.broken(runs + [r for r in made if r["word"]], end)
+            ends.append((order, end, done, broke, made))
             return
         for (name, rid), sub in tree:
             site = CHECKOUT if (name, rid) == ("comment", "100") else None
@@ -1078,23 +1063,18 @@ def refusedline_with_the_comment_job_cancelled_at_its_checkout_records_no_succes
 
     walk(interleavings(runs), self.world(), [])
     self.assertEqual(len(ends), 3)
-    for order, end, done, broke, sami in ends:
+    for order, end, done, broke, made in ends:
         with self.subTest(order=order):
             success = [c["id"] for c in end["checks"] if c.get("name") == NAME and c.get("conclusion") == "success"]
-            self.assertEqual((success, end["makers"], sami, [b[0] for b in broke]), ([], {}, True, ["I3"]),
-                             (done, broke))
-            self.assertTrue(any("relabel" in d for d in done), done)
-            self.assertTrue(excepted("I3", "comment", by_id["100"], CHECKOUT))
-    first = by_id["100"]
-    for case, args in (("another invariant", ("I4", "comment", first, CHECKOUT)),
-                       ("the post job", ("I3", "post", first, CHECKOUT)),
-                       ("a run of another word", ("I3", "comment", by_id["110"], CHECKOUT)),
-                       ("another step", ("I3", "comment", first, ("cancel", "Record the withdrawal of a refused review "
-                                                                     "whose post job did not finish"))),
-                       ("a failed read", ("I3", "comment", first, ("read", 1))),
-                       ("another run of refused", ("I3", "comment", dict(first, word="refused"), CHECKOUT))):
-        with self.subTest(case=case):
-            self.assertFalse(excepted(*args))
+            self.assertEqual((success, end["makers"], broke), ([], {}, []), done)
+            self.assertEqual([r["task"] for r in made if r["task"] == "relabel"], [], done)
+            self.assertIn("post 100 attempt 2", done)
+            self.assertIn("comment 100 attempt 2", done)
+            self.assertTrue(self.on_the_item(by_id["100"], end), end["comments"])
+            labels = [c["body"] for c in end["comments"] if c["body"].startswith(rules.FIRST)]
+            step = next((line[len("**Next step:** "):] for line in labels[-1].split("\n")
+                         if line.startswith("**Next step:** ")), "")
+            self.assertIn("refused-review", STEPS.get(step, set()), labels[-1])
 
 
 
@@ -1108,9 +1088,9 @@ for _i, _c in enumerate(_all):
         setattr(OrderTest, f"test_{_i:04d}_{len(_c)}_runs_{_name}", method(_c))
 
 if _k == 0:
-    # The pin of the exception to I3 runs once, in shard 0.
-    OrderTest.test_refusedline_with_the_comment_job_cancelled_at_its_checkout_records_no_success = \
-        refusedline_with_the_comment_job_cancelled_at_its_checkout_records_no_success
+    # The pin of the end of a refusedline order whose comment job is cancelled at its checkout runs once, in shard 0.
+    OrderTest.test_refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal = \
+        refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal
 
 
 if __name__ == "__main__":

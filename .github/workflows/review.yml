@@ -4123,11 +4123,14 @@ jobs:
       # (OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4). The line then names this run and STARTED, as for
       # the output owed of the post job itself. The two steps never both run: this one runs for each other post job
       # that gave owed or withdrawn, and the step after it for each post job of a refused review that did not succeed,
-      # whatever it gave. The rescreen pass reads the conclusion of the step after it alone (held.sh owe_failed), as it
-      # cannot read the verdict of a job: when it failed or was cancelled, the run recorded no withdrawal that it owes,
-      # and no relabel can read a refusal that neither a line nor a check run carries, so the pass runs the failed jobs
-      # of the run again (the post job too), an hour after it ended. The review job's outputs stand in each attempt,
-      # and the re-run derives the same output owed. The label step reads the line from whichever of the two ran.
+      # whatever it gave. The rescreen pass cannot read the verdict of a job, so it reads the step at which this job
+      # died (held.sh unrecorded): when this job failed or was cancelled at its checkout, at this step or at the step
+      # after it (or before its first step), and the post job did not succeed, the run recorded nothing that it owes,
+      # whatever its verdict, and no relabel can read a word that neither a line, nor a review comment, nor a check run
+      # carries. So the pass runs the failed jobs of the run again (the post job too), an hour after it ended, but not
+      # under the stop of the import check of the head, which ends each App write of the head (OSSV-613's architect,
+      # 2026-11-27 00:24Z, choice (a)). The review job's outputs stand in each attempt, and the re-run derives the same
+      # output owed. The label step reads the line from whichever of the two ran.
       # The label step after it keeps the line. For an author whose write access GitHub did not give, the line goes in
       # all the same, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z), but no line
       # goes out. For such an author, the label step changes no label comment. So when the post job finished the
