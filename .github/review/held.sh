@@ -232,20 +232,24 @@ no_key_of() {
 # external_id <number>:<head>): a refused review posts no comment, so only its check run or its line gives its word
 # (OSSV-613's architect, round 30, item 1). Each review comment and each hold comment of the screen counts from the
 # time when its run read the item (rules.py word_time), a check run from the time that its summary names, and at the
-# same time a verdict or a hold outranks a pass. screen when a hold of the screen of <head> (its hold comment, or a
-# check run for the reason screen) outranks each review comment of <head> whose run screened it: the state held. Else
-# "<why> owed" while a label comment holds the line <!-- withdraw-owed <head> <why> <run> <read> -->
-# of a withdrawal that a run owes (it found a reason for it and did not finish it, or no comment gives that reason
-# yet), and the newest review comment of <head> whose run screened it does not outrank that line: the line is a word
-# from <read> (rules.py owed_reason; OSSV-221's architect, 2026-11-25 01:13Z, G1), whatever the newest review says
-# else. Only a run that finished the withdrawal of <head> takes that line out, and only while a comment of
-# github-actions[bot] gives a reason for it (rules.py owed, line_reason). Else blocking, person or refused, of the
-# newest word of <head> that gives one (a review comment, or a check run of not-approved for that reason) when the
-# newest screened review comment of <head> does not outrank it. Else -: then a relabel of <head> withdraws nothing. It
-# records an import check run only when the newest review comment of <head> holds the marker
-# <!-- review-screened <head> --> and passes, with no withdraw-owed line of <head>, and no withdrawal of the newest
-# read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands). It fails
-# when GitHub could not give the comments or the check runs: gh's error, or rules.py's for the check runs, says which.
+# same time a verdict or a hold outranks a pass. A screened review of <head> is a review comment of <head> whose run
+# screened it, or an import check run of <head> with the conclusion success whose summary names the run that recorded
+# it and the time when that run read the item: the screened pass of that run, from that time (rules.py recorded_by;
+# OSSV-613's architect, 2026-11-27 20:53Z). screen when a hold of the screen of <head> (its hold comment, or a check run
+# for the reason screen) outranks each screened review of <head>: the state held. Else blocking, person or refused, of
+# the newest word of <head> that gives one (a review comment, the line <!-- withdraw-owed <head> <why> <run> <read> -->
+# from <read>, or a check run of not-approved for that reason) when the newest screened review of <head> does not
+# outrank it. " owed" follows it while a label comment holds that line of a withdrawal that a run owes (it found a
+# reason for it and did not finish it, or no comment gives that reason yet), and the newest screened review of <head>
+# does not outrank that line: the line is a word from <read> (rules.py owed_reason, by the rule of the state; OSSV-221's
+# architect, 2026-11-25 01:13Z, G1), whatever the newest review says else. Only a run that finished the withdrawal of
+# <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it (rules.py owed,
+# line_reason): a success that outranks the line takes its reason, but never takes it out. Else -: then a relabel of
+# <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
+# marker <!-- review-screened <head> --> and passes, with no withdraw-owed line of <head>, and no withdrawal of the
+# newest read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands). It
+# fails when GitHub could not give the comments or the check runs: gh's error, or rules.py's for the check runs, says
+# which.
 relabel_withdraws() {
   comments "$1" > /dev/null || return 1
   python3 "$GITHUB_WORKSPACE/.github/review/rules.py" relabel-withdraws "$1" "$2" "$seen/comments-$1"
@@ -1924,10 +1928,11 @@ consider() {
   [ -z "$taken" ] || return 0
   # A hold that is not tried again names the head: of the App's writes of the head, the withdrawal of its import check
   # run is tried again while a relabel of the head withdraws it (relabel_withdraws): a screen held the head after each
-  # review that screened it, a label comment holds the line
-  # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes and no newer screened review of
-  # the head outranks it, the newest screened review of the head does not pass, or a review newer than it
-  # gives a blocking finding or the verdict person. Such a relabel records no import check run. So the App's retry
+  # screened review of it (a review comment whose run screened it, or an import check run with the conclusion success
+  # whose summary names its run, the screened pass of that run), or a word that the newest screened review of the head
+  # does not outrank gives a blocking finding, the verdict person or a refused review (a review comment, the line
+  # <!-- withdraw-owed <head> <why> <run> <read> --> of a withdrawal that a run owes, or a check run). Such a relabel
+  # records no import check run. So the App's retry
   # (due_retry) still takes a run of the head whose post job failed or was cancelled: one relabel an hour after that run
   # ended. After REVIEW_TRIES such tries (a relabel whose trust job failed among them), head_stopped import stops it,
   # and the hold of that stop, which names the head, ends the retry. When relabel_withdraws gives no reason to

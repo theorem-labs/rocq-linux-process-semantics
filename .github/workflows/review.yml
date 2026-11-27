@@ -3014,26 +3014,35 @@ jobs:
       # with a blocking finding or the verdict person, the line <!-- withdraw-owed <head> <why> <run> <read> --> of the
       # label comment (a withdrawal that an earlier run found a reason for and did not finish, or whose reason no
       # comment of the workflow gives yet; .github/review/rules.py owed), or a check run of such a reason. The line is
-      # a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1): once the newest screened review comment
-      # of the head outranks it, it gives no reason, and nothing is withdrawn for it (.github/review/rules.py
+      # a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1): once the newest screened review of the
+      # head (a screened review comment, or an import check run of the head with the conclusion success that names its
+      # run and read) outranks it, it gives no reason, and nothing is withdrawn for it (.github/review/rules.py
       # owed_reason). A relabel with a line records no check run. When the newest review comment of the head is then a
       # screened pass, the decision is hand for a line that gives no reason, and withdrawn for a line whose reason no
       # comment of the workflow gives: the label comment says so (.github/review/rules.py NO_REASON). When a hold of
       # the screen of the head (a hold comment of the screen, the line for screen, or a check run for screen) is newer
-      # than each screened review comment (held), a later screen held the head: the decision is held, so that the
-      # label comment says so, and a later step withdraws its check run. A review by hand with no screen (a review or a
+      # than each screened review comment and each import check run of the head with the conclusion success (held), a
+      # later screen held the head: the decision is held, so that the label comment says so, and a later step withdraws
+      # its check run. A review by hand with no screen (a review or a
       # rescreen whose route is not screen) records no check run, as no screen ran in its run, and keeps its own
       # verdict. It reads the rule for every author, as a relabel does, so that it withdraws for the same reasons.
       # The rule gives its decision only for an outside author. For screened or earlier, its decision is screened when
       # the rule withdraws, and hand when it does not. So is a relabel's in the state earlier with the verdict pass.
       # The comment job replaces the review comment in place, but a review with no screen never replaces a screened
       # review of the same head that gives a blocking finding or the verdict person: it posts a comment of its own. So a
-      # review with no screen hides only a screened pass of the same head. An import check run of the head that stands
-      # is then the record of that screened pass, as only a screened pass records one. So for an outside author, an
-      # unscreened newest pass with no reason to withdraw gives the decision hand while such a check run stands
-      # (replaced). Else the decision is screen, and the label comment says that no screen passed the head in a run that
-      # also reviewed it. A run whose decision is hand records and withdraws nothing, and reads whether an import check
-      # run of the head with the conclusion success, for the value of the variable now, still stands (output standing).
+      # review with no screen hides only a screened pass of the same head, and a run whose posts are skipped posts no
+      # review comment. An import check run of the head with the conclusion success is the record of such a screened
+      # pass, as only a screened pass records one. So the rule counts each one whose summary names the run that recorded
+      # it and the time when that run read the item as the screened pass of that run, from that time, and this step
+      # gives the rule the import check runs of the head (import_checks; OSSV-613's architect, 2026-11-27 20:53Z).
+      # Such a check run outranks each older word that withdraws, and each older hold of the screen. The state still
+      # reads the newest review comment: screened when it is screened, and earlier when it is not but a screened review
+      # comment or such a check run exists. A success whose summary names neither does not count. So for an outside
+      # author, an unscreened newest pass with no reason to withdraw and no such screened word gives the decision hand
+      # while such a check run stands (replaced). Else the decision is screen, and the label comment says
+      # that no screen passed the head in a run that also reviewed it. A run whose decision is hand records and
+      # withdraws nothing, and reads whether an import check run of the head with the conclusion success, for the value
+      # of the variable now, still stands (output standing).
       # The comment job counts such a check run as recorded, unless a later step of this job withdraws it: so the state
       # is import when one stands while the variable is set, and decide when none does. The state of the decision
       # screened follows this run's verdict, and for a pass the label comment says that the screen and the review passed
@@ -3117,12 +3126,19 @@ jobs:
           # why the import check runs of the head are withdrawn: a command after it that fails leaves that output. It
           # writes only while the step that finds the check runs can run (APP_KEY_SET and the table's withdraw). <why>
           # is what rules.py verdict gives, as it is (OSSV-613's architect, round 30, item 1: this step picks no why).
-          # A relabel gives no verdict of its own: its why is the why of rules.py verdict alone, screen for held, else
-          # the newest word that withdraws, whichever carrier gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). A
-          # review by hand gives rules.py verdict its own verdict, and takes the why of owed that it gives: the newest
-          # of the own word of this run, at STARTED, and the word that gives that why (rules.py owed_why).
+          # A relabel gives no verdict of its own: it gives rules.py verdict an empty verdict and STARTED, and takes the
+          # why of owed that it gives: screen for held, else the why, the newest word that withdraws, whichever carrier
+          # gives it (OSSV-221's architect, 2026-11-25 23:02Z, G1). A review by hand gives rules.py verdict its own
+          # verdict, and takes the why of owed that it gives: the newest of the own word of this run, at STARTED, and
+          # the word that gives that why (rules.py owed_why). Each of the two reads the comments alone first and writes
+          # that owed ahead (write ahead, round 14), then reads them again with the import check runs of the head, which
+          # count since OSSV-613's architect's ruling of 2026-11-27 20:53Z, and decides. When that second read gives no
+          # why, write_owed with an empty <why> writes the output owed empty again: a success of a newer read outranks
+          # the why of the first read (OSSV-613's architect's decision of round 33i).
           write_owed() {
-            if [ "$APP_KEY_SET" = true ] && [ "$WITHDRAW" = true ]; then echo "owed=$HEAD $1" >> "$GITHUB_OUTPUT"; fi
+            if [ "$APP_KEY_SET" = true ] && [ "$WITHDRAW" = true ]; then
+              echo "owed=${1:+$HEAD $1}" >> "$GITHUB_OUTPUT"
+            fi
           }
           # standing: for the decision hand, the output standing, and stands: true when an import check run of the OSS
           # Verify App with conclusion success, for this pull request (external_id <number>:<head>), stands on the head,
@@ -3148,7 +3164,10 @@ jobs:
           # replaced <verdict> <state> <why>: the rule's verdict, state and why of the head, for an outside author. The
           # comment job replaces the review comment in place, so a pass with no screen can hide a screened pass of the
           # head. For the state unscreened, the verdict pass and no why, an import check run of the head that stands
-          # (standing) is the record of that screened pass: the decision is hand. Else this decides nothing.
+          # (standing) is the record of that screened pass: the decision is hand. In that state the rule counted no such
+          # check run as a screened review: its summary names no run that recorded it and no read of that run
+          # (OSSV-613's architect, 2026-11-27 20:53Z: a success that names them gives the state earlier). Else this
+          # decides nothing.
           replaced() {
             if [ "$RECORD" = true ] && [ "$2" = unscreened ] && [ "$1" = pass ] && [ "$3" = - ]; then
               standing
@@ -3171,29 +3190,35 @@ jobs:
               || { echo "::error::the import check runs of $HEAD could not be read."; exit 1; }
           }
           # relabeled: for a relabel, the verdict of the newest review comment that names the head, its state and why
-          # (rules.py verdict), and the run of that comment with the time when that run read the item (record_run and
-          # record_read, from its markers, or - when it has none): a record of this relabel rests on that review, so it
-          # names that run and that time (rules.py check_run). screen is true only for screened: that comment holds the
-          # marker <!-- review-screened <head> --> and no hold of the screen of the head is newer (a hold comment of
-          # the screen, the line <!-- withdraw-owed <head> screen <run> <read> --> of the label comment, or a check run
-          # for screen). why is blocking, person or refused, of the newest word that gives one, whichever carrier gives
-          # it (a review comment, the line, or a check run that rules.py verdict reads), while the newest screened
-          # review comment does not outrank it (OSSV-221's architect, 2026-11-25 23:02Z, G1). held or a why writes the
-          # output owed first (write_owed). The step that withdraws an import check run takes its own word from
-          # rules.py withdraw-word. held gives the decision held. For an outside author, the state screened with the
-          # verdict pass and a why gives a decision that records no check run, as a relabel that withdraws records
-          # none: withdrawn when no comment of the workflow gives the why of the line (from owed, and posted is
-          # unposted: the comment of the line's run that gives its why, or a screened review comment whose run read the
-          # item after the time of the line, its <read>; rules.py owed and word_time), so that the label comment says
-          # so (rules.py, the decision withdrawn), and screened else. For an outside author whose newest review comment
-          # is a screened pass, rules.py verdict reads the comments again with the import check runs of the head
-          # (import_checks): their words count too, and they decide stands and since.
+          # (rules.py verdict, from the comments and the import check runs of the head, which import_checks reads after
+          # the read of the comments alone that writes owed ahead), and the run of that comment with the time when that
+          # run read the item (record_run and record_read, from its markers, or - when it has none): a record of this
+          # relabel rests on that review, so it names that run and that time (rules.py check_run). The words of the
+          # check runs count too: a success whose summary names the run that recorded it and the time when that run
+          # read the item is the screened pass of that run, from that time (OSSV-613's architect, 2026-11-27 20:53Z),
+          # and the check runs decide stands and since. screen is true only for screened: that comment holds the
+          # marker <!-- review-screened <head> --> and no hold of the screen of the head is newer than the newest
+          # screened review (a hold comment of the screen, the line <!-- withdraw-owed <head> screen <run> <read> --> of
+          # the label comment, or a check run for screen). why is blocking, person or refused, of
+          # the newest word that gives one, whichever carrier gives it (a review comment, the line, or a check run),
+          # while the newest screened review (that screened review comment, or a success that outranks it) does not
+          # outrank it (OSSV-221's architect, 2026-11-25 23:02Z, G1). held or a why writes the output owed first
+          # (write_owed), from the comments alone, and the second read writes it empty again when it gives no why.
+          # The step that withdraws an import check run takes its own word from rules.py withdraw-word.
+          # held gives the decision held. For an outside author, the state screened with the verdict pass and a why
+          # gives a decision that records no check run, as a relabel that withdraws records none: withdrawn when no
+          # comment of the workflow gives the why of the line (from owed, and posted is unposted: the comment of the
+          # line's run that gives its why, or a screened review comment whose run read the item after the time of the
+          # line, its <read>; rules.py owed and word_time), so that the label comment says so (rules.py, the decision
+          # withdrawn), and screened else.
           # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
-          # review comment outranks it, it gives no why, and from is outranked (rules.py verdict): the
-          # step that withdraws then gives the head to its output clear (rules.py withdraw-word), so that the comment
-          # job takes the line out (rules.py owed). The state screened with the verdict pass and such a line, with no
-          # withdrawal that stands, gives the decision hand: this relabel records no check run while a line stands, and
-          # withdraws none for it. The label step counts an import check run that stands (standing) as recorded.
+          # review (a screened review comment, or a success that names its run and read) outranks it, it gives no why,
+          # and from is outranked (rules.py verdict). For such a review comment the step that withdraws then gives the
+          # head to its output clear (rules.py withdraw-word), so that the comment job takes the line out (rules.py
+          # owed); for such a success it does not, and the line stays. The state screened with the verdict pass and such
+          # a line, with no withdrawal that stands, gives the decision hand: this relabel records no check run while a
+          # line stands, and withdraws none for it. The label step counts an import check run that stands (standing) as
+          # recorded.
           # A withdrawal that succeeded is itself the record of the verdict that caused it (OSSV-221's architect,
           # 2026-11-23 01:47Z and 03:06Z), and the run that withdrew it can have ended before its comment posted. So
           # when the withdrawal of the newest read among them (by the time that each one names, never by completed_at;
@@ -3206,20 +3231,20 @@ jobs:
           # with the verdict pass gives the decision screened with a why, and hand with none. The state unscreened gives
           # replaced.
           relabeled() {
-            local reviewed state why from posted stands since
-            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD") \
+            local reviewed state why from posted stands since ahead owed
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" own= started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state why from posted stands since record_run record_read <<< "$reviewed"
-            if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ]; then
-              import_checks
-              reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl") \
-                || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-              read -r verdict state why from posted stands since record_run record_read <<< "$reviewed"
-            fi
+            read -r _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
+            [ "$ahead" = - ] || write_owed "$ahead"
+            import_checks
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl" \
+              own= started="$STARTED") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            read -r verdict state why from posted stands since record_run record_read owed <<< "$reviewed"
+            [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""
             [ "$verdict" != - ] || verdict=""
             screen=false
             [ "$state" != screened ] || screen=true
-            [ "$why" = - ] || write_owed "$why"
             [ "$state" != held ] || decided held screen
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
               [ "$posted" != unposted ] || decided withdrawn unposted
@@ -3242,21 +3267,29 @@ jobs:
           }
           # by_hand: for a review or a rescreen with no screen in this run (a review by hand), of any author, the
           # verdict of the newest review comment of the head (earlier: this run's review has not posted yet), its state
-          # and why (rules.py verdict), as relabeled reads them. The run keeps its own verdict, and records no check
-          # run. rules.py verdict takes that verdict and STARTED too, and gives owed, the why of the output owed when
-          # it reads from the comments why the import check runs are withdrawn (held, or a why: blocking, person or
-          # refused, of the newest word that gives one, whichever carrier gives it): the newest of that word and the own
-          # word of this run at STARTED (rules.py owed_why). owed, when it is not -, is written first (write_owed). The
-          # step that withdraws an import check run takes its own word from rules.py withdraw-word, with this run's own
-          # verdict. Only for an outside author does the rule give a decision: held gives held, and screened or earlier
-          # gives screened with a why, and hand with none, with the output standing. The state unscreened gives
-          # replaced, and else the import check below gives the decision screen.
+          # and why (rules.py verdict, from the comments and the import check runs of the head), as relabeled does.
+          # The run keeps its own verdict and records no check run. rules.py verdict takes that verdict and STARTED too,
+          # and gives owed, the why of the output owed when it reads why the import check runs are withdrawn (held, or a
+          # why: blocking, person or refused, of the newest word that gives one, whichever carrier gives it): the newest
+          # of that word and the own word of this run at STARTED (rules.py owed_why). owed of the read of the comments
+          # alone, when it is not -, is written first (write_owed), and the read with the check runs writes it empty
+          # again when it gives none. The step that withdraws an import check run takes its own word from rules.py
+          # withdraw-word, with this run's own verdict.
+          # Only for an outside author does the rule give a decision: held gives held, and screened or earlier gives
+          # screened with a why, and hand with none, with the output standing. The state unscreened gives replaced,
+          # and else the import check below gives the decision screen.
           by_hand() {
-            local reviewed earlier state why owed
+            local reviewed earlier state why ahead owed
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" own="$verdict" started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
+            read -r _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
+            [ "$ahead" = - ] || write_owed "$ahead"
+            import_checks
+            reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl" \
+              own="$verdict" started="$STARTED") \
+              || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
             read -r earlier state why _ _ _ _ _ _ owed <<< "$reviewed"
-            [ "$owed" = - ] || write_owed "$owed"
+            [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""
             [ "$RECORD" = true ] || return 0
             [ "$state" != held ] || decided held screen
             if [ "$state" = screened ] || [ "$state" = earlier ]; then
@@ -3989,10 +4022,11 @@ jobs:
   # request posts nothing at all when a review or a hold of its head is newer than the read of this run, or when a
   # withdrawal is newer than the screened pass of this run (the step "Skip the posts when the head has a review or hold
   # newer than this run's read, or a withdrawal newer than this run's screened pass"). When the post job of such a run
-  # withdrew an import check run of the head with the conclusion success, it posts only the state label and the label
-  # comment that a relabel of the head gives now. A pass of a review by hand whose label step would give the state
-  # decide while an import check run of the head with the conclusion success stands posts its review comment, and then
-  # the state label and the label comment that a relabel of the head gives now (the label step's comment).
+  # withdrew an import check run of the head with the conclusion success, or recorded one and the newer word is a pass,
+  # it posts only the state label and the label comment that a relabel of the head gives now. A pass of a review by
+  # hand whose label step would give the state decide while an import check run of the head with the conclusion
+  # success stands posts its review comment, and then the state label and the label comment that a relabel of the head
+  # gives now (the label step's comment).
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed. Whatever that result, it records in the label comment the
@@ -4261,21 +4295,25 @@ jobs:
       # neutral or verdict, with no run and no time. It writes the output gave_way too. Each later step that writes on
       # the item reads that output in its if. A read that fails fails this step, and nothing posts.
       # The post job of such a run can have withdrawn an import check run of the head with the conclusion success (its
-      # output withdrew names the head). Then a label comment that says that the workflow recorded the check can stand
-      # with no such check run, as the run of the newer word need not write the label again (the reviewer's round 3,
-      # finding 1; OSSV-613's architect, 2026-11-27 15:50Z). So when this step skips the posts and withdrew names the
-      # head, it also writes the output relabel: the time now. With it, three steps after the label step run as a
-      # relabel of the head that reads the item at that time, each with the script of that step of a relabel (a YAML
-      # anchor): "Read the author-kind table for a relabel of the head", "Decide the import check of the head as a
-      # relabel decides it now" and "Set the state label as a relabel of the head sets it now". So the item gets the
-      # state label and the label comment that a relabel of the head gives now (rules.py relabel and relabel_facts).
-      # That label comment says that the workflow recorded the check only while such a check run stands: the label
-      # step reads the check runs again before it writes that. This run still posts no review comment and no fix. This
-      # step then writes one more line to its log, which says that the post job of this run withdrew such a check run
-      # and gives the time of the output relabel. When the post job withdrew nothing, this step writes no output
-      # relabel, and those three steps do not run. A step of the three that fails fails the job, and its last step
-      # leaves no label comment that says that the workflow recorded the check while no such check run stands
-      # (rules.py unclaim).
+      # output withdrew names the head), or recorded one (its output recorded is true). Then a label comment that says
+      # that the workflow recorded the check can stand with no such check run, or a label comment that does not say it
+      # can stand while one stands, as the run of the newer word need not write the label again (the reviewer's round 3,
+      # finding 1; OSSV-613's architect, 2026-11-27 15:50Z and 20:53Z). So when this step skips the posts and withdrew
+      # names the head, or recorded is true and the newer word is a pass (the cause pass), it also writes the output
+      # relabel: the time now. A record counts only under a newer pass (OSSV-613's architect's decision of round 33i):
+      # a newer verdict, refusal or hold withdraws that success or owes its withdrawal, and the label of its run is
+      # right, but a newer pass, as of a review by hand, can leave a label that read the item before the record. With
+      # the output relabel, three steps after the label step run as a relabel of the head that reads the item at that
+      # time, each with the script of that step of a relabel (a YAML anchor): "Read the author-kind table for a relabel
+      # of the head", "Decide the import check of the head as a relabel decides it now" and "Set the state label as a
+      # relabel of the head sets it now". So the item gets the state label and the label comment that a relabel of the
+      # head gives now (rules.py relabel and relabel_facts). That label comment says that the workflow recorded the
+      # check only while such a check run stands: the label step reads the check runs again before it writes that.
+      # This run still posts no review comment and no fix. This step then writes one more line to its log, which says
+      # that the post job of this run recorded or withdrew such a check run and gives the time of the output relabel.
+      # In each other case, this step writes no output relabel, and those three steps do not run. A step of the three
+      # that fails fails the job, and its last step leaves no label comment that says that the workflow recorded the
+      # check while no such check run stands (rules.py unclaim).
       - name: >-
           Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
           this run's screened pass
@@ -4294,6 +4332,9 @@ jobs:
           VERDICT: ${{ needs.review.outputs.verdict }}
           # The head whose import check runs with the conclusion success the post job of this run withdrew, or empty.
           WITHDREW: ${{ needs.post.outputs.withdrew }}
+          # true when the post job of this run recorded the import check run of the head with the conclusion success,
+          # whatever the result of that job: its output recorded (the job's RECORDED is false for a job that failed).
+          POST_RECORDED: ${{ needs.post.outputs.recorded }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -4336,11 +4377,15 @@ jobs:
           echo "$line"
           printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
           echo "gave_way=true" >> "$GITHUB_OUTPUT"
-          # The post job of this run withdrew a success of the head: the steps after this one run as a relabel of the
-          # head that reads the item now (the comment above this step).
-          [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
+          # The post job of this run withdrew a success of the head, or recorded one and the newer word is a pass: the
+          # steps after this one run as a relabel of the head that reads the item now (the comment above this step).
+          did=recorded
+          if [ "${POST_RECORDED:-}" != true ] || [ "$cause" != pass ]; then
+            [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
+            did=withdrew
+          fi
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "#$NUMBER: the post job of this run withdrew an import check run of $HEAD with the conclusion" \
+          echo "#$NUMBER: the post job of this run $did an import check run of $HEAD with the conclusion" \
             "success. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
           echo "relabel=$now" >> "$GITHUB_OUTPUT"
       # The review comment: it replaces the newest review comment of the workflow on the item, or posts a new one when
@@ -4628,9 +4673,9 @@ jobs:
       # off. A run whose posts were skipped
       # (the step "Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer
       # than this run's screened pass") writes no label and no label comment: the run of that newer word owns them.
-      # When the post job of such a run withdrew an import check run of the head with the conclusion success, the step
-      # "Set the state label as a relabel of the head sets it now" runs the script of this step, as a relabel of the
-      # head.
+      # When the post job of such a run withdrew an import check run of the head with the conclusion success, or
+      # recorded one and the newer word is a pass, the step "Set the state label as a relabel of the head sets it now"
+      # runs the script of this step, as a relabel of the head.
       - name: Take the label review-held off and set the state label
         id: label
         if: >-
