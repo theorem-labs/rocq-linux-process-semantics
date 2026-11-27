@@ -18151,7 +18151,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(json.loads(got["post"].get("imports", "")), value)
         self.assertEqual({k: v for k, v in got["post"].items() if k != "imports"},
                          {"recorded": "true", "decision": "record", "standing": "false", "caught": "", "steering": "",
-                          "no_key": "", "owed": "", "withdrawn": "", "gave_way": "", "key_set": "true"})
+                          "no_key": "", "owed": "", "withdrawn": "", "withdrew": "", "gave_way": "", "key_set": "true"})
 
     def assertNotRecorded(self, got, decision=None):
         """No check run, and recorded is not true; the post job's decision is decision, when it ran."""
@@ -21652,8 +21652,8 @@ class ImportCheckTest(ReaderRunner):
     def hold_job_after_post(self, got, trust, comments, run, cancel=None):
         """The hold job of run <run> (trust; its screen held HEAD, so it has no review) after its post job gave got,
         with #7's comments now comments, as GitHub runs it (run_job): (outcomes, writes as (method, endpoint)). The
-        check runs of HEAD are what the test served before (serve_checks). cancel is the step that a cancel of the job
-        ends (run_job)."""
+        check runs of HEAD are what the test served before (serve_checks), and so are the files of #7 (judge). #7 is at
+        HEAD with one changed file, as GitHub gives it. cancel is the step that a cancel of the job ends (run_job)."""
         trust = dict(trust, account="mallory", kind="outsider", origin="", tries="0")
         event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
@@ -21672,7 +21672,7 @@ class ImportCheckTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/comments/50", {"html_url": f"https://github.com/{REPO}/pull/7#c50"})
         self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
         self.serve(f"repos/{REPO}/labels", {"name": "review-held"})
-        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}})
+        self.serve(f"repos/{REPO}/pulls/7", {"number": 7, "head": {"sha": HEAD}, "changed_files": 1})
         self.serve(f"repos/{REPO}/actions/runs/{run}/attempts/1/jobs",
                    {"jobs": [attempt_job("trust"), attempt_job("gather"),
                              attempt_job("screen", name="screen mallory")]})
@@ -21680,6 +21680,38 @@ class ImportCheckTest(ReaderRunner):
         self.env["GITHUB_STEP_SUMMARY"] = self.summary
         outcomes = run_job(self, "hold", ctx, self.AnyToken(self.TOKENS), cancel=cancel)
         return outcomes, [tuple(c[1:3]) for c in writes(self.api)]
+
+    def live(self, comments, job):
+        """job() while #7's comments change with each write of a comment that a step of the job makes, as on GitHub: a
+        later step reads them as the steps before it left them (test_orders.OrderTest.apply does so for every order).
+        comments is the list that the job's helper serves (comment_job_after_post or hold_job_after_post), which this
+        changes in place: a PATCH of a comment gives it the new body, and a POST of a comment of #7 adds one, with the
+        lowest id from 30 that no comment has (30 is the review comment that the helpers serve). job's result."""
+        run_script, seen = self.run_script, [0]
+
+        def stepped(script, **env):
+            found = run_script(script, **env)
+            made = writes(self.api)
+            for call in made[seen[0]:]:
+                method = call[call.index("--method") + 1] if "--method" in call else "POST"
+                endpoint = next((a for a in call if a.startswith(f"repos/{REPO}/")), "")
+                body = next((a[len("body="):] for a in call if a.startswith("body=")), None)
+                if body is not None and method == "PATCH" and endpoint.startswith(f"repos/{REPO}/issues/comments/"):
+                    cid = int(endpoint.rsplit("/", 1)[1])
+                    comments[:] = [dict(c, body=body, updated_at=ago(0)) if c["id"] == cid else c for c in comments]
+                elif body is not None and method == "POST" and endpoint == f"repos/{REPO}/issues/7/comments":
+                    cid = next(i for i in itertools.count(30) if all(c["id"] != i for c in comments))
+                    comments.append({"id": cid, "user": {"login": BOT}, "created_at": ago(0), "updated_at": ago(0),
+                                     "body": body})
+            seen[0] = len(made)
+            self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
+            return found
+
+        self.run_script = stepped
+        try:
+            return job()
+        finally:
+            del self.run_script
 
     def serve_checks(self, checks):
         """GitHub lists checks as the check runs of HEAD, and answers a PATCH of each."""
@@ -22093,13 +22125,6 @@ class ImportCheckTest(ReaderRunner):
     # counts the word of this run too, an earlier attempt's, and a word at the same place in the order as its own word.
     OWN_WORD = ("run=run, over=(started, kind), where=counts)",
                 "where=lambda word: counts(word) and not outranks((started, kind), word[:2]))")
-    # The controls of the lifting rule of newer_word (OSSV-613's architect, round 33, item 1). PASS_OVER_ANY is
-    # rules.py with the newer_word of before that rule: each pass of a later read stands over the own word of the run,
-    # whatever its kind. NO_PASS_OVER_WITHDRAWING is rules.py whose newer_word counts no pass over an own word that
-    # withdraws, also a screened pass.
-    LIFTED = '        if withdrawing and word.kind == "pass" and not lifts(word):\n            return False\n'
-    PASS_OVER_ANY = (LIFTED, "")
-    NO_PASS_OVER_WITHDRAWING = (LIFTED, LIFTED.replace(" and not lifts(word)", ""))
 
     def changed_module(self, old, new):
         """rules.py as a module whose text holds new in the place of old, which it holds once, from a copy in the
@@ -23282,126 +23307,259 @@ class ImportCheckTest(ReaderRunner):
                                             'over=(started, "read"), where=counts)', lambda: run_120([passed])),
                          (True, True, True))
 
-    def test_a_pass_stands_over_an_own_word_that_withdraws_only_when_the_pass_lifts_it(self):
-        """OSSV-613's architect, round 33, item 1: newer_word asks whether a word of another run stands over the own
-        word of this run, by the lifting rule of the step that withdraws (rules.py lifts). Run 100 of mallory's #7 read
-        the item 40 minutes ago. Run 130 read it 20 minutes ago and passed HEAD. For each own word that withdraws
-        (blocking, person, refused, and hold for a hold of the screen), the pass of run 130 stands over it only when
-        run 130 is a screened review: a pass by hand, with no screen, gives None. For the own word pass or read, the
-        pass by hand is still the newer word. The controls: rules.py with the newer_word of before this rule
-        (PASS_OVER_ANY) gives the pass by hand for each kind, and rules.py whose newer_word counts no pass over an own
-        word that withdraws (NO_PASS_OVER_WITHDRAWING) gives None for the screened pass over each such word."""
-        read, later = ago(40), ago(20)
-        by_hand = review_of(HEAD, at=ago(15), run=130, read=later, screened=False)
-        screened = review_of(HEAD, at=ago(15), run=130, read=later)
-        found = ("130", "pass", later)
-        kinds = ("blocking", "person", "refused", "hold", "pass", "read")
-        for kind in kinds:
-            with self.subTest(kind=kind):
-                withdraws = kind not in ("pass", "read")
-                self.assertEqual(rules.newer_word([by_hand], HEAD, read, "100", kind), None if withdraws else found)
-                self.assertEqual(rules.newer_word([screened], HEAD, read, "100", kind), found)
-        # The controls, built after the assertions of rules.py itself, so that a rules.py with no such line fails
-        # those assertions first.
-        over_any = self.changed_module(*self.PASS_OVER_ANY)
-        no_pass = self.changed_module(*self.NO_PASS_OVER_WITHDRAWING)
-        for kind in kinds:
-            with self.subTest(kind=kind, control=True):
-                withdraws = kind not in ("pass", "read")
-                self.assertEqual(over_any.newer_word([by_hand], HEAD, read, "100", kind), found)
-                self.assertEqual(no_pass.newer_word([screened], HEAD, read, "100", kind), None if withdraws else found)
+    # The line of the step that skips the posts of a run, in the comment job and in the hold job, after which it writes
+    # the output relabel, so that the three steps of a relabel of the head run (OSSV-613's architect, 2026-11-27
+    # 15:50Z), and what a control puts in its place. GIVE_WAY_972A0EBB is the give-way branch of 972a0ebb: it never
+    # writes that output. ALWAYS_RELABEL writes it also when the post job withdrew nothing.
+    RELABELS = '[ "${WITHDREW:-}" = "$HEAD" ] || exit 0'
+    GIVE_WAY_972A0EBB = (RELABELS, "exit 0")
+    ALWAYS_RELABEL = (RELABELS, ":")
+    RELABEL_STEPS = ("Read the author-kind table for a relabel of the head",
+                     "Decide the import check of the head as a relabel decides it now",
+                     "Set the state label as a relabel of the head sets it now")
 
-    def test_a_pass_by_hand_of_a_newer_read_leaves_the_posts_and_the_label_of_a_screened_blocking_review(self):
-        """The reviewer's finding on pull request #152 (review 6088962018), by OSSV-613's architect's ruling of round
-        33, item 1. Three runs of mallory's #7 at HEAD: the screened CI review run 100 read the item 60 minutes ago and
-        passed HEAD; rescreen run 120 read it 40 minutes ago and gave a blocking finding; alice's review by hand run 130
-        (no screen, the route review) read it 20 minutes ago and passed HEAD. The jobs of write-7 run in the order: post
-        100, comment 100, post 130, comment 130, post 120, comment 120. Run 100 records 901, and its label comment says
-        that the workflow recorded the check. Run 130's decision is hand, as 901 stands, and its review replaces the
-        review comment of run 100. Run 120's post job withdraws 901: the pass of run 130 has no screen, so it does not
-        lift the blocking finding. Run 120's comment job then does not give way to that pass either (newer_word, by the
-        same rule, lifts). At the end no success stands, run 120's review posted, and the label comment gives the state
-        change and does not say that the workflow recorded the check. The control, rules.py with the newer_word of
-        before this rule (PASS_OVER_ANY), makes run 120's comment job give way to the pass of run 130: its review and
-        its label step do not run, and the label comment still says that the workflow recorded the check, with no
-        success."""
-        ci = dict(self.REVIEWED, started=ago(60))
-        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
-        by_hand = dict(self.BY_HAND, started=ago(20))
-        _label, step, text = rules.STATES["change"]
-        change = f"{rules.FIRST}\n**Next step:** {step}\n\n{text}"
+    def ordered(self, jobs, comments=None, labels=("review-held",), checks=()):
+        """The jobs of runs of mallory's #7 at HEAD, in the order of jobs, each job whole and each while #7 is as the
+        jobs before it left it: its comments (live), its state labels and the check runs of HEAD. Each item of jobs is
+        (run, trust, verdict, kwargs): the post job of run (judged, with kwargs), then its hold job when kwargs give the
+        screen held (hold_job_after_post), else its comment job (comment_job_after_post, with screened and event of
+        kwargs). before of kwargs, when given, runs between the two jobs (a refusal of GitHub, say). #7 starts with
+        comments (by default its label comment of the state working, comment 40), labels and checks. The result: (#7's
+        comments, its labels and the check runs of HEAD at the end, and for each run its post job's result and the
+        outcomes of its comment or hold job)."""
+        comments = [dict(c) for c in comments] if comments is not None else [
+            {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+             "body": rules.label_comment("working")}]
+        labels, checks, done = list(labels), list(checks), {}
+        for run, trust, verdict, kwargs in jobs:
+            kwargs = dict(kwargs)
+            screened, before = kwargs.pop("screened", True), kwargs.pop("before", None)
+            event = kwargs.get("event", "workflow_run")
+            got, checks = self.judged(checks, run, verdict=verdict, trust=trust, comments=comments, labels=labels,
+                                      **kwargs)
+            self.serve_checks(checks)
+            self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
+            if before:
+                before()
+            if kwargs.get("screen") == "held":
+                outcomes, _wrote = self.live(comments, lambda: self.hold_job_after_post(got, trust, comments, run))
+            else:
+                outcomes, *_rest = self.live(comments, lambda: self.comment_job_after_post(
+                    got, trust, verdict, comments, run, screened=screened, event=event))
+            for sign, name in state_labels(self.api):
+                labels = [n for n in labels if n != name] + ([name] if sign == "+" else [])
+            held_off = ["--method", "DELETE", f"repos/{REPO}/issues/7/labels/review-held"]
+            if any(c[:3] == held_off for c in writes(self.api)):
+                labels = [n for n in labels if n != "review-held"]
+            done[run] = (got, outcomes)
+        return comments, labels, checks, done
 
-        def order():
-            # #7 has the label comment of the state working (comment 40). Post 100 and comment 100: run 100 records
-            # 901, posts its review (comment 30), and its label comment says that the workflow recorded the check.
-            working = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
-                       "body": rules.label_comment("working")}
-            got, checks = self.judged([], "100", trust=ci, comments=[working])
-            self.assertEqual(self.successes(checks), [901], self.logs[-3:])
-            self.serve_checks(checks)
-            _o, _w, bodies, review = self.comment_job_after_post(got, ci, "pass", [working], "100")
-            self.assertTrue(bodies and rules.says_recorded(bodies[-1]), (bodies, self.logs[-3:]))
-            label = dict(working, updated_at=ago(55), body=bodies[-1])
-            comments = [dict(review, id=30), label]
-            # Post 130 and comment 130: the review by hand records and withdraws nothing, and its pass replaces
-            # comment 30.
-            got, checks = self.judged(checks, "130", trust=by_hand, event="workflow_dispatch", comments=comments)
-            self.assertEqual((got["post"]["decision"], got["post"]["standing"], self.successes(checks)),
-                             ("hand", "true", [901]), self.logs[-3:])
-            self.serve_checks(checks)
-            _o, wrote, bodies, review = self.comment_job_after_post(got, by_hand, "pass", comments, "130",
-                                                                    screened=False, event="workflow_dispatch")
-            self.assertIn(("PATCH", f"repos/{REPO}/issues/comments/30"), wrote, self.logs[-4:])
-            label = dict(label, body=bodies[-1]) if bodies else label
-            self.assertTrue(rules.says_recorded(label["body"]), bodies)
-            comments = [dict(review, id=30), label]
-            # Post 120 and comment 120.
-            got, checks = self.judged(checks, "120", verdict="blocking", trust=rescreen, event="workflow_dispatch",
-                                      comments=comments, named=HEAD)
-            self.serve_checks(checks)
-            outcomes, _wrote, bodies, _review = self.comment_job_after_post(got, rescreen, "blocking", comments, "120")
-            final = bodies[-1] if bodies else label["body"]
-            return (self.successes(checks), outcomes[self.REVIEW], outcomes[self.LABEL], rules.says_recorded(final),
-                    final.startswith(change))
+    @staticmethod
+    def label_body(comments):
+        """The body of the newest label comment among comments."""
+        return [c["body"] for c in comments if c["body"].startswith(rules.FIRST)][-1]
 
-        self.assertEqual(order(), ([], "success", "success", False, True), self.logs[-6:])
+    def relabel_at_the_end(self, comments, labels, checks):
+        """A relabel of HEAD (run 900, which reads #7 now) after the jobs that left #7 with comments and labels and HEAD
+        with checks: its post job and its comment job (ordered). (Whether it left #7's comments, labels and check runs
+        as they were, its label step's outcome, and the label comment at the end.)"""
+        relabel = dict(self.RELABEL, started=ago(0))
+        after, now, end, done = self.ordered([("900", relabel, "pass", {"event": "workflow_dispatch"})], comments,
+                                             labels, checks)
+        same = ([c["body"] for c in after], now, end) == ([c["body"] for c in comments], labels, checks)
+        return same, done["900"][1][self.LABEL], self.label_body(after)
+
+    def reviewers_order(self, **kwargs):
+        """The reviewer's order of round 3, finding 1 (pull request #152, review 6088962018, inline at review.yml:4287),
+        by OSSV-613's architect's ruling of 2026-11-27 15:50Z: runs of mallory's #7 at HEAD, each read minutes before
+        now, whose jobs run in the order post 100, comment 100, post 130, comment 130, post 120, comment 120 (ordered).
+        Run 100, a screened CI review, read 60 and passed HEAD. Run 130, alice's review by hand with no screen
+        (BY_HAND), read 20 and passed HEAD. Run 120, a screened rescreen, read 40 and gave a blocking finding. With
+        screen="held" among kwargs, the screen of run 120 held HEAD, and its hold job runs. kwargs go to the jobs of run
+        120. ordered's result."""
+        return self.ordered([("100", dict(self.REVIEWED, started=ago(60)), "pass", {}),
+                             ("130", dict(self.BY_HAND, started=ago(20)), "pass",
+                              {"event": "workflow_dispatch", "screened": False}),
+                             ("120", dict(self.REVIEWED, task="rescreen", started=ago(40)), "blocking",
+                              {"event": "workflow_dispatch", "named": HEAD, **kwargs})])
+
+    def test_a_run_that_gives_way_after_its_post_job_withdrew_a_success_writes_the_labels_of_a_relabel(self):
+        """The reviewer's finding on pull request #152 (review 6088962018, inline at review.yml:4287), by OSSV-613's
+        architect's ruling of 2026-11-27 15:50Z: after a run that gives way withdrew a success, no label comment that
+        says that the workflow recorded the check stands. The reviewer's order (reviewers_order): run 100 records 901,
+        and its label comment says that the workflow recorded the check. Run 130's decision is hand, as 901 stands, so
+        its label comment says that too, and its review replaces the review comment of run 100. Run 120's post job
+        withdraws 901 for its blocking finding (its output withdrew names HEAD): the pass of run 130 has no screen, so
+        it lifts nothing. Run 120's comment job gives way to that newer pass: it posts no review and its label step does
+        not run. So the three steps of a relabel of HEAD run, and they write the state label and the label comment that
+        a relabel of HEAD gives now: the state decide, with waits-on-theorem and Sami's steps of the import, and the
+        text that no screen passed HEAD in a run that also reviewed it (rules.py UNSCREENED: the newest review is the
+        pass by hand, and the newest read decides). At the end no success stands, no label comment says that the
+        workflow recorded the check, and a relabel of HEAD at the end (relabel_at_the_end) changes nothing on #7: the
+        label of run 120 is the one that the relabel gives. The control, the give-way branch of 972a0ebb
+        (GIVE_WAY_972A0EBB), skips the three steps, and the label comment of run 130 that says that the workflow
+        recorded the check stands with no success."""
+        comments, labels, checks, done = self.reviewers_order()
+        got, outcomes = done["120"]
+        body = self.label_body(comments)
+        self.assertEqual((got["post"]["withdrew"], self.successes(checks)), (HEAD, []), self.logs[-8:])
+        self.assertEqual([outcomes[n] for n in (self.SKIP, self.REVIEW, self.LABEL, *self.RELABEL_STEPS, UNCLAIM)],
+                         ["success", "skipped", "skipped", "success", "success", "success", "skipped"], self.logs[-8:])
+        _label, step, _text = rules.STATES["decide"]
+        self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{rules.UNSCREENED}"), body)
+        self.assertEqual((rules.says_recorded(body), labels), (False, [THEOREM_LABEL]), body)
+        self.assertEqual(self.relabel_at_the_end(comments, labels, checks), (True, "success", body), self.logs[-4:])
         self.tearDown()
         self.setUp()
-        self.assertEqual(self.changed_rules(*self.PASS_OVER_ANY, order), ([], "skipped", "skipped", True, False),
-                         self.logs[-6:])
+        comments, labels, checks, done = self.changed_step("comment", self.SKIP, *self.GIVE_WAY_972A0EBB,
+                                                           self.reviewers_order)
+        self.assertEqual(([done["120"][1][n] for n in self.RELABEL_STEPS], self.successes(checks),
+                          rules.says_recorded(self.label_body(comments))),
+                         (["skipped"] * 3, [], True), self.logs[-8:])
 
-    def test_a_hold_of_the_screen_gives_way_to_a_pass_of_a_newer_read_only_when_the_pass_is_screened(self):
-        """OSSV-613's architect, round 33, item 1: the hold job's step that skips its posts reads newer_word as the step
-        of the comment job does, with the lifting rule of the step that withdraws (rules.py lifts). The screen of
-        rescreen run 120 of mallory's #7, which read the item 40 minutes ago, held HEAD: its own word is hold. Run 130
-        read the item 20 minutes ago and passed HEAD. (i) Run 130 is alice's review by hand, with no screen: its pass
-        does not lift the hold, so the hold job of run 120 does not give way, and it posts its hold comment. (ii) Run
-        130 is a screened review: its pass lifts the hold, so the hold job gives way to it and posts nothing, and its
-        line names the cause pass, run 130 and its read. The controls: rules.py with the newer_word of before this rule
-        (PASS_OVER_ANY) gives way in (i), and rules.py whose newer_word counts no pass over an own word that withdraws
-        (NO_PASS_OVER_WITHDRAWING) does not give way in (ii)."""
+    def test_a_hold_job_that_gives_way_after_its_post_job_withdrew_a_success_writes_the_labels_of_a_relabel(self):
+        """As for the comment job (OSSV-613's architect, 2026-11-27 15:50Z), in the hold job: the reviewer's order
+        (reviewers_order) in which the screen of rescreen run 120, which read #7 40 minutes ago, held HEAD. Run 100
+        records 901 and run 130's decision is hand, and the label comment of each says that the workflow recorded the
+        check. Run 120's post job withdraws 901 for the screen of run 120 (its output withdrew names HEAD), and its hold
+        job gives way to the newer pass of run 130: it posts no hold comment, and its step "Label it and say that it
+        was held" does not run. So the three steps of a relabel of HEAD run, and they write what a relabel of HEAD
+        gives now: the state decide, with waits-on-theorem and Sami's steps of the import, and the text that a screen
+        held HEAD and no screen passed it after that in a run that also reviewed it (rules.py SCREEN_HELD_AFTER: the
+        decision held, as the line of run 120 for its screen is newer than each screened review comment of HEAD, and
+        the review of run 130 replaced the one of run 100). At the end no success stands, no label comment says that
+        the workflow recorded the check, and a relabel of HEAD at the end changes nothing on #7. The control, the
+        give-way branch of 972a0ebb (GIVE_WAY_972A0EBB) in the hold job, skips the three steps, and the label comment of
+        run 130 that says that the workflow recorded the check stands with no success."""
+        comments, labels, checks, done = self.reviewers_order(screen="held")
+        got, outcomes = done["120"]
+        body = self.label_body(comments)
+        self.assertEqual((got["post"]["withdrew"], self.successes(checks)), (HEAD, []), self.logs[-8:])
+        self.assertEqual([outcomes[n] for n in (HoldTest.SKIP, Holding.STEP, *self.RELABEL_STEPS)],
+                         ["success", "skipped", "success", "success", "success"], self.logs[-8:])
+        self.assertEqual(len([c for c in comments if c["body"].startswith("<!-- review-held -->")]), 0)
+        _label, step, _text = rules.STATES["decide"]
+        self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{rules.SCREEN_HELD_AFTER}"), body)
+        self.assertEqual((rules.says_recorded(body), labels), (False, [THEOREM_LABEL]), body)
+        self.assertEqual(self.relabel_at_the_end(comments, labels, checks), (True, "success", body), self.logs[-4:])
+        self.tearDown()
+        self.setUp()
+        comments, labels, checks, done = self.changed_step("hold", HoldTest.SKIP, *self.GIVE_WAY_972A0EBB,
+                                                           lambda: self.reviewers_order(screen="held"))
+        self.assertEqual(([done["120"][1][n] for n in self.RELABEL_STEPS], self.successes(checks),
+                          rules.says_recorded(self.label_body(comments))),
+                         (["skipped"] * 3, [], True), self.logs[-8:])
+
+    def test_a_run_that_gives_way_after_its_post_job_withdrew_nothing_writes_as_before(self):
+        """OSSV-613's architect, 2026-11-27 15:50Z: when the post job of a run that gives way withdrew no success (its
+        output withdrew is empty), the step that skips the posts writes nothing more than at 972a0ebb. Run 120 of
+        mallory's #7 read the item 40 minutes ago, and a screened pass of run 130 that read it 20 minutes ago stands on
+        HEAD (its review comment), with no import check run. (i) A writer's run: the review of alice's #7 (outside
+        false) gives a blocking finding, and its post job finds no success to withdraw. (ii) A run whose author kind
+        GitHub did not say (kind unknown) passes HEAD, and its post job records the check run of not-approved for
+        access, which withdraws no success. (iii) The screen of run 120 held HEAD, and its post job records the check
+        run of not-approved for the screen. In each the comment job or the hold job gives way to the pass of run 130,
+        and the three steps of a relabel do not run: its calls of GitHub and #7 at the end are those of the give-way
+        branch of 972a0ebb (GIVE_WAY_972A0EBB). The control, a step that writes the output relabel whatever the post job
+        withdrew (ALWAYS_RELABEL), runs the three steps, and its calls differ."""
+        passed = review_of(HEAD, at=ago(15), run=130, read=ago(20))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                 "body": rules.label_comment("working")}
         rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
-        later = ago(20)
-        line = f"#7 at {HEAD}: decision skip, cause pass, read {rescreen['started']}, run 130, from {later}\n"
-        for case, screened, gives_way, control in (("(i) a pass by hand", False, False, self.PASS_OVER_ANY),
-                                                   ("(ii) a screened pass", True, True, self.NO_PASS_OVER_WITHDRAWING)):
+        writer = dict(rescreen, outside="false", outsider="", route="review", kind="writer")
+        unknown = dict(rescreen, outside="false", outsider="", kind="unknown")
+        for case, trust, verdict, kwargs, skip in (
+                ("(i) a writer's run", writer, "blocking", {}, self.SKIP),
+                ("(ii) a run whose author kind is unknown", unknown, "pass", {}, self.SKIP),
+                ("(iii) a held run", rescreen, "pass", {"screen": "held"}, HoldTest.SKIP)):
             with self.subTest(case=case):
-                self.tearDown()
-                self.setUp()
-                passed = review_of(HEAD, at=ago(15), run=130, read=later, screened=screened)
-                got, checks = self.judged([], "120", trust=rescreen, screen="held", event="workflow_dispatch",
-                                          comments=[passed], named=HEAD)
-                self.serve_checks(checks)
+                job = "hold" if kwargs else "comment"
 
-                def held():
-                    start = len(self.logs)
-                    outcomes, _wrote = self.hold_job_after_post(got, rescreen, [passed], "120")
-                    return (outcomes[Holding.STEP] == "skipped", len(self.posted("<!-- review-held -->")),
-                            line in "\n".join(self.logs[start:]))
+                def gave_way(control=None):
+                    self.tearDown()
+                    self.setUp()
 
-                self.assertEqual(held(), (gives_way, int(not gives_way), gives_way), self.logs[-4:])
-                self.assertEqual(self.changed_rules(*control, held), (not gives_way, int(gives_way), not gives_way),
-                                 self.logs[-4:])
+                    def run():
+                        return self.ordered([("120", trust, verdict, {"event": "workflow_dispatch", "named": HEAD,
+                                                                      **kwargs})], [passed, label])
+
+                    comments, labels, checks, done = self.changed_step(job, skip, *control, run) if control else run()
+                    got, outcomes = done["120"]
+                    # A check run of not-approved completes at the time when the post job posts it.
+                    checks = [{k: v for k, v in c.items() if k != "completed_at"} for c in checks]
+                    return ((got["post"]["withdrew"], outcomes[skip], [outcomes[n] for n in self.RELABEL_STEPS]),
+                            gh_calls(self.api), [c["body"] for c in comments], labels, checks)
+
+                now, before, always = gave_way(), gave_way(self.GIVE_WAY_972A0EBB), gave_way(self.ALWAYS_RELABEL)
+                self.assertEqual(now[0], ("", "success", ["skipped"] * 3), self.logs[-6:])
+                self.assertEqual(now[1:], before[1:])
+                self.assertEqual(always[0][2], ["success"] * 3, self.logs[-6:])
+                self.assertNotEqual(always[1], before[1])
+
+    def test_a_refusal_of_github_in_the_steps_of_a_relabel_leaves_no_label_that_says_recorded(self):
+        """OSSV-613's architect, 2026-11-27 15:50Z, item 3: a read or a write that GitHub refuses in the three steps of
+        a relabel after a run gave way leaves no false claim. In the reviewer's order (reviewers_order), after the post
+        job of run 120 withdrew 901, GitHub refuses (i) the read of the files of #7, in the step "Decide the import
+        check of the head as a relabel decides it now", or (ii) the write that adds waits-on-theorem, in the step "Set
+        the state label as a relabel of the head sets it now", before it writes the label comment. The step fails, and
+        the comment job's last step, "Leave no label that says the workflow recorded the check" (rules.py unclaim),
+        reads the label comment of run 130, which says that the workflow recorded the check on HEAD while no such check
+        run stands: it writes the label comment of the state working in its place. The re-run of the failed jobs of
+        run 120 (held.sh due_rerun) gives the labels later. The control, that last step with no unclaim, leaves the
+        label comment that says that the workflow recorded the check."""
+        for case, step, refused in (
+                ("(i) a refused read", 1, lambda: self.refuse(f"repos/{REPO}/pulls/7/files", 502, "Bad Gateway")),
+                ("(ii) a refused write", 2, lambda: self.refuse_field(f"repos/{REPO}/issues/7/labels",
+                                                                       f"labels[]={THEOREM_LABEL}"))):
+            with self.subTest(case=case):
+                for control, want in ((False, False), (True, True)):
+                    self.tearDown()
+                    self.setUp()
+
+                    def run():
+                        return self.reviewers_order(before=refused)
+
+                    comments, _labels, checks, done = (self.changed_step(
+                        "comment", UNCLAIM, 'python3 .github/review/rules.py unclaim "$NUMBER"', "true", run)
+                        if control else run())
+                    outcomes = done["120"][1]
+                    self.assertEqual((outcomes[self.RELABEL_STEPS[step]], outcomes[UNCLAIM], self.successes(checks)),
+                                     ("failure", "success", []), self.logs[-6:])
+                    body = self.label_body(comments)
+                    self.assertEqual(rules.says_recorded(body), want, body)
+                    if not control:
+                        self.assertTrue(body.startswith(rules.label_comment("working").split("\n\n")[0]), body)
+
+    def test_the_labels_of_a_relabel_in_a_run_that_gave_way_count_the_words_of_that_run(self):
+        """rules.py relabel counts no word of its own run (GITHUB_RUN_ID), and RELABEL_RUN, when a step sets it, takes
+        the place of that id. The steps of a relabel in a run that gave way set it empty (OSSV-613's architect,
+        2026-11-27 15:50Z): a relabel of the head now has no word of its own, and each word of that run is a word of
+        another run for it. #7's label comment holds the line of a review of run 120 that the fresh reader refused,
+        which read the item 40 minutes ago, and the newest review comment of HEAD is a pass of run 90, which read it 60
+        minutes ago. In run 120, with RELABEL_RUN empty, the refusal is the newest word of the review side: the state
+        refused-review. The control, the same call with no RELABEL_RUN, counts no word of run 120: the state of the pass
+        of run 90, decide."""
+        line = f"<!-- withdraw-owed {HEAD} refused 120 {ago(40)} -->"
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(30),
+                 "body": rules.label_comment("working", "", [line])}
+        script = (f"python3 .github/review/rules.py relabel 7 {HEAD} outside=true outsider=mallory author=outsider "
+                  "kind=pr recorded=false decision=screen")
+
+        def relabelled(**given):
+            self.forget()
+            self.checkout()
+            self.serve(f"repos/{REPO}/issues/7/comments", [review_of(HEAD, at=ago(55), run=90, read=ago(60)), label])
+            self.serve(f"repos/{REPO}/issues/7/labels", [])
+            self.serve(f"repos/{REPO}/pulls/7/reviews", [])
+            rc, out, _got = self.run_script(script, REPO=REPO, OSS_VERIFY_APP_ID=WF["env"]["OSS_VERIFY_APP_ID"],
+                                            GITHUB_RUN_ID="120", **given)
+            self.assertEqual(rc, 0, out)
+            body = label_comments(self.api)[-1][2]
+            return [s for s, (_label, step, _text) in rules.STATES.items()
+                    if body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n")]
+
+        self.assertEqual(relabelled(RELABEL_RUN=""), ["refused-review"])
+        self.assertEqual(relabelled(), ["decide"])
 
     def test_an_answers_hold_job_withdraws_as_a_post_job_does_for_the_screen_of_a_review(self):
         """OSSV-221's architect, 2026-11-24 14:29Z, F2: an answer has no post job, so the hold job of an answer whose
