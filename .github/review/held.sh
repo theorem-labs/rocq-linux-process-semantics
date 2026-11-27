@@ -1310,7 +1310,8 @@ unclaimed() {
 # made it, of the reviews, rescreens, relabels and approvals of the head and of the answers of #number (the name of an
 # answer gives no head) that did work after their trust jobs: a run that its trust job stopped did none. A newer run
 # that wrote all it owed does not hide it: a run that GitHub made earlier can read the item later, so its word can be
-# the newest one, and the step of its failed job that skips its posts gives way when it is not (rules.py newer-word).
+# the newest one. The step of its failed job that skips its posts gives way only when a word of another run stands over
+# its word (rules.py newer-word).
 # That run wrote only a part of what it owed on the item (a review comment, a hold comment, a label, a label comment).
 # Its last step, when it succeeds, leaves no label comment that says that the workflow recorded the check while no such
 # check run stands (rules.py unclaim). Once it ended an hour or more ago, its failed jobs run again (restart, as rerun

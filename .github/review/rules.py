@@ -292,7 +292,10 @@ older than <started> leaves the record of this run, as after a blocking review, 
 again.
 
 newer-word: "<other> <kind> <time>" on standard output for <head> of the pull request <number>: the newest word on
-<head> of another run that outranks the own word of this run, (<started>, <kind>) (newer_word, outranks below).
+<head> of another run that stands over the own word of this run, (<started>, <kind>) (newer_word). Such a word
+outranks the own word (outranks below). Over an own word that withdraws (blocking, person, refused or hold), a pass
+counts only when it lifts that word, by the rule of withdraw-word: a review comment that passes <head> and holds the
+marker <!-- review-screened <head> -->. A pass with no screen in its run never counts over such a word.
 <started> is the time when the trust job of this run read the item, <run> the id of this run, and <kind> the kind of
 its own word: its verdict pass, blocking, person or refused, hold for a hold of its screen, or read (the default) for
 a run that gives no word. A word comes from the one model of the order of the words on a head (head_words,
@@ -305,10 +308,10 @@ or a hold counts from the time when its run read the item (its marker <!-- revie
 <!-- review-held-read <time> -->), a hold with no such marker from when GitHub last changed it, and a pass with none
 at no time. The line counts from its <read>, and the check run from the time that its summary names. <other> is the
 run of that word, or - when it names none. "-" alone when no such word stands. A run whose own word such a word
-outranks posts nothing on the item: the comment job and the hold job read this. It reads the comments and the import
-check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is 1 when GitHub could not give
-the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID is not a whole number
-greater than 0 (NUMBER).
+stands over posts nothing on the item: the comment job and the hold job read this. It reads the comments and the
+import check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is 1 when GitHub could
+not give the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID is not a whole
+number greater than 0 (NUMBER).
 
 relabel-withdraws: why a relabel of <head> of the pull request <number> withdraws the import check runs of <head>, by
 the rule that the post job of that relabel reads (review_verdict, with the import check runs of <head>), from
@@ -2304,13 +2307,14 @@ WITHDRAWING = ("blocking", "person")
 # place; (I5) no run withdraws a success of a newer read. The post job records only while its pass outranks each other
 # word (own_record), and withdraws only a success that does not outrank its own word (withdraws), for the newest word
 # that withdraws (withdraw_word). The comment and hold jobs post nothing while a word of another run outranks their
-# own (newer_word), and the label step writes no label while a hold of its head outranks its own word (stays). A
-# relabel, a review by hand and the rescreen pass read the newest word (review_verdict, relabel_facts, and held.sh
-# relabel_withdraws through the command relabel-withdraws, with the import check runs of the head), the rescreen pass
-# and the label step the newest hold of each work (newest_holds, through the command holds), and each writer of a hold
-# comment the hold that it replaces (replaced_hold, through the command replaced-hold). The line gives its
-# reason only while the newest screened review comment does not outrank it (owed_reason): so an older read's line
-# never withdraws a newer read's record.
+# own (newer_word). Over an own word that withdraws, only a pass that lifts it counts, by the rule of withdraw_word
+# (lifts): a screened pass. So a pass with no screen never stops the posts of a verdict or of a hold. The label step
+# writes no label while a hold of its head outranks its own word (stays). A relabel, a review by hand and the rescreen
+# pass read the newest word (review_verdict, relabel_facts, and held.sh relabel_withdraws through the command
+# relabel-withdraws, with the import check runs of the head), the rescreen pass and the label step the newest hold of
+# each work (newest_holds, through the command holds), and each writer of a hold comment the hold that it replaces
+# (replaced_hold, through the command replaced-hold). The line gives its reason only while the newest screened review
+# comment does not outrank it (owed_reason): so an older read's line never withdraws a newer read's record.
 RANKS = {"read": 0, "pass": 1, "success": 1, "blocking": 2, "person": 2, "refused": 2, "neutral": 2, "hold": 3}
 # The time of a word that counts after each time: a neutral check run whose summary names no time (head_words).
 NEWEST = None
@@ -2406,6 +2410,14 @@ def screen_hold(word):
     """Whether word, a Word, is a hold of the screen: a hold comment of the screen (hold_fact screen_held), the line of
     OWED for screen, a check run for the reason screen, or the own word of a run whose screen held the head."""
     return word.kind == "hold" and (word.carrier != "hold" or word.why == "screen_held")
+
+
+def lifts(word):
+    """Whether word, a Word, lifts a word that withdraws: the one rule of the step that withdraws (withdraw_word) and of
+    the step that skips the posts of a run (newer_word). A word lifts when it is a pass of a review comment that holds
+    the marker <!-- review-screened <head> --> (screened), or the own word pass of a run on the route screen. A pass
+    with no screen in its run (a review by hand, or a writer's review) lifts nothing. A success lifts nothing."""
+    return word.kind == "pass" and (word.carrier == "own" or word.carrier == "review" and word.screened)
 
 
 def comment_word(c, head):
@@ -2740,29 +2752,36 @@ def own_record(checks, comments, head, started, run):
 
 
 def newer_word(comments, head, started, run, kind="read", checks=()):
-    """(run, kind, at) of the newest word on head of another run that outranks the own word of this run, (started,
-    kind), or None (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z, (a), and 14:29Z, F1): a run whose own word is
-    outranked by such a word posts nothing on the item, as the newer run owns its comment and its label. comments are
-    the item's comments as the API lists them, and checks the import check runs of head (import_checks). started is the
-    time when the trust job of this run read the item, and run is the id of this run. kind is the kind of its own word:
-    pass, blocking, person or refused for its review, and hold for a hold of its screen. It is read for a run that gives
-    no word (a relabel or an approval). The word comes from head_words and newest_word (OSSV-221's architect,
-    2026-11-25 23:02Z): a review comment (its verdict), a hold comment of the screen (hold), the line of OWED (its why,
-    or hold for screen), and a check run of checks that carries the word of a refused review (refused, from the time
-    that its summary names). A refused review posts no comment, so only its check run or its line carries its word
-    (2026-11-25 19:29Z, F2). Each other kind of word has a comment of its own, or a line when that comment could not
-    post, so no other check run counts: a run whose post job withdrew for its own verdict or screen still lets an
-    older run post until that comment posts (the tester's red test of round 21, the label of a newer read's
-    withdrawal). A review or a hold counts from the time when its run read the item, never from when it posted
-    (2026-11-24 09:43Z, A3). A hold with no marker of that read counts from its updated_at. A pass with no such marker
-    counts at no time, so it never makes this run skip its posts. A hold of another kind than the screen's is no word
-    here. A word of a later time outranks the own word. At the same time, it outranks only a word of a lower rank
-    (RANKS). A verdict, a refusal or a hold makes a pass skip. A pass of the same time does not make a verdict, a
-    refusal or a hold skip. Each word makes a read skip, which fails closed. A word of this run never counts: a comment
-    whose REVIEW_RUN or HELD_RUN is run, or a line or a check run that names run. An earlier attempt of this run can
-    have posted it. The word's run is "" when it names none."""
+    """(run, kind, at) of the newest word on head of another run that stands over the own word of this run, (started,
+    kind), or None (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z, (a), and 14:29Z, F1): a word that outranks the
+    own word and that counts over it (below). A run whose own word such a word stands over posts nothing on the item,
+    as the newer run owns its comment and its label. comments are the item's comments as the API lists them, and
+    checks the import check runs of head (import_checks). started is the time when the trust job of this run read the
+    item, and run is the id of this run. kind is the kind of its own word: pass, blocking, person or refused for its
+    review, and hold for a hold of its screen. It is read for a run that gives no word (a relabel or an approval). The
+    word comes from head_words and newest_word (OSSV-221's architect, 2026-11-25 23:02Z): a review comment (its
+    verdict), a hold comment of the screen (hold), the line of OWED (its why, or hold for screen), and a check run of
+    checks that carries the word of a refused review (refused, from the time that its summary names). A refused review
+    posts no comment, so only its check run or its line carries its word (2026-11-25 19:29Z, F2). Each other kind of
+    word has a comment of its own, or a line when that comment could not post, so no other check run counts: a run
+    whose post job withdrew for its own verdict or screen still lets an older run post until that comment posts (the
+    tester's red test of round 21, the label of a newer read's withdrawal). A review or a hold counts from the time when
+    its run read the item, never from when it posted (2026-11-24 09:43Z, A3). A hold with no marker of that read counts
+    from its updated_at. A pass with no such marker counts at no time, so it never makes this run skip its posts. A
+    hold of another kind than the screen's is no word here. A word of a later time outranks the own word. At the same
+    time, it outranks only a word of a lower rank (RANKS). A verdict, a refusal or a hold makes a pass skip. A pass of
+    the same time does not make a verdict, a refusal or a hold skip. A pass of a later time makes a verdict, a refusal
+    or a hold skip only when the pass lifts that word, by the rule of the step that withdraws (lifts; OSSV-613's
+    architect, round 33, item 1): a pass of a screened review comment. A pass with no screen in its run (a review by
+    hand, or a writer's review) never makes such a run skip. Each word makes a read skip, which fails closed. A word of
+    this run never counts: a comment whose REVIEW_RUN or HELD_RUN is run, or a line or a check run that names run. An
+    earlier attempt of this run can have posted it. The word's run is "" when it names none."""
+    # The own word withdraws: a verdict that withdraws, or a hold of the screen.
+    withdrawing = kind in VERDICT_WITHDRAWS or kind == "hold"
 
     def counts(word):
+        if withdrawing and word.kind == "pass" and not lifts(word):
+            return False
         if word.carrier == "check":
             return word.why == "refused"
         return word.carrier != "hold" or screen_hold(word)
@@ -2832,9 +2851,6 @@ def withdraw_word(comments, head, checks, started, run, own):
 
     def withdraws_(word):
         return word.kind in VERDICT_WITHDRAWS or screen_hold(word) or word.carrier == "own" and word.kind == "neutral"
-
-    def lifts(word):
-        return word.kind == "pass" and (word.carrier == "own" or word.carrier == "review" and word.screened)
 
     def since(word):
         # The time from which the withdrawal for word counts: empty, after each time, when word names no run or time.

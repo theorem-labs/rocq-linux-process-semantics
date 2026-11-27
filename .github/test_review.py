@@ -21620,19 +21620,21 @@ class ImportCheckTest(ReaderRunner):
         def __missing__(self, _name):
             return "token-A"
 
-    def comment_job_after_post(self, got, trust, verdict, comments, run, cancel=None):
+    def comment_job_after_post(self, got, trust, verdict, comments, run, cancel=None, screened=True, event=None):
         """The comment job of run <run> (trust; its review gave verdict) after its post job gave got, with #7's comments
         now comments: (outcomes, writes as (method, endpoint), label comment bodies, its review comment). The check runs
         of HEAD are what the test served before (serve_checks). cancel is the step that a cancel of the job ends
-        (run_job)."""
-        event = "workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run"
+        (run_job). The review comment holds the marker <!-- review-screened <head> --> unless screened is False (a
+        review by hand, which runs no screen). event is the event of the run: by default workflow_dispatch for a
+        relabel or a rescreen, and workflow_run for each other task."""
+        event = event or ("workflow_dispatch" if trust["task"] in ("relabel", "rescreen") else "workflow_run")
         ctx = {f"needs.trust.outputs.{k}": v for k, v in trust.items()}
         ctx.update({"github.event_name": event, "github.ref": "refs/heads/main", "github.repository": REPO,
                     "github.token": self.RUN_TOKEN, "needs.trust.result": "success", "github.run_id": run,
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
                     "needs.post.result": got["result"],
                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
-        mine = review_of(HEAD, verdict, at=ago(0), run=int(run), read=trust["started"])
+        mine = review_of(HEAD, verdict, at=ago(0), run=int(run), read=trust["started"], screened=screened)
         ctx.update({"needs.gather.result": "success", "needs.gather.outputs.kind": "pr",
                     "needs.review.result": "success", "needs.review.outputs.head": HEAD,
                     "needs.review.outputs.verdict": verdict, "needs.review.outputs.body": mine["body"],
@@ -22090,6 +22092,13 @@ class ImportCheckTest(ReaderRunner):
     # counts the word of this run too, an earlier attempt's, and a word at the same place in the order as its own word.
     OWN_WORD = ("run=run, over=(started, kind), where=counts)",
                 "where=lambda word: counts(word) and not outranks((started, kind), word[:2]))")
+    # The controls of the lifting rule of newer_word (OSSV-613's architect, round 33, item 1). PASS_OVER_ANY is
+    # rules.py with the newer_word of before that rule: each pass of a later read stands over the own word of the run,
+    # whatever its kind. NO_PASS_OVER_WITHDRAWING is rules.py whose newer_word counts no pass over an own word that
+    # withdraws, also a screened pass.
+    LIFTED = '        if withdrawing and word.kind == "pass" and not lifts(word):\n            return False\n'
+    PASS_OVER_ANY = (LIFTED, "")
+    NO_PASS_OVER_WITHDRAWING = (LIFTED, LIFTED.replace(" and not lifts(word)", ""))
 
     def changed_module(self, old, new):
         """rules.py as a module whose text holds new in the place of old, which it holds once, from a copy in the
@@ -23271,6 +23280,127 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(self.changed_rules("over=(started, kind), where=counts)",
                                             'over=(started, "read"), where=counts)', lambda: run_120([passed])),
                          (True, True, True))
+
+    def test_a_pass_stands_over_an_own_word_that_withdraws_only_when_the_pass_lifts_it(self):
+        """OSSV-613's architect, round 33, item 1: newer_word asks whether a word of another run stands over the own
+        word of this run, by the lifting rule of the step that withdraws (rules.py lifts). Run 100 of mallory's #7 read
+        the item 40 minutes ago. Run 130 read it 20 minutes ago and passed HEAD. For each own word that withdraws
+        (blocking, person, refused, and hold for a hold of the screen), the pass of run 130 stands over it only when
+        run 130 is a screened review: a pass by hand, with no screen, gives None. For the own word pass or read, the
+        pass by hand is still the newer word. The controls: rules.py with the newer_word of before this rule
+        (PASS_OVER_ANY) gives the pass by hand for each kind, and rules.py whose newer_word counts no pass over an own
+        word that withdraws (NO_PASS_OVER_WITHDRAWING) gives None for the screened pass over each such word."""
+        read, later = ago(40), ago(20)
+        by_hand = review_of(HEAD, at=ago(15), run=130, read=later, screened=False)
+        screened = review_of(HEAD, at=ago(15), run=130, read=later)
+        found = ("130", "pass", later)
+        kinds = ("blocking", "person", "refused", "hold", "pass", "read")
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                withdraws = kind not in ("pass", "read")
+                self.assertEqual(rules.newer_word([by_hand], HEAD, read, "100", kind), None if withdraws else found)
+                self.assertEqual(rules.newer_word([screened], HEAD, read, "100", kind), found)
+        # The controls, built after the assertions of rules.py itself, so that a rules.py with no such line fails
+        # those assertions first.
+        over_any = self.changed_module(*self.PASS_OVER_ANY)
+        no_pass = self.changed_module(*self.NO_PASS_OVER_WITHDRAWING)
+        for kind in kinds:
+            with self.subTest(kind=kind, control=True):
+                withdraws = kind not in ("pass", "read")
+                self.assertEqual(over_any.newer_word([by_hand], HEAD, read, "100", kind), found)
+                self.assertEqual(no_pass.newer_word([screened], HEAD, read, "100", kind), None if withdraws else found)
+
+    def test_a_pass_by_hand_of_a_newer_read_leaves_the_posts_and_the_label_of_a_screened_blocking_review(self):
+        """The reviewer's finding on pull request #152 (review 6088962018), by OSSV-613's architect's ruling of round
+        33, item 1. Three runs of mallory's #7 at HEAD: the screened CI review run 100 read the item 60 minutes ago and
+        passed HEAD; rescreen run 120 read it 40 minutes ago and gave a blocking finding; alice's review by hand run 130
+        (no screen, the route review) read it 20 minutes ago and passed HEAD. The jobs of write-7 run in the order: post
+        100, comment 100, post 130, comment 130, post 120, comment 120. Run 100 records 901, and its label comment says
+        that the workflow recorded the check. Run 130's decision is hand, as 901 stands, and its review replaces the
+        review comment of run 100. Run 120's post job withdraws 901: the pass of run 130 has no screen, so it does not
+        lift the blocking finding. Run 120's comment job then does not give way to that pass either (newer_word, by the
+        same rule, lifts). At the end no success stands, run 120's review posted, and the label comment gives the state
+        change and does not say that the workflow recorded the check. The control, rules.py with the newer_word of
+        before this rule (PASS_OVER_ANY), makes run 120's comment job give way to the pass of run 130: its review and
+        its label step do not run, and the label comment still says that the workflow recorded the check, with no
+        success."""
+        ci = dict(self.REVIEWED, started=ago(60))
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
+        by_hand = dict(self.BY_HAND, started=ago(20))
+        _label, step, text = rules.STATES["change"]
+        change = f"{rules.FIRST}\n**Next step:** {step}\n\n{text}"
+
+        def order():
+            # #7 has the label comment of the state working (comment 40). Post 100 and comment 100: run 100 records
+            # 901, posts its review (comment 30), and its label comment says that the workflow recorded the check.
+            working = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                       "body": rules.label_comment("working")}
+            got, checks = self.judged([], "100", trust=ci, comments=[working])
+            self.assertEqual(self.successes(checks), [901], self.logs[-3:])
+            self.serve_checks(checks)
+            _o, _w, bodies, review = self.comment_job_after_post(got, ci, "pass", [working], "100")
+            self.assertTrue(bodies and rules.says_recorded(bodies[-1]), (bodies, self.logs[-3:]))
+            label = dict(working, updated_at=ago(55), body=bodies[-1])
+            comments = [dict(review, id=30), label]
+            # Post 130 and comment 130: the review by hand records and withdraws nothing, and its pass replaces
+            # comment 30.
+            got, checks = self.judged(checks, "130", trust=by_hand, event="workflow_dispatch", comments=comments)
+            self.assertEqual((got["post"]["decision"], got["post"]["standing"], self.successes(checks)),
+                             ("hand", "true", [901]), self.logs[-3:])
+            self.serve_checks(checks)
+            _o, wrote, bodies, review = self.comment_job_after_post(got, by_hand, "pass", comments, "130",
+                                                                    screened=False, event="workflow_dispatch")
+            self.assertIn(("PATCH", f"repos/{REPO}/issues/comments/30"), wrote, self.logs[-4:])
+            label = dict(label, body=bodies[-1]) if bodies else label
+            self.assertTrue(rules.says_recorded(label["body"]), bodies)
+            comments = [dict(review, id=30), label]
+            # Post 120 and comment 120.
+            got, checks = self.judged(checks, "120", verdict="blocking", trust=rescreen, event="workflow_dispatch",
+                                      comments=comments, named=HEAD)
+            self.serve_checks(checks)
+            outcomes, _wrote, bodies, _review = self.comment_job_after_post(got, rescreen, "blocking", comments, "120")
+            final = bodies[-1] if bodies else label["body"]
+            return (self.successes(checks), outcomes[self.REVIEW], outcomes[self.LABEL], rules.says_recorded(final),
+                    final.startswith(change))
+
+        self.assertEqual(order(), ([], "success", "success", False, True), self.logs[-6:])
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(self.changed_rules(*self.PASS_OVER_ANY, order), ([], "skipped", "skipped", True, False),
+                         self.logs[-6:])
+
+    def test_a_hold_of_the_screen_gives_way_to_a_pass_of_a_newer_read_only_when_the_pass_is_screened(self):
+        """OSSV-613's architect, round 33, item 1: the hold job's step that skips its posts reads newer_word as the step
+        of the comment job does, with the lifting rule of the step that withdraws (rules.py lifts). The screen of
+        rescreen run 120 of mallory's #7, which read the item 40 minutes ago, held HEAD: its own word is hold. Run 130
+        read the item 20 minutes ago and passed HEAD. (i) Run 130 is alice's review by hand, with no screen: its pass
+        does not lift the hold, so the hold job of run 120 does not give way, and it posts its hold comment. (ii) Run
+        130 is a screened review: its pass lifts the hold, so the hold job gives way to it and posts nothing, and its
+        line names the cause pass, run 130 and its read. The controls: rules.py with the newer_word of before this rule
+        (PASS_OVER_ANY) gives way in (i), and rules.py whose newer_word counts no pass over an own word that withdraws
+        (NO_PASS_OVER_WITHDRAWING) does not give way in (ii)."""
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
+        later = ago(20)
+        line = f"#7 at {HEAD}: decision skip, cause pass, read {rescreen['started']}, run 130, from {later}\n"
+        for case, screened, gives_way, control in (("(i) a pass by hand", False, False, self.PASS_OVER_ANY),
+                                                   ("(ii) a screened pass", True, True, self.NO_PASS_OVER_WITHDRAWING)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                passed = review_of(HEAD, at=ago(15), run=130, read=later, screened=screened)
+                got, checks = self.judged([], "120", trust=rescreen, screen="held", event="workflow_dispatch",
+                                          comments=[passed], named=HEAD)
+                self.serve_checks(checks)
+
+                def held():
+                    start = len(self.logs)
+                    outcomes, _wrote = self.hold_job_after_post(got, rescreen, [passed], "120")
+                    return (outcomes[Holding.STEP] == "skipped", len(self.posted("<!-- review-held -->")),
+                            line in "\n".join(self.logs[start:]))
+
+                self.assertEqual(held(), (gives_way, int(not gives_way), gives_way), self.logs[-4:])
+                self.assertEqual(self.changed_rules(*control, held), (not gives_way, int(gives_way), not gives_way),
+                                 self.logs[-4:])
 
     def test_an_answers_hold_job_withdraws_as_a_post_job_does_for_the_screen_of_a_review(self):
         """OSSV-221's architect, 2026-11-24 14:29Z, F2: an answer has no post job, so the hold job of an answer whose

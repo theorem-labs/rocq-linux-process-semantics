@@ -4212,12 +4212,13 @@ jobs:
       # approval. Such a run posts nothing on the item: no review comment, no replacement of one, no fix, no label and
       # no label comment. The run of that newer word owns the comment and the label of the item. The posts are skipped
       # when the own record of this run recorded nothing for such a word (the post job's output gave_way: the decision
-      # held, withdrawn or newer of a screened run), or when a word of another run on the head outranks the own word of
-      # this run in the order of the words on a head (.github/review/rules.py newer-word and outranks; OSSV-221's
-      # architect, 2026-11-24 14:29Z, F1). The own word of this run is its verdict from STARTED, the time when the
-      # trust job of this run read the item. That verdict is pass, blocking or person, or refused for a review that the
-      # fresh reader refused (OSSV-221's architect, 2026-11-25 19:29Z). The own word is read from STARTED for a relabel
-      # or an approval, which give no word. The newer word comes from the one model of the order of the words on a head
+      # held, withdrawn or newer of a screened run), or when a word of another run on the head stands over the own
+      # word of this run (.github/review/rules.py newer-word and outranks; OSSV-221's architect, 2026-11-24 14:29Z,
+      # F1): it outranks that word in the order of the words on a head, and it counts over that word (below). The own
+      # word of this run is its verdict from STARTED, the time when the trust job of this run read the item. That
+      # verdict is pass, blocking or person, or refused for a review that the fresh reader refused (OSSV-221's
+      # architect, 2026-11-25 19:29Z). The own word is read from STARTED for a relabel or an approval, which give no
+      # word. The newer word comes from the one model of the order of the words on a head
       # (rules.py head_words and newest_word; OSSV-221's architect, 2026-11-25 23:02Z): a review comment of the head,
       # with any verdict, a hold comment of the screen of the head, the withdraw-owed line of the head in a label
       # comment, and an import check run of the head that a refused review gave. A refused review posts no comment, so
@@ -4229,12 +4230,15 @@ jobs:
       # finding or the verdict person, and a pass with none never counts (rules.py word_time). The line counts from its
       # read, and the check run from the time that its summary names. A word of a later time outranks the own word. At
       # STARTED, a verdict, a refusal or a hold outranks a pass. A hold outranks a verdict or a refusal, and each word
-      # outranks a read, which fails closed. A pass of the same time does not make a verdict or a refusal skip. A word
-      # of this run (an earlier attempt of it) does not count.
+      # outranks a read, which fails closed. A pass of the same time does not make a verdict or a refusal skip. A pass
+      # of a later time makes a verdict or a refusal skip only when the pass lifts that word, by the rule of the step
+      # that withdraws (rules.py lifts; OSSV-613's architect, round 33, item 1): a screened review comment that passes
+      # the head. A pass with no screen in its run (a review by hand, or a writer's review) never makes such a run
+      # skip. A word of this run (an earlier attempt of it) does not count.
       # The output gave_way also skips the posts: only the own record of a screened pass gives it, and the pass of such
       # a run counts from STARTED. The decisions held and withdrawn of a relabel or of a review by hand set no output
       # gave_way: such a run read the head after that hold or withdrawal, so its read is the newer one. Its posts are
-      # still skipped for a word that outranks its own word.
+      # still skipped for a word that stands over its own word.
       # The step "Record a withdrawal that the post job owes" runs before this one: its line makes later runs withdraw,
       # and it stays in the label comment. When the item has no label comment, that step writes no line, and a run whose
       # posts are skipped does not record it. Such a run writes one line to its log and its summary, in the form of
@@ -5063,8 +5067,8 @@ jobs:
   # the post job's steps and token A, or records that the head is not approved (OSSV-221's architect, 2026-11-24
   # 14:29Z, F2). Its last step takes the line of a withdrawal that the post job or this job finished out, once the hold
   # comment of this run for the head stands. A review, a rescreen, an approval or an answer of a pull request on the
-  # route screen holds nothing when a word of another run on its head outranks the own word of this run (the step "Skip
-  # the posts of this run when a review or hold of the head is newer than this run's read").
+  # route screen holds nothing when a word of another run on its head stands over the own word of this run (the step
+  # "Skip the posts of this run when a review or hold of the head is newer than this run's read").
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -5233,7 +5237,7 @@ jobs:
             task="$TASK" outside="${OUTSIDE:-}" outsider="${OUTSIDER:-}" author="${AUTHOR_KIND:-}" || rc=$?
           (( rc != 3 )) || exit 0
           exit "$rc"
-      # Whether the posts of this run are skipped because a word of another run on its head outranks the own word of
+      # Whether the posts of this run are skipped because a word of another run on its head stands over the own word of
       # this run, as the comment job's step that skips its posts decides it (OSSV-221's architect, 2026-11-24 01:20Z and
       # 01:26Z, (a), and 14:29Z, F1), for a review, a rescreen, an approval or an answer of a pull request on the route
       # screen, which read a head. The word comes from the one model of the order of the words on a head (rules.py
@@ -5248,8 +5252,11 @@ jobs:
       # that its summary names. The own word of this run is a hold from STARTED, the time when the trust job of this
       # run read the item, when its screen held the head, and else a read from STARTED (a review that did not finish
       # gives no word). A word of a later time outranks it. At STARTED, a pass, a verdict or a refusal does not outrank
-      # a hold, and each word outranks a read (.github/review/rules.py newer-word and outranks). A word of this run does
-      # not count: the hold of an earlier attempt of this run never makes it give way.
+      # a hold, and each word outranks a read (.github/review/rules.py newer-word and outranks). A pass of a later time
+      # makes a hold skip only when the pass lifts that hold, by the rule of the step that withdraws (rules.py lifts;
+      # OSSV-613's architect, round 33, item 1): a screened review comment that passes the head. A pass with no screen
+      # in its run (a review by hand, or a writer's review) never makes it skip. A word of this run does not count: the
+      # hold of an earlier attempt of this run never makes it give way.
       # Then the later steps of this run post nothing on the item: no hold comment, no label and no label comment. The
       # run of that newer word owns them. The step "Record a withdrawal that this run owes" runs before this one, and
       # its line stays. The withdrawal of an answer still runs: it withdraws only a success of a read at or before
