@@ -24596,6 +24596,19 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(outcomes[OWE_REFUSED], "success", self.logs[-4:])
         self.assertIn(line, (bodies[:1] or [""])[0].split("\n"), (outcomes, self.logs[-4:]))
 
+    def test_the_line_of_a_refused_review_whose_post_job_did_not_finish_claims_no_record_that_it_does_not_write(self):
+        """The tester's round 31 (b7): a posted text is true for each case it posts with. The comment job of rescreen
+        run 130 of mallory's #7, whose review the fresh reader refused and whose post job was cancelled with no output,
+        derives the withdrawal of that refusal. #7 has no label comment yet, so rules.py owe writes no line (it says
+        so). The step's own line before that must not say that this step records the refusal."""
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
+        start = len(self.logs)
+        outcomes, _wrote, bodies = self.refused_comment_job({"result": "cancelled", "post": {}}, rescreen, "130", [])
+        logs = "\n".join(self.logs[start:])
+        self.assertEqual((outcomes[OWE_REFUSED], bodies), ("success", []), logs)
+        self.assertIn("it has no label comment", logs)
+        self.assertNotIn("so this step records that refusal", logs)
+
     def test_an_empty_key_set_counts_as_true_and_only_a_key_set_of_false_leaves_no_line_of_a_refused_review(self):
         """OSSV-613's architect, 2026-11-27 09:24Z, round 31, R7: for a post job that did not succeed over a review that
         the fresh reader refused, the comment job's step "Record the withdrawal of a refused review whose post job did
