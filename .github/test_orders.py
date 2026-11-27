@@ -4,8 +4,8 @@ architect, 2026-11-24 14:36Z and 14:42Z, for round 24 of OSSV-613; the relabel a
 01:13Z, for round 25; the refused review, OSSV-613's architect, 2026-11-26 12:52Z, round 30, item 4; the refused review
 of a writer, left out of the model, and the line that the comment job derives for a post job that died before it wrote
 its output owed, 2026-11-26 20:57Z, round 30, item 4; the re-run of a run whose comment job died before it recorded what
-the run owes, 2026-11-27 00:24Z, choice (a); the pass of a review by hand with no screen, which lifts no word that
-withdraws, OSSV-613's architect, round 33, item 1).
+the run owes, 2026-11-27 00:24Z, choice (a); the pass of a review by hand with no screen, OSSV-613's architect, round
+33, item 1, with its end state and its switch ORDERS_HAND, 2026-11-27 15:50Z and 15:51Z).
 
 The jobs of a pull request that write its import check run, its label comment and its review and hold comments share
 one concurrency group (write-<n>), so GitHub runs them one at a time, each whole. A run of the review workflow on HEAD
@@ -18,47 +18,56 @@ holds an older review comment of HEAD that counts at no time (a pass with no mar
 the state change, the label waits-on-author, and no import check run. At the end of each order it checks:
 
   I1  a success stands (an import check run repo-pairs/import-approved of HEAD with the conclusion success) only when
-      the standing word (below) is a pass of a run that read the author as an outsider, a pass by hand among them. One
-      exception (OSSV-613's architect, 2026-11-26 07:36Z and 08:46Z, B1 of the failure sweep): a success over a pass of
-      a run that read the kind as unknown, whose route was the screen, whose screen passed at HEAD and whose post job
-      did not succeed, when the run that recorded the success read the author as an outsider (a relabel, or a review or
-      a rescreen that records its own screened pass), and each standing word is such a pass or a pass of an outsider's
-      read, so that no blocking, person or refused word stands over it. A pass under the kind unknown is no approval,
-      so the post job of such a run withdraws (its word access) and records that HEAD is not approved. When that post
-      job did not succeed, that word was never written, and a run that reads the author as an outsider finds a
-      screened pass of an outside author's head, which R12 and the author-kind table's R approve. Outside that
-      exception, a failure of I1 stays a failure.
+      the newest word (below) that is not a pass by hand (hand, below) is a pass of a run that read the author as an
+      outsider: a pass by hand has no screen, so it never lifts a word for the import (OSSV-613's architect, 2026-11-27
+      15:50Z), and with no such word no success stands. One exception (OSSV-613's architect, 2026-11-26 07:36Z and
+      08:46Z, B1 of the failure sweep): a success over a pass of a run that read the kind as unknown, whose route was
+      the screen, whose screen passed at HEAD and whose post job did not succeed, when the run that recorded the
+      success read the author as an outsider (a relabel, or a review or a rescreen that records its own screened pass),
+      and each of those newest words is such a pass or a pass of an outsider's read, so that no blocking, person or
+      refused word stands over it. A pass under the kind unknown is no approval, so the post job of such a run
+      withdraws (its word access) and records that HEAD is not approved. When that post job did not succeed, that word
+      was never written, and a run that reads the author as an outsider finds a screened pass of an outside author's
+      head, which R12 and the author-kind table's R approve. Outside that exception, a failure of I1 stays a failure.
   I2  the label comment says that the workflow recorded the check exactly when a success stands.
-  I3  the state of the label comment is the state of the standing word (refused-review for a refusal, whoever wrote
-      the item; for a pass, a pass by hand among them, import with a success and else decide), when that word is of a
-      run that read the author's kind (outsider or writer). A run that could not read it (kind unknown) changes no
-      label, so I3 does not apply when the standing word is of such a run; I1, I2, I4 and I5 still do.
-  I4  the standing word is on the pull request at the end: its review comment (in place, from its run) or its hold
+  I3  the state of the label comment is the state of the newest word (refused-review for a refusal, whoever wrote the
+      item; for a pass by hand, the state that by_hand gives, below), when that word is of a run that read the
+      author's kind (outsider or writer). A run that could not read it (kind unknown) changes no label, so I3 does not
+      apply when the newest word is of such a run; I1, I2, I4 and I5 still do.
+  I4  the newest word is on the pull request at the end: its review comment (in place, from its run) or its hold
       comment. A refusal posts no comment, so one of the two carriers of its word is enough (rules.head_words): the
       line <!-- withdraw-owed HEAD refused <run> <read> --> of the label comment, with its run and its read, or an
       import check run of HEAD with the conclusion neutral whose summary names the reason refused of its run from its
       read (rules.withdrawn_by: its own withdrawal or check run of not-approved, or a withdrawal for its line). At a
-      tie of two standing words, one of them is enough.
+      tie of two newest words, one of them is enough.
   I5  no run withdraws a success that a run of a newer read recorded (a tie withdraws).
   I0  every job that runs succeeds: no order here has a failure of GitHub but the refusal of refusedline (below).
 
-The standing words, which I1 to I4 read (OSSV-613's architect, round 33, item 1; OrderTest.standing). The newest words
-are the words of the newest read, and at a tie of read times a verdict, a refusal or a hold outranks a pass. A pass
-with no screen in its run, an unscreened pass (the pass by hand, hand below, or a writer's pass, whose route is
-review), does not stand over a word that withdraws (blocking, person, refused, refusedline, held or answer) of an older
-or equal read, unless a screened pass (a pass of a run that is neither by hand nor a writer's) of a newer read than
-that word outranks it: that pass lifts it, as rules.lifts gives it to the step that withdraws and to the step that
-skips the posts of a run (newer_word). So when each newest word is an unscreened pass and no screened pass of a newer
-read lifts the newest word that withdraws, the standing words are the newest words that withdraw (that word, and each
-word that withdraws of its read); else they are the newest words.
+The newest words (OrderTest.newest) are the words of the newest read, and at a tie of read times a verdict, a refusal
+or a hold outranks a pass. The newest read decides the label (OSSV-613's architect, 2026-11-27 15:50Z): for I3 and I4,
+a pass by hand counts as the pass of an outsider's read that it is, and a writer's pass stands as the newest word as it
+did before round 33. The state of a pass by hand that is the newest word is the state of the label comment that the
+decision of by_hand gives, the function of the decision step of review.yml's post job that decides for a review with
+no screen, from the words of the order (by_hand_state). by_hand reads rules.py review_verdict (rules.py verdict, with
+no import check run), and for an outside author the author-kind table's record answer lets it decide. review_verdict
+gives the state held when a hold of the screen (held or answer) outranks the newest screened review comment (of a run
+on the route screen, so not a pass by hand), or when no review comment is screened and such a hold stands; and a why
+when the newest blocking, person or refused word is not outranked by that review comment. held gives the decision
+held and a why the decision screened. Each records nothing, so the label step gives the verdict pass with no record
+the state decide (rules.label_state; rules.import_steps gives each decision the step of decide, held with the text of
+a hold after each screened review). Else by_hand gives the decision hand with its output standing (the states
+screened and earlier), or the step's replaced gives hand when a success stands and else the import check gives the
+decision screen (the state unscreened). The label step counts a success that stands as recorded for the decision
+hand, so the state is import with a success, and decide with none. So a word that withdraws (held, answer, blocking,
+person, refused or refusedline) gives the state decide unless a screened pass of a newer read outranks it.
 
 After the last job of each order of two runs, one relabel run of #7 runs (the task relabel, a run of the rescreen pass
 with no screen and no model: its post job, then its comment job), as a change of the variable, a merge conflict that
 went away or a person can start one. It reads the author as its true kind. A relabel gives no word of its own, so I0 to
 I4 must hold after it as before it, each written R:I0 to R:I4 when it breaks only after it; and R:I5: when the order
 broke no invariant before the relabel, the relabel withdraws no success that stood before it (each such success rests
-on the standing word, a pass of an outsider's run). An order in which GitHub refused the write of refusedline (below)
-gets no relabel: it ends with the retry.
+on the newest word that is not a pass by hand, a pass of an outsider's run). An order in which GitHub refused the write
+of refusedline (below) gets no relabel: it ends with the retry.
 
 What it runs. A word is a verdict at a read time: pass, blocking, person, held (the screen held HEAD), answer (the
 screen of an answer held the author's comment), or a refused review (the fresh reader refused the review: its review
@@ -86,28 +95,30 @@ checkout, at that step, or at the step "Record a withdrawal that the post job ow
 their writes, and cancels them, after a refusal of refusedline too), the run recorded neither its line nor its review
 comment, and the retry below runs the failed jobs of the run again, the post job among them, in the place of a
 relabel, which could not read its word (held.sh unrecorded, due_rerun and due_retry; OSSV-613's architect, 2026-11-27
-00:24Z, choice (a)). One more word is hand (OSSV-613's architect, round 33, item 1): the pass of a review by hand with
-no screen, of an outside author's head, read as an outsider. alice, who has write access, starts review.yml by hand with
-the inputs task review and number 7 alone (test_review's ImportCheckTest.BY_HAND), so the run's name is review #7 and
-names no head (the trust job's output named is empty), its event is workflow_dispatch and its actor alice. Its trust
-job gives the task review, the route review, no outsider, outside true and the kind outsider, and alice as its account,
-so no screen runs; its review job gives the verdict pass, and its review comment holds no marker
-<!-- review-screened <head> --> (review_of, screened=False). Its post job's decision comes from by_hand of review.yml
-(hand earlier or standing, or screened with a why). Run 0 is a CI review (workflow_run), each other run a rescreen
-(workflow_dispatch), a run of hand a review by hand wherever it is, and an answer is an answer. Each run reads the
-author as its true kind or as unknown (GitHub did not say), and one author has one true kind:
+00:24Z, choice (a)). One more word is hand (OSSV-613's architect, round 33, item 1), of the combinations that
+ORDERS_HAND=1 alone adds (below): the pass of a review by hand with no screen, of an outside author's head, read as an
+outsider. alice, who has write access, starts review.yml by hand with the inputs task review and number 7 alone
+(test_review's ImportCheckTest.BY_HAND), so the run's name is review #7 and names no head (the trust job's output
+named is empty), its event is workflow_dispatch and its actor alice. Its trust job gives the task review, the route
+review, no outsider, outside true and the kind outsider, and alice as its account, so no screen runs; its review job
+gives the verdict pass, and its review comment holds no marker <!-- review-screened <head> --> (review_of,
+screened=False). Its post job's decision comes from by_hand of review.yml (hand earlier or standing, or screened with
+a why). Run 0 is a CI review (workflow_run), each other run a rescreen (workflow_dispatch), a run of hand a review by
+hand wherever it is, and an answer is an answer. Each run reads the author as its true kind or as unknown (GitHub did
+not say), and one author has one true kind:
   2 runs: the true kind outsider (each run reads outsider or unknown) or writer (each run reads writer or unknown, not
           both unknown, which the first already runs); each word of a run that reads outsider is one of the seven or
-          hand, of a run that reads unknown one of the seven, and a writer's one of pass, blocking and person (a
-          writer's item has no screen); run 1 read before, with or after run 0. Every combination.
+          (under ORDERS_HAND=1 alone) hand, of a run that reads unknown one of the seven, and a writer's one of pass,
+          blocking and person (a writer's item has no screen); run 1 read before, with or after run 0. Every
+          combination.
   3 runs: each run reads outsider, or exactly one run reads unknown; each word one of pass, blocking, held, answer and
           refused, with at least one pass and one other word; the reads of the three in one of the patterns a<b<c,
           a=b<c, a<b=c and a=b=c, and in a group of runs with the same read, one order of their (kind, word) alone.
-          And with hand: each run reads outsider, exactly one word is hand and the other two are of those five, at
-          least one of them no pass, in the same patterns of reads and with the same one order in a group. Among them
-          is the reviewer's order of round 33: pass, blocking and hand, read a<b<c (the CI review passes, the rescreen
-          gives a blocking finding, the review by hand passes), of jobs post, comment of the pass, post, comment of
-          hand, then post, comment of blocking.
+          And with hand, under ORDERS_HAND=1 alone: each run reads outsider, exactly one word is hand and the other two
+          are of those five, at least one of them no pass, in the same patterns of reads and with the same one order
+          in a group. Among them is the reviewer's order of round 33: pass, blocking and hand, read a<b<c (the CI
+          review passes, the rescreen gives a blocking finding, the review by hand passes), of jobs post, comment of
+          the pass, post, comment of hand, then post, comment of blocking.
 What it does not run (the architect's pruning of 14:42Z): 3 runs with the word person, with a writer, with two or three
 unknown reads, or with no pass or only passes; 3 runs with the word refusedline, whose retry at the end of each order
 would cost more than all the rest (266 combinations of 20,820 orders: about 187,000 job runs), and the sweep gives
@@ -122,29 +133,35 @@ writes it for each author, and the comment job derives it for each author alike;
 hand of a run that reads the kind as unknown: a pass by hand under the kind unknown is the own word access-last
 (rules.own_word), which withdraws every success whatever its read (test_review's KindTableTest, its red test of a
 review by hand that withdraws what stands after an earlier blocking review or a newer hold for any author), so I5 does
-not hold for it by design. Nor hand of a writer: a writer's pass already has no screen (route review), so it is already
-an unscreened pass of the model. Nor 3 runs with two runs of hand, or with hand and a read of unknown. Also not run:
-any failure of GitHub but the one of refusedline and the one of the failure sweep (below); relabels, catch-ups,
-approvals, and runs by hand but the review of hand (a review by hand with an input head, or with another verdict, say);
-more than one head; a run's re-run attempt but the re-run of the failed jobs of a run that the retry starts. The sweep
-runs under ORDERS_FAILURES=1 alone.
+not hold for it by design. Nor hand of a writer: a writer's review already runs no screen (route review). Nor 3 runs
+with two runs of hand, or with hand and a read of unknown. Also not run: any failure of GitHub but the one of
+refusedline and the one of the failure sweep (below); relabels, catch-ups, approvals, and runs by hand but the review
+of hand (a review by hand with an input head, or with another verdict, say); more than one head; a run's re-run
+attempt but the re-run of the failed jobs of a run that the retry starts. The sweep runs under ORDERS_FAILURES=1
+alone.
 
-That is 1,534 combinations: 828 of 2 runs (4,398 orders, 12,996 job runs, and after each order a relabel of 2 job
-runs, or for the 1,044 orders of refusedline the retry, about 6 job runs (RETRY_COST): 25,968 job runs) and 706 of 3
-runs (46,434 orders, 138,991 job runs; the orders of one combination share their first jobs). The 538 combinations of
-before round 33 with a refused word (324 of 2 runs, 214 of 3) come after the 747 of before round 30, which keep their
-indexes, and the 249 with hand (87 of 2 runs, 162 of 3: 2,706 and 32,440 job runs) come after the 1,285 of before round
-33, which keep theirs. Each combination is one test method, which runs every order of its jobs. ORDERS_SHARD=<k>/<n>
-(0 <= k < n) keeps the methods of shard k of n, for a matrix of review-tests.yml: the shards share the job runs of the
-plain orders about equally (shard_of), so that each of the 77 shards of review-tests.yml ends in under 10 minutes
-(OSSV-613's architect, 2026-11-26 02:25Z, and round 33, item 1: the 60 shards of the 129,813 job runs of the 1,285
-combinations, at most 2,169 job runs a shard, took 3.9 to 6.9 minutes each in CI; the 77 of the 164,959 job runs of
-the 1,534 keep at most 2,146 a shard). Run it as python3 .github/parallel_tests.py --processes 4 .github/test_orders.py.
+That is 1,285 combinations, 129,813 job runs, with no ORDERS_HAND: 741 of 2 runs (3,912 orders, 11,550 job runs, and
+after each order a relabel of 2 job runs, or for the 972 orders of refusedline the retry, about 6 job runs
+(RETRY_COST): 23,262 job runs) and 544 of 3 runs (35,598 orders, 106,551 job runs; the orders of one combination share
+their first jobs). The 538 combinations with a refused word (324 of 2 runs, 214 of 3) come after the 747 of before
+round 30, which keep their indexes. ORDERS_HAND=1 adds the 249 combinations with hand after the 1,285, which keep
+theirs (OSSV-613's architect, 2026-11-27 15:50Z and 15:51Z): 87 of 2 runs (486 orders, 1,446 job runs, and the
+relabel or, for the 72 orders of refusedline, the retry: 2,706 job runs) and 162 of 3 (10,836 orders, 32,440 job
+runs). So with the switch, 1,534 combinations, 164,959 job runs: 828 of 2 runs (4,398 orders, 25,968 job runs) and 706
+of 3 (46,434 orders, 138,991 job runs). Each combination is one test method, which runs every order of its jobs.
+ORDERS_SHARD=<k>/<n> (0 <= k < n) keeps the methods of shard k of n, for a matrix of review-tests.yml: the shards
+share the job runs of the plain orders about equally (shard_of, over the combinations that the switch gives), so that
+each of the 60 shards of review-tests.yml ends in under 10 minutes (OSSV-613's architect, 2026-11-26 02:25Z; 60 for
+the 129,813 job runs of the 1,285 combinations, 1.9 times those of the 747). review-tests.yml never sets ORDERS_HAND:
+its 60 shards run the 1,285, and the combinations with hand run on the build cluster, in plain orders and in the
+failure sweep (OSSV-613's architect, 2026-11-27 15:50Z and 15:51Z). Run it as python3 .github/parallel_tests.py
+--processes 4 .github/test_orders.py.
 
 The failure sweep (OSSV-613, round 29, item 3). ORDERS_FAILURES=1 runs it in each test method, in the place of its
 plain orders: the walk still runs the jobs of each plain order, but it checks no plain order. review-tests.yml never
-sets the switch: the sweep runs on the build cluster. Each order runs again with one failure of GitHub in one of its
-jobs, which starts from the state that the plain walk reached before that job. A failure is one of three kinds. In a
+sets the switch: the sweep runs on the build cluster. ORDERS_FAILURES=1 works with or without ORDERS_HAND=1, which
+adds the combinations with hand to it. Each order runs again with one failure of GitHub in one of its jobs, which
+starts from the state that the plain walk reached before that job. A failure is one of three kinds. In a
 read, the n-th read of GitHub that the job makes fails as a 502 does. In a write, the n-th write of the job fails so,
 and it does not land. In a cancel, a cancel of the job ends a step that it ran: that step is cancelled, the steps after
 it are skipped, and the step whose if is failure() || cancelled() runs. The stand-in gh counts the reads and the
@@ -232,8 +249,9 @@ REFUSED = ("refused", "refusedline")
 # <!-- review-screened <head> -->.
 HAND = "hand"
 BY_HAND = "alice"
-# The words that pass, and the words that withdraw a success: an unscreened pass (unscreened) does not stand over a word
-# that withdraws unless a screened pass lifts it (OrderTest.standing).
+# The words that pass, which a word that is no pass outranks at a tie of reads (OrderTest.newest), and the words that
+# give by_hand of review.yml a reason to record no success (by_hand_state): a hold of the screen (held, answer) or a
+# verdict that withdraws (blocking, person, and the refused words).
 PASSES = ("pass", HAND)
 WITHDRAWING = ("blocking", "person", "held", "answer") + REFUSED
 RECORDED = "The workflow recorded the check `repo-pairs/import-approved`"
@@ -251,6 +269,9 @@ NAME = "repo-pairs/import-approved"
 # names the directory of its report lines.
 FAILURES = os.environ.get("ORDERS_FAILURES") == "1"
 REPORT = os.environ.get("ORDERS_REPORT")
+# The combinations with a review by hand (HAND; the module's text): ORDERS_HAND=1 adds them after the others.
+# review-tests.yml never sets it: they run on the build cluster, in plain orders and in the failure sweep.
+WITH_HAND = os.environ.get("ORDERS_HAND") == "1"
 TRIES = int(WF["env"]["REVIEW_TRIES"])
 # The files in which the stand-in gh records its calls and its injection (FAKE_GH): no part of what GitHub serves.
 RECORDS = {"calls", "args", "inputs", "tokens", "sleeps", "inject", "inject.read", "inject.write", "injected"}
@@ -283,8 +304,9 @@ def run_specs(runs):
 def combinations():
     """Each combination that this file runs, in a fixed order: a tuple of (kind, word, rank) per run. The combinations
     with a word of REFUSED come after the others, so that each other combination keeps the index (and the name of its
-    test method) that it had before the refused words (OSSV-613, round 30, item 4), and the combinations with the word
-    HAND come after all of those, so that each of those keeps its index too (OSSV-613, round 33, item 1)."""
+    test method) that it had before the refused words (OSSV-613, round 30, item 4). Under ORDERS_HAND=1 (WITH_HAND)
+    alone, the combinations with the word HAND come after all of those, so that each of those keeps its index too
+    (OSSV-613, round 33, item 1; OSSV-613's architect, 2026-11-27 15:50Z and 15:51Z)."""
     found = []
     for true in ("outsider", "writer"):
         for kinds in itertools.product((true, "unknown"), repeat=2):
@@ -310,6 +332,8 @@ def combinations():
                 if ordered(runs):
                     found.append(runs)
     found.sort(key=lambda runs: any(word in REFUSED for _kind, word, _rank in runs))
+    if not WITH_HAND:
+        return found
     # Two runs: hand as one more word of a run that reads the author as an outsider, of the true kind outsider.
     for kinds in itertools.product(("outsider", "unknown"), repeat=2):
         for words in itertools.product(*[WORDS + (HAND,) if k == "outsider" else WORDS for k in kinds]):
@@ -338,10 +362,24 @@ def verdict_of(run):
     return "pass" if run["word"] == HAND else run["word"]
 
 
-def unscreened(run):
-    """Whether the word of run is a pass with no screen in its run: a pass by hand (HAND), or a writer's pass, whose
-    route is review. Each other pass is a screened one: its run's route is the screen (trust)."""
-    return run["word"] == HAND or run["word"] == "pass" and run["kind"] == "writer"
+def by_hand_state(runs, success):
+    """The state of the label comment that a pass by hand (HAND) gives as the newest word of runs, at the end of an
+    order in which a success stands or not (success): the state of the decision that by_hand of review.yml's decision
+    step gives when it reads the words of runs (the module's text). rules.py review_verdict, which by_hand reads, gives
+    the state held when a hold of the screen outranks the newest screened review comment (of a run on the route screen:
+    a pass by hand and a writer's pass have none), or when no review comment is screened and such a hold stands; and a
+    why when the newest blocking, person or refused word is not outranked by that review comment. So a word of
+    WITHDRAWING gives one of the two unless a screened pass of a newer read outranks it. held gives the decision held,
+    and a why the decision screened; each records nothing, so the label step gives the state decide (rules.label_state,
+    the verdict pass with no record; rules.import_steps gives each the step of decide). With neither, by_hand gives the
+    decision hand (the states screened and earlier, with the output standing), or replaced gives it when a success
+    stands and else the import check gives the decision screen (the state unscreened): the label step counts a success
+    that stands as recorded for the decision hand, so the state is import when a success stands, and decide when none
+    does."""
+    screened = [r["minutes"] for r in runs if r["word"] == "pass" and r["kind"] != "writer"]
+    newest = min(screened, default=None)
+    why = any(r["word"] in WITHDRAWING and (newest is None or r["minutes"] <= newest) for r in runs)
+    return "import" if success and not why else "decide"
 
 
 def interleavings(runs):
@@ -630,32 +668,19 @@ class OrderTest(T.ReaderRunner):
         tied = [r for r in runs if r["minutes"] == top]
         return [r for r in tied if r["word"] not in PASSES] or tied
 
-    @classmethod
-    def standing(cls, runs):
-        """The words of runs that stand at the end, which I1 to I4 read (the module's text; OSSV-613's architect, round
-        33, item 1): the newest words, but when each of them is an unscreened pass (unscreened) and no screened pass of
-        a newer read lifts the newest word that withdraws (WITHDRAWING; rules.lifts), the newest words that withdraw.
-        Such a word is of an older read than the newest words, as a word that withdraws outranks a pass at a tie."""
-        newest = cls.newest(runs)
-        withdrawing = [r for r in runs if r["word"] in WITHDRAWING]
-        if not withdrawing or not all(unscreened(r) for r in newest):
-            return newest
-        top = min(r["minutes"] for r in withdrawing)
-        if any(r["word"] == "pass" and not unscreened(r) and r["minutes"] < top for r in runs):
-            return newest
-        return [r for r in withdrawing if r["minutes"] == top]
-
     @staticmethod
-    def state_of(run, success):
-        """The state of the label comment that the word of run gives, for a run that read the author's kind. A refused
-        review gives refused-review (rules.label_state reads the fact refused before the verdict). A pass by hand gives
-        the state of a pass."""
+    def state_of(run, success, runs):
+        """The state of the label comment that the word of run gives, for a run that read the author's kind, at the end
+        of an order of runs. A refused review gives refused-review (rules.label_state reads the fact refused before the
+        verdict). A pass by hand gives the state of the decision of by_hand (by_hand_state)."""
         if run["word"] in REFUSED:
             return "refused-review"
         if run["kind"] == "writer":
             return "reviewed"
+        if run["word"] == HAND:
+            return by_hand_state(runs, success)
         return {"pass": "import" if success else "decide", "blocking": "change", "person": "person",
-                "held": "screen", "answer": "screen"}[verdict_of(run)]
+                "held": "screen", "answer": "screen"}[run["word"]]
 
     def on_the_item(self, run, w):
         """Whether the word of run is on #7 in w: its review comment, or its hold comment. A refused review posts no
@@ -684,22 +709,26 @@ class OrderTest(T.ReaderRunner):
         return False
 
     def broken(self, runs, w):
-        """The invariants that w, the end of an order, breaks, each with what breaks it. I1 to I4 read the standing
-        words (standing)."""
+        """The invariants that w, the end of an order, breaks, each with what breaks it. I1 reads the newest words that
+        are not a pass by hand, and I3 and I4 the newest words (newest; the module's text)."""
         found = []
         if w["failed"]:
             found.append(("I0", w["failed"]))
         success = [c for c in w["checks"] if c.get("name") == NAME and c.get("conclusion") == "success"]
-        standing = self.standing(runs)
-        if success and not all(r["word"] in PASSES and r["kind"] == "outsider" for r in standing):
-            # The exception of I1 (the module's text): each standing word is a pass of an outsider's read, or of a read
-            # of the kind unknown on the route screen with a screen that passed (trust, contexts) and a post job that
-            # did not succeed (its word access was never written); and a run that read the author as an outsider
+        newest = self.newest(runs)
+        # A pass by hand has no screen, so it never lifts a word for the import: I1 reads the newest of the other words.
+        others = [r for r in runs if r["word"] != HAND]
+        deciding = self.newest(others) if others else []
+        if success and not (deciding and all(r["word"] == "pass" and r["kind"] == "outsider" for r in deciding)):
+            # The exception of I1 (the module's text): each of those newest words is a pass of an outsider's read, or of
+            # a read of the kind unknown on the route screen with a screen that passed (trust, contexts) and a post job
+            # that did not succeed (its word access was never written); and a run that read the author as an outsider
             # recorded each success.
             def lost(r):
                 return (r["kind"] == "unknown" and self.trust(r)["route"] == "screen"
                         and w["posts"].get(r["id"], {}).get("result") != "success")
-            passes = all(r["word"] in PASSES and (r["kind"] == "outsider" or lost(r)) for r in standing)
+            passes = bool(deciding) and all(r["word"] == "pass" and (r["kind"] == "outsider" or lost(r))
+                                            for r in deciding)
             outsiders = all((w["makers"].get(str(c["id"])) or [None, None])[1] == "outsider" for c in success)
             if not (passes and outsiders):
                 found.append(("I1", [c["id"] for c in success]))
@@ -707,14 +736,14 @@ class OrderTest(T.ReaderRunner):
         label = labels[-1]["body"] if labels else ""
         if (RECORDED in label) != bool(success):
             found.append(("I2", (RECORDED in label, [c["id"] for c in success])))
-        if all(r["kind"] != "unknown" for r in standing):
+        if all(r["kind"] != "unknown" for r in newest):
             step = next_step(label)
             states = STEPS.get(step, set())
-            want = {self.state_of(r, bool(success)) for r in standing}
+            want = {self.state_of(r, bool(success), runs) for r in newest}
             if not states & want:
                 found.append(("I3", (sorted(states), sorted(want))))
-        if not any(self.on_the_item(r, w) for r in standing):
-            found.append(("I4", [r["id"] for r in standing]))
+        if not any(self.on_the_item(r, w) for r in newest):
+            found.append(("I4", [r["id"] for r in newest]))
         reads = {r["id"]: self.read(r) for r in runs}
         for run_id, cid, check in w["withdrawals"]:
             record = rules.recorded_by(check) if check else None
