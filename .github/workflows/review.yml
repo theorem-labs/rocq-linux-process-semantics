@@ -3990,7 +3990,9 @@ jobs:
   # withdrawal is newer than the screened pass of this run (the step "Skip the posts when the head has a review or hold
   # newer than this run's read, or a withdrawal newer than this run's screened pass"). When the post job of such a run
   # withdrew an import check run of the head with the conclusion success, it posts only the state label and the label
-  # comment that a relabel of the head gives now.
+  # comment that a relabel of the head gives now. A pass of a review by hand whose label step would give the state
+  # decide while an import check run of the head with the conclusion success stands posts its review comment, and then
+  # the state label and the label comment that a relabel of the head gives now (the label step's comment).
   # No App token posts here, so none of these comments, reviews and labels starts a run of a workflow. It never commits
   # or pushes: its token can write no file of the repository. It runs whatever the post job's result, and reads that
   # job's recorded as false when it did not succeed. Whatever that result, it records in the label comment the
@@ -4604,6 +4606,16 @@ jobs:
       # Else it gives the decision gone: in the state decide, its text says that a run of the workflow withdrew the
       # check after the screen and the review passed (rules.py GONE), with Sami's step for a review by hand. A read that
       # fails fails this step before it writes anything.
+      # A pass of a review by hand (a review or a rescreen with no screen in its run) of an outside author's pull request
+      # gets that read too, while the variable is set, where this step would give it the state decide (OSSV-613's
+      # architect, 2026-11-27 19:02Z). Its post job can have decided before a screened pass of another run recorded such
+      # a check run, or before the review comment of that pass posted: the state decide would then stand with that
+      # check run. So when such a check run stands, this step takes review-held off as for any review, but writes no
+      # state label and no label comment. It writes the output relabel, the time now, and one line to its log. With it,
+      # the three steps after this one run as a relabel of the head that reads the item at that time, as after a run
+      # that gave way (the step "Set the state label as a relabel of the head sets it now"): the item gets the state
+      # label and the label comment that a relabel of the head gives now. When none stands, this step gives the state
+      # decide as before. A read that fails fails this step here too.
       # With the decision screened, the state follows this run's verdict, as for any review. With the decision withdrawn
       # of a relabel, the state decide gets its own text and Sami's step for a review by hand, in the place of the
       # passed text and the steps of the import (rules.py NO_REASON). After a review job that
@@ -4620,6 +4632,7 @@ jobs:
       # "Set the state label as a relabel of the head sets it now" runs the script of this step, as a relabel of the
       # head.
       - name: Take the label review-held off and set the state label
+        id: label
         if: >-
           env.POST_REVIEW == 'true' && needs.trust.outputs.task != 'conflict' && needs.trust.outputs.task != 'stop'
           && needs.trust.outputs.task != 'catchup' && needs.trust.outputs.task != 'approve'
@@ -4629,6 +4642,9 @@ jobs:
           # The head that the review read, or the head of a relabel, which the trust job read.
           HEAD: ${{ needs.trust.outputs.task == 'relabel' && needs.trust.outputs.head || needs.review.outputs.head }}
           STARTED: ${{ needs.trust.outputs.started }}
+          # The route of this run: a review or a rescreen with no screen in its run (a review by hand) has the route
+          # review.
+          ROUTE: ${{ needs.trust.outputs.route }}
           # The post job's result: success, failure, cancelled, or skipped when it did not run.
           POSTED: ${{ needs.post.result }}
           KIND: ${{ needs.trust.outputs.task == 'relabel' && 'pr' || needs.gather.outputs.kind }}
@@ -4810,7 +4826,15 @@ jobs:
             && { [ "${TASK:-}" = review ] || [ "${TASK:-}" = rescreen ]; }; then
             approved=true unposted=true
           fi
-          if [ "$approved" = true ] && [ -n "$paths" ]; then
+          # hand: the pass of a review by hand of an outside author's pull request, which this step would give the
+          # state decide (approved false; rules.py label_state). It reads the check runs too (the comment above this
+          # step), and relabel is true when such a check run stands.
+          hand=false relabel=false
+          if [ "$approved" = false ] && [ "${KIND:-}" = pr ] && [ "${VERDICT:-}" = pass ] && [ "${OUTSIDE:-}" = true ] \
+            && [ "${ROUTE:-}" != screen ] && { [ "${TASK:-}" = review ] || [ "${TASK:-}" = rescreen ]; }; then
+            hand=true
+          fi
+          if { [ "$approved" = true ] || [ "$hand" = true ]; } && [ -n "$paths" ]; then
             marker=$(python3 .github/review/rules.py import-marker "$HEAD" "$paths") || exit 1
             # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
             if ! found=$(SHA=$HEAD MARKER=$marker gh api --method GET --paginate \
@@ -4827,7 +4851,9 @@ jobs:
                 "that the workflow recorded the check."
               found=""
             fi
-            if [ -z "$found" ] && [ "$unposted" = true ]; then
+            if [ "$hand" = true ]; then
+              [ -z "$found" ] || relabel=true
+            elif [ -z "$found" ] && [ "$unposted" = true ]; then
               approved=false
             elif [ -z "$found" ]; then
               python3 .github/review/rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED" || exit 1
@@ -4856,6 +4882,16 @@ jobs:
               take_off
             fi
           fi
+          # A pass by hand while such a check run stands: the steps after this one run as a relabel of the head that
+          # reads the item now, and write the state label and the label comment (the comment above this step).
+          if [ "$relabel" = true ]; then
+            at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            echo "#$NUMBER: the review of this run passed $HEAD with no screen, and an import check run of $HEAD with" \
+              "the conclusion success stands. So this step writes no state label and no label comment, and the steps" \
+              "after it run as a relabel of $HEAD that reads #$NUMBER at $at."
+            echo "relabel=$at" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           facts=()
           [ -z "$paths" ] || facts=("import_paths=$paths")
           # The trust job's outputs as they are: rules.py reads the kind of the author from them (outside_author and
@@ -4877,11 +4913,13 @@ jobs:
       # The author-kind table for the task relabel, with the trust job's outside of this run (*answers), as the post
       # job of a relabel reads it: its answers record and withdraw, which the next step reads. This step and the two
       # after it run only when the step "Skip the posts when the head has a review or hold newer than this run's read,
-      # or a withdrawal newer than this run's screened pass" gave the output relabel (its comment says why). No step
-      # between that step and this one posts for such a run: each reads its output gave_way, or runs for another task.
+      # or a withdrawal newer than this run's screened pass" or the label step just before this one ("Take the label
+      # review-held off and set the state label") gave the output relabel (the comment of each says why). The two never
+      # both give it: the label step does not run for a run whose posts were skipped. No step between the step that
+      # skips the posts and this one posts for such a run: each reads its output gave_way, or runs for another task.
       - name: Read the author-kind table for a relabel of the head
         id: relabel_answers
-        if: steps.way.outputs.relabel != ''
+        if: steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''
         env:
           TASK: relabel
           OUTSIDE: ${{ needs.trust.outputs.outside }}
@@ -4890,12 +4928,12 @@ jobs:
       # The decision of the post job of a relabel on the import check run of the head (*decide), from the comments, the
       # files and the import check runs as GitHub gives them now: held, withdrawn, screened, hand, writer or what the
       # rules of R12 give. A relabel gives no verdict, and its route is review. Its read is the output relabel of the
-      # step that skips the posts. This job holds no key of the OSS Verify App: no step of it records or withdraws a
-      # check run. So this step writes no output owed (APP_KEY_SET false). The outputs decision, imports and standing
-      # go to the next step.
+      # step that skips the posts or of the label step. This job holds no key of the OSS Verify App: no step of it
+      # records or withdraws a check run. So this step writes no output owed (APP_KEY_SET false). The outputs decision,
+      # imports and standing go to the next step.
       - name: Decide the import check of the head as a relabel decides it now
         id: relabeled
-        if: steps.way.outputs.relabel != ''
+        if: steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''
         env:
           TASK: relabel
           RECORD: ${{ steps.relabel_answers.outputs.record }}
@@ -4904,7 +4942,7 @@ jobs:
           ROUTE: review
           HEAD: ${{ needs.review.outputs.head || needs.trust.outputs.head }}
           VERDICT: ''
-          STARTED: ${{ steps.way.outputs.relabel }}
+          STARTED: ${{ steps.way.outputs.relabel || steps.label.outputs.relabel }}
           AUTHOR_KIND: ${{ needs.trust.outputs.kind }}
           IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
         run: *decide
@@ -4918,11 +4956,11 @@ jobs:
       # word of its own on the head, so each word of this run counts too (RELABEL_RUN empty, in the place of the id of
       # this run; rules.py relabel).
       - name: Set the state label as a relabel of the head sets it now
-        if: steps.way.outputs.relabel != ''
+        if: steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''
         env:
           TASK: relabel
           HEAD: ${{ needs.review.outputs.head || needs.trust.outputs.head }}
-          STARTED: ${{ steps.way.outputs.relabel }}
+          STARTED: ${{ steps.way.outputs.relabel || steps.label.outputs.relabel }}
           POSTED: ${{ steps.relabeled.outcome }}
           KIND: pr
           OUTSIDER: ${{ needs.trust.outputs.outsider }}

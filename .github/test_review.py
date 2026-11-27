@@ -17668,14 +17668,16 @@ class DecisionLogTest(unittest.TestCase):
         """Round 33 (OSSV-613's architect's ruling of 2026-11-27 18:42Z, on b7's fresh reader of 972a0ebb to 6aac835e):
         after the decision skip, the comment job and the hold job run three steps as a relabel of the head
         (ImportCheckTest.RELABEL_STEPS), with the script of the post job's decide step and the script of the comment
-        job's label step. Their log lines carry the words of the tables, so the meaning of each word that prints there
-        says what happens there: skip (the line before the three steps), record, hand, screened and the cause rule. No
-        step of the three records or withdraws a check run. The last one writes the state label and the label comment
-        that a relabel of the head gives now and, for the decision record, counts a success that stands, or gives the
-        decision gone. The workflow facts that the sentences rest on are asserted here too. No step and no command
-        prints a meaning: only its word goes into a log line."""
+        job's label step. By the ruling of 2026-11-27 19:02Z, the comment job also runs them right after its label step,
+        when that step gives the output relabel for a pass by hand (ImportCheckTest's test of that ruling). So the
+        meanings name the three steps by their jobs. Their log lines carry the words of the tables, so the meaning of
+        each word that prints there says what happens there: skip (the line before the three steps after a give-way),
+        record, hand, screened and the cause rule. No step of the three records or withdraws a check run. The last one
+        writes the state label and the label comment that a relabel of the head gives now and, for the decision record,
+        counts a success that stands, or gives the decision gone. The workflow facts that the sentences rest on are
+        asserted here too. No step and no command prints a meaning: only its word goes into a log line."""
         steps = ImportCheckTest.RELABEL_STEPS
-        after = "In the steps of a relabel after the decision skip, no step "
+        after = "In the steps of a relabel in the comment job or the hold job, no step "
         writes = ("The last of these steps writes the state label and the label comment that a relabel of the head "
                   "gives now.")
         said = {
@@ -17699,9 +17701,9 @@ class DecisionLogTest(unittest.TestCase):
         self.assertNotIn(". A later step can still withdraw", rules.LOG_DECISIONS["hand"])
         self.assertIn("Both steps are in the post job. They run only while the GitHub environment named post holds the "
                       "key", rules.LOG_DECISIONS["screened"])
-        self.assertIn("The decide step of the post job applies the rules of R12 (import_decision). After the decision "
-                      "skip, the comment job or the hold job applies them in the decide step of its relabel. The rules "
-                      "read the verdict,", rules.LOG_CAUSES["rule"])
+        self.assertIn("The decide step of the post job applies the rules of R12 (import_decision). In the steps of a "
+                      "relabel in the comment job or the hold job, the decide step applies them too. The rules read "
+                      "the verdict,", rules.LOG_CAUSES["rule"])
         decide = step("post", "Decide the import check of the head")["run"]
         label = step("comment", PostLabelTest.STEP)["run"]
         for word in ("POST", "PATCH", "DELETE"):
@@ -17710,8 +17712,10 @@ class DecisionLogTest(unittest.TestCase):
         self.assertIn("approved=$RECORDED", label)
         self.assertIn('rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED"', label)
         self.assertIn("rules.py relabel", label)
-        for job, gives, ids in (("comment", ImportCheckTest.SKIP, "way"),
-                                ("hold", ImportCheckTest.HOLD_RELABEL, "withdrew")):
+        for job, gives, ifs in (
+                ("comment", ImportCheckTest.SKIP,
+                 "steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''"),
+                ("hold", ImportCheckTest.HOLD_RELABEL, "steps.withdrew.outputs.relabel != ''")):
             with self.subTest(job=job):
                 names = [s.get("name") for s in JOBS[job]["steps"]]
                 first = names.index(steps[0])
@@ -17719,10 +17723,13 @@ class DecisionLogTest(unittest.TestCase):
                 self.assertGreater(first, names.index(gives))
                 if job == "hold":
                     self.assertEqual(first, names.index(gives) + 1)
+                else:
+                    self.assertEqual((first, step(job, PostLabelTest.STEP)["id"]),
+                                     (names.index(PostLabelTest.STEP) + 1, "label"))
                 self.assertIn(ImportCheckTest.RELABELS, step(job, gives)["run"])
                 kept = answers, decided, labelled = [step(job, name) for name in steps]
                 self.assertEqual((decided["run"], labelled["run"]), (decide, label))
-                self.assertEqual({s["if"] for s in kept}, {f"steps.{ids}.outputs.relabel != ''"})
+                self.assertEqual({s["if"] for s in kept}, {ifs})
                 self.assertEqual(({s["env"]["TASK"] for s in kept}, decided["env"]["APP_KEY_SET"]),
                                  ({"relabel"}, "false"))
                 for s in kept:
@@ -23390,6 +23397,16 @@ class ImportCheckTest(ReaderRunner):
     # hold job's step that withdraws for an answer. POST_ONLY is the rule of 484b8851, which reads the post job alone.
     WITHDREW_EITHER = "${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}"
     POST_ONLY = "${{ needs.post.outputs.withdrew }}"
+    # The line of the label step that marks a pass of a review by hand that the step would give the state decide, so
+    # that it reads the import check runs of the head (OSSV-613's architect, 2026-11-27 19:02Z), and the line that
+    # gives relabel when such a check run stands. Also what a control puts in their place. HAND_UNREAD is the label
+    # step of before that ruling: it never reads them for such a pass, and never writes the output relabel.
+    # HAND_ALWAYS_RELABELS writes that output for such a pass also when no such check run stands.
+    HAND_READS = "hand=true"
+    HAND_UNREAD = (HAND_READS, "hand=false")
+    HAND_ALWAYS_RELABELS = ('[ -z "$found" ] || relabel=true', "relabel=true")
+    # The read of the import check runs of HEAD that the label step makes, as the stand-in gh records it.
+    CHECKS_READ = ["--method", "GET", "--paginate", f"repos/{REPO}/commits/{HEAD}/check-runs"]
 
     def ordered(self, jobs, comments=None, labels=("review-held",), checks=()):
         """The jobs of runs of mallory's #7 at HEAD, in the order of jobs, each job whole and each while #7 is as the
@@ -23400,24 +23417,31 @@ class ImportCheckTest(ReaderRunner):
         runs, while #7 has one changed file and no review of GitHub, as judged serves them. The check runs of HEAD at
         the end of a hold job hold its writes (applied_checks), as the withdrawal of an answer writes them: the stand-in
         gh gives each such write to the later steps of the job. before of kwargs, when given, runs before the comment
-        job or the hold job (a refusal of GitHub, say). #7 starts with comments (by default its label comment of the
-        state working, comment 40), labels and checks. The result: (#7's comments, its labels and the check runs of
-        HEAD at the end, and for each run its post job's result and the outcomes of its comment or hold job)."""
+        job or the hold job (a refusal of GitHub, say). alone of kwargs, when given, runs one job of run alone, so that
+        the jobs of runs interleave: post its post job, and comment its comment job after the post job that an earlier
+        item ran alone. #7 starts with comments (by default its label comment of the state working, comment 40), labels
+        and checks. The result: (#7's comments, its labels and the check runs of HEAD at the end, and for each run its
+        post job's result and the outcomes of its comment or hold job)."""
         comments = [dict(c) for c in comments] if comments is not None else [
             {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
              "body": rules.label_comment("working")}]
-        labels, checks, done = list(labels), list(checks), {}
+        labels, checks, done, posted = list(labels), list(checks), {}, {}
         for run, trust, verdict, kwargs in jobs:
             kwargs = dict(kwargs)
-            screened, before = kwargs.pop("screened", True), kwargs.pop("before", None)
+            screened, before, alone = kwargs.pop("screened", True), kwargs.pop("before", None), kwargs.pop("alone", None)
             event = kwargs.get("event", "workflow_run")
             if trust["task"] == "answer":
                 got = {"result": "skipped", "post": {}}
                 self.serve(f"repos/{REPO}/pulls/7/files", [{"filename": "README.md", "previous_filename": None}])
                 self.serve(f"repos/{REPO}/pulls/7/reviews", [])
+            elif alone == "comment":
+                got = posted.pop(run)
             else:
                 got, checks = self.judged(checks, run, verdict=verdict, trust=trust, comments=comments, labels=labels,
                                           **kwargs)
+                if alone == "post":
+                    posted[run] = got
+                    continue
             self.serve_checks(checks)
             self.serve(f"repos/{REPO}/issues/7/labels", [{"name": n} for n in labels])
             if before:
@@ -23684,6 +23708,122 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(now[0], (["success", "skipped", *steps, "success"], ["skipped"] * 3), self.logs[-6:])
                 self.assertEqual(now[1:], before[1:])
                 self.assertEqual(always[0][1], ["success"] * 3, self.logs[-6:])
+                self.assertNotEqual(always[1], before[1])
+
+    def interleaved(self, runs, order):
+        """The jobs of runs of mallory's #7 at HEAD in order, a list of (job, run) with job post or comment, each job
+        alone (ordered): runs maps each run to its (trust, verdict, kwargs), as an item of ordered gives them. #7 starts
+        as test_orders.py starts it (OrderTest.world): an older review comment of HEAD that counts at no time, a label
+        comment of the state change, and the label waits-on-author. ordered's result."""
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                 "body": rules.label_comment("change")}
+        return self.ordered([(run, runs[run][0], runs[run][1], dict(runs[run][2], alone=job)) for job, run in order],
+                            [review_of(HEAD, at=ago(70), run=60), label], [AUTHOR_LABEL])
+
+    def test_a_pass_by_hand_whose_label_step_finds_a_success_writes_the_labels_of_a_relabel(self):
+        """OSSV-613's architect's ruling of 2026-11-27 19:02Z, on test_orders.py's
+        OrderTest.test_1458_3_runs_oblocking0_opass1_ohand2 and test_1285_2_runs_opass0_ohand0 (ORDERS_HAND=1, I2 and
+        I3): the label step of a pass by hand reads the import check runs of the head again before it writes decide.
+        An order of the runs of each method (interleaved), whose last job is the comment job of alice's review by hand
+        with no screen (BY_HAND). (i) test_1458: run 100, a screened CI review, read 40 and gave a blocking finding; run
+        110, a screened rescreen, read 30 and passed HEAD; run 120, the review by hand, read 20 and passed HEAD. Post
+        100, comment 100, post 110, post 120, comment 110, comment 120: run 110 records its success after the check run
+        of not-approved of run 100, and the post job of run 120 decides screened, for the blocking review of run 100,
+        which is still the newest screened review comment. No post job withdraws that success: run 110 read #7 after
+        run 100. (ii) test_1285: run 100, a screened CI review, and run 110, the review by hand, each read 40 and passed
+        HEAD. Post 110, post 100, comment 100, comment 110: the post job of run 110 decides hand before run 100 records
+        its success, so none stands for it. In each order, the label step of the review by hand would give the state
+        decide while that success stands. It reads the import check runs of HEAD again, finds the success, takes
+        review-held off as for any review, and writes the output relabel in the place of its state label and its label
+        comment. So the three steps of a relabel of HEAD run, and they write what a relabel of HEAD gives now: the
+        state import, whose label comment says that the workflow recorded the check. At the end the success stands, and
+        a relabel of HEAD at the end (relabel_at_the_end) changes nothing on #7. The control, the label step of before
+        that ruling (HAND_UNREAD), skips the three steps, and its label comment of the state decide does not say that
+        the workflow recorded the check while the success stands."""
+        by_hand = {"event": "workflow_dispatch", "screened": False}
+        rescreen = {"event": "workflow_dispatch", "named": HEAD}
+        cases = {
+            "(i) test_1458": ({"100": (dict(self.REVIEWED, started=ago(40)), "blocking", {}),
+                               "110": (dict(self.REVIEWED, task="rescreen", started=ago(30)), "pass", rescreen),
+                               "120": (dict(self.BY_HAND, started=ago(20)), "pass", by_hand)},
+                              [("post", "100"), ("comment", "100"), ("post", "110"), ("post", "120"),
+                               ("comment", "110"), ("comment", "120")], "120", "screened"),
+            "(ii) test_1285": ({"100": (dict(self.REVIEWED, started=ago(40)), "pass", {}),
+                                "110": (dict(self.BY_HAND, started=ago(40)), "pass", by_hand)},
+                               [("post", "110"), ("post", "100"), ("comment", "100"), ("comment", "110")], "110",
+                               "hand")}
+        said = (f"#7: the review of this run passed {HEAD} with no screen, and an import check run of {HEAD} with the "
+                "conclusion success stands. So this step writes no state label and no label comment, and the steps "
+                f"after it run as a relabel of {HEAD} that reads #7 at ")
+        for case, (runs, order, hand, decision) in cases.items():
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                comments, labels, checks, done = self.interleaved(runs, order)
+                got, outcomes = done[hand]
+                body = self.label_body(comments)
+                self.assertEqual((got["post"]["decision"], len(self.successes(checks))), (decision, 1), self.logs[-8:])
+                self.assertEqual([outcomes[n] for n in (self.REVIEW, self.LABEL, *self.RELABEL_STEPS, UNCLAIM)],
+                                 ["success"] * 5 + ["skipped"], self.logs[-8:])
+                self.assertIn(said, "\n".join(self.logs))
+                self.assertEqual((rules.says_recorded(body), labels), (True, []), body)
+                self.assertEqual(self.relabel_at_the_end(comments, labels, checks), (True, "success", body),
+                                 self.logs[-4:])
+                self.tearDown()
+                self.setUp()
+                comments, labels, checks, done = self.changed_step(
+                    "comment", self.LABEL, *self.HAND_UNREAD, lambda: self.interleaved(runs, order))
+                body = self.label_body(comments)
+                _label, step_, _text = rules.STATES["decide"]
+                self.assertEqual(([done[hand][1][n] for n in self.RELABEL_STEPS], len(self.successes(checks)),
+                                  rules.says_recorded(body), body.startswith(f"{rules.FIRST}\n**Next step:** {step_}")),
+                                 (["skipped"] * 3, 1, False, True), self.logs[-8:])
+
+    def test_a_pass_by_hand_whose_label_step_finds_no_success_writes_as_before(self):
+        """OSSV-613's architect's ruling of 2026-11-27 19:02Z: when no import check run of HEAD with the conclusion
+        success stands, the label step of a pass by hand that gives the state decide writes decide as before the
+        ruling. alice's review by hand with no screen (BY_HAND) of mallory's #7, run 120, read 20 minutes ago and passed
+        HEAD, which has no import check run. Before it, #7 holds (i) its label comment alone: the decision is screen;
+        (ii) an older screened pass of HEAD that counts at no time: the decision is hand, with no success that stands;
+        (iii) a screened blocking review of run 100, which read #7 40 minutes ago: the decision is screened. In each,
+        the label step reads the import check runs of HEAD once more, finds no success, and the three steps of a
+        relabel do not run. Its calls of GitHub are those of the label step of before the ruling (HAND_UNREAD) but that
+        one read (CHECKS_READ), and #7 at the end is the same. The control, a label step that writes the output
+        relabel for such a pass whatever it found (HAND_ALWAYS_RELABELS), runs the three steps, and its calls
+        differ."""
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
+                 "body": rules.label_comment("working")}
+        by_hand = dict(self.BY_HAND, started=ago(20))
+        for case, before_hand, decision in (
+                ("(i) no review", [], "screen"),
+                ("(ii) an older screened pass", [review_of(HEAD, at=ago(70), run=60)], "hand"),
+                ("(iii) a screened blocking review", [review_of(HEAD, "blocking", at=ago(35), run=100, read=ago(40))],
+                 "screened")):
+            with self.subTest(case=case):
+
+                def passed(control=None):
+                    self.tearDown()
+                    self.setUp()
+
+                    def run():
+                        return self.ordered([("120", by_hand, "pass", {"event": "workflow_dispatch",
+                                                                       "screened": False})], [*before_hand, label])
+
+                    end, labels, checks, done = (self.changed_step("comment", self.LABEL, *control, run) if control
+                                                 else run())
+                    got, outcomes = done["120"]
+                    calls = [[a.replace(self.dir, "<dir>") for a in c] for c in gh_calls(self.api)]
+                    return ((got["post"]["decision"], outcomes[self.LABEL], [outcomes[n] for n in self.RELABEL_STEPS]),
+                            calls, [c["body"] for c in end], labels, checks)
+
+                now, before = passed(), passed(self.HAND_UNREAD)
+                self.assertEqual(now[0], (decision, "success", ["skipped"] * 3), self.logs[-6:])
+                self.assertEqual(now[2:], before[2:])
+                self.assertFalse(rules.says_recorded(self.label_body([{"body": b} for b in now[2]])))
+                read = [k for k in range(len(now[1])) if now[1][:k] + now[1][k + 1:] == before[1]]
+                self.assertEqual([now[1][k][:4] for k in read[:1]], [self.CHECKS_READ], (now[1], before[1]))
+                always = passed(self.HAND_ALWAYS_RELABELS)
+                self.assertEqual(always[0][2], ["success"] * 3, self.logs[-6:])
                 self.assertNotEqual(always[1], before[1])
 
     def test_a_refusal_of_github_in_the_steps_of_a_relabel_leaves_no_label_that_says_recorded(self):
@@ -24344,7 +24484,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(f"::error::the import check runs of {HEAD} could not be read, so the labels stay.", out)
         os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_commits_{HEAD}_check-runs.fail"))
         rc, out, _wrote, labels = self.changed_step(
-            "comment", self.LABEL, 'if [ "$approved" = true ] && [ -n "$paths" ]; then\n', "if false; then\n",
+            "comment", self.LABEL, 'if { [ "$approved" = true ] || [ "$hand" = true ]; } && [ -n "$paths" ]; then\n',
+            "if false; then\n",
             lambda: self.label_step(trust, got, [withdrawn], [labelled]))
         self.assertEqual((rc, [recorded in label for label in labels]), (0, [True]), out)
 
