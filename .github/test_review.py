@@ -24518,6 +24518,23 @@ class ImportCheckTest(ReaderRunner):
             self.assertIn(f"#7 at {HEAD}: {said}\n", logs)
         self.assertEqual(self.successes(end), [])
 
+    def test_a_cancelled_post_job_with_no_outputs_still_leaves_the_line_of_its_refused_review(self):
+        """The tester's round 30 (R7), by OSSV-613's architect's ruling of 2026-11-27 09:21Z: the comment job derives
+        the withdrawal of a refused review whose post job did not finish from the review job's verdict, not from the
+        post job's outputs, so a cancelled post job of which GitHub gives no output still leaves the refusal a
+        carrier. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused its
+        review. Its post job was cancelled, and GitHub gives none of its outputs (no owed, no withdrawn, no key_set).
+        The comment job's step "Record the withdrawal of a refused review whose post job did not finish" writes the
+        line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment."""
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
+                 "body": rules.label_comment("working")}
+        outcomes, _wrote, bodies = self.refused_comment_job({"result": "cancelled", "post": {}}, rescreen, "130",
+                                                            [label])
+        line = f"<!-- withdraw-owed {HEAD} refused 130 {rescreen['started']} -->"
+        self.assertEqual(outcomes[OWE_REFUSED], "success", self.logs[-4:])
+        self.assertIn(line, (bodies[:1] or [""])[0].split("\n"), (outcomes, self.logs[-4:]))
+
     def test_an_older_pass_records_nothing_while_the_line_of_a_newer_refused_review_stands(self):
         """The tester's audit of round 27 (F1): a review that the fresh reader refuses withdraws on any verdict, as a
         blocking one does (OSSV-221's architect, 2026-11-25 10:21Z), and a failure path that records an approval
