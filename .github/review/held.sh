@@ -1432,8 +1432,7 @@ due_rerun() {
     stood=$(awk -v h="$head" '$3 == "-" && $9 == h { print $1 }' <<< "$hold")
     if [ -n "$owes" ] && [ "$outsider" = true ]; then
       echo "#$number: the rescreen pass starts the stop of the import check of $head, whose hold ends the App's retry" \
-        "of $head. The comment job of that stop writes its label comment, which names Sami's step, when GitHub said" \
-        "whether the author has write access."
+        "of $head."
       head_stopped import "$attempt"
       return 0
     fi
@@ -1463,16 +1462,14 @@ due_rerun() {
     if [ -n "$import_stop" ]; then
       echo "#$number: the stop of the import check, a hold that is not tried again, names $head. So the rescreen pass" \
         "starts no relabel, whose post job could write a check run of $head. It starts the stop of the import check" \
-        "of $head again. The comment job of that stop writes its label comment when GitHub said whether the author" \
-        "has write access."
+        "of $head again."
       head_stopped import "$attempt"
       return 0
     fi
     if [ "$task" = relabel ] || { [ -n "$work" ] && [ -z "$stood" ]; }; then
       what=$work
       [ "$work" != import ] || what="import check"
-      echo "#$number: the rescreen pass starts the stop of the automated $what of $head. The comment job of that stop" \
-        "writes its label comment when GitHub said whether the author has write access."
+      echo "#$number: the rescreen pass starts the stop of the automated $what of $head."
       head_stopped "$work" "$attempt"
       return 0
     fi
@@ -1491,8 +1488,7 @@ due_rerun() {
     if (( idle >= REVIEW_TRIES )); then
       echo "#$number: each relabel of $head made after run $run ended did nothing after its trust job" \
         "($idle of them), so the rescreen pass starts no more relabels. It starts the stop of the import check of" \
-        "$head. The comment job of that stop writes its label comment when GitHub said whether the author has write" \
-        "access."
+        "$head."
       head_stopped import "$attempt"
       return 0
     fi
@@ -1507,9 +1503,11 @@ due_rerun() {
         "($idle of them). After $REVIEW_TRIES such relabels, the rescreen pass starts the stop of the import check" \
         "of $head instead."
     fi
-    what="a failed job of run $run did not finish its last step"
+    what="the step \"Leave no label that says the workflow recorded the check\" of run $run did not succeed"
     # Only the label comment of an outside author's pull request can say that the workflow recorded the check.
-    [ "$outsider" != true ] || what="the label comment can still say that the workflow recorded the check: $what"
+    if [ "$outsider" = true ]; then
+      what+=", so the label comment can still say that the workflow recorded the check repo-pairs/import-approved"
+    fi
     owe "$ended" relabel "" "$head" - "$what"
     taken=1
     return 0

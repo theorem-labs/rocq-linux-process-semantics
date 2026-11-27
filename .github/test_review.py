@@ -13565,7 +13565,7 @@ class ScheduleTest(Scheduled):
         at its label step after its post job succeeded, so its last step did not run. For mallory's #7 and for alice's,
         a writer's, the log says that that step did not succeed. (a) With no hold, the pass starts the stop of the
         review of HEAD. (b) Under the stop of the review of HEAD, a hold that is not tried again, it starts one relabel
-        of HEAD, whose reason says that a failed job of run 10 did not finish its last step. Only for mallory's #7 do
+        of HEAD, whose reason says that that step of run 10 did not succeed. Only for mallory's #7 do
         the log line and the reason say that the label comment can still say that the workflow recorded the check. The
         controls, held.sh whose line says so for every author (a) and held.sh whose reason says so for every author
         (b), say it for alice's #7 too."""
@@ -13574,8 +13574,9 @@ class ScheduleTest(Scheduled):
                 "failed or was cancelled did not succeed.")
         claim = (" So the label comment can still say that the workflow recorded the check repo-pairs/import-approved "
                  "while no such check run stands.")
-        finished = "a failed job of run 10 did not finish its last step"
-        recorded = f"the label comment can still say that the workflow recorded the check: {finished}"
+        finished = 'the step "Leave no label that says the workflow recorded the check" of run 10 did not succeed'
+        recorded = (f"{finished}, so the label comment can still say that the workflow recorded the check "
+                    "repo-pairs/import-approved")
         text = (f"The automated review of the head commit {HEAD[:12]} did not finish after {tries} tries. The workflow "
                 "does not try it again.")
         stop = {"id": 51, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
@@ -13583,7 +13584,8 @@ class ScheduleTest(Scheduled):
                         f"<!-- review-held-head {HEAD} -->"}
         line_for_all = changed_held("due_rerun", 'if [ "$outsider" = true ]; then\n      line+=',
                                     'if true; then\n      line+=')
-        reason_for_all = changed_held("due_rerun", '[ "$outsider" != true ] || what=', "what=")
+        reason_for_all = changed_held("due_rerun", 'if [ "$outsider" = true ]; then\n      what+=',
+                                      'if true; then\n      what+=')
         for case, comments, labels, want, changed in (
                 ("a", [], (), (1, [("7", "stop", "", HEAD, "head-review")]), line_for_all),
                 ("b", [stop], ("review-held",), (0, [("7", "relabel", "", HEAD, "")]), reason_for_all)):
@@ -13760,15 +13762,13 @@ class ScheduleTest(Scheduled):
         unread = changed_held("due_rerun", "[[ $made > $ended ]] || continue", "continue")
         busy = changed_held("due_rerun", 'if [ "$early" = stopped ]; then idle=$((idle + 1)); continue; fi', ":")
         unbound = changed_held("due_rerun", "if (( idle >= REVIEW_TRIES )); then", "if false; then")
-        later = ("The comment job of that stop writes its label comment when GitHub said whether the author has write "
-                 "access.")
         answer_said = f"#7: run 10 is an answer, so the rescreen pass starts one relabel of {HEAD}."
         hold_said = (f"#7: a hold that is not tried again names {HEAD} already, so the rescreen pass starts one "
                      f"relabel of {HEAD}.")
-        stop_said = f"#7: the rescreen pass starts the stop of the automated import check of {HEAD}. {later}"
+        stop_said = f"#7: the rescreen pass starts the stop of the automated import check of {HEAD}.\n"
         import_said = (f"#7: the stop of the import check, a hold that is not tried again, names {HEAD}. So the "
                        f"rescreen pass starts no relabel, whose post job could write a check run of {HEAD}. It starts "
-                       f"the stop of the import check of {HEAD} again. {later}")
+                       f"the stop of the import check of {HEAD} again.\n")
         once_said = f"#7: stop run 11 of {HEAD} was made after run 10 ended, so the rescreen pass starts nothing more"
         newer_said = f"#7: relabel run 11 of {HEAD} was made after run 10 ended, and did work after its trust job."
         idle_said = (f"#7: each relabel of {HEAD} made after run 10 ended did nothing after its trust job (1 of them). "
@@ -13776,7 +13776,7 @@ class ScheduleTest(Scheduled):
                      "instead.")
         bound_said = (f"#7: each relabel of {HEAD} made after run 10 ended did nothing after its trust job ({tries} of "
                       f"them), so the rescreen pass starts no more relabels. It starts the stop of the import check of "
-                      f"{HEAD}. {later}")
+                      f"{HEAD}.\n")
         unclaim_said = ('#7: in run 10, the step "Leave no label that says the workflow recorded the check" of a job '
                         "that failed or was cancelled did not succeed.")
         # case: (task of run 10, its comments, the runs of HEAD made after run 10 ended (the jobs of a relabel, or
@@ -14049,8 +14049,7 @@ class ScheduleTest(Scheduled):
                 self.assertIn(f"#7: the comment job of run 10 was cancelled. That run is at attempt {tries} of "
                               f"{tries}: its failed jobs do not run again.", out)
                 self.assertIn(f"#7: the rescreen pass starts the stop of the import check of {HEAD}, whose hold ends "
-                              f"the App's retry of {HEAD}. The comment job of that stop writes its label comment, "
-                              "which names Sami's step, when GitHub said whether the author has write access.", out)
+                              f"the App's retry of {HEAD}.\n", out)
                 self.assertEqual((control[0], control[2], control[3]), (0, [relabel] if held else [], []), control[1])
                 self.assertStopped("head-import", "Automated check for the import held.", text, edited=True)
                 # The next pass, after the stop: its hold comment names HEAD.
@@ -19110,12 +19109,11 @@ class ImportCheckTest(ReaderRunner):
         listed, _others = self.recorded()
         find = "Find the import check runs that a later review or screen withdraws"
         withdraw = "Withdraw the import check runs of the head"
-        retry = (" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment"
-                 " job of this run failed or was cancelled before it recorded the withdrawal that the post job owes,"
-                 " the pass runs the failed jobs again. Else it starts a relabel of this head. After"
-                 f" {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of the import check"
-                 " of this head. The comment job of that stop writes its label comment when GitHub said whether the"
-                 " author has write access.")
+        retry = (" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an"
+                 " hour or more after this run ends. If the comment job of this run then fails or is cancelled before"
+                 " it records what the post job owes, the pass runs the failed jobs again. Else it starts a relabel of"
+                 f" this head. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of"
+                 " the import check of this head.")
         cases = (("a writer's pull request", dict(self.REVIEWED, outsider="eve", outside="false"), "workflow_run",
                   HEAD, False),
                  ("a review by hand while GitHub does not say of the author", dict(self.BY_HAND, outside="false"),
@@ -19427,7 +19425,8 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["README.md"], "pass", self.LPS, trust=dict(self.BY_HAND, started=ago(1)),
                          event="workflow_dispatch", comments=[blocking, old], listed=[listed], named=HEAD)
         self.assertEqual(got["result"], "failure", self.logs)
-        self.assertIn("the rescreen pass tries this withdrawal again.", "\n".join(self.logs))
+        self.assertIn("the rescreen pass tries this withdrawal again an hour or more after this run ends.",
+                      "\n".join(self.logs))
         self.assertIn("Else it starts a relabel of this head.", "\n".join(self.logs))
         os.remove(os.path.join(self.api, f"repos_{REPO.replace('/', '_')}_check-runs_901.fail"))
         # The comment job posts alice's review: it replaces comment 30, the blocking review comment.
@@ -22786,12 +22785,11 @@ class ImportCheckTest(ReaderRunner):
         check runs of HEAD after a blocking finding: the error promises the rescreen pass's retry for the pull request
         that is ready, and says "Re-run this run." for the draft."""
         find = "Find the import check runs that a later review or screen withdraws"
-        retry = (" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment"
-                 " job of this run failed or was cancelled before it recorded the withdrawal that the post job owes,"
-                 " the pass runs the failed jobs again. Else it starts a relabel of this head. After"
-                 f" {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of the import check"
-                 " of this head. The comment job of that stop writes its label comment when GitHub said whether the"
-                 " author has write access.")
+        retry = (" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an"
+                 " hour or more after this run ends. If the comment job of this run then fails or is cancelled before"
+                 " it records what the post job owes, the pass runs the failed jobs again. Else it starts a relabel of"
+                 f" this head. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of"
+                 " the import check of this head.")
         self.permissions(alice="write", mallory="read")
         self.serve(f"repos/{REPO}/actions/runs", {"workflow_runs": []})
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
@@ -22889,12 +22887,11 @@ class ImportCheckTest(ReaderRunner):
         blocking finding and after a screen that held the head too (ruling 2 of OSSV-221's architect; held.sh,
         consider)."""
         listed, _others = self.recorded()
-        again = (" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment "
-                 "job of this run failed or was cancelled before it recorded the withdrawal that the post job owes, "
-                 "the pass runs the failed jobs again. Else it starts a relabel of this head. After "
-                 f"{WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of the import check "
-                 "of this head. The comment job of that stop writes its label comment when GitHub said whether the "
-                 "author has write access.")
+        again = (" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an "
+                 "hour or more after this run ends. If the comment job of this run then fails or is cancelled before "
+                 "it records what the post job owes, the pass runs the failed jobs again. Else it starts a relabel of "
+                 f"this head. After {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of "
+                 "the import check of this head.")
         cases = (("a screen that held the head", "pass", "held"),
                  ("a review with a blocking finding", "blocking", "clean"))
         self.refuse(f"repos/{REPO}/check-runs/901", 502, "Bad Gateway")
@@ -24067,13 +24064,13 @@ class ImportCheckTest(ReaderRunner):
         (rules.py owe), so no relabel withdraws for it (OSSV-221's architect's list of round 28, item 3)."""
         ending = (" It records no check run that says that the head is not approved. After "
                   f"{WF['env']['REVIEW_TRIES']} failed tries, this one included, the rescreen pass starts the stop of "
-                  "the import check of this head. The comment job of that stop writes its label comment when GitHub "
-                  "said whether the author has write access.")
-        retry = (" An hour or more after this run ends, the rescreen pass starts a relabel of this head. If the "
-                 "comment job of this run failed or was cancelled before it recorded the withdrawal that the post job "
-                 "owes, it runs the failed jobs of this run again instead. For the verdict or the screen of this run, "
-                 "a relabel withdraws each import check run with the conclusion success. It leaves one only when the "
-                 f"run that recorded it read #7 after that verdict or screen.{ending}")
+                  "the import check of this head.")
+        retry = (" If no stop of the import check names this head, the rescreen pass starts a relabel of this head an "
+                 "hour or more after this run ends. If the comment job of this run then fails or is cancelled before "
+                 "it records what the post job owes, it runs the failed jobs of this run again instead. For the "
+                 "verdict or the screen of this run, a relabel withdraws each import check run with the conclusion "
+                 f"success. It leaves one only when the run that recorded it read #7 after that verdict or screen."
+                 f"{ending}")
         self.refuse(f"repos/{REPO}/check-runs", 422)
         for why, screen, verdict in (("blocking", "clean", "blocking"), ("screen", "held", "pass")):
             for named, again in ((HEAD, retry), ("", " Re-run this run.")):
@@ -25775,12 +25772,11 @@ class KindTableTest(Scheduled, ReaderRunner):
                 "output": {"text": rules.import_marker(HEAD, None)}}
     FIND = "Find the import check runs that a later review or screen withdraws"
     ANSWER_FIND = "Find the import check runs that the screen of this answer withdraws"
-    RETRY = (" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment job "
-             "of this run failed or was cancelled before it recorded the withdrawal that the post job owes, the pass "
-             "runs the failed jobs again. Else it starts a relabel of this head. After "
-             f"{WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of the import check of "
-             "this head. The comment job of that stop writes its label comment when GitHub said whether the author "
-             "has write access.")
+    RETRY = (" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an hour "
+             "or more after this run ends. If the comment job of this run then fails or is cancelled before it records "
+             "what the post job owes, the pass runs the failed jobs again. Else it starts a relabel of this head. "
+             f"After {WF['env']['REVIEW_TRIES']} failed tries, this one included, it starts the stop of the import "
+             "check of this head.")
     REPLY = "The approved reply."
     HELD_REVIEW = "Automated review held."
     KNOWN = (1, "::error::GitHub did not say whether carol has write access. Re-run this run.")

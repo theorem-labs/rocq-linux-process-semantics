@@ -3422,13 +3422,14 @@ jobs:
       # author: a check run of R12 that an earlier run recorded may stand on the head, whatever the trust job says of
       # the author now. The error of a read that fails, and of a withdrawal or a check run of not-approved that GitHub
       # refuses (the steps after the sign-in), follows the table's retry and the name of this run. For an outside
-      # author, the rescreen pass's retry of the App's writes (a relabel, held.sh due_retry) withdraws the check run
-      # again, an hour or more after this run ends. When the comment job of this run failed or was cancelled before it
-      # recorded the withdrawal that the post job owes, the pass runs the failed jobs of this run again instead (held.sh
-      # unrecorded and due_rerun). A relabel records no check run of not-approved, so the error of that path says so.
-      # That retry takes only a run whose name gives the head (the trust job's named): a CI run, or a run by hand whose
-      # input head is set, as each run of the pass for a pull request sets it. held.sh take records no head for any
-      # other run. After a hold that is not tried again names the head,
+      # author, unless the stop of the import check names the head (held.sh head_stopped import: under it, consider
+      # tries no App write of the head again), the rescreen pass's retry of the App's writes (a relabel, held.sh
+      # due_retry) withdraws the check run again, an hour or more after this run ends. When the comment job of this run
+      # fails or is cancelled before it records what the post job owes, the pass runs the failed jobs of this run again
+      # instead (held.sh unrecorded and due_rerun). A relabel records no check run of not-approved, so the error of that
+      # path says so. That retry takes only a run whose name gives the head (the trust job's named): a CI run, or a run
+      # by hand whose input head is set, as each run of the pass for a pull request sets it. held.sh take records no
+      # head for any other run. After a hold that is not tried again names the head,
       # that relabel is the one App write that the pass tries again for the head, and only when the relabel withdraws:
       # a screen held the head after each review that screened it, the newest review of the head gives a blocking
       # finding or the verdict person, or the label comment holds the line
@@ -3508,11 +3509,11 @@ jobs:
           # table's retry holds and the name of this run gives the head, else a re-run of this run.
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
-            again=" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment"
-            again+=" job of this run failed or was cancelled before it recorded the withdrawal that the post job owes,"
-            again+=" the pass runs the failed jobs again. Else it starts a relabel of this head. After $REVIEW_TRIES"
-            again+=" failed tries, this one included, it starts the stop of the import check of this head. The comment"
-            again+=" job of that stop writes its label comment when GitHub said whether the author has write access."
+            again=" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an"
+            again+=" hour or more after this run ends. If the comment job of this run then fails or is cancelled before"
+            again+=" it records what the post job owes, the pass runs the failed jobs again. Else it starts a relabel"
+            again+=" of this head. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the"
+            again+=" import check of this head."
           fi
           # Each import check run of the OSS Verify App for this pull request on the head, with its conclusion,
           # completed_at and summary, and the output text that a withdrawal keeps.
@@ -3682,11 +3683,11 @@ jobs:
           # author-kind table's retry holds and the name of this run gives the head, else a re-run of this run.
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
-            again=" An hour or more after this run ends, the rescreen pass tries this withdrawal again. If the comment"
-            again+=" job of this run failed or was cancelled before it recorded the withdrawal that the post job owes,"
-            again+=" the pass runs the failed jobs again. Else it starts a relabel of this head. After $REVIEW_TRIES"
-            again+=" failed tries, this one included, it starts the stop of the import check of this head. The comment"
-            again+=" job of that stop writes its label comment when GitHub said whether the author has write access."
+            again=" If no stop of the import check names this head, the rescreen pass tries this withdrawal again an"
+            again+=" hour or more after this run ends. If the comment job of this run then fails or is cancelled before"
+            again+=" it records what the post job owes, the pass runs the failed jobs again. Else it starts a relabel"
+            again+=" of this head. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the"
+            again+=" import check of this head."
           fi
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
@@ -3709,11 +3710,11 @@ jobs:
       # stands, and records nothing. The step posts only a request for this pull request at that head.
       # A call that fails fails the job, as a withdrawal that GitHub refuses does: the output owed stays, and the
       # comment job or the hold job records the line <!-- withdraw-owed <head> <why> <run> <read> -->. The error says
-      # what comes next: when the author-kind table's retry holds and the name of this run gives the head, the rescreen
-      # pass's relabel of the head, or the re-run of the failed jobs of this run when its comment job failed or was
-      # cancelled before it recorded the withdrawal that the post job owes. Else a re-run of this run. A relabel
-      # withdraws for the line, but it records no check run that says that the head is not approved. Once it is
-      # posted, the output head names the head: the job's output withdrawn.
+      # what comes next when the author-kind table's retry holds and the name of this run gives the head: unless a stop
+      # of the import check names the head, the rescreen pass's relabel of the head, or the re-run of the failed jobs of
+      # this run when its comment job fails or is cancelled before it records what the post job owes. Else a re-run of
+      # this run. A relabel withdraws for the line, but it records no check run that says that the head is not
+      # approved. Once it is posted, the output head names the head: the job's output withdrawn.
       - name: Record that the head is not approved for the import
         id: neutral
         if: env.APP_KEY_SET == 'true' && steps.withdraw.outputs.neutral != ''
@@ -3733,19 +3734,20 @@ jobs:
         # The hold job of an answer runs this script too, with an env of its own (*not-approved).
         run: &not-approved |
           set -euo pipefail
-          # again: what the error of a call that fails says comes next. The rescreen pass's retry is a relabel, which
-          # withdraws for the line of this run but records no such check run, or the re-run of the failed jobs of this
-          # run when its comment job failed or was cancelled before it recorded the withdrawal that the post job owes.
+          # again: what the error of a call that fails says comes next. Unless a stop of the import check names the
+          # head, the rescreen pass's retry is a relabel, which withdraws for the line of this run but records no such
+          # check run, or the re-run of the failed jobs of this run when its comment job fails or is cancelled before
+          # it records what the post job owes.
           again=" Re-run this run."
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
-            again=" An hour or more after this run ends, the rescreen pass starts a relabel of this head. If the"
-            again+=" comment job of this run failed or was cancelled before it recorded the withdrawal that the post"
-            again+=" job owes, it runs the failed jobs of this run again instead. For the verdict or the screen of this"
-            again+=" run, a relabel withdraws each import check run with the conclusion success. It leaves one only"
-            again+=" when the run that recorded it read #$NUMBER after that verdict or screen. It records no check run"
-            again+=" that says that the head is not approved. After $REVIEW_TRIES failed tries, this one included, the"
-            again+=" rescreen pass starts the stop of the import check of this head. The comment job of that stop"
-            again+=" writes its label comment when GitHub said whether the author has write access."
+            again=" If no stop of the import check names this head, the rescreen pass starts a relabel of this head an"
+            again+=" hour or more after this run ends. If the comment job of this run then fails or is cancelled before"
+            again+=" it records what the post job owes, it runs the failed jobs of this run again instead. For the"
+            again+=" verdict or the screen of this run, a relabel withdraws each import check run with the conclusion"
+            again+=" success. It leaves one only when the run that recorded it read #$NUMBER after that verdict or"
+            again+=" screen. It records no check run that says that the head is not approved. After $REVIEW_TRIES"
+            again+=" failed tries, this one included, the rescreen pass starts the stop of the import check of this"
+            again+=" head."
           fi
           request=$RUNNER_TEMP/not-approved.json
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
