@@ -605,6 +605,18 @@ class Runner(unittest.TestCase):
         finally:
             found["run"] = script
 
+    def changed_step(self, job, name, old, new, run):
+        """run() with the step name of job changed, as a control: its script holds new in the place of old, which it
+        holds once. Its result."""
+        found = step(job, name)
+        script = found["run"]
+        self.assertEqual(script.count(old), 1, old)
+        found["run"] = script.replace(old, new)
+        try:
+            return run()
+        finally:
+            found["run"] = script
+
     def refuse(self, endpoint, status, text="Validation Failed"):
         """Every call of endpoint fails with an HTTP status, as gh names it."""
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
@@ -4277,6 +4289,37 @@ class HoldTest(Holding):
                     self.assertEqual((rc, len(held)), (0, 1), out)
                     self.assertEqual(f"repos/{REPO}/pulls/7" in self.calls(), now == HEAD)
 
+    def test_a_stop_whose_read_of_the_comments_or_of_the_head_fails_writes_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's step "Say that the work of the
+        item is not tried again" (STOP_STEP) reads the comments of #7 (GET issues/<n>/comments) for a comment of the
+        workflow that changed since the trust job read #7, then the head of the pull request now (GET pulls/<n>, in
+        rules.py hold-head). The rule of each of these reads: a read that GitHub refuses fails the step, with the error
+        that the comments of #7 could not be read, or with rules.py's error of the refused call. The step then sets no
+        state label and writes no label comment and no hold comment: the hold comment that the stop names stays as it
+        is, with its marker. The controls write: the step that takes the refused read of the comments as an empty
+        answer goes on to the label, and the step that does not stop when hold-head fails sets the label and posts the
+        hold comment of a head that it could not read."""
+        stop = self.halted("stopped review 3", "pr", [])
+        self.assertEqual(stop["head"], HEAD)
+        for read, endpoint, error, old, new in (
+                ("the comments", f"repos/{REPO}/issues/7/comments", "::error::the comments of #7 could not be read",
+                 '  || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }', "  || true"),
+                ("the head", f"repos/{REPO}/pulls/7", "::error::rules.py: gh: Bad Gateway (HTTP 502)",
+                 "(( rc == 0 )) || exit 1\n", "")):
+            with self.subTest(read=read):
+                self.tearDown()
+                self.setUp()
+                self.refuse(endpoint, 502, "Bad Gateway")
+
+                def stopped():
+                    self.forget()
+                    rc, out = self.stop_step(stop, HEAD)
+                    return rc, error in out, writes(self.api)
+
+                want = (1, True, [])
+                self.assertEqual(stopped(), want)
+                self.assertNotEqual(self.changed_step("comment", STOP_STEP, old, new, stopped), want)
+
     def test_the_writers_of_a_hold_comment_are_found_in_any_quoting(self):
         """assertWriters finds a writer only by the marker in single quotes ('<!-- review-held -->'). A step that
         writes a comment of an item (POST or PATCH of issues/.../comments) and names the marker in any quoting is a
@@ -5391,6 +5434,84 @@ class ApproveTest(Holding):
         self.assertIn(f"::notice::#7 moved from {HEAD} to {OTHER_HEAD} while its files were read. This run approves "
                       f"no run of {HEAD} or of {OTHER_HEAD}.", self.logs[-1])
         self.assertEqual((self.approvals(), writes(self.api)), ([], []))
+
+    def test_a_read_of_the_pull_request_or_of_its_held_runs_that_fails_approves_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the post job's step "The held runs of the
+        screened head" (HELD) reads, with this run's own token, the pull request (GET pulls/<n>) for its head, head
+        repository, branch and count of changed files, then the runs that GitHub holds of that head (GET
+        actions/runs), and, after the files, the pull request again for its head. The rule of each of these reads: a
+        read that GitHub refuses fails the step, with the error that the pull request, or the runs of the head, could
+        not be read. Then token B is never minted, no run is approved, nothing is written, the post job names no head
+        in its output steering, and the post job fails, so no job runs after it (the comment job of an approval needs
+        a post job that succeeded). The stand-in gh refuses the first two reads with a 502, and the second read of the
+        pull request alone (its argument .head.sha) with a 422. The controls, the step that takes each refused read as
+        an empty answer, pass and leave no error."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        pull = f"repos/{REPO}/pulls/7"
+        unread = '  || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }\n'
+        first = "read -r sha repository branch count"
+        again = "--jq .head.sha) \\\n"
+        runs = '  || { echo "::error::the runs of $HEAD could not be read."; exit 1; }\n'
+        for read, refuse, error, old, new in (
+                ("the pull request", lambda: self.refuse(pull, 502, "Bad Gateway"),
+                 "::error::pull request #7 could not be read.", unread + first, "  || true\n" + first),
+                ("the held runs of the head", lambda: self.refuse(f"repos/{REPO}/actions/runs", 502, "Bad Gateway"),
+                 f"::error::the runs of {HEAD} could not be read.", runs, "  || true\n"),
+                ("the pull request after its files", lambda: self.refuse_field(pull, ".head.sha"),
+                 "::error::pull request #7 could not be read.", again + unread, again + "  || true\n")):
+            with self.subTest(read=read):
+                self.tearDown()
+                self.setUp()
+                self.runs(*self.RUNS)
+                refuse()
+
+                def held():
+                    start = len(self.logs)
+                    steps = self.post(trust, "clean")
+                    return ((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
+                            error in "\n".join(self.logs[start:]), self.approvals(), writes(self.api),
+                            filled(JOBS["post"]["outputs"], self.ctx)["steering"])
+
+                want = (("failure", "skipped", "skipped"), True, [], [], "")
+                self.assertEqual(held(), want, self.logs)
+                ran = self.jobs(trust, results={"post": "failure"}, outputs={"screen": {"verdict": "clean"}})
+                self.assertEqual(ran, {"trust", "gather", "screen", "post"})
+                self.assertNotEqual(self.changed_step("post", self.HELD, old, new, held), want, self.logs)
+
+    def test_an_approval_left_to_a_person_writes_no_label_when_the_pull_request_cannot_be_read(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): after a post job that approved no run of a head
+        that changes a file under .github/ (its output steering), the comment job's step "Say that a person at Theorem
+        approves the runs of the head" (STEERED) reads the pull request (GET pulls/<n>) for its head now, and writes
+        only while that head is the one that the post job named. The rule of that read: a read that GitHub refuses
+        fails the step, with the error that #7 has no head. The step then sets no state label and writes no label
+        comment, so nothing says that a person at Theorem approves the runs of a head that the step could not read.
+        The job's last step (UNCLAIM) then finds no label comment that says that the workflow recorded the check, and
+        writes nothing either. The control, the step that takes the refused read as an empty answer, passes and leaves
+        no error."""
+        self.runs(*self.RUNS)
+        trust = self.by_hand()
+        self.serve(f"repos/{REPO}/issues/7/labels", [])
+        self.serve(f"repos/{REPO}/issues/7/comments", [])
+        self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
+        self.serve_files(7, ".github/workflows/mine.yml")
+        steps = self.post(trust, "clean")
+        self.assertEqual((steps[self.HELD], filled(JOBS["post"]["outputs"], self.ctx)["steering"]), ("success", HEAD),
+                         self.logs)
+        self.refuse(f"repos/{REPO}/pulls/7", 502, "Bad Gateway")
+
+        def said():
+            start = len(self.logs)
+            steps = self.commented(trust)
+            return ((steps[self.STEERED], steps[ImportCheckTest.UNCLAIM]),
+                    "::error::no head of #7" in "\n".join(self.logs[start:]), writes(self.api))
+
+        want = (("failure", "success"), True, [])
+        self.assertEqual(said(), want, self.logs)
+        read = 'now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) '
+        unread = '|| { echo "::error::no head of #$NUMBER"; exit 1; }'
+        self.assertNotEqual(self.changed_step("comment", self.STEERED, read + unread, read + "|| true", said), want,
+                            self.logs)
 
     def test_when_the_screen_does_not_pass_nothing_is_approved_and_the_hold_names_no_maintainer(self):
         """The post job runs only to withdraw an import check run of the head, of which there is none here, and token
@@ -8825,6 +8946,35 @@ class AnswerFixTest(ReaderRunner):
             with self.subTest(job=name):
                 self.assertIn(job.get("permissions", {}).get("contents"), (None, "read"))
 
+    def test_a_fix_whose_read_of_the_pull_request_or_of_its_reviews_fails_posts_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's step "Post the fix as
+        suggested changes" (POST_FIX) reads the pull request (GET pulls/<n>) for its head now, then its reviews (GET
+        pulls/<n>/reviews) for the fix of the head that posted before. The rule of each of these reads: a read that
+        GitHub refuses fails the step, with the error that #7 has no head, or that its reviews could not be read. The
+        step then posts no review of suggested changes and gives no output posted, so no label step reads a fix that
+        posted. The controls, the step that takes each refused read as an empty answer, leave no such error: the first
+        passes, and the second asks GitHub to post the fix, also when it posted before."""
+        fix = json.dumps({"body": f"<!-- review-fix {HEAD} -->\nThe fix.", "event": "COMMENT", "commit_id": HEAD,
+                          "comments": [{"path": "theories/A.v", "line": 4, "side": "RIGHT", "body": "The why."}]})
+        read = 'now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) '
+        for case, endpoint, error, old, new in (
+                ("the pull request", f"repos/{REPO}/pulls/7", "::error::no head of #7",
+                 read + '|| { echo "::error::no head of #$NUMBER"; exit 1; }', read + "|| true"),
+                ("its reviews", f"repos/{REPO}/pulls/7/reviews", "::error::the reviews of #7 could not be read",
+                 '  || { echo "::error::the reviews of #$NUMBER could not be read"; exit 1; }', "  || true")):
+            with self.subTest(read=case):
+                self.tearDown()
+                self.setUp()
+                self.refuse(endpoint, 502, "Bad Gateway")
+
+                def posted():
+                    rc, out, got = self.post_fix(fix)
+                    return rc, error in out, got.get("posted"), writes(self.api)
+
+                want = (1, True, None, [])
+                self.assertEqual(posted(), want, self.logs)
+                self.assertNotEqual(self.changed_step("comment", self.POST_FIX, old, new, posted), want, self.logs)
+
     def test_a_blocking_verdict_whose_list_holds_no_blocking_finding_is_the_person_verdict_and_starts_no_fix(self):
         """.github/review.md ("The verdict"): the verdict blocking needs a blocking finding, a change item whose
         optional is false. A review of an outside pull request that gives the verdict blocking with a question and no
@@ -9490,6 +9640,26 @@ class DraftReplyTest(ReaderRunner):
         self.serve(f"repos/{REPO}/issues/7/comments", [replied, posted])
         rc, out, trust = self.run_trust("issue_comment", actor="mallory", comment="900")
         self.assertEqual((rc, trust.get("task"), trust.get("route")), (0, "answer", "screen"), out)
+
+    def test_an_approved_reply_whose_read_of_the_comments_fails_posts_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's step "Post the approved reply"
+        (POST) reads the comments of the issue (GET issues/<n>/comments) for the reply that posted before. The rule of
+        that read: a read that GitHub refuses fails the step, with the error that the comments of #7 could not be
+        read. The step then posts no reply and gives no output id, so no label comment records a reply that posted
+        (<!-- issue-reply-posted <id> -->). The control, the step that takes the refused read as an empty answer,
+        leaves no such error and asks GitHub to post the reply, also when it posted before."""
+        self.refuse(f"repos/{REPO}/issues/7/comments", 502, "Bad Gateway")
+
+        def replied():
+            self.forget()
+            rc, out, got = self.run_step("comment", self.POST, self.REPLY_CTX, NUMBER="7",
+                                         POST_REVIEW=WF["env"]["POST_REVIEW"])
+            return rc, "::error::the comments of #7 could not be read" in out, got, writes(self.api)
+
+        want = (1, True, {}, [])
+        self.assertEqual(replied(), want, self.logs)
+        self.assertNotEqual(self.changed_step("comment", self.POST, '  || { echo "::error::the comments of #$NUMBER '
+                                              'could not be read"; exit 1; }', "  || true", replied), want, self.logs)
 
     def test_a_draft_that_the_strip_leaves_with_no_word_is_not_uploaded(self):
         """R3: the one file of the artifact issue-draft-<issue> is one that the OSSV controller's ask can hold: after
@@ -13872,6 +14042,62 @@ class CatchUpScheduleTest(Scheduled):
         self.assertEqual(steps[CATCH_UP], "success", self.logs)
         self.assertEqual(self.patches(), [])
 
+    def test_a_catch_up_that_cannot_read_the_pull_request_closes_and_reopens_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the post job's step "Close and reopen the pull
+        request" (CATCH_UP) reads the pull request (GET pulls/<n>) for its state, its head and its head repository
+        before it closes or reopens it. The rule of that read: a read that GitHub refuses fails the step, with the
+        error that the pull request could not be read. The step then closes and reopens nothing and writes nothing,
+        and the post job names no head that it caught up (its output caught) and fails, so the comment job does not
+        run and records no catch-up of the head. The control, the step that takes the refused read as an empty
+        answer, passes and leaves no error."""
+        self.item(kind="pr")
+        self.ci(ended=90)
+        trust = self.dispatched("catchup")
+        self.refuse(f"repos/{REPO}/pulls/7", 502, "Bad Gateway")
+
+        def caught_up():
+            self.forget()
+            start = len(self.logs)
+            ctx = self.ctx(trust)
+            steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+            return (steps[CATCH_UP], "::error::pull request #7 could not be read." in "\n".join(self.logs[start:]),
+                    writes(self.api), filled(JOBS["post"]["outputs"], ctx)["caught"])
+
+        want = ("failure", True, [], "")
+        self.assertEqual(caught_up(), want, self.logs)
+        self.assertEqual(ran_jobs(run_graph(trust, {"post": "failure"}, {"post": {"caught": ""}},
+                                            github={"github.event_name": "workflow_dispatch"})), {"trust", "post"})
+        unread = '  || { echo "::error::pull request #$NUMBER could not be read."; exit 1; }'
+        self.assertNotEqual(self.changed_step("post", CATCH_UP, unread, "  || true", caught_up), want, self.logs)
+
+    def test_a_catch_up_whose_label_comments_cannot_be_read_records_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): after a post job that reopened the pull request
+        (its output caught), the comment job's step "Record the catch-up of the head" records that head in the label
+        comment with rules.py mark, which first reads the label comments of #7 (GET issues/<n>/comments). The rule of
+        that read: a read that GitHub refuses makes rules.py fail with the error of the refused call, and the step
+        fails. It then writes no label comment and sets no state label. The job's last step (UNCLAIM) reads the same
+        comments, fails too, and writes nothing. The control, the step that does not fail when rules.py fails,
+        passes, and the last step does not run."""
+        self.item(kind="pr")
+        self.ci(ended=90)
+        trust = self.dispatched("catchup")
+        self.refuse(f"repos/{REPO}/issues/7/comments", 502, "Bad Gateway")
+        mark = "Record the catch-up of the head"
+
+        def recorded():
+            self.forget()
+            start = len(self.logs)
+            steps = run_job(self, "comment", self.ctx(trust, **{"needs.post.result": "success",
+                                                                "needs.post.outputs.caught": HEAD}), {})
+            return ((steps[mark], steps[ImportCheckTest.UNCLAIM]),
+                    "::error::rules.py: gh: Bad Gateway (HTTP 502)" in "\n".join(self.logs[start:]), writes(self.api))
+
+        want = (("failure", "failure"), True, [])
+        self.assertEqual(recorded(), want, self.logs)
+        line = 'python3 .github/review/rules.py mark "$NUMBER" "<!-- review-catchup $CAUGHT -->"\n'
+        self.assertNotEqual(self.changed_step("comment", mark, line, line[:-1] + " || true\n", recorded), want,
+                            self.logs)
+
     def test_a_catchup_whose_token_a_could_not_be_minted_is_started_again_an_hour_later_and_not_before(self):
         """The App's retry: the head gets one catchup run an hour after that run ended, which the trust job takes and
         whose post job closes and reopens the pull request."""
@@ -14041,6 +14267,34 @@ class LeftClosedTest(Scheduled):
         self.assertEqual((r2["task"], r2["route"], r2["head"]), ("catchup", "review", HEAD))
         self.assertEqual(ran_jobs(run_graph(r2, github={"github.event_name": "workflow_dispatch"})), {"trust", "post"})
         self.reopened(r2)
+
+    def test_a_reopen_that_cannot_read_the_events_of_the_pull_request_reopens_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): for a closed pull request, the post job's step
+        "Close and reopen the pull request" (CATCH_UP) reads its events (GET issues/<n>/events) for its newest close,
+        and reopens it only while that close is the OSS Verify App's. The rule of that read: a read that GitHub
+        refuses fails the step, with the error that the events of the pull request could not be read. The step then
+        reopens nothing and writes nothing, and the post job names no head that it caught up and fails, so the comment
+        job does not run and records no catch-up. The control, the step that takes the refused read as an empty
+        answer, passes and leaves no error."""
+        self.closing(ago(200))
+        self.ran(60, self.TITLE, made=205, ended=195, jobs=[self.FAILED])
+        trust = self.dispatched("catchup")
+        self.refuse(f"repos/{REPO}/issues/7/events", 502, "Bad Gateway")
+
+        def tried():
+            self.forget()
+            start = len(self.logs)
+            ctx = self.ctx(trust)
+            steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
+            return (steps[CATCH_UP], "::error::the events of #7 could not be read." in "\n".join(self.logs[start:]),
+                    writes(self.api), filled(JOBS["post"]["outputs"], ctx)["caught"])
+
+        want = ("failure", True, [], "")
+        self.assertEqual(tried(), want, self.logs)
+        self.assertEqual(ran_jobs(run_graph(trust, {"post": "failure"}, {"post": {"caught": ""}},
+                                            github={"github.event_name": "workflow_dispatch"})), {"trust", "post"})
+        unread = '    || { echo "::error::the events of #$NUMBER could not be read."; exit 1; }'
+        self.assertNotEqual(self.changed_step("post", CATCH_UP, unread, "    || true", tried), want, self.logs)
 
     def test_a_failed_reopen_a_reopen_that_could_not_sign_in_and_a_closing_run_cancelled_get_a_reopen_an_hour_later(self):
         """When R2's reopen failed, when R2's token A could not be minted, and when R1's post job was cancelled after
@@ -16413,6 +16667,28 @@ class ConflictTest(Runner):
         self.assertEqual((method, endpoint), ("PATCH", f"repos/{REPO}/issues/comments/40"))
         self.assertIn(f"<!-- review-conflict-state {OTHER_HEAD} -->", text)
         self.assertNotIn(HEAD, text)
+
+    def test_a_conflict_whose_read_of_the_comments_fails_posts_nothing_and_sets_no_label(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's step "Ask the author to
+        resolve the merge conflict" (STEP) reads the comments of #7 (GET issues/<n>/comments) for the comment on the
+        conflict at the head that posted before. The rule of that read: a read that GitHub refuses fails the step,
+        with the error that the comments of #7 could not be read. The step then posts no comment on the conflict, sets
+        no state label and writes no label comment. The control, the step that takes the refused read as an empty
+        answer, leaves no such error and asks GitHub to post the comment on the conflict, also when it posted before."""
+        self.refuse(f"repos/{REPO}/issues/7/comments", 502, "Bad Gateway")
+
+        def asked():
+            self.forget()
+            s = step("comment", self.STEP)
+            env = filled(s["env"], {f"needs.trust.outputs.{k}": v for k, v in self.MALLORY.items()})
+            rc, out, _ = self.run_script(s["run"], **dict(env, NUMBER="7", HEAD=HEAD,
+                                                          POST_REVIEW=WF["env"]["POST_REVIEW"]))
+            return rc, "::error::the comments of #7 could not be read" in out, writes(self.api)
+
+        want = (1, True, [])
+        self.assertEqual(asked(), want)
+        self.assertNotEqual(self.changed_step("comment", self.STEP, '  || { echo "::error::the comments of #$NUMBER '
+                                              'could not be read"; exit 1; }', "  || true", asked), want)
 
     def test_a_conflict_that_cleared_is_none(self):
         """The rescreen job's conflict run of a head that no longer conflicts is refused, and the author's comment
@@ -20069,6 +20345,49 @@ class ImportCheckTest(ReaderRunner):
                                 self.assertEqual(written.split("\n")[1], f"**Next step:** {rules.STATES[state][1]}",
                                                  written)
 
+    def test_a_review_whose_review_job_did_not_finish_posts_nothing_when_the_pull_request_cannot_be_read(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): after a review job that failed or was cancelled
+        after its verdict, the comment job's step "Post the review, or replace the one posted before" (REVIEW) reads
+        the pull request (GET pulls/<n>) for its head now, and posts the review only while that head is the head of
+        the review. The rule of that read: a read that GitHub refuses fails the step, with the error that #7 has no
+        head. The step then posts and replaces no review comment, the label step does not run, and the job's last step
+        (UNCLAIM) finds no label comment that says that the workflow recorded the check: the job writes nothing. The
+        control, the step that takes the refused read as an empty answer, passes and leaves no error, and the label
+        step runs after it."""
+        started = ago(1)
+        passed = review_of(HEAD, at=ago(300))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),
+                 "body": rules.label_comment("change", "", [rules.import_marker(HEAD, self.LPS)])}
+        body = review_of(HEAD, "blocking", run=100, read=started)["body"]
+        self.refuse(f"repos/{REPO}/pulls/7", 502, "Bad Gateway")
+        read = 'now=$(gh api "repos/$REPO/pulls/$NUMBER" --jq .head.sha) '
+        for result in ("failure", "cancelled"):
+            with self.subTest(review=result):
+                ctx = {f"needs.trust.outputs.{k}": v for k, v in dict(self.REVIEWED, started=started).items()}
+                ctx.update({"github.event_name": "workflow_run", "github.ref": "refs/heads/main",
+                            "github.repository": REPO, "github.token": self.RUN_TOKEN,
+                            "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS, "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
+                            "needs.trust.result": "success", "needs.gather.result": "success",
+                            "needs.gather.outputs.kind": "pr", "needs.screen.result": "success",
+                            "needs.screen.outputs.verdict": "clean", "needs.review.result": result,
+                            "needs.review.outputs.head": HEAD, "needs.review.outputs.verdict": "blocking",
+                            "needs.review.outputs.will_fix": "false", "needs.review.outputs.fix_stop": "false",
+                            "needs.review.outputs.body": body, "needs.review.outputs.fix": "",
+                            "needs.post.result": "success"})
+                self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
+
+                def posted():
+                    start = len(self.logs)
+                    outcomes, _labels = self.comment_job_whole(ctx, [passed, label], labels=("review-held",))
+                    return ({n: outcomes[n] for n in (self.REVIEW, self.LABEL, self.UNCLAIM)},
+                            "::error::no head of #7" in "\n".join(self.logs[start:]), writes(self.api))
+
+                want = ({self.REVIEW: "failure", self.LABEL: "skipped", self.UNCLAIM: "success"}, True, [])
+                self.assertEqual(posted(), want, self.logs)
+                self.assertNotEqual(self.changed_step("comment", self.REVIEW, read + '|| { echo "::error::no head of '
+                                                      '#$NUMBER"; exit 1; }', read + "|| true", posted), want,
+                                    self.logs)
+
     def test_the_line_of_a_refused_withdrawal_gives_a_reason_and_never_the_text_that_a_screen_passed_the_head(self):
         """Round 13, part B, F2 (OSSV-221's architect, 2026-11-21 06:38Z): the line
         <!-- withdraw-owed <head> <why> <run> --> gives only the reason to withdraw, never a state. No screen ever
@@ -22149,18 +22468,6 @@ class ImportCheckTest(ReaderRunner):
     FIND = "Find the import check runs that a later review or screen withdraws"
     # The step of the hold job of an answer that runs the same script (OSSV-221's architect, 2026-11-24 14:29Z, F2).
     ANSWER_FIND = "Find the import check runs that the screen of this answer withdraws"
-
-    def changed_step(self, job, name, old, new, run):
-        """run() with the step name of job changed, as a control: its script holds new in the place of old, which it
-        holds once. Its result."""
-        found = step(job, name)
-        script = found["run"]
-        self.assertEqual(script.count(old), 1, old)
-        found["run"] = script.replace(old, new)
-        try:
-            return run()
-        finally:
-            found["run"] = script
 
     def test_an_own_withdrawal_withdraws_only_the_record_of_a_run_that_read_the_item_at_or_before_it(self):
         """OSSV-221's architect, 2026-11-24 05:23Z, (2): a withdrawal counts from the time of its reason, and withdraws
