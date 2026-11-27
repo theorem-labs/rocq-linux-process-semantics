@@ -24837,8 +24837,8 @@ class ImportCheckTest(ReaderRunner):
                                         self.SKIP: "success", self.LABEL: "success"}, found["log"])
         self.assertEqual([line in b.split("\n") for _m, _e, b in wrote], [True, True], wrote)
         self.assertIn(f"**Next step:** {rules.STATES['refused-review'][1]}", wrote[-1][2])
-        self.assertIn(f"The fresh reader refused the review of {HEAD}, so this step records that refusal: {HEAD} "
-                      "refused.", found["log"])
+        self.assertIn(f"The fresh reader refused the review of {HEAD}, so this step tries to record \"{HEAD} refused\" "
+                      "in the label comment. The next line says whether it did.", found["log"])
         self.assertEqual((found["holds"], found["labels"], found["states"]), ([], [], []), found["summary"])
         self.assertIn(f"#7 at {HEAD}: decision skip, cause refused, read {found['answer']['started']}, run 100, from "
                       f"{line.split()[-2]}\n", found["summary"])
@@ -24965,7 +24965,7 @@ class ImportCheckTest(ReaderRunner):
                 if runs:
                     ran, wrote = self.comment_job(ctx, [label], labels=("review-held",))
                     self.assertEqual((ran[OWE_REFUSED], OWE in ran), ("success", False), self.logs[-4:])
-                    self.assertNotIn("so this step records that refusal", "\n".join(self.logs))
+                    self.assertNotIn("so this step tries to record", "\n".join(self.logs))
                     self.assertFalse(any("withdraw-owed" in b for _m, _e, b in wrote), wrote)
 
     def test_the_two_steps_that_record_what_the_post_job_owes_never_both_run_for_one_run(self):

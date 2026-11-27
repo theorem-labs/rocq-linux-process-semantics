@@ -4176,7 +4176,8 @@ jobs:
                 || { echo "::error::the review job gave no head commit: ${REVIEW_HEAD:-}"; exit 1; }
               OWED="$REVIEW_HEAD refused"
               echo "#$NUMBER: the post job of this run ended with the result $POSTED, and it gave no output owed." \
-                "The fresh reader refused the review of $REVIEW_HEAD, so this step records that refusal: $OWED."
+                "The fresh reader refused the review of $REVIEW_HEAD, so this step tries to record \"$OWED\" in" \
+                "the label comment. The next line says whether it did."
             fi
           fi
           [ -n "${OWED:-}" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
