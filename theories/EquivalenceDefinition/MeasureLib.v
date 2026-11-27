@@ -842,26 +842,29 @@
     ** How a file's contents are addressed inside a core, which is the
     one representation question
 
-    [FinInput.FinCore]'s file-system component is an [Fs.Fs] — a
-    path-to-contents association list, kept strictly sorted where
-    [Fs.valid_fs] applies — so varying one file's contents needs a way to
-    read that file out of a core and a way to put a contents back in.
-    Both already exist in [Fs] and neither is added here: [Fs.fs_lookup]
-    reads ([fs_file] is that with the absent file reading as the empty
-    one, which only decides what is said about cores this family weighs
-    zero), and [Fs.fs_set] writes.  [file_core argv envp fs0 pth s] is
-    the resulting template — [mkFinCore] with the file-system field built
-    as [Fs.fs_set fs0 pth d] — and it is the family's embedding of byte
-    lists into cores, with [d] last so that the partial application is
-    that embedding.
+    [FinInput.FinCore]'s file-system component is an [Fs.Fs] — a name
+    tree from paths to entries, kept strictly sorted where [Fs.wf_fs]
+    applies, beside an inode table holding each regular file's bytes —
+    so varying one file's contents needs a way to read that file out of
+    a core and a way to put a contents back in.  Both already exist in
+    [Fs] and neither is added here: [Fs.fs_lookup] and [Fs.fs_ino_data]
+    read ([fs_file] is the name's inode's bytes, with the absent file
+    reading as the empty one, which only decides what is said about
+    cores this family weighs zero), and [Fs.fs_create_file] writes.
+    [file_core argv envp fs0 pth s] is the resulting template —
+    [mkFinCore] with the file-system field built as
+    [Fs.fs_create_file fs0 pth d] — and it is the family's embedding of
+    byte lists into cores, with [d] last so that the partial application
+    is that embedding.
 
     "The file system is OTHERWISE CANONICAL" is exactly [fs0] together
-    with [Fs.fs_set]: everything else the task's file system holds is
-    [fs0]'s and is untouched, and the one varying path is overwritten.
-    Two facts make the representation carry the whole construction, and
-    both hold with NO hypothesis on [fs0] — not sortedness, not that
-    [pth] is already present: the coordinate reads back off the template
-    ([fs_file_file_core], from [fs_lookup_set]), and the template is
+    with [Fs.fs_create_file]: everything else the task's file system
+    holds is [fs0]'s and is untouched, and the one varying path names a
+    fresh inode holding the varied bytes.  Two facts make the
+    representation carry the whole construction, and both hold with NO
+    hypothesis on [fs0] — not sortedness, not that [pth] is already
+    present: the coordinate reads back off the template
+    ([fs_file_file_core], from [fs_file_set]), and the template is
     INJECTIVE in the contents ([file_core_inj]).  The first is what lets
     the weight's decidable test be the same one-equation shape
     [geo_weight]'s is; the second is what makes the length slice really
@@ -1125,8 +1128,9 @@
     a flag — and a task with a different shape uses the general
     constructor and discharges [argv_names_path] itself.
 
-    And the collapse is PINNED rather than described.  [Fs.fs_set]
-    touches one key and no other ([fs_lookup_set_other], again with no
+    And the collapse is PINNED rather than described.  [Fs.fs_create_file]
+    touches one name and no other and gives it an inode no other name
+    holds ([fs_file_set_other], again with no
     hypothesis on the file system), so every core either family weighs
     holds, at every path other than the one it varies, exactly the base
     file system's contents ([file_geo_weight_blind_off_path],
@@ -1154,8 +1158,9 @@
     core).  It is the product of four independent laws, one per field
     of [FinInput.FinCore]: [strings_point] — which IS [envp_point] under
     a field-neutral name — on argv and on envp at their own rates,
-    [fs_point] on the file system (the same entry-count shell around a
-    PAIR of byte-geometric factors per entry, path and contents), and
+    [fs_point] on the file system (the same entry-count shell, once per
+    table of the image: the names, the inode rows and the folder rows),
+    and
     [geo_point] on standard input.  There is no template and no
     [decide]; [base_weight_mk] is a computation.
 
@@ -1164,7 +1169,9 @@
     ([qsum_full_support_product]); three of the coordinates' sums are
     bounded by lemmas the earlier families already proved, and the
     file-system coordinate gets [fs_enum] and [fs_enum_sum_le], which
-    are [envp_enum] and [envp_enum_sum_le] with a pair in the slot.
+    are [list_enum] and [list_enum_sum_le] — [envp_enum] and
+    [envp_enum_sum_le] written once for any element type — on each of
+    the three tables.
     [base_weight_product_bound] is the engine: four enumerations, four
     one-coordinate bounds, one product.  The exports follow the
     siblings' name for name — [full_support_base_bound] over a
@@ -1188,9 +1195,11 @@
     [cd_mix2 (cd_scale s structured) (cd_scale (1 - s) base)].
 
     The seam, decided the way this file decides validity everywhere:
-    [fs_point] weighs every list of pairs, sorted or not, and the
-    declared [1] is the mass of the LAW, not the mass reachable by
-    [Fs.valid_fs] file systems.  The family's own header says why.
+    [fs_point] weighs every image, sorted or not, and the declared [1]
+    is the mass of the LAW, not the mass reachable by [Fs.wf_fs] file
+    systems.  The family's own header says why, and says why the law is
+    on the image's three tables as they are and not on a canonical view
+    of them.
 
     ** Why powers are defined again
 
@@ -1244,7 +1253,10 @@
 
     [List.NoDup] is written qualified throughout, for the reason
     [Measure]'s header gives: [stdpp], in scope here through [BvBase],
-    shadows the standard library's [NoDup] with one of its own. *)
+    shadows the standard library's [NoDup] with one of its own.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State StackLayout.
@@ -1447,8 +1459,8 @@ Qed.
     It is derivable rather than assumed because every field is built
     from [BvBase.byte] and lists: [FinInput.core_argv] and
     [FinInput.core_envp] are [list (list byte)],
-    [FinInput.core_stdin] is [list byte], and [Fs.Fs] is by definition
-    [list (Fs.path * list byte)].  [stdpp]'s [solve_decision] assembles
+    [FinInput.core_stdin] is [list byte], and [Fs.Fs] is a record of
+    three lists over bytes, numbers and counts.  [stdpp]'s [solve_decision] assembles
     the instance from its own [bv] and [list] instances.  Declared with
     [Defined] rather than [Qed] because the examples below reduce
     [decide] on closed cores. *)
@@ -2187,9 +2199,10 @@ Qed.
     library cannot know an author's cores denote a valid input.  Nor is
     it claimed anything rejects them.  See the header. *)
 Definition core_input (c : FinCore) : FinProcInput :=
-  mkFinProcInput (core_argv c) (core_envp c) (core_fs c) (core_stdin c)
+  mkFinProcInput (core_argv c) (core_envp c) (core_fs c) Fs.default_cwd
+                 (core_stdin c)
                  (Z_to_bv 64 0) (Z_to_bv 64 0) [] net_silent
-                 (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 [] []
+                 (Z_to_bv 64 0) (Z_to_bv 64 0) hwcap_rv64gc false Sv48 []
                  default_kernel default_execfn true true false.
 
 (** THE LAUNCH-ENVIRONMENT FIELDS ARE NOT ARBITRARY, even though this
@@ -2380,8 +2393,8 @@ Qed.
     empty argv and envp and an empty file system are not claimed valid
     (see [core_input]); these are two points of [FinInput.FinCore] to
     hang weights on, nothing more. *)
-Definition example_core_empty : FinCore := mkFinCore [] [] [] [].
-Definition example_core_a : FinCore := mkFinCore [] [] [] [Z_to_bv 8 65].
+Definition example_core_empty : FinCore := mkFinCore [] [] Fs.fs_empty [].
+Definition example_core_a : FinCore := mkFinCore [] [] Fs.fs_empty [Z_to_bv 8 65].
 
 (** A two-entry support: half the mass on the empty input, a quarter on
     "A", for a declared total of three quarters. *)
@@ -3559,8 +3572,8 @@ Qed.
     and one whose argv is not empty.  As at [example_core_empty],
     neither is claimed valid; they are two points of
     [FinInput.FinCore]. *)
-Definition geo_example_core : FinCore := mkFinCore [] [] [] [].
-Definition geo_example_other : FinCore := mkFinCore [[Z_to_bv 8 65]] [] [] [].
+Definition geo_example_core : FinCore := mkFinCore [] [] Fs.fs_empty [].
+Definition geo_example_other : FinCore := mkFinCore [[Z_to_bv 8 65]] [] Fs.fs_empty [].
 
 (** THE BITE, both ways: the distribution is not the zero
     distribution — it puts [p_stop] on the empty input, which is
@@ -3571,8 +3584,8 @@ Definition geo_example_other : FinCore := mkFinCore [[Z_to_bv 8 65]] [] [] [].
     above would hold of a distribution that weighs nothing. *)
 Lemma stdin_geometric_bites : forall p Hp0 Hp1,
   (0 < p)%Q ->
-  (0 < cd_weight (stdin_geometric p [] [] [] Hp0 Hp1) geo_example_core)%Q
-  /\ cd_weight (stdin_geometric p [] [] [] Hp0 Hp1) geo_example_other = 0%Q.
+  (0 < cd_weight (stdin_geometric p [] [] Fs.fs_empty Hp0 Hp1) geo_example_core)%Q
+  /\ cd_weight (stdin_geometric p [] [] Fs.fs_empty Hp0 Hp1) geo_example_other = 0%Q.
 Proof.
   intros p Hp0 Hp1 Hlt. cbn [cd_weight stdin_geometric]. split.
   - unfold geo_example_core. rewrite geo_weight_match.
@@ -3593,7 +3606,7 @@ Qed.
     concrete arithmetic instead of open terms.  It is also why [Qpow]
     exists: its ratio is zero. *)
 Definition geo_point_cd : CoreDistribution :=
-  stdin_geometric 1 [] [] [] Qle_0_1 (Qle_refl 1).
+  stdin_geometric 1 [] [] Fs.fs_empty Qle_0_1 (Qle_refl 1).
 
 Definition geo_empty_input : FinProcInput := core_input geo_example_core.
 
@@ -3637,7 +3650,7 @@ Qed.
 Lemma stdin_geometric_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [geo_empty_input; geo_empty_input])
   /\ (forall f, List.In f [geo_empty_input; geo_empty_input] ->
-        in_stdin_cylinder [] [] [] [] (fin_core f))
+        in_stdin_cylinder [] [] Fs.fs_empty [] (fin_core f))
   /\ ~ (core_sum (cd_weight geo_point_cd) [geo_empty_input; geo_empty_input]
           <= stdin_geometric_cylinder_mass 1 [])%Q.
 Proof.
@@ -4762,7 +4775,7 @@ Qed.
     that cares supplies its own. *)
 Definition worked_argv : list (list byte) := [[Z_to_bv 8 119; Z_to_bv 8 99]].
 Definition worked_envp : list (list byte) := [].
-Definition worked_fs : Fs.Fs := [].
+Definition worked_fs : Fs.Fs := Fs.fs_empty.
 
 (** A core of this family: the fixed environment, and a standard input.
     Every core named below goes through it, which is what puts the
@@ -5249,7 +5262,7 @@ Lemma bytes_cyl_In : forall N bs ext,
   (length ext <= N)%nat -> List.In (bs ++ ext) (bytes_cyl bs N).
 Proof.
   intros N bs ext Hlen.
-  assert (Hin := cyl_enum_complete [] [] [] N bs ext Hlen).
+  assert (Hin := cyl_enum_complete [] [] Fs.fs_empty N bs ext Hlen).
   rewrite cyl_enum_bytes_cyl in Hin.
   apply List.in_map_iff in Hin as [s [Hs Hins]].
   apply (f_equal core_stdin) in Hs. cbn [core_stdin] in Hs.
@@ -5270,8 +5283,8 @@ Lemma bytes_cyl_sum_le : forall p, (0 <= p)%Q -> (p <= 1)%Q ->
        <= geo_mass p (length bs))%Q.
 Proof.
   intros p Hp0 Hp1 N bs.
-  apply (Qle_trans _ (qsum (geo_weight p [] [] [])
-                        (cyl_enum [] [] [] bs N))).
+  apply (Qle_trans _ (qsum (geo_weight p [] [] Fs.fs_empty)
+                        (cyl_enum [] [] Fs.fs_empty bs N))).
   - apply Qle_of_Qeq.
     rewrite cyl_enum_bytes_cyl, qsum_map.
     apply qsum_ext. intros s _. rewrite geo_weight_match. reflexivity.
@@ -5282,7 +5295,7 @@ Lemma short_inputs_sum : forall p k,
   (qsum (fun s => geo_point p (length s)) (short_inputs k)
      == geo_prefix_sum p k)%Q.
 Proof.
-  intros p k. rewrite <- (qsum_short_inputs p [] [] [] k).
+  intros p k. rewrite <- (qsum_short_inputs p [] [] Fs.fs_empty k).
   rewrite qsum_map.
   apply qsum_ext. intros s _. rewrite geo_weight_match. reflexivity.
 Qed.
@@ -5291,7 +5304,7 @@ Lemma byte_lists_sum : forall p n,
   (qsum (fun s => geo_point p (length s)) (byte_lists n)
      == p * Qpow (1 - p) n)%Q.
 Proof.
-  intros p n. rewrite <- (qsum_full_slice p [] [] [] n).
+  intros p n. rewrite <- (qsum_full_slice p [] [] Fs.fs_empty n).
   rewrite qsum_map.
   apply qsum_ext. intros s _. rewrite geo_weight_match. reflexivity.
 Qed.
@@ -6811,7 +6824,8 @@ Qed.
     single byte [A].  As at [geo_example_core] it is not claimed valid;
     it is a point of [FinInput.FinCore] chosen so that the two families
     disagree at it. *)
-Definition envp_example_named : FinCore := mkFinCore [] [[Z_to_bv 8 65]] [] [].
+Definition envp_example_named : FinCore :=
+  mkFinCore [] [[Z_to_bv 8 65]] Fs.fs_empty [].
 
 (** THE BITE THE FAMILY EXISTS FOR, both halves on ONE core.
     [stdin_geometric] over the empty environment weighs
@@ -6834,8 +6848,8 @@ Lemma stdin_envp_geometric_envp_bites :
   forall p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1,
   (0 < p)%Q -> (p < 1)%Q -> (0 < r)%Q -> (r < 1)%Q ->
   (0 < q)%Q -> (q < 1)%Q ->
-  cd_weight (stdin_geometric p [] [] [] Hp0 Hp1) envp_example_named = 0%Q
-  /\ (0 < cd_weight (stdin_envp_geometric p r q [] [] Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
+  cd_weight (stdin_geometric p [] [] Fs.fs_empty Hp0 Hp1) envp_example_named = 0%Q
+  /\ (0 < cd_weight (stdin_envp_geometric p r q [] Fs.fs_empty Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
             envp_example_named)%Q.
 Proof.
   intros p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1 Hppos Hplt Hrpos Hrlt Hqpos Hqlt.
@@ -6865,9 +6879,9 @@ Qed.
 Lemma stdin_envp_geometric_bites : forall p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1,
   (0 < p)%Q -> (p < 1)%Q -> (0 < r)%Q -> (r < 1)%Q ->
   (0 < q)%Q -> (q < 1)%Q ->
-  (0 < cd_weight (stdin_envp_geometric p r q [] [] Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
+  (0 < cd_weight (stdin_envp_geometric p r q [] Fs.fs_empty Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
          geo_example_core)%Q
-  /\ cd_weight (stdin_envp_geometric p r q [] [] Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
+  /\ cd_weight (stdin_envp_geometric p r q [] Fs.fs_empty Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
        geo_example_other = 0%Q.
 Proof.
   intros p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1 Hppos Hplt Hrpos Hrlt Hqpos Hqlt.
@@ -6892,7 +6906,7 @@ Qed.
     [envp_geo_weight_collapses_at_one_r] it weighs exactly as
     [geo_point_cd] does. *)
 Definition envp_point_cd : CoreDistribution :=
-  stdin_envp_geometric 1 1 1 [] []
+  stdin_envp_geometric 1 1 1 [] Fs.fs_empty
     Qle_0_1 (Qle_refl 1) Qle_0_1 (Qle_refl 1) Qle_0_1 (Qle_refl 1).
 
 (** THE [List.NoDup] HYPOTHESIS IS LOAD-BEARING for this family's
@@ -6910,7 +6924,7 @@ Definition envp_point_cd : CoreDistribution :=
 Lemma stdin_envp_geometric_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [geo_empty_input; geo_empty_input])
   /\ (forall f, List.In f [geo_empty_input; geo_empty_input] ->
-        in_envp_stdin_cylinder [] [] [] [] (fin_core f))
+        in_envp_stdin_cylinder [] Fs.fs_empty [] [] (fin_core f))
   /\ ~ (core_sum (cd_weight envp_point_cd)
           [geo_empty_input; geo_empty_input]
           <= stdin_envp_geometric_cylinder_mass 1 1 1 [] [])%Q.
@@ -7126,10 +7140,10 @@ Qed.
     relations between literals this file wrote out, per the header's
     exception. *)
 Lemma envp_geo_weight_at_one_q_needs_a_non_empty_entry :
-  (envp_geo_weight (1 # 2) (1 # 5) 1 [] []
-     (mkFinCore [] [[Z_to_bv 8 65]] [] []) == 0)%Q
-  /\ (0 < envp_geo_weight (1 # 2) (1 # 5) 1 [] []
-            (mkFinCore [] [[]] [] []))%Q.
+  (envp_geo_weight (1 # 2) (1 # 5) 1 [] Fs.fs_empty
+     (mkFinCore [] [[Z_to_bv 8 65]] Fs.fs_empty []) == 0)%Q
+  /\ (0 < envp_geo_weight (1 # 2) (1 # 5) 1 [] Fs.fs_empty
+            (mkFinCore [] [[]] Fs.fs_empty []))%Q.
 Proof.
   split.
   - apply (envp_geo_weight_zero_at_one_q _ _ _ _ _ [Z_to_bv 8 65]);
@@ -7730,8 +7744,8 @@ Qed.
     is what makes the pin below a computation a reader can check by
     eye rather than an appeal to a family. *)
 Lemma envp_stdin_product_at_depth_one :
-  envp_stdin_product [] [] (envps_upto 1 1) (short_inputs 1)
-    = [mkFinCore [] [] [] []].
+  envp_stdin_product [] Fs.fs_empty (envps_upto 1 1) (short_inputs 1)
+    = [mkFinCore [] [] Fs.fs_empty []].
 Proof. reflexivity. Qed.
 
 (** ... AND THE THRESHOLD IS LOAD-BEARING AT THE DISTRIBUTION TOO, where
@@ -7746,7 +7760,7 @@ Proof. reflexivity. Qed.
 
     The mixture here fixes the one-entry environment [[Z_to_bv 8 65]]
     for its stdin-only component, and the list is the shallowest envp
-    witness — the single core [mkFinCore [] [] [] []], whose
+    witness — the single core [mkFinCore [] [] Fs.fs_empty []], whose
     environment is [[]].  So the stdin-only component weighs that list
     ZERO, which is exactly the depth failure
     [stdin_geometric_on_envp_geo_lower_witness_needs_the_depths]
@@ -7763,15 +7777,15 @@ Proof. reflexivity. Qed.
 Lemma calibrated_mixture_mass_lower_certificate_needs_the_threshold :
   forall (Hp0 : (0 <= 1 # 2)%Q) (Hp1 : ((1 # 2) <= 1)%Q),
   ((15 # 16) < (159 # 160))%Q /\ ((159 # 160) < 1)%Q
-  /\ List.NoDup (List.map fin_core (envp_geo_lower_witness [] [] 1 1 1))
+  /\ List.NoDup (List.map fin_core (envp_geo_lower_witness [] Fs.fs_empty 1 1 1))
   /\ (1 - (159 # 160)
         <= core_sum
              (cd_weight (calibrated_mixture (1 # 2) []
-                           [[Z_to_bv 8 65]] [] Hp0 Hp1))
-             (envp_geo_lower_witness [] [] 1 1 1))%Q
+                           [[Z_to_bv 8 65]] Fs.fs_empty Hp0 Hp1))
+             (envp_geo_lower_witness [] Fs.fs_empty 1 1 1))%Q
   /\ (core_sum
-        (cd_weight (stdin_geometric (1 # 2) [] [[Z_to_bv 8 65]] [] Hp0 Hp1))
-        (envp_geo_lower_witness [] [] 1 1 1) == 0)%Q.
+        (cd_weight (stdin_geometric (1 # 2) [] [[Z_to_bv 8 65]] Fs.fs_empty Hp0 Hp1))
+        (envp_geo_lower_witness [] Fs.fs_empty 1 1 1) == 0)%Q.
 Proof.
   intros Hp0 Hp1.
   split; [reflexivity |]. split; [reflexivity |].
@@ -7782,8 +7796,8 @@ Proof.
       qsum_nil.
     unfold calibrated_mixture.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite (geo_weight_off_envp_zero (1 # 2) [] [[Z_to_bv 8 65]] []
-               (mkFinCore [] [] [] []))
+    rewrite (geo_weight_off_envp_zero (1 # 2) [] [[Z_to_bv 8 65]] Fs.fs_empty
+               (mkFinCore [] [] Fs.fs_empty []))
       by (cbn [core_envp]; intros Heq; discriminate Heq).
     rewrite envp_geo_weight_match.
     apply (proj1 (Qle_bool_iff _ _)). vm_compute. reflexivity.
@@ -7791,8 +7805,8 @@ Proof.
     rewrite envp_stdin_product_at_depth_one, qsum_cons,
       qsum_nil.
     cbn [cd_weight stdin_geometric].
-    rewrite (geo_weight_off_envp_zero (1 # 2) [] [[Z_to_bv 8 65]] []
-               (mkFinCore [] [] [] []))
+    rewrite (geo_weight_off_envp_zero (1 # 2) [] [[Z_to_bv 8 65]] Fs.fs_empty
+               (mkFinCore [] [] Fs.fs_empty []))
       by (cbn [core_envp]; intros Heq; discriminate Heq).
     ring.
 Qed.
@@ -7836,8 +7850,8 @@ Qed.
     the environment that is no longer null. *)
 Lemma calibrated_mixture_envp_bites : forall p Hp0 Hp1,
   (0 < p)%Q -> (p < 1)%Q ->
-  cd_weight (stdin_geometric p [] [] [] Hp0 Hp1) envp_example_named = 0%Q
-  /\ (0 < cd_weight (calibrated_mixture p [] [] [] Hp0 Hp1)
+  cd_weight (stdin_geometric p [] [] Fs.fs_empty Hp0 Hp1) envp_example_named = 0%Q
+  /\ (0 < cd_weight (calibrated_mixture p [] [] Fs.fs_empty Hp0 Hp1)
             envp_example_named)%Q.
 Proof.
   intros p Hp0 Hp1 Hppos Hplt. split.
@@ -7845,8 +7859,8 @@ Proof.
     unfold envp_example_named. cbn [core_envp]. discriminate.
   - unfold calibrated_mixture, envp_example_named.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite (geo_weight_off_envp_zero p [] [] []
-               (mkFinCore [] [[Z_to_bv 8 65]] [] []))
+    rewrite (geo_weight_off_envp_zero p [] [] Fs.fs_empty
+               (mkFinCore [] [[Z_to_bv 8 65]] Fs.fs_empty []))
       by (cbn [core_envp]; discriminate).
     rewrite envp_geo_weight_match.
     apply (Qlt_le_trans _ (calibrated_lambda
@@ -7999,32 +8013,32 @@ Lemma calibrated_mixture_at_endpoints_bite :
   forall p q r argv Hp0 Hp1 Hq0 Hq1 Hr0 Hr1 c,
   core_envp c <> [] ->
   (cd_weight (calibrated_mixture_at 0 q (Qle_refl 0) Qle_0_1 Hq0 Hq1
-                p argv [] [] Hp0 Hp1) c == 0)%Q
+                p argv [] Fs.fs_empty Hp0 Hp1) c == 0)%Q
   /\ (cd_weight (calibrated_mixture_at 1 q Qle_0_1 (Qle_refl 1) Hq0 Hq1
-                  p argv [] [] Hp0 Hp1) c == 0)%Q
+                  p argv [] Fs.fs_empty Hp0 Hp1) c == 0)%Q
   /\ (cd_weight (calibrated_mixture_at r 0 Hr0 Hr1 (Qle_refl 0) Qle_0_1
-                  p argv [] [] Hp0 Hp1) c == 0)%Q
+                  p argv [] Fs.fs_empty Hp0 Hp1) c == 0)%Q
   /\ (forall e, List.In e (core_envp c) -> e <> [] ->
         (cd_weight (calibrated_mixture_at r 1 Hr0 Hr1 Qle_0_1 (Qle_refl 1)
-                      p argv [] [] Hp0 Hp1) c == 0)%Q).
+                      p argv [] Fs.fs_empty Hp0 Hp1) c == 0)%Q).
 Proof.
   intros p q r argv Hp0 Hp1 Hq0 Hq1 Hr0 Hr1 c Hne.
-  assert (Hgeo : geo_weight p argv [] [] c = 0%Q)
+  assert (Hgeo : geo_weight p argv [] Fs.fs_empty c = 0%Q)
     by (apply geo_weight_off_envp_zero; exact Hne).
   split; [| split; [| split]].
   - unfold calibrated_mixture_at.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite Hgeo, (envp_geo_weight_zero_at_zero_r p q argv [] c). ring.
+    rewrite Hgeo, (envp_geo_weight_zero_at_zero_r p q argv Fs.fs_empty c). ring.
   - unfold calibrated_mixture_at.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite Hgeo, (envp_geo_weight_collapses_at_one_r p q argv [] c), Hgeo.
+    rewrite Hgeo, (envp_geo_weight_collapses_at_one_r p q argv Fs.fs_empty c), Hgeo.
     ring.
   - unfold calibrated_mixture_at.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite Hgeo, (envp_geo_weight_zero_at_zero_q p r argv [] c Hne). ring.
+    rewrite Hgeo, (envp_geo_weight_zero_at_zero_q p r argv Fs.fs_empty c Hne). ring.
   - intros e Hin Hene. unfold calibrated_mixture_at.
     cbn [cd_weight cd_mix2 cd_scale stdin_geometric stdin_envp_geometric].
-    rewrite Hgeo, (envp_geo_weight_zero_at_one_q p r argv [] c e Hin Hene).
+    rewrite Hgeo, (envp_geo_weight_zero_at_one_q p r argv Fs.fs_empty c e Hin Hene).
     ring.
 Qed.
 
@@ -8038,50 +8052,51 @@ Qed.
 
     THIS IS THE FAMILY'S COORDINATE, and the representation question it
     settles is the only one the two families below turn on, so it is
-    settled here and in one place.  [Fs.Fs] is an association list from
-    [Fs.path] to bytes, kept strictly sorted ([Fs.valid_fs]), and a
-    weight that wants to vary ONE file's contents therefore needs two
-    things of it: a way to read that file out of a core, and a way to put
-    a given contents back in.  [Fs.fs_lookup] is the first and
-    [Fs.fs_set] is the second, both already in [Fs] and neither added
-    here.
+    settled here and in one place.  An [Fs.Fs] holds a name tree from
+    [Fs.path] to [Fs.Entry] and an inode table holding each regular
+    file's bytes, and a weight that wants to vary ONE file's contents
+    therefore needs two things of it: a way to read that file out of a
+    core, and a way to put a given contents back in.  [Fs.fs_lookup] and
+    [Fs.fs_ino_data] are the first (the name's inode, then that inode's
+    bytes) and [Fs.fs_create_file] is the second, all already in [Fs]
+    and none added here.
 
     Collapsing "absent" onto "empty" is what makes this total, and it
     costs nothing the family uses: the cores this family weighs all have
     the file PRESENT, because they are built by [file_core] below, which
-    sets it.  The collapse only decides what [fs_file] says about cores
+    creates it.  The collapse only decides what [fs_file] says about cores
     the family weighs zero, and it says the same thing [Fs.fs_lookup]
     would have said one [option] later. *)
 Definition fs_file (pth : Fs.path) (fs : Fs.Fs) : list byte :=
   match Fs.fs_lookup fs pth with
-  | Some d => d
-  | None => []
+  | Some (Fs.EFile i) => Fs.fs_ino_data fs i
+  | _ => []
+        (* a directory, a device or a link at the key collapses to the
+           same EMPTY the absent key collapses to.  This weighs cores,
+           and the note above says what the collapse decides and what it
+           does not: it is not a spec arm and answers no syscall *)
   end.
 
 (** Setting a path and reading it back gives what was set, at every file
-    system and with no sortedness hypothesis.  [Fs.fs_set] either
-    inserts before the first larger key, replaces an equal one, or
-    recurses past a smaller one; in all three cases the entry it lands on
-    is the one [Fs.fs_lookup] finds first.  Sortedness is what makes
-    [Fs.fs_set] preserve the CANONICAL form and is [Fs.valid_fs]'s
-    business, not this lemma's — the round trip holds either way, so
-    nothing below has to carry a validity hypothesis in order to read its
-    own coordinate back. *)
+    system and with no sortedness hypothesis ([Fs.fs_lookup_set_eq]):
+    sortedness is what makes [Fs.fs_set] preserve the CANONICAL form and
+    is [Fs.wf_fs]'s business, not this lemma's — the round trip holds
+    either way, so nothing below has to carry a validity hypothesis in
+    order to read its own coordinate back. *)
 Lemma fs_lookup_set : forall fs pth d,
   Fs.fs_lookup (Fs.fs_set fs pth d) pth = Some d.
-Proof.
-  intros fs pth d. induction fs as [| [q e] r IH].
-  - cbn [Fs.fs_set Fs.fs_lookup]. rewrite Fs.path_eqb_refl. reflexivity.
-  - cbn [Fs.fs_set]. destruct (Fs.path_ltb pth q) eqn:Hlt.
-    + cbn [Fs.fs_lookup]. rewrite Fs.path_eqb_refl. reflexivity.
-    + destruct (Fs.path_eqb pth q) eqn:Heq.
-      * cbn [Fs.fs_lookup]. rewrite Fs.path_eqb_refl. reflexivity.
-      * cbn [Fs.fs_lookup]. rewrite Heq. exact IH.
-Qed.
+Proof. intros fs pth d. apply Fs.fs_lookup_set_eq. Qed.
 
-Lemma fs_file_set : forall fs0 pth d, fs_file pth (Fs.fs_set fs0 pth d) = d.
+(** A file created at [pth] with contents [d] reads back as [d]: the
+    name holds the fresh inode, and the fresh inode's row holds [d]. *)
+Lemma fs_file_set : forall fs0 pth d,
+  fs_file pth (Fs.fs_create_file fs0 pth d) = d.
 Proof.
-  intros fs0 pth d. unfold fs_file. rewrite fs_lookup_set. reflexivity.
+  intros fs0 pth d. unfold fs_file, Fs.fs_create_file. cbv zeta.
+  rewrite Fs.fs_lookup_set_eq. cbv iota beta.
+  rewrite Fs.fs_ino_data_set_name.
+  unfold Fs.fs_ino_data, Fs.fs_put_inode, Fs.fs_inode.
+  cbn [Fs.fs_inodes Fs.fs_with_inodes]. rewrite Fs.itab_find_put_eq. reflexivity.
 Qed.
 
 (** THE TEMPLATE: the core over fixed argv, envp, standard input and a
@@ -8093,18 +8108,21 @@ Qed.
     [stdin_geometric]'s enumerations map over.
 
     "The file system is otherwise canonical" is [fs0] together with
-    [Fs.fs_set]: whatever else the task's file system holds is [fs0]'s
-    and is untouched, and the one path the family varies is overwritten.
-    Note what that does NOT require of [fs0] — it need not already
-    contain [pth], and it need not be sorted for anything below to hold
-    (see [fs_lookup_set]).  A task whose [fs0] is [Fs.valid_fs] gets
-    weighted cores whose file systems are too; that is a fact about
-    [Fs.fs_set] and about the task's [fs0], and this library neither
-    needs it nor claims it, exactly as it neither needs nor claims that
-    [core_input]'s records are valid. *)
+    [Fs.fs_create_file]: whatever else the task's file system holds is
+    [fs0]'s and is untouched, and the name the family varies holds a
+    fresh inode with the given bytes.  The fresh inode is a number no
+    name of [fs0] holds ([Fs.fs_fresh_ino]), so no other name of [fs0]
+    sees the new bytes ([fs_file_set_other]).  Note what that does NOT
+    require of [fs0] — it need not already contain [pth], and it need
+    not be sorted for anything below to hold (see [fs_lookup_set]).  A
+    task whose [fs0] is [Fs.wf_fs] gets weighted cores whose file systems
+    are too — [Fs.wf_fs_create_file] is the fact; that is a fact about
+    [Fs.fs_create_file] and about the task's [fs0], and this library
+    neither needs it nor claims it, exactly as it neither needs nor
+    claims that [core_input]'s records are valid. *)
 Definition file_core (argv envp : list (list byte)) (fs0 : Fs.Fs)
     (pth : Fs.path) (s : list byte) (d : list byte) : FinCore :=
-  mkFinCore argv envp (Fs.fs_set fs0 pth d) s.
+  mkFinCore argv envp (Fs.fs_create_file fs0 pth d) s.
 
 (** The coordinate is READABLE OFF the template, which is what makes the
     weight below well defined: the decidable test can ask "is this core
@@ -8839,7 +8857,7 @@ Qed.
 Definition file_example_path : Fs.path := [Z_to_bv 8 105].
 
 Definition file_example_core : FinCore :=
-  file_core [] [] [] file_example_path [] [].
+  file_core [] [] Fs.fs_empty file_example_path [] [].
 
 (** THE BITE THE FAMILY EXISTS FOR, both halves on ONE core.
     [stdin_geometric] over the empty file system weighs
@@ -8866,14 +8884,15 @@ Definition file_example_core : FinCore :=
     about that core non-vacuous; it is not itself a bound. *)
 Lemma file_geometric_fs_bites : forall p Hp0 Hp1,
   (0 < p)%Q ->
-  cd_weight (stdin_geometric p [] [] [] Hp0 Hp1) file_example_core = 0%Q
-  /\ (0 < cd_weight (file_geometric p [] [] [] file_example_path [] Hp0 Hp1)
+  cd_weight (stdin_geometric p [] [] Fs.fs_empty Hp0 Hp1) file_example_core = 0%Q
+  /\ (0 < cd_weight (file_geometric p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
             file_example_core)%Q.
 Proof.
   intros p Hp0 Hp1 Hlt. split.
   - cbn [cd_weight stdin_geometric]. apply geo_weight_off_fs_zero.
     unfold file_example_core, file_core, file_example_path.
-    cbn [core_fs Fs.fs_set]. discriminate.
+    cbn [core_fs]. intros H. apply (f_equal Fs.fs_tree) in H.
+    vm_compute in H. discriminate H.
   - cbn [cd_weight file_geometric]. unfold file_example_core.
     rewrite file_geo_weight_match.
     unfold geo_point, geo_mass. cbn [length Qpow].
@@ -8888,9 +8907,9 @@ Qed.
     a distribution that weighs nothing. *)
 Lemma file_geometric_bites : forall p Hp0 Hp1,
   (0 < p)%Q ->
-  (0 < cd_weight (file_geometric p [] [] [] file_example_path [] Hp0 Hp1)
+  (0 < cd_weight (file_geometric p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
          file_example_core)%Q
-  /\ cd_weight (file_geometric p [] [] [] file_example_path [] Hp0 Hp1)
+  /\ cd_weight (file_geometric p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
        geo_example_other = 0%Q.
 Proof.
   intros p Hp0 Hp1 Hlt. split.
@@ -8911,7 +8930,7 @@ Qed.
     and it is what makes the two refutations below closed arithmetic
     instead of open terms. *)
 Definition file_point_cd : CoreDistribution :=
-  file_geometric 1 [] [] [] file_example_path [] Qle_0_1 (Qle_refl 1).
+  file_geometric 1 [] [] Fs.fs_empty file_example_path [] Qle_0_1 (Qle_refl 1).
 
 Definition file_empty_input : FinProcInput := core_input file_example_core.
 
@@ -8942,7 +8961,7 @@ Qed.
 Lemma file_geometric_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [file_empty_input; file_empty_input])
   /\ (forall f, List.In f [file_empty_input; file_empty_input] ->
-        in_file_cylinder [] [] [] file_example_path [] [] (fin_core f))
+        in_file_cylinder [] [] Fs.fs_empty file_example_path [] [] (fin_core f))
   /\ ~ (core_sum (cd_weight file_point_cd)
           [file_empty_input; file_empty_input]
           <= file_geometric_cylinder_mass 1 [])%Q.
@@ -9920,7 +9939,7 @@ Qed.
 Definition file_example_hdr : list byte := [Z_to_bv 8 104].
 
 Definition file_example_hdr_core : FinCore :=
-  file_core [] [] [] file_example_path [] file_example_hdr.
+  file_core [] [] Fs.fs_empty file_example_path [] file_example_hdr.
 
 (** THE HEADER BITES, exhibited, all on cores the whole-file family
     treats alike.  The empty-file core — the very one
@@ -9931,13 +9950,13 @@ Definition file_example_hdr_core : FinCore :=
     visibly the header and nothing else. *)
 Lemma file_geometric_prefix_header_bites : forall p Hp0 Hp1,
   (0 < p)%Q ->
-  cd_weight (file_geometric_prefix file_example_hdr p [] [] []
+  cd_weight (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                file_example_path [] Hp0 Hp1) file_example_core = 0%Q
-  /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] []
+  /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1) file_example_hdr_core)%Q
-  /\ cd_mass (file_geometric_prefix file_example_hdr p [] [] []
+  /\ cd_mass (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                 file_example_path [] Hp0 Hp1) = 1%Q
-  /\ (0 < cd_weight (file_geometric p [] [] [] file_example_path [] Hp0 Hp1)
+  /\ (0 < cd_weight (file_geometric p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
             file_example_core)%Q.
 Proof.
   intros p Hp0 Hp1 Hlt. split; [| split; [| split]].
@@ -9946,7 +9965,7 @@ Proof.
     unfold file_example_core. rewrite fs_file_file_core. reflexivity.
   - cbn [cd_weight file_geometric_prefix].
     change file_example_hdr_core
-      with (file_prefix_core file_example_hdr [] [] [] file_example_path [] []).
+      with (file_prefix_core file_example_hdr [] [] Fs.fs_empty file_example_path [] []).
     rewrite file_prefix_geo_weight_match.
     unfold geo_point, geo_mass. cbn [length Qpow].
     rewrite Qmult_1_r. exact Hlt.
@@ -9958,9 +9977,9 @@ Qed.
     exact-header core, zero off the fixed argv. *)
 Lemma file_geometric_prefix_bites : forall p Hp0 Hp1,
   (0 < p)%Q ->
-  (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] []
+  (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                     file_example_path [] Hp0 Hp1) file_example_hdr_core)%Q
-  /\ cd_weight (file_geometric_prefix file_example_hdr p [] [] []
+  /\ cd_weight (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                   file_example_path [] Hp0 Hp1) geo_example_other = 0%Q.
 Proof.
   intros p Hp0 Hp1 Hlt. split.
@@ -9979,7 +9998,7 @@ Qed.
     Closed arithmetic, decided by computation; [strip_prefix] is a
     [Fixpoint] so that it is. *)
 Definition file_prefix_point_cd : CoreDistribution :=
-  file_geometric_prefix file_example_hdr 1 [] [] [] file_example_path []
+  file_geometric_prefix file_example_hdr 1 [] [] Fs.fs_empty file_example_path []
     Qle_0_1 (Qle_refl 1).
 
 Definition file_hdr_input : FinProcInput := core_input file_example_hdr_core.
@@ -9998,7 +10017,7 @@ Qed.
 Lemma file_geometric_prefix_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [file_hdr_input; file_hdr_input])
   /\ (forall f, List.In f [file_hdr_input; file_hdr_input] ->
-        in_file_prefix_cylinder file_example_hdr [] [] [] file_example_path []
+        in_file_prefix_cylinder file_example_hdr [] [] Fs.fs_empty file_example_path []
           [] (fin_core f))
   /\ ~ (core_sum (cd_weight file_prefix_point_cd)
           [file_hdr_input; file_hdr_input]
@@ -11330,10 +11349,10 @@ Lemma file_example_alpha_ne : file_example_alpha <> [].
 Proof. discriminate. Qed.
 
 Definition file_example_in_alpha_core : FinCore :=
-  file_prefix_core file_example_hdr [] [] [] file_example_path [] [Z_to_bv 8 65].
+  file_prefix_core file_example_hdr [] [] Fs.fs_empty file_example_path [] [Z_to_bv 8 65].
 
 Definition file_example_off_alpha_core : FinCore :=
-  file_prefix_core file_example_hdr [] [] [] file_example_path [] [Z_to_bv 8 66].
+  file_prefix_core file_example_hdr [] [] Fs.fs_empty file_example_path [] [Z_to_bv 8 66].
 
 (** THE ALPHABET BITES, exhibited: the off-alphabet core — which the
     256-byte header family weighs positively — weighs zero, the
@@ -11341,16 +11360,16 @@ Definition file_example_off_alpha_core : FinCore :=
 Lemma file_geometric_prefix_over_alphabet_bites : forall p Hp0 Hp1,
   (0 < p)%Q -> (p < 1)%Q ->
   cd_weight (file_geometric_prefix_over file_example_alpha file_example_alpha_nodup
-               file_example_alpha_ne file_example_hdr p [] [] []
+               file_example_alpha_ne file_example_hdr p [] [] Fs.fs_empty
                file_example_path [] Hp0 Hp1) file_example_off_alpha_core = 0%Q
   /\ (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                        file_example_alpha_nodup file_example_alpha_ne
-                       file_example_hdr p [] [] [] file_example_path [] Hp0 Hp1)
+                       file_example_hdr p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
             file_example_in_alpha_core)%Q
   /\ cd_mass (file_geometric_prefix_over file_example_alpha file_example_alpha_nodup
-                file_example_alpha_ne file_example_hdr p [] [] []
+                file_example_alpha_ne file_example_hdr p [] [] Fs.fs_empty
                 file_example_path [] Hp0 Hp1) = 1%Q
-  /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] []
+  /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p [] [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1)
             file_example_off_alpha_core)%Q.
 Proof.
@@ -11371,11 +11390,11 @@ Lemma file_geometric_prefix_over_bites : forall p Hp0 Hp1,
   (0 < p)%Q -> (p < 1)%Q ->
   (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                     file_example_alpha_nodup file_example_alpha_ne
-                    file_example_hdr p [] [] [] file_example_path [] Hp0 Hp1)
+                    file_example_hdr p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
          file_example_in_alpha_core)%Q
   /\ cd_weight (file_geometric_prefix_over file_example_alpha
                   file_example_alpha_nodup file_example_alpha_ne
-                  file_example_hdr p [] [] [] file_example_path [] Hp0 Hp1)
+                  file_example_hdr p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
        geo_example_other = 0%Q.
 Proof.
   intros p Hp0 Hp1 Hpos Hlt. split.
@@ -11392,7 +11411,7 @@ Qed.
 
 Definition file_prefix_over_point_cd : CoreDistribution :=
   file_geometric_prefix_over file_example_alpha file_example_alpha_nodup
-    file_example_alpha_ne file_example_hdr 1 [] [] [] file_example_path []
+    file_example_alpha_ne file_example_hdr 1 [] [] Fs.fs_empty file_example_path []
     Qle_0_1 (Qle_refl 1).
 
 Lemma file_prefix_over_point_cd_mass_attained :
@@ -11409,7 +11428,7 @@ Qed.
 Lemma file_geometric_prefix_over_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [file_hdr_input; file_hdr_input])
   /\ (forall f, List.In f [file_hdr_input; file_hdr_input] ->
-        in_file_prefix_cylinder file_example_hdr [] [] [] file_example_path []
+        in_file_prefix_cylinder file_example_hdr [] [] Fs.fs_empty file_example_path []
           [] (fin_core f))
   /\ ~ (core_sum (cd_weight file_prefix_over_point_cd)
           [file_hdr_input; file_hdr_input]
@@ -12229,7 +12248,7 @@ Qed.
     valid; it is the point of [FinInput.FinCore] at which the two file
     families disagree. *)
 Definition file_envp_example_named : FinCore :=
-  file_envp_core [] [] file_example_path [] [[Z_to_bv 8 65]] [].
+  file_envp_core [] Fs.fs_empty file_example_path [] [[Z_to_bv 8 65]] [].
 
 (** THE BITE THIS FAMILY EXISTS FOR, both halves on ONE core.
     [file_geometric] over the empty environment weighs
@@ -12250,9 +12269,9 @@ Lemma file_envp_geometric_envp_bites :
   forall p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1,
   (0 < p)%Q -> (p < 1)%Q -> (0 < r)%Q -> (r < 1)%Q ->
   (0 < q)%Q -> (q < 1)%Q ->
-  cd_weight (file_geometric p [] [] [] file_example_path [] Hp0 Hp1)
+  cd_weight (file_geometric p [] [] Fs.fs_empty file_example_path [] Hp0 Hp1)
     file_envp_example_named = 0%Q
-  /\ (0 < cd_weight (file_envp_geometric p r q [] [] file_example_path []
+  /\ (0 < cd_weight (file_envp_geometric p r q [] Fs.fs_empty file_example_path []
                        Hp0 Hp1 Hr0 Hr1 Hq0 Hq1) file_envp_example_named)%Q.
 Proof.
   intros p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1 Hppos Hplt Hrpos Hrlt Hqpos Hqlt.
@@ -12273,16 +12292,16 @@ Lemma file_envp_geometric_bites :
   forall p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1,
   (0 < p)%Q -> (p < 1)%Q -> (0 < r)%Q -> (r < 1)%Q ->
   (0 < q)%Q -> (q < 1)%Q ->
-  (0 < cd_weight (file_envp_geometric p r q [] [] file_example_path []
+  (0 < cd_weight (file_envp_geometric p r q [] Fs.fs_empty file_example_path []
                     Hp0 Hp1 Hr0 Hr1 Hq0 Hq1) file_example_core)%Q
-  /\ cd_weight (file_envp_geometric p r q [] [] file_example_path []
+  /\ cd_weight (file_envp_geometric p r q [] Fs.fs_empty file_example_path []
                   Hp0 Hp1 Hr0 Hr1 Hq0 Hq1) geo_example_other = 0%Q.
 Proof.
   intros p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1 Hppos Hplt Hrpos Hrlt Hqpos Hqlt.
   cbn [cd_weight file_envp_geometric]. split.
   - unfold file_example_core.
-    change (file_core [] [] [] file_example_path [] [])
-      with (file_envp_core [] [] file_example_path [] [] []).
+    change (file_core [] [] Fs.fs_empty file_example_path [] [])
+      with (file_envp_core [] Fs.fs_empty file_example_path [] [] []).
     rewrite file_envp_geo_weight_match.
     apply Qmult_lt_0_compat;
       [apply envp_point_pos; assumption | apply geo_point_pos; assumption].
@@ -12300,7 +12319,7 @@ Qed.
     what makes the refutation below closed arithmetic instead of open
     terms. *)
 Definition file_envp_point_cd : CoreDistribution :=
-  file_envp_geometric 1 1 1 [] [] file_example_path []
+  file_envp_geometric 1 1 1 [] Fs.fs_empty file_example_path []
     Qle_0_1 (Qle_refl 1) Qle_0_1 (Qle_refl 1) Qle_0_1 (Qle_refl 1).
 
 (** THE [List.NoDup] HYPOTHESIS IS LOAD-BEARING for this family's
@@ -12313,7 +12332,7 @@ Definition file_envp_point_cd : CoreDistribution :=
 Lemma file_envp_geometric_bound_needs_nodup :
   ~ List.NoDup (List.map fin_core [file_empty_input; file_empty_input])
   /\ (forall f, List.In f [file_empty_input; file_empty_input] ->
-        in_file_envp_cylinder [] [] file_example_path [] [] []
+        in_file_envp_cylinder [] Fs.fs_empty file_example_path [] [] []
           (fin_core f))
   /\ ~ (core_sum (cd_weight file_envp_point_cd)
           [file_empty_input; file_empty_input]
@@ -12505,10 +12524,10 @@ Qed.
     two environments and the same [2 # 25], beside
     [envp_geo_weight_at_one_q_needs_a_non_empty_entry]. *)
 Lemma file_envp_geo_weight_at_one_q_needs_a_non_empty_entry :
-  (file_envp_geo_weight (1 # 2) (1 # 5) 1 [] [] file_example_path []
+  (file_envp_geo_weight (1 # 2) (1 # 5) 1 [] Fs.fs_empty file_example_path []
      file_envp_example_named == 0)%Q
-  /\ (0 < file_envp_geo_weight (1 # 2) (1 # 5) 1 [] [] file_example_path []
-            (file_envp_core [] [] file_example_path [] [[]] []))%Q.
+  /\ (0 < file_envp_geo_weight (1 # 2) (1 # 5) 1 [] Fs.fs_empty file_example_path []
+            (file_envp_core [] Fs.fs_empty file_example_path [] [[]] []))%Q.
 Proof.
   split.
   - apply (file_envp_geo_weight_zero_at_one_q _ _ _ _ _ _ _
@@ -12692,38 +12711,44 @@ Qed.
 
 (** [Fs.fs_set] TOUCHES ONE KEY AND NO OTHER, with no hypothesis on the
     file system — the companion of [fs_lookup_set], and the fact the
-    blindness below is made of.  The three-way case split is
-    [fs_lookup_set]'s, read at a query key that is not the one being
-    set: the inserted or replaced entry is skipped, and what is left is
-    the original lookup. *)
+    blindness below is made of ([Fs.fs_lookup_set_neq]). *)
 Lemma fs_lookup_set_other : forall fs pth d pth',
   pth' <> pth ->
   Fs.fs_lookup (Fs.fs_set fs pth d) pth' = Fs.fs_lookup fs pth'.
 Proof.
-  intros fs pth d pth' Hne. induction fs as [| [q e] r IH].
-  - cbn [Fs.fs_set Fs.fs_lookup].
-    destruct (Fs.path_eqb pth' pth) eqn:Hpq; [| reflexivity].
-    exfalso. apply Hne. apply (proj1 (Fs.path_eqb_eq pth' pth)). exact Hpq.
-  - cbn [Fs.fs_set]. destruct (Fs.path_ltb pth q) eqn:Hlt.
-    + cbn [Fs.fs_lookup]. destruct (Fs.path_eqb pth' pth) eqn:Hpq;
-        [| reflexivity].
-      exfalso. apply Hne. apply (proj1 (Fs.path_eqb_eq pth' pth)). exact Hpq.
-    + destruct (Fs.path_eqb pth q) eqn:Heq.
-      * assert (Hq : pth = q)
-          by (apply (proj1 (Fs.path_eqb_eq pth q)); exact Heq).
-        subst q. cbn [Fs.fs_lookup].
-        destruct (Fs.path_eqb pth' pth) eqn:Hpq; [| reflexivity].
-        exfalso. apply Hne. apply (proj1 (Fs.path_eqb_eq pth' pth)).
-        exact Hpq.
-      * cbn [Fs.fs_lookup]. destruct (Fs.path_eqb pth' q) eqn:Hpq;
-          [reflexivity | exact IH].
+  intros fs pth d pth' Hne. apply Fs.fs_lookup_set_neq.
+  apply Fs.path_eqb_false_of_neq. exact Hne.
 Qed.
 
-Lemma fs_file_set_other : forall fs0 pth d pth',
-  pth' <> pth -> fs_file pth' (Fs.fs_set fs0 pth d) = fs_file pth' fs0.
+(** A name holds an inode number no greater than the largest the tree
+    names, so a fresh number is held by no name of the image. *)
+Lemma tree_lookup_file_le_max : forall t p j,
+  Fs.tree_lookup t p = Some (Fs.EFile j) -> (j <= Fs.tree_max_ino t)%Z.
 Proof.
-  intros fs0 pth d pth' Hne. unfold fs_file.
-  rewrite (fs_lookup_set_other fs0 pth d pth' Hne). reflexivity.
+  induction t as [| [q e] r IH]; intros p j H;
+    [cbn [Fs.tree_lookup] in H; discriminate H |].
+  cbn [Fs.tree_lookup] in H.
+  destruct (Fs.path_eqb p q).
+  - injection H as He. subst e. cbn [Fs.tree_max_ino]. lia.
+  - specialize (IH p j H). destruct e; cbn [Fs.tree_max_ino]; lia.
+Qed.
+
+(** Creating a file at [pth] changes what no other name reads: the other
+    names keep their entries, and the inode the new name holds is fresh,
+    so it is not one of theirs. *)
+Lemma fs_file_set_other : forall fs0 pth d pth',
+  pth' <> pth -> fs_file pth' (Fs.fs_create_file fs0 pth d) = fs_file pth' fs0.
+Proof.
+  intros fs0 pth d pth' Hne. unfold fs_file, Fs.fs_create_file. cbv zeta.
+  rewrite Fs.fs_lookup_set_neq by (apply Fs.path_eqb_false_of_neq; exact Hne).
+  rewrite Fs.fs_lookup_put_inode.
+  destruct (Fs.fs_lookup fs0 pth') as [[j | | dk | b] |] eqn:Hl; try reflexivity.
+  cbv iota beta. rewrite Fs.fs_ino_data_set_name.
+  unfold Fs.fs_ino_data, Fs.fs_put_inode, Fs.fs_inode.
+  cbn [Fs.fs_inodes Fs.fs_with_inodes].
+  rewrite Fs.itab_find_put_neq; [reflexivity |].
+  apply Z.eqb_neq. unfold Fs.fs_fresh_ino.
+  assert (Hj := tree_lookup_file_le_max (Fs.fs_tree fs0) pth' j Hl). lia.
 Qed.
 
 Lemma fs_file_file_core_other : forall argv envp fs0 pth s d pth',
@@ -12884,18 +12909,18 @@ Definition file_misconfigured_argv : list (list byte) :=
 Lemma file_geometric_needs_argv_to_name_the_path : forall p Hp0 Hp1,
   (0 < p)%Q -> (p < 1)%Q ->
   ~ argv_names_path file_misconfigured_argv file_example_path
-  /\ (0 < cd_weight (file_geometric p file_misconfigured_argv [] []
+  /\ (0 < cd_weight (file_geometric p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1)
-            (file_core file_misconfigured_argv [] [] file_example_path [] []))%Q
-  /\ (0 < cd_weight (file_geometric p file_misconfigured_argv [] []
+            (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path [] []))%Q
+  /\ (0 < cd_weight (file_geometric p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1)
-            (file_core file_misconfigured_argv [] [] file_example_path []
+            (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_core file_misconfigured_argv [] [] file_example_path []
+       (core_fs (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                    []))
      = fs_file file_other_path
-         (core_fs (file_core file_misconfigured_argv [] [] file_example_path []
+         (core_fs (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                      [Z_to_bv 8 65])).
 Proof.
   intros p Hp0 Hp1 Hpos Hlt. split; [| split; [| split]].
@@ -12926,19 +12951,19 @@ Lemma file_envp_geometric_needs_argv_to_name_the_path :
   (0 < p)%Q -> (p < 1)%Q -> (0 < r)%Q -> (r < 1)%Q ->
   (0 < q)%Q -> (q < 1)%Q ->
   ~ argv_names_path file_misconfigured_argv file_example_path
-  /\ (0 < cd_weight (file_envp_geometric p r q file_misconfigured_argv []
+  /\ (0 < cd_weight (file_envp_geometric p r q file_misconfigured_argv Fs.fs_empty
                        file_example_path [] Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
-            (file_envp_core file_misconfigured_argv [] file_example_path []
+            (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                [] []))%Q
-  /\ (0 < cd_weight (file_envp_geometric p r q file_misconfigured_argv []
+  /\ (0 < cd_weight (file_envp_geometric p r q file_misconfigured_argv Fs.fs_empty
                        file_example_path [] Hp0 Hp1 Hr0 Hr1 Hq0 Hq1)
-            (file_envp_core file_misconfigured_argv [] file_example_path []
+            (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                [] [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_envp_core file_misconfigured_argv [] file_example_path []
+       (core_fs (file_envp_core file_misconfigured_argv Fs.fs_empty file_example_path []
                    [] []))
      = fs_file file_other_path
-         (core_fs (file_envp_core file_misconfigured_argv []
+         (core_fs (file_envp_core file_misconfigured_argv Fs.fs_empty
                      file_example_path [] [] [Z_to_bv 8 65])).
 Proof.
   intros p r q Hp0 Hp1 Hr0 Hr1 Hq0 Hq1 Hppos Hplt Hrpos Hrlt Hqpos Hqlt.
@@ -13037,21 +13062,21 @@ Lemma file_geometric_prefix_needs_argv_to_name_the_path : forall p Hp0 Hp1,
   (0 < p)%Q -> (p < 1)%Q ->
   ~ argv_names_path file_misconfigured_argv file_example_path
   /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p
-                       file_misconfigured_argv [] [] file_example_path []
+                       file_misconfigured_argv [] Fs.fs_empty file_example_path []
                        Hp0 Hp1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] []))%Q
   /\ (0 < cd_weight (file_geometric_prefix file_example_hdr p
-                       file_misconfigured_argv [] [] file_example_path []
+                       file_misconfigured_argv [] Fs.fs_empty file_example_path []
                        Hp0 Hp1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                    file_example_path [] []))
      = fs_file file_other_path
          (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv
-                     [] [] file_example_path [] [Z_to_bv 8 65])).
+                     [] Fs.fs_empty file_example_path [] [Z_to_bv 8 65])).
 Proof.
   intros p Hp0 Hp1 Hpos Hlt. split; [| split; [| split]].
   - exact (proj1 (file_geometric_needs_argv_to_name_the_path p Hp0 Hp1 Hpos Hlt)).
@@ -13136,22 +13161,22 @@ Lemma file_geometric_prefix_over_needs_argv_to_name_the_path : forall p Hp0 Hp1,
   ~ argv_names_path file_misconfigured_argv file_example_path
   /\ (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                        file_example_alpha_nodup file_example_alpha_ne
-                       file_example_hdr p file_misconfigured_argv [] []
+                       file_example_hdr p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] []))%Q
   /\ (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                        file_example_alpha_nodup file_example_alpha_ne
-                       file_example_hdr p file_misconfigured_argv [] []
+                       file_example_hdr p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path [] Hp0 Hp1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                    file_example_path [] []))
      = fs_file file_other_path
          (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv
-                     [] [] file_example_path [] [Z_to_bv 8 65])).
+                     [] Fs.fs_empty file_example_path [] [Z_to_bv 8 65])).
 Proof.
   intros p Hp0 Hp1 Hpos Hlt. split; [| split; [| split]].
   - exact (proj1 (file_geometric_needs_argv_to_name_the_path p Hp0 Hp1 Hpos Hlt)).
@@ -13187,17 +13212,20 @@ Qed.
     per-entry-byte source [envp_point] was built for; [strings_point] is
     that source under a field-neutral name, so that "the argv law" and
     "the envp law" are visibly the same object at different rates.  The
-    file system is a list of (path, contents) PAIRS, and [fs_point] is
-    the same entry-count shell around a pair of byte-geometric factors
-    per entry, one for the path and one for the contents.  Standard
+    file system is a record of three TABLES — the names, the inode rows
+    and the folder rows ([Fs.Fs]) — and [fs_point] is the same
+    entry-count shell once per table ([list_point]), around what one row
+    of that table carries: a name's key bytes and its entry, an inode
+    row's number, bytes and outside-name count, a folder row's key and
+    two counts ([name_point], [row_point], [dir_point]).  Standard
     input is [geo_point] as everywhere.  Eight rates in all: a stop rate
     and a per-entry byte rate for argv ([ra], [qa]) and for envp ([re],
-    [qe]); an entry stop rate, a path byte rate and a contents byte rate
+    [qe]); an entry stop rate, a key byte rate and a carried-datum rate
     for the file system ([u], [v], [w]); and the standard-input stop
     rate [ps].  Setting all eight to
     [1 # 2] makes every byte string weigh [(1 # 2) * (1 # 512) ^
     length] and every list weigh [(1 # 2) ^ (count + 1)] times its
-    entries' product; the demo file at
+    entries' product, per table; the demo file at
     [Examples/measure_lib_demo/FullSupportBase.v] works that instance.
 
     Mass [1] is DECLARED, as everywhere in this file, and
@@ -13210,13 +13238,13 @@ Qed.
     the four coordinates' own sums are already bounded above
     ([envp_enum_sum_le] twice, [bytes_cyl_sum_le]); the file-system
     coordinate gets its own enumeration and cancellation below
-    ([fs_enum], [fs_enum_sum_le]), which are [envp_enum] and
-    [envp_enum_sum_le] with a pair where they have a string.
+    ([fs_enum], [fs_enum_sum_le]), which are [list_enum] and
+    [list_enum_sum_le] on each of the three tables.
 
-    WHAT IS NOT CLAIMED.  [fs_point] weighs EVERY list of pairs, sorted
-    or not, duplicate keys or not, and those lists are never
-    [Fs.valid_fs] and so never the file system of a real input.  This
-    seam is decided rather than hidden,
+    WHAT IS NOT CLAIMED.  [fs_point] weighs EVERY image, sorted or not,
+    duplicate keys or not, inode rows no name holds or not, and many of
+    those images are never [Fs.wf_fs] and so never the file system of a
+    real input.  This seam is decided rather than hidden,
     and it is decided the way every other family in this file decides
     validity: not at all.  [file_core]'s comment already says the
     library neither needs nor claims that the cores it weighs are valid,
@@ -13228,15 +13256,31 @@ Qed.
     sorted enumeration for every bound below and would make this family
     the only one in the file that ties weight to validity.
 
+    WHY THE LAW IS ON THE THREE TABLES AS THEY ARE.  Two images that
+    differ only in their inode numbering, or in rows no name reaches,
+    behave alike, and two other designs would have weighed them as one.
+    Weighing only a CANONICAL image ([fs = build (view fs)], times a
+    list law on the view) gives every view list that no image is
+    canonical for — two names of one inode with different bytes, a
+    "same file as" naming no file — law mass but no core, so the
+    canonical cores collect strictly less than the declared [1] and
+    [full_support_base_mass_lower_certificate] is false.  Making the
+    core HOLD the view instead breaks the section [fin_core_core_input]
+    every record-level lower certificate lifts its witness through: a
+    view no image has is a core no record has.  Every triple of lists is
+    an image, so the law below has neither defect: every image weighs
+    strictly positively, the record level is reached exactly, and an
+    image is charged as itself.
+
     The composability bound — cores whose argv is a
     fixed list and whose file at a path EXTENDS given bytes weigh at
     most the argv's weight times the byte cylinder's mass — is
     [full_support_base_argv_file_bound].  It is not an instance of the
-    cylinder bound, because the file condition constrains ONE ENTRY of
-    the file-system list while the entry count and every other entry
-    stay free; it is proved instead by a weight-preserving injection
-    ([core_strip]) that strips the prefix off the distinguished entry
-    and pays exactly [geo_mass w (length bs)] for it. *)
+    cylinder bound, because the file condition constrains ONE ROW of
+    the inode table while the row counts and every other row stay free;
+    it is proved instead by a weight-preserving injection ([core_strip])
+    that strips the prefix off the bytes of the inode the name holds and
+    pays exactly [geo_mass w (length bs)] for it. *)
 
 (** The argv law and the envp law are ONE source.  [strings_point r q]
     is [envp_point r q], and [strings_factor] is [envp_factor]; the
@@ -13267,75 +13311,921 @@ Proof.
   apply envp_point_pos; assumption.
 Qed.
 
-(** The file-system law.  [fs_entries_product] is [entries_geo_product]
-    with two byte-geometric factors per entry — the path's and the
-    contents' — and [fs_factor] is [envp_factor]'s running product with
-    the same pair inside: continuing past an entry costs [1 - u], the
-    entry costs its path's weight times its contents' weight.
-    [fs_point] is [u] times it, [u] being the weight of stopping.  As
-    with [envp_point], the three-factor form the family is specified
-    with is [fs_point_closed_form] and is a LEMMA, not a rival
-    definition. *)
-Fixpoint fs_entries_product (v w : Q) (fs : Fs.Fs) : Q :=
-  match fs with
-  | [] => 1%Q
-  | (pth, d) :: fs' =>
-      (geo_point v (length pth) * geo_point w (length d)
-       * fs_entries_product v w fs')%Q
+(* -------------------------------------------------------------------------
+   Small facts about rates in the unit interval
+   ------------------------------------------------------------------------- *)
+
+(** Three small facts about a rate in [[0, 1]] and its geometric tail,
+    stated once because eight rates each need them below. *)
+Lemma one_minus_unit : forall q,
+  (0 <= q)%Q -> (q <= 1)%Q -> (0 <= 1 - q)%Q /\ (1 - q <= 1)%Q.
+Proof.
+  intros q Hq0 Hq1. split.
+  - apply (Qle_minus_iff q 1). exact Hq1.
+  - apply (proj2 (Qle_minus_iff (1 - q) 1)).
+    apply (Qle_trans _ q); [exact Hq0 | apply Qle_of_Qeq; ring].
+Qed.
+
+Lemma geo_tail_unit : forall q L,
+  (0 <= q)%Q -> (q <= 1)%Q ->
+  (0 <= Qpow (1 - q) L)%Q /\ (Qpow (1 - q) L <= 1)%Q.
+Proof.
+  intros q L Hq0 Hq1. destruct (one_minus_unit q Hq0 Hq1) as [H0 H1].
+  split; [apply Qpow_nonneg; exact H0 | apply Qpow_le_1; assumption].
+Qed.
+
+Lemma geo_head_unit : forall q L,
+  (0 <= q)%Q -> (q <= 1)%Q ->
+  (0 <= 1 - Qpow (1 - q) L)%Q /\ (1 - Qpow (1 - q) L <= 1)%Q.
+Proof.
+  intros q L Hq0 Hq1. destruct (geo_tail_unit q L Hq0 Hq1) as [H0 H1].
+  apply one_minus_unit; assumption.
+Qed.
+
+Lemma Qmult_unit : forall x y,
+  (0 <= x)%Q -> (x <= 1)%Q -> (0 <= y)%Q -> (y <= 1)%Q ->
+  (0 <= x * y)%Q /\ (x * y <= 1)%Q.
+Proof.
+  intros x y Hx0 Hx1 Hy0 Hy1. split.
+  - apply Qmult_le_0_compat; assumption.
+  - apply (Qle_trans _ (1 * 1)%Q); [| apply Qle_of_Qeq; ring].
+    apply Qmult_le_compat_nonneg; split; assumption.
+Qed.
+
+(** Multiplying both sides on the LEFT by a nonnegative factor keeps
+    the order ([Qmult_le_compat_r] with the factors commuted). *)
+Lemma Qmult_le_compat_l_nn : forall x y z,
+  (x <= y)%Q -> (0 <= z)%Q -> (z * x <= z * y)%Q.
+Proof.
+  intros x y z Hxy Hz. rewrite (Qmult_comm z x), (Qmult_comm z y).
+  apply Qmult_le_compat_r; assumption.
+Qed.
+
+Lemma Qpow_plus_exp : forall x m n, (Qpow x (m + n) == Qpow x m * Qpow x n)%Q.
+Proof.
+  intros x m n. induction m as [| m IH].
+  - cbn [Nat.add]. rewrite Qpow_0. ring.
+  - cbn [Nat.add]. rewrite !Qpow_succ, IH. ring.
+Qed.
+
+(** A nonnegative rational literal, decided by computation. *)
+Local Ltac q_lit := apply (proj1 (Qle_bool_iff _ _)); reflexivity.
+
+(* -------------------------------------------------------------------------
+   The list law, once, over any element type
+   ------------------------------------------------------------------------- *)
+
+(** THE LIST LAW, written once.  A list of elements weighs [u] (stop)
+    times, per element, [1 - u] (go on) and the element's own weight
+    [f x]: [envp_point]'s shell around any element law.  The image's
+    three tables are three lists ([Fs.fs_tree], [Fs.fs_inodes],
+    [Fs.fs_dirs]), so the file-system coordinate below is this law three
+    times over, and every enumeration, cancellation and lower estimate
+    it needs is proved here once for every element type: [list_enum] and
+    [list_enum_sum_le] are the bounds' enumeration and its cancellation,
+    [lists_upto] and [qsum_list_point_lists_upto] are the certificate's
+    duplicate-free witness and its exact sum. *)
+Section ListLaw.
+  Context {A : Type}.
+
+  Fixpoint list_product (f : A -> Q) (l : list A) : Q :=
+    match l with
+    | [] => 1%Q
+    | x :: l' => (f x * list_product f l')%Q
+    end.
+
+  Fixpoint list_factor (u : Q) (f : A -> Q) (l : list A) : Q :=
+    match l with
+    | [] => 1%Q
+    | x :: l' => ((1 - u) * f x * list_factor u f l')%Q
+    end.
+
+  Definition list_point (u : Q) (f : A -> Q) (l : list A) : Q :=
+    (u * list_factor u f l)%Q.
+
+  Lemma list_factor_closed_form : forall u f l,
+    (list_factor u f l == Qpow (1 - u) (length l) * list_product f l)%Q.
+  Proof.
+    intros u f l. induction l as [| x l IH].
+    - cbn [list_factor list_product length]. rewrite Qpow_0. ring.
+    - cbn [list_factor list_product length]. rewrite IH, Qpow_succ. ring.
+  Qed.
+
+  Lemma list_factor_app : forall u f l l',
+    (list_factor u f (l ++ l') == list_factor u f l * list_factor u f l')%Q.
+  Proof.
+    intros u f l l'. induction l as [| x l IH].
+    - cbn [List.app list_factor]. ring.
+    - cbn [List.app list_factor]. rewrite IH. ring.
+  Qed.
+
+  Lemma list_factor_nonneg : forall u f,
+    (u <= 1)%Q -> (forall x, (0 <= f x)%Q) ->
+    forall l, (0 <= list_factor u f l)%Q.
+  Proof.
+    intros u f Hu1 Hf l. induction l as [| x l IH]; [exact Qle_0_1 |].
+    cbn [list_factor]. apply Qmult_le_0_compat; [| exact IH].
+    apply Qmult_le_0_compat; [apply (Qle_minus_iff u 1); exact Hu1 | apply Hf].
+  Qed.
+
+  Lemma list_point_nonneg : forall u f,
+    (0 <= u)%Q -> (u <= 1)%Q -> (forall x, (0 <= f x)%Q) ->
+    forall l, (0 <= list_point u f l)%Q.
+  Proof.
+    intros u f Hu0 Hu1 Hf l. unfold list_point.
+    apply Qmult_le_0_compat; [exact Hu0 | apply list_factor_nonneg; assumption].
+  Qed.
+
+  Lemma list_point_le_factor : forall u f,
+    (u <= 1)%Q -> (forall x, (0 <= f x)%Q) ->
+    forall l, (list_point u f l <= list_factor u f l)%Q.
+  Proof.
+    intros u f Hu1 Hf l. unfold list_point.
+    rewrite <- (Qmult_1_l (list_factor u f l)) at 2.
+    apply Qmult_le_compat_r; [exact Hu1 | apply list_factor_nonneg; assumption].
+  Qed.
+
+  Lemma list_point_pos : forall u f l,
+    (0 < u)%Q -> (u < 1)%Q -> (forall x, (0 < f x)%Q) ->
+    (0 < list_point u f l)%Q.
+  Proof.
+    intros u f l Hu0 Hu1 Hf. unfold list_point.
+    apply Qmult_lt_0_compat; [exact Hu0 |].
+    induction l as [| x l IH]; [reflexivity |].
+    cbn [list_factor]. apply Qmult_lt_0_compat; [| exact IH].
+    apply Qmult_lt_0_compat; [apply (Qlt_minus_iff u 1); exact Hu1 | apply Hf].
+  Qed.
+
+  (** Every list extending [l0] by at most [M] elements drawn from [E].
+      Duplicate-freedom is never proved and never needed for the bounds,
+      as with [envp_enum]. *)
+  Fixpoint list_enum (E : list A) (l0 : list A) (M : nat) : list (list A) :=
+    match M with
+    | O => [l0]
+    | S M' => l0 :: List.flat_map (fun x => list_enum E (l0 ++ [x]) M') E
+    end.
+
+  Lemma list_enum_complete : forall E M l0 rest,
+    (length rest <= M)%nat ->
+    (forall x, List.In x rest -> List.In x E) ->
+    List.In (l0 ++ rest) (list_enum E l0 M).
+  Proof.
+    intros E M. induction M as [| M IH]; intros l0 rest Hlen Hin.
+    - destruct rest as [| x rest]; [| cbn [length] in Hlen; lia].
+      rewrite List.app_nil_r. left. reflexivity.
+    - destruct rest as [| x rest].
+      + rewrite List.app_nil_r. left. reflexivity.
+      + right. apply List.in_flat_map. exists x. split.
+        * apply Hin. left. reflexivity.
+        * replace (l0 ++ x :: rest) with ((l0 ++ [x]) ++ rest)
+            by (rewrite <- List.app_assoc; reflexivity).
+          apply IH; [cbn [length] in Hlen; lia |].
+          intros y Hy. apply Hin. right. exact Hy.
+  Qed.
+
+  (** THE CANCELLATION, once: the lists extending [l0] weigh at most the
+      continuation factor of [l0], whenever one element costs at most
+      [1].  [envp_enum_sum_le]'s induction. *)
+  Lemma list_enum_sum_le : forall u f E,
+    (0 <= u)%Q -> (u <= 1)%Q -> (forall x, (0 <= f x)%Q) ->
+    (qsum f E <= 1)%Q ->
+    forall M l0,
+      (qsum (list_point u f) (list_enum E l0 M) <= list_factor u f l0)%Q.
+  Proof.
+    intros u f E Hu0 Hu1 Hf HE M. induction M as [| M IH]; intros l0.
+    - cbn [list_enum]. rewrite qsum_cons, (@qsum_nil _ (list_point u f)).
+      rewrite Qplus_0_r. apply list_point_le_factor; assumption.
+    - cbn [list_enum]. rewrite qsum_cons.
+      apply (Qle_trans _ (list_point u f l0
+                          + qsum (fun x => list_factor u f (l0 ++ [x])) E)%Q).
+      + apply Qplus_le_compat; [apply Qle_refl |].
+        apply (qsum_flat_map_le (list_point u f)
+                 (fun x => list_enum E (l0 ++ [x]) M)
+                 (fun x => list_factor u f (l0 ++ [x])) E).
+        intros x _. apply IH.
+      + rewrite (qsum_ext (fun x => list_factor u f (l0 ++ [x]))
+                   (fun x => ((list_factor u f l0 * (1 - u)) * f x)%Q) E)
+          by (intros x _; rewrite list_factor_app; cbn [list_factor]; ring).
+        rewrite (qsum_scale (list_factor u f l0 * (1 - u)) f E). unfold list_point.
+        assert (HF : (0 <= list_factor u f l0 * (1 - u))%Q).
+        { apply Qmult_le_0_compat; [apply list_factor_nonneg; assumption |].
+          apply (Qle_minus_iff u 1). exact Hu1. }
+        apply (Qle_trans _ (u * list_factor u f l0
+                            + list_factor u f l0 * (1 - u) * 1)%Q);
+          [| apply Qle_of_Qeq; ring].
+        apply Qplus_le_compat; [apply Qle_refl |].
+        apply Qmult_le_compat_nonneg;
+          [split; [exact HF | apply Qle_refl]
+          | split; [apply qsum_nonneg; intros x _; apply Hf | exact HE]].
+  Qed.
+
+  (** Every list of exactly [m] elements of [E], and those of fewer than
+      [M]: [envps_len] and [envps_upto] for any element type, and
+      duplicate-free whenever [E] is. *)
+  Fixpoint lists_len (E : list A) (m : nat) : list (list A) :=
+    match m with
+    | O => [[]]
+    | S m' => List.flat_map (fun x => List.map (cons x) (lists_len E m')) E
+    end.
+
+  Fixpoint lists_upto (E : list A) (M : nat) : list (list A) :=
+    match M with
+    | O => []
+    | S M' => lists_len E M' ++ lists_upto E M'
+    end.
+
+  Lemma lists_len_In_length : forall E m l,
+    List.In l (lists_len E m) -> length l = m.
+  Proof.
+    intros E m. induction m as [| m IH]; intros l Hl.
+    - destruct Hl as [Heq | []]. rewrite <- Heq. reflexivity.
+    - cbn [lists_len] in Hl. apply List.in_flat_map in Hl as [x [_ Hl]].
+      apply List.in_map_iff in Hl as [l' [Heq Hin]].
+      rewrite <- Heq. cbn [length]. rewrite (IH l' Hin). reflexivity.
+  Qed.
+
+  Lemma lists_len_nodup : forall E m, List.NoDup E -> List.NoDup (lists_len E m).
+  Proof.
+    intros E m HE. induction m as [| m IH].
+    - cbn [lists_len]. apply List.NoDup_cons; [intros [] | apply List.NoDup_nil].
+    - cbn [lists_len]. apply NoDup_flat_map; [exact HE | |].
+      + intros x _. apply NoDup_map_inj; [| exact IH].
+        intros a b _ _ Heq. exact (f_equal (@List.tl A) Heq).
+      + intros x y l _ _ H1 H2.
+        apply List.in_map_iff in H1 as [l1 [H1 _]].
+        apply List.in_map_iff in H2 as [l2 [H2 _]].
+        rewrite <- H1 in H2.
+        exact (eq_sym (f_equal (List.hd x) H2)).
+  Qed.
+
+  Lemma lists_upto_In_length : forall E M l,
+    List.In l (lists_upto E M) -> (length l < M)%nat.
+  Proof.
+    intros E M. induction M as [| M IH]; intros l Hl; [destruct Hl |].
+    cbn [lists_upto] in Hl. apply List.in_app_or in Hl as [Hl | Hl].
+    - rewrite (lists_len_In_length E M l Hl). lia.
+    - apply IH in Hl. lia.
+  Qed.
+
+  Lemma lists_upto_nodup : forall E M, List.NoDup E -> List.NoDup (lists_upto E M).
+  Proof.
+    intros E M HE. induction M as [| M IH]; [apply List.NoDup_nil |].
+    cbn [lists_upto]. apply List.NoDup_app.
+    - apply lists_len_nodup. exact HE.
+    - exact IH.
+    - intros l Hin1 Hin2. apply lists_upto_In_length in Hin2.
+      rewrite (lists_len_In_length E M l Hin1) in Hin2. lia.
+  Qed.
+
+  Lemma qsum_list_product_lists_len : forall f E m,
+    (qsum (list_product f) (lists_len E m) == Qpow (qsum f E) m)%Q.
+  Proof.
+    intros f E m. induction m as [| m IH].
+    - cbn [lists_len]. rewrite qsum_cons, (@qsum_nil _ (list_product f)).
+      cbn [list_product]. rewrite Qpow_0. ring.
+    - cbn [lists_len]. rewrite qsum_flat_map. cbv beta.
+      rewrite (qsum_ext (fun x => qsum (list_product f) (List.map (cons x) (lists_len E m)))
+                 (fun x => (Qpow (qsum f E) m * f x)%Q) E).
+      + rewrite (qsum_scale (Qpow (qsum f E) m) f E), Qpow_succ. ring.
+      + intros x _. rewrite qsum_map.
+        rewrite (qsum_ext (fun l => list_product f (x :: l))
+                   (fun l => (f x * list_product f l)%Q) (lists_len E m))
+          by (intros l _; reflexivity).
+        rewrite (qsum_scale (f x) (list_product f) (lists_len E m)), IH. ring.
+  Qed.
+
+  Lemma qsum_list_point_lists_len : forall u f E m,
+    (qsum (list_point u f) (lists_len E m)
+       == u * Qpow (1 - u) m * Qpow (qsum f E) m)%Q.
+  Proof.
+    intros u f E m.
+    rewrite (qsum_ext (list_point u f)
+               (fun l => ((u * Qpow (1 - u) m) * list_product f l)%Q) (lists_len E m)).
+    - rewrite (qsum_scale (u * Qpow (1 - u) m) (list_product f) (lists_len E m)).
+      rewrite qsum_list_product_lists_len. ring.
+    - intros l Hl. unfold list_point. rewrite list_factor_closed_form.
+      rewrite (lists_len_In_length E m l Hl). ring.
+  Qed.
+
+  (** The witness's exact sum: [envp_prefix_sum] at the element law's
+      partial mass. *)
+  Lemma qsum_list_point_lists_upto : forall u f E M,
+    (qsum (list_point u f) (lists_upto E M) == envp_prefix_sum u (qsum f E) M)%Q.
+  Proof.
+    intros u f E M. induction M as [| M IH]; [reflexivity |].
+    cbn [lists_upto envp_prefix_sum].
+    rewrite qsum_app, IH, qsum_list_point_lists_len. reflexivity.
+  Qed.
+End ListLaw.
+
+(** A partial sum of the list law depends on the element mass only up to
+    [Qeq]. *)
+Lemma envp_prefix_sum_Qeq : forall r G1 G2 M,
+  (G1 == G2)%Q -> (envp_prefix_sum r G1 M == envp_prefix_sum r G2 M)%Q.
+Proof.
+  intros r G1 G2 M H. induction M as [| M IH]; [reflexivity |].
+  cbn [envp_prefix_sum]. rewrite IH, (Qpow_Qeq G1 G2 M H). reflexivity.
+Qed.
+
+(** A sum over a product enumeration is the product of the sums. *)
+Lemma qsum_pairs : forall {A B C : Type} (f : A -> Q) (g : B -> Q) (h : A -> B -> C)
+    (wc : C -> Q) (la : list A) (lb : list B),
+  (forall a b, (wc (h a b) == f a * g b)%Q) ->
+  (qsum wc (List.flat_map (fun a => List.map (h a) lb) la)
+     == qsum f la * qsum g lb)%Q.
+Proof.
+  intros A B C f g h wc la lb Hw. rewrite qsum_flat_map. cbv beta.
+  rewrite (qsum_ext (fun a => qsum wc (List.map (h a) lb))
+             (fun a => (qsum g lb * f a)%Q) la).
+  - rewrite (qsum_scale (qsum g lb) f la). ring.
+  - intros a _. rewrite qsum_map.
+    rewrite (qsum_ext (fun b => wc (h a b)) (fun b => (f a * g b)%Q) lb)
+      by (intros b _; apply Hw).
+    rewrite (qsum_scale (f a) g lb). ring.
+Qed.
+
+(* -------------------------------------------------------------------------
+   The element laws of the image's three tables
+   ------------------------------------------------------------------------- *)
+
+(** A COUNT: the memoryless law on [nat], [w * (1 - w) ^ n].  It weighs
+    a link count and a count of names outside the image. *)
+Definition nat_point (w : Q) (n : nat) : Q := (w * Qpow (1 - w) n)%Q.
+
+Lemma nat_point_nonneg : forall w n,
+  (0 <= w)%Q -> (w <= 1)%Q -> (0 <= nat_point w n)%Q.
+Proof.
+  intros w n Hw0 Hw1. unfold nat_point. apply Qmult_le_0_compat; [exact Hw0 |].
+  apply Qpow_nonneg. apply (Qle_minus_iff w 1). exact Hw1.
+Qed.
+
+Lemma nat_point_pos : forall w n,
+  (0 < w)%Q -> (w < 1)%Q -> (0 < nat_point w n)%Q.
+Proof.
+  intros w n Hw0 Hw1. unfold nat_point. apply Qmult_lt_0_compat; [exact Hw0 |].
+  apply Qpow_pos. apply (Qlt_minus_iff w 1). exact Hw1.
+Qed.
+
+Lemma qsum_nat_inputs : forall w L,
+  (qsum (nat_point w) (List.seq 0 L) == 1 - Qpow (1 - w) L)%Q.
+Proof.
+  intros w L. induction L as [| L IH].
+  - cbn [List.seq]. rewrite qsum_nil, Qpow_0. ring.
+  - rewrite List.seq_S, qsum_app, IH, qsum_cons, qsum_nil.
+    unfold nat_point. cbn [Nat.add]. rewrite Qpow_succ. ring.
+Qed.
+
+(** AN INODE NUMBER: [Fs.ino] is [Z], and the law is the two-sided
+    memoryless one, [w] at [0] and half of [nat_point w |i|] at each of
+    [i] and [-i], so the numbers of absolute value under [L] collect
+    exactly what [nat_point] collects under [L]. *)
+Definition ino_point (w : Q) (i : Fs.ino) : Q :=
+  if Z.eqb i 0 then w else ((1 # 2) * nat_point w (Z.to_nat (Z.abs i)))%Q.
+
+Fixpoint ino_inputs (L : nat) : list Fs.ino :=
+  match L with
+  | O => []
+  | S L' => ino_inputs L' ++ (match L' with
+                              | O => [0%Z]
+                              | S _ => [Z.of_nat L'; (- Z.of_nat L')%Z]
+                              end)
   end.
 
-Fixpoint fs_factor (u v w : Q) (fs : Fs.Fs) : Q :=
-  match fs with
-  | [] => 1%Q
-  | (pth, d) :: fs' =>
-      ((1 - u) * geo_point v (length pth) * geo_point w (length d)
-       * fs_factor u v w fs')%Q
+Lemma ino_inputs_S : forall L,
+  ino_inputs (S L)
+  = ino_inputs L ++ (match L with
+                     | O => [0%Z]
+                     | S _ => [Z.of_nat L; (- Z.of_nat L)%Z]
+                     end).
+Proof. reflexivity. Qed.
+
+Lemma ino_inputs_bound : forall L i,
+  List.In i (ino_inputs L) -> (Z.abs i < Z.of_nat L)%Z.
+Proof.
+  induction L as [| L IH]; intros i Hi; [destruct Hi |].
+  rewrite ino_inputs_S in Hi. apply List.in_app_or in Hi as [Hi | Hi].
+  - apply IH in Hi. lia.
+  - destruct L as [| L'].
+    + destruct Hi as [<- | []]. lia.
+    + destruct Hi as [<- | [<- | []]]; lia.
+Qed.
+
+Lemma ino_inputs_complete : forall L i,
+  (Z.abs i < Z.of_nat L)%Z -> List.In i (ino_inputs L).
+Proof.
+  induction L as [| L IH]; intros i Hi; [lia |].
+  rewrite ino_inputs_S. apply List.in_or_app.
+  destruct (Z_lt_dec (Z.abs i) (Z.of_nat L)) as [Hlt | Hge].
+  - left. apply IH. exact Hlt.
+  - right. destruct L as [| L'].
+    + left. lia.
+    + destruct (Z_le_dec 0 i) as [Hpos | Hneg].
+      * left. lia.
+      * right. left. lia.
+Qed.
+
+Lemma ino_inputs_nodup : forall L, List.NoDup (ino_inputs L).
+Proof.
+  induction L as [| L IH]; [apply List.NoDup_nil |].
+  rewrite ino_inputs_S. apply List.NoDup_app; [exact IH | |].
+  - destruct L as [| L'].
+    + apply List.NoDup_cons; [intros [] | apply List.NoDup_nil].
+    + apply List.NoDup_cons;
+        [| apply List.NoDup_cons; [intros [] | apply List.NoDup_nil]].
+      intros [H | []]. lia.
+  - intros i Hin1 Hin2. apply ino_inputs_bound in Hin1.
+    destruct L as [| L']; [destruct Hin2 as [<- | []]; lia |].
+    destruct Hin2 as [<- | [<- | []]]; lia.
+Qed.
+
+Lemma ino_point_nonneg : forall w i,
+  (0 <= w)%Q -> (w <= 1)%Q -> (0 <= ino_point w i)%Q.
+Proof.
+  intros w i Hw0 Hw1. unfold ino_point. destruct (Z.eqb i 0); [exact Hw0 |].
+  apply Qmult_le_0_compat; [q_lit | apply nat_point_nonneg; assumption].
+Qed.
+
+Lemma ino_point_pos : forall w i,
+  (0 < w)%Q -> (w < 1)%Q -> (0 < ino_point w i)%Q.
+Proof.
+  intros w i Hw0 Hw1. unfold ino_point. destruct (Z.eqb i 0); [exact Hw0 |].
+  apply Qmult_lt_0_compat; [reflexivity | apply nat_point_pos; assumption].
+Qed.
+
+Lemma ino_point_of_nat : forall w n,
+  ino_point w (Z.of_nat (S n)) = ((1 # 2) * nat_point w (S n))%Q.
+Proof.
+  intros w n. unfold ino_point.
+  replace (Z.eqb (Z.of_nat (S n)) 0) with false by (symmetry; apply Z.eqb_neq; lia).
+  replace (Z.to_nat (Z.abs (Z.of_nat (S n)))) with (S n) by lia.
+  reflexivity.
+Qed.
+
+Lemma ino_point_of_neg_nat : forall w n,
+  ino_point w (- Z.of_nat (S n))%Z = ((1 # 2) * nat_point w (S n))%Q.
+Proof.
+  intros w n. unfold ino_point.
+  replace (Z.eqb (- Z.of_nat (S n)) 0) with false by (symmetry; apply Z.eqb_neq; lia).
+  replace (Z.to_nat (Z.abs (- Z.of_nat (S n)))) with (S n) by lia.
+  reflexivity.
+Qed.
+
+Lemma qsum_ino_inputs : forall w L,
+  (qsum (ino_point w) (ino_inputs L) == 1 - Qpow (1 - w) L)%Q.
+Proof.
+  intros w L. induction L as [| L IH].
+  - cbn [ino_inputs]. rewrite qsum_nil, Qpow_0. ring.
+  - rewrite ino_inputs_S, qsum_app, IH, Qpow_succ.
+    destruct L as [| L']; cbv iota beta.
+    + rewrite qsum_cons, qsum_nil. change (ino_point w 0%Z) with w.
+      rewrite Qpow_0. ring.
+    + rewrite !qsum_cons, qsum_nil, ino_point_of_nat, ino_point_of_neg_nat.
+      unfold nat_point. ring.
+Qed.
+
+(** WHAT ONE NAME'S ENTRY WEIGHS.  The law picks the kind first and then
+    what the kind carries: a regular file weighs half its INODE NUMBER's
+    weight [ino_point w i] (its bytes are the inode table's and are
+    weighed there), a folder weighs [1 # 4], each of the two device kinds
+    [1 # 16], and a symbolic link an eighth of its body's byte-geometric
+    weight [geo_point w (length b)].  Over every entry the weights sum to
+    [1] in the limit; [entry_mass] is what the entries whose carried
+    datum is shorter than [Lc] collect ([entry_len]: the inode number's
+    absolute value, the body's length), and [entry_inputs] enumerates
+    them. *)
+Definition entry_point (w : Q) (e : Fs.Entry) : Q :=
+  match e with
+  | Fs.EFile i => ((1 # 2) * ino_point w i)%Q
+  | Fs.EDir => 1 # 4
+  | Fs.EDev _ => 1 # 16
+  | Fs.ELink b => ((1 # 8) * geo_point w (length b))%Q
   end.
 
-Definition fs_point (u v w : Q) (fs : Fs.Fs) : Q := (u * fs_factor u v w fs)%Q.
+Definition entry_len (e : Fs.Entry) : nat :=
+  match e with
+  | Fs.EFile i => Z.to_nat (Z.abs i)
+  | Fs.ELink b => length b
+  | Fs.EDir | Fs.EDev _ => 0%nat
+  end.
+
+Definition entry_inputs (Lc : nat) : list Fs.Entry :=
+  Fs.EDir :: Fs.EDev Fs.DevNull :: Fs.EDev Fs.DevUrandom
+  :: (List.map Fs.EFile (ino_inputs Lc) ++ List.map Fs.ELink (short_inputs Lc)).
+
+Definition entry_mass (w : Q) (Lc : nat) : Q := (1 - (5 # 8) * Qpow (1 - w) Lc)%Q.
+
+Lemma entry_point_nonneg : forall w e,
+  (0 <= w)%Q -> (w <= 1)%Q -> (0 <= entry_point w e)%Q.
+Proof.
+  intros w e Hw0 Hw1. destruct e as [i | | dk | b]; cbn [entry_point].
+  - apply Qmult_le_0_compat; [q_lit | apply ino_point_nonneg; assumption].
+  - q_lit.
+  - q_lit.
+  - apply Qmult_le_0_compat; [q_lit | apply geo_point_nonneg; assumption].
+Qed.
+
+Lemma entry_point_pos : forall w e,
+  (0 < w)%Q -> (w < 1)%Q -> (0 < entry_point w e)%Q.
+Proof.
+  intros w e Hw0 Hw1. destruct e as [i | | dk | b]; cbn [entry_point].
+  - apply Qmult_lt_0_compat; [reflexivity | apply ino_point_pos; assumption].
+  - reflexivity.
+  - reflexivity.
+  - apply Qmult_lt_0_compat; [reflexivity | apply geo_point_pos; assumption].
+Qed.
+
+Lemma entry_inputs_complete : forall Lc e,
+  (entry_len e < Lc)%nat -> List.In e (entry_inputs Lc).
+Proof.
+  intros Lc e Hlen. unfold entry_inputs.
+  destruct e as [i | | [|] | b]; cbn [entry_len] in Hlen.
+  - right; right; right. apply List.in_or_app. left. apply List.in_map.
+    apply ino_inputs_complete. lia.
+  - left. reflexivity.
+  - right; left. reflexivity.
+  - right; right; left. reflexivity.
+  - right; right; right. apply List.in_or_app. right. apply List.in_map.
+    apply short_inputs_complete. exact Hlen.
+Qed.
+
+Lemma entry_inputs_nodup : forall Lc, List.NoDup (entry_inputs Lc).
+Proof.
+  intros Lc. unfold entry_inputs.
+  assert (Hm : List.NoDup (List.map Fs.EFile (ino_inputs Lc)
+                           ++ List.map Fs.ELink (short_inputs Lc))).
+  { apply List.NoDup_app.
+    - apply NoDup_map_inj; [| apply ino_inputs_nodup].
+      intros x y _ _ H. injection H. auto.
+    - apply NoDup_map_inj; [| apply short_inputs_nodup].
+      intros x y _ _ H. injection H. auto.
+    - intros e H1 H2. apply List.in_map_iff in H1 as [x [Hx _]].
+      apply List.in_map_iff in H2 as [y [Hy _]]. subst e. discriminate Hy. }
+  repeat apply List.NoDup_cons; try exact Hm;
+    cbn [List.In]; intros H;
+    repeat (destruct H as [H | H]; [discriminate H |]);
+    apply List.in_app_or in H as [H | H];
+    apply List.in_map_iff in H as [x [Hx _]]; discriminate Hx.
+Qed.
+
+Lemma qsum_entry_inputs : forall w Lc,
+  (qsum (entry_point w) (entry_inputs Lc) == entry_mass w Lc)%Q.
+Proof.
+  intros w Lc. unfold entry_inputs, entry_mass.
+  rewrite !qsum_cons, qsum_app, !qsum_map.
+  rewrite (qsum_ext (fun x => entry_point w (Fs.EFile x))
+             (fun i => ((1 # 2) * ino_point w i)%Q) (ino_inputs Lc))
+    by (intros i _; reflexivity).
+  rewrite (qsum_ext (fun x => entry_point w (Fs.ELink x))
+             (fun s => ((1 # 8) * geo_point w (length s))%Q) (short_inputs Lc))
+    by (intros s _; reflexivity).
+  rewrite (qsum_scale (1 # 2) (ino_point w) (ino_inputs Lc)).
+  rewrite (qsum_scale (1 # 8) (fun s => geo_point w (length s)) (short_inputs Lc)).
+  rewrite qsum_ino_inputs, short_inputs_sum, geo_prefix_sum_closed.
+  cbn [entry_point]. ring.
+Qed.
+
+Lemma entry_mass_unit : forall w Lc,
+  (0 <= w)%Q -> (w <= 1)%Q -> (0 <= entry_mass w Lc)%Q /\ (entry_mass w Lc <= 1)%Q.
+Proof.
+  intros w Lc Hw0 Hw1. destruct (geo_tail_unit w Lc Hw0 Hw1) as [Ht0 Ht1].
+  unfold entry_mass. split.
+  - apply (Qle_trans _ (1 - (5 # 8) * 1)%Q); [q_lit |].
+    apply Qplus_le_compat; [apply Qle_refl |]. apply Qopp_le_compat.
+    apply Qmult_le_compat_l_nn; [exact Ht1 | q_lit].
+  - apply (Qle_trans _ (1 - 0)%Q); [| apply Qle_of_Qeq; ring].
+    apply Qplus_le_compat; [apply Qle_refl |]. apply Qopp_le_compat.
+    apply Qmult_le_0_compat; [q_lit | exact Ht0].
+Qed.
+
+(** ONE NAME: its key's bytes at the path rate [v] and its entry. *)
+Definition name_point (v w : Q) (x : Fs.path * Fs.Entry) : Q :=
+  (geo_point v (length (fst x)) * entry_point w (snd x))%Q.
+
+Definition name_inputs (Lp Lc : nat) : list (Fs.path * Fs.Entry) :=
+  List.flat_map (fun pth => List.map (pair pth) (entry_inputs Lc)) (short_inputs Lp).
+
+Definition name_mass (v w : Q) (Lp Lc : nat) : Q :=
+  ((1 - Qpow (1 - v) Lp) * entry_mass w Lc)%Q.
+
+(** ONE INODE ROW: its number, its bytes and its count of names outside
+    the image. *)
+Definition row_point (w : Q) (x : Fs.ino * Fs.Inode) : Q :=
+  (ino_point w (fst x) * geo_point w (length (Fs.ino_data (snd x)))
+   * nat_point w (Fs.ino_outside (snd x)))%Q.
+
+Definition row_len (x : Fs.ino * Fs.Inode) : nat :=
+  Nat.max (Z.to_nat (Z.abs (fst x)))
+    (Nat.max (length (Fs.ino_data (snd x))) (Fs.ino_outside (snd x))).
+
+Definition row_inputs (Lc : nat) : list (Fs.ino * Fs.Inode) :=
+  List.flat_map
+    (fun i => List.map (fun dn => (i, Fs.mkInode (fst dn) (snd dn)))
+                (List.flat_map (fun d => List.map (pair d) (List.seq 0 Lc))
+                   (short_inputs Lc)))
+    (ino_inputs Lc).
+
+Definition row_mass (w : Q) (Lc : nat) : Q :=
+  ((1 - Qpow (1 - w) Lc) * ((1 - Qpow (1 - w) Lc) * (1 - Qpow (1 - w) Lc)))%Q.
+
+(** ONE FOLDER ROW: its key and its two counts. *)
+Definition dir_point (v w : Q) (x : Fs.path * Fs.DirLinks) : Q :=
+  (geo_point v (length (fst x)) * nat_point w (Fs.dl_counting (snd x))
+   * nat_point w (Fs.dl_fixed (snd x)))%Q.
+
+Definition dir_len (x : Fs.path * Fs.DirLinks) : nat :=
+  Nat.max (Fs.dl_counting (snd x)) (Fs.dl_fixed (snd x)).
+
+Definition dir_inputs (Lp Lc : nat) : list (Fs.path * Fs.DirLinks) :=
+  List.flat_map
+    (fun k => List.map (fun ab => (k, Fs.mkDirLinks (fst ab) (snd ab)))
+                (List.flat_map (fun a => List.map (pair a) (List.seq 0 Lc))
+                   (List.seq 0 Lc)))
+    (short_inputs Lp).
+
+Definition dir_mass (v w : Q) (Lp Lc : nat) : Q :=
+  ((1 - Qpow (1 - v) Lp) * ((1 - Qpow (1 - w) Lc) * (1 - Qpow (1 - w) Lc)))%Q.
+
+Lemma name_point_nonneg : forall v w,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  forall x, (0 <= name_point v w x)%Q.
+Proof.
+  intros v w Hv0 Hv1 Hw0 Hw1 x. unfold name_point.
+  apply Qmult_le_0_compat; [apply geo_point_nonneg | apply entry_point_nonneg]; assumption.
+Qed.
+
+Lemma row_point_nonneg : forall w,
+  (0 <= w)%Q -> (w <= 1)%Q -> forall x, (0 <= row_point w x)%Q.
+Proof.
+  intros w Hw0 Hw1 x. unfold row_point.
+  apply Qmult_le_0_compat; [apply Qmult_le_0_compat |].
+  - apply ino_point_nonneg; assumption.
+  - apply geo_point_nonneg; assumption.
+  - apply nat_point_nonneg; assumption.
+Qed.
+
+Lemma dir_point_nonneg : forall v w,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  forall x, (0 <= dir_point v w x)%Q.
+Proof.
+  intros v w Hv0 Hv1 Hw0 Hw1 x. unfold dir_point.
+  apply Qmult_le_0_compat; [apply Qmult_le_0_compat |].
+  - apply geo_point_nonneg; assumption.
+  - apply nat_point_nonneg; assumption.
+  - apply nat_point_nonneg; assumption.
+Qed.
+
+Lemma name_point_pos : forall v w x,
+  (0 < v)%Q -> (v < 1)%Q -> (0 < w)%Q -> (w < 1)%Q -> (0 < name_point v w x)%Q.
+Proof.
+  intros v w x Hv0 Hv1 Hw0 Hw1. unfold name_point.
+  apply Qmult_lt_0_compat; [apply geo_point_pos | apply entry_point_pos]; assumption.
+Qed.
+
+Lemma row_point_pos : forall w x,
+  (0 < w)%Q -> (w < 1)%Q -> (0 < row_point w x)%Q.
+Proof.
+  intros w x Hw0 Hw1. unfold row_point.
+  apply Qmult_lt_0_compat; [apply Qmult_lt_0_compat |].
+  - apply ino_point_pos; assumption.
+  - apply geo_point_pos; assumption.
+  - apply nat_point_pos; assumption.
+Qed.
+
+Lemma dir_point_pos : forall v w x,
+  (0 < v)%Q -> (v < 1)%Q -> (0 < w)%Q -> (w < 1)%Q -> (0 < dir_point v w x)%Q.
+Proof.
+  intros v w x Hv0 Hv1 Hw0 Hw1. unfold dir_point.
+  apply Qmult_lt_0_compat; [apply Qmult_lt_0_compat |].
+  - apply geo_point_pos; assumption.
+  - apply nat_point_pos; assumption.
+  - apply nat_point_pos; assumption.
+Qed.
+
+Lemma qsum_name_inputs : forall v w Lp Lc,
+  (qsum (name_point v w) (name_inputs Lp Lc) == name_mass v w Lp Lc)%Q.
+Proof.
+  intros v w Lp Lc. unfold name_inputs, name_mass.
+  rewrite (qsum_pairs (fun p : Fs.path => geo_point v (length p)) (entry_point w)
+             pair (name_point v w) (short_inputs Lp) (entry_inputs Lc))
+    by (intros a b; reflexivity).
+  rewrite short_inputs_sum, geo_prefix_sum_closed, qsum_entry_inputs. reflexivity.
+Qed.
+
+Lemma qsum_row_inputs : forall w Lc,
+  (qsum (row_point w) (row_inputs Lc) == row_mass w Lc)%Q.
+Proof.
+  intros w Lc. unfold row_inputs, row_mass.
+  apply (Qeq_trans _ (qsum (ino_point w) (ino_inputs Lc)
+                      * qsum (fun dn : list byte * nat =>
+                                (geo_point w (length (fst dn)) * nat_point w (snd dn))%Q)
+                          (List.flat_map (fun d => List.map (pair d) (List.seq 0 Lc))
+                             (short_inputs Lc)))%Q).
+  - apply (qsum_pairs (ino_point w)
+             (fun dn : list byte * nat =>
+                (geo_point w (length (fst dn)) * nat_point w (snd dn))%Q)
+             (fun i dn => (i, Fs.mkInode (fst dn) (snd dn))) (row_point w)).
+    intros i dn. unfold row_point. cbn [fst snd Fs.ino_data Fs.ino_outside]. ring.
+  - rewrite (qsum_pairs (fun d : list byte => geo_point w (length d)) (nat_point w) pair
+               (fun dn : list byte * nat =>
+                  (geo_point w (length (fst dn)) * nat_point w (snd dn))%Q))
+      by (intros d n; reflexivity).
+    rewrite qsum_ino_inputs, short_inputs_sum, geo_prefix_sum_closed, qsum_nat_inputs.
+    reflexivity.
+Qed.
+
+Lemma qsum_dir_inputs : forall v w Lp Lc,
+  (qsum (dir_point v w) (dir_inputs Lp Lc) == dir_mass v w Lp Lc)%Q.
+Proof.
+  intros v w Lp Lc. unfold dir_inputs, dir_mass.
+  apply (Qeq_trans _ (qsum (fun k : Fs.path => geo_point v (length k)) (short_inputs Lp)
+                      * qsum (fun ab : nat * nat =>
+                                (nat_point w (fst ab) * nat_point w (snd ab))%Q)
+                          (List.flat_map (fun a => List.map (pair a) (List.seq 0 Lc))
+                             (List.seq 0 Lc)))%Q).
+  - apply (qsum_pairs (fun k : Fs.path => geo_point v (length k))
+             (fun ab : nat * nat => (nat_point w (fst ab) * nat_point w (snd ab))%Q)
+             (fun k ab => (k, Fs.mkDirLinks (fst ab) (snd ab))) (dir_point v w)).
+    intros k ab. unfold dir_point. cbn [fst snd Fs.dl_counting Fs.dl_fixed]. ring.
+  - rewrite (qsum_pairs (nat_point w) (nat_point w) pair
+               (fun ab : nat * nat => (nat_point w (fst ab) * nat_point w (snd ab))%Q))
+      by (intros a b; reflexivity).
+    rewrite short_inputs_sum, geo_prefix_sum_closed, !qsum_nat_inputs.
+    reflexivity.
+Qed.
+
+Lemma name_inputs_complete : forall Lp Lc x,
+  (length (fst x) < Lp)%nat -> (entry_len (snd x) < Lc)%nat ->
+  List.In x (name_inputs Lp Lc).
+Proof.
+  intros Lp Lc [p e] Hp He. cbn [fst snd] in Hp, He. unfold name_inputs.
+  apply List.in_flat_map. exists p. split; [apply short_inputs_complete; exact Hp |].
+  apply List.in_map. apply entry_inputs_complete. exact He.
+Qed.
+
+Lemma row_inputs_complete : forall Lc x,
+  (row_len x < Lc)%nat -> List.In x (row_inputs Lc).
+Proof.
+  intros Lc [i [d o]] Hlen. unfold row_len in Hlen.
+  cbn [fst snd Fs.ino_data Fs.ino_outside] in Hlen.
+  unfold row_inputs. apply List.in_flat_map. exists i. split.
+  - apply ino_inputs_complete. lia.
+  - apply List.in_map_iff. exists (d, o). split; [reflexivity |].
+    apply List.in_flat_map. exists d. split.
+    + apply short_inputs_complete. lia.
+    + apply List.in_map. apply List.in_seq. lia.
+Qed.
+
+Lemma dir_inputs_complete : forall Lp Lc x,
+  (length (fst x) < Lp)%nat -> (dir_len x < Lc)%nat ->
+  List.In x (dir_inputs Lp Lc).
+Proof.
+  intros Lp Lc [k [a b]] Hk Hlen. unfold dir_len in Hlen.
+  cbn [fst snd Fs.dl_counting Fs.dl_fixed] in Hk, Hlen.
+  unfold dir_inputs. apply List.in_flat_map. exists k. split.
+  - apply short_inputs_complete. exact Hk.
+  - apply List.in_map_iff. exists (a, b). split; [reflexivity |].
+    apply List.in_flat_map. exists a. split.
+    + apply List.in_seq. lia.
+    + apply List.in_map. apply List.in_seq. lia.
+Qed.
+
+Lemma name_inputs_nodup : forall Lp Lc, List.NoDup (name_inputs Lp Lc).
+Proof.
+  intros Lp Lc. unfold name_inputs. apply NoDup_flat_map.
+  - apply short_inputs_nodup.
+  - intros p _. apply NoDup_map_inj; [| apply entry_inputs_nodup].
+    intros a b _ _ H. exact (f_equal snd H).
+  - intros p q x _ _ H1 H2. apply List.in_map_iff in H1 as [a [Ha _]].
+    apply List.in_map_iff in H2 as [b [Hb _]]. rewrite <- Ha in Hb.
+    exact (eq_sym (f_equal fst Hb)).
+Qed.
+
+(** The pairs of [l1] and [l2], in [flat_map] order, repeat nothing when
+    neither list does. *)
+Lemma NoDup_pairs : forall {A B : Type} (l1 : list A) (l2 : list B),
+  List.NoDup l1 -> List.NoDup l2 ->
+  List.NoDup (List.flat_map (fun a => List.map (pair a) l2) l1).
+Proof.
+  intros A B l1 l2 H1 H2. apply NoDup_flat_map; [exact H1 | |].
+  - intros a _. apply NoDup_map_inj; [| exact H2].
+    intros x y _ _ H. exact (f_equal snd H).
+  - intros a b x _ _ Ha Hb. apply List.in_map_iff in Ha as [y [Hy _]].
+    apply List.in_map_iff in Hb as [z [Hz _]]. rewrite <- Hy in Hz.
+    exact (eq_sym (f_equal fst Hz)).
+Qed.
+
+Lemma row_inputs_nodup : forall Lc, List.NoDup (row_inputs Lc).
+Proof.
+  intros Lc. unfold row_inputs. apply NoDup_flat_map.
+  - apply ino_inputs_nodup.
+  - intros i _. apply NoDup_map_inj.
+    + intros [d1 o1] [d2 o2] _ _ H.
+      exact (f_equal (fun x : Fs.ino * Fs.Inode =>
+                        (Fs.ino_data (snd x), Fs.ino_outside (snd x))) H).
+    + apply NoDup_pairs; [apply short_inputs_nodup | apply List.seq_NoDup].
+  - intros i j x _ _ H1 H2. apply List.in_map_iff in H1 as [a [Ha _]].
+    apply List.in_map_iff in H2 as [b [Hb _]]. rewrite <- Ha in Hb.
+    exact (eq_sym (f_equal fst Hb)).
+Qed.
+
+Lemma dir_inputs_nodup : forall Lp Lc, List.NoDup (dir_inputs Lp Lc).
+Proof.
+  intros Lp Lc. unfold dir_inputs. apply NoDup_flat_map.
+  - apply short_inputs_nodup.
+  - intros k _. apply NoDup_map_inj.
+    + intros [a1 b1] [a2 b2] _ _ H.
+      exact (f_equal (fun x : Fs.path * Fs.DirLinks =>
+                        (Fs.dl_counting (snd x), Fs.dl_fixed (snd x))) H).
+    + apply NoDup_pairs; apply List.seq_NoDup.
+  - intros k q x _ _ H1 H2. apply List.in_map_iff in H1 as [a [Ha _]].
+    apply List.in_map_iff in H2 as [b [Hb _]]. rewrite <- Ha in Hb.
+    exact (eq_sym (f_equal fst Hb)).
+Qed.
+
+Lemma name_mass_unit : forall v w Lp Lc,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (0 <= name_mass v w Lp Lc)%Q /\ (name_mass v w Lp Lc <= 1)%Q.
+Proof.
+  intros v w Lp Lc Hv0 Hv1 Hw0 Hw1. unfold name_mass.
+  destruct (geo_head_unit v Lp Hv0 Hv1) as [H0 H1].
+  destruct (entry_mass_unit w Lc Hw0 Hw1) as [E0 E1].
+  apply Qmult_unit; assumption.
+Qed.
+
+Lemma row_mass_unit : forall w Lc,
+  (0 <= w)%Q -> (w <= 1)%Q ->
+  (0 <= row_mass w Lc)%Q /\ (row_mass w Lc <= 1)%Q.
+Proof.
+  intros w Lc Hw0 Hw1. unfold row_mass.
+  destruct (geo_head_unit w Lc Hw0 Hw1) as [H0 H1].
+  destruct (Qmult_unit _ _ H0 H1 H0 H1) as [P0 P1].
+  apply Qmult_unit; assumption.
+Qed.
+
+Lemma dir_mass_unit : forall v w Lp Lc,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (0 <= dir_mass v w Lp Lc)%Q /\ (dir_mass v w Lp Lc <= 1)%Q.
+Proof.
+  intros v w Lp Lc Hv0 Hv1 Hw0 Hw1. unfold dir_mass.
+  destruct (geo_head_unit v Lp Hv0 Hv1) as [V0 V1].
+  destruct (geo_head_unit w Lc Hw0 Hw1) as [H0 H1].
+  destruct (Qmult_unit _ _ H0 H1 H0 H1) as [P0 P1].
+  apply Qmult_unit; assumption.
+Qed.
+
+(** THE FILE-SYSTEM LAW: the list law on each of the image's three
+    tables, the names, the inode rows and the folder rows, with one
+    entry-count rate [u], one key-byte rate [v] and one rate [w] for
+    what a row or an entry carries.  Every image is a triple of lists and
+    every triple of lists is an image, so the law weighs exactly the
+    images, each strictly positively ([fs_point_pos]).  [fs_factor] is
+    the continuation factor of an image the enumeration extends table by
+    table, and the closed forms are lemmas, not rival definitions. *)
+Definition fs_factor (u v w : Q) (fs : Fs.Fs) : Q :=
+  (list_factor u (name_point v w) (Fs.fs_tree fs)
+   * list_factor u (row_point w) (Fs.fs_inodes fs)
+   * list_factor u (dir_point v w) (Fs.fs_dirs fs))%Q.
+
+Definition fs_point (u v w : Q) (fs : Fs.Fs) : Q :=
+  (list_point u (name_point v w) (Fs.fs_tree fs)
+   * list_point u (row_point w) (Fs.fs_inodes fs)
+   * list_point u (dir_point v w) (Fs.fs_dirs fs))%Q.
+
+(** How many rows the three tables hold together, and the product of
+    their element weights. *)
+Definition fs_count (fs : Fs.Fs) : nat :=
+  (length (Fs.fs_tree fs) + length (Fs.fs_inodes fs) + length (Fs.fs_dirs fs))%nat.
+
+Definition fs_entries_product (v w : Q) (fs : Fs.Fs) : Q :=
+  (list_product (name_point v w) (Fs.fs_tree fs)
+   * list_product (row_point w) (Fs.fs_inodes fs)
+   * list_product (dir_point v w) (Fs.fs_dirs fs))%Q.
 
 Lemma fs_factor_closed_form : forall u v w fs,
-  (fs_factor u v w fs
-     == Qpow (1 - u) (length fs) * fs_entries_product v w fs)%Q.
+  (fs_factor u v w fs == Qpow (1 - u) (fs_count fs) * fs_entries_product v w fs)%Q.
 Proof.
-  intros u v w fs. induction fs as [| [pth d] fs IH].
-  - cbn [fs_factor fs_entries_product length]. rewrite Qpow_0. ring.
-  - cbn [fs_factor fs_entries_product length]. rewrite IH, Qpow_succ. ring.
+  intros u v w fs. unfold fs_factor, fs_entries_product, fs_count.
+  rewrite !list_factor_closed_form, !Qpow_plus_exp. ring.
 Qed.
 
 Lemma fs_point_closed_form : forall u v w fs,
   (fs_point u v w fs
-     == u * Qpow (1 - u) (length fs) * fs_entries_product v w fs)%Q.
+     == u * u * u * Qpow (1 - u) (fs_count fs) * fs_entries_product v w fs)%Q.
 Proof.
-  intros u v w fs. unfold fs_point. rewrite fs_factor_closed_form. ring.
+  intros u v w fs. unfold fs_point, list_point, fs_entries_product, fs_count.
+  rewrite !list_factor_closed_form, !Qpow_plus_exp. ring.
 Qed.
 
-Lemma fs_factor_app : forall u v w fs fs',
-  (fs_factor u v w (fs ++ fs') == fs_factor u v w fs * fs_factor u v w fs')%Q.
-Proof.
-  intros u v w fs fs'. induction fs as [| [pth d] fs IH].
-  - cbn [List.app fs_factor]. ring.
-  - cbn [List.app fs_factor]. rewrite IH. ring.
-Qed.
-
-Lemma fs_factor_one : forall u v w pth d,
-  (fs_factor u v w [(pth, d)]
-     == (1 - u) * geo_point v (length pth) * geo_point w (length d))%Q.
-Proof. intros u v w pth d. cbn [fs_factor]. ring. Qed.
-
-(** Nonnegativity costs the five side conditions the three rates cost
-    separately, exactly as [envp_factor_nonneg]'s cost its three. *)
 Lemma fs_factor_nonneg : forall u v w,
   (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
   forall fs, (0 <= fs_factor u v w fs)%Q.
 Proof.
-  intros u v w Hu1 Hv0 Hv1 Hw0 Hw1 fs.
-  induction fs as [| [pth d] fs IH]; [exact Qle_0_1 |].
-  cbn [fs_factor]. apply Qmult_le_0_compat; [| exact IH].
-  apply Qmult_le_0_compat; [apply Qmult_le_0_compat |].
-  - apply (Qle_minus_iff u 1). exact Hu1.
-  - apply geo_point_nonneg; assumption.
-  - apply geo_point_nonneg; assumption.
+  intros u v w Hu1 Hv0 Hv1 Hw0 Hw1 fs. unfold fs_factor.
+  apply Qmult_le_0_compat; [apply Qmult_le_0_compat |];
+    apply list_factor_nonneg; try exact Hu1.
+  - apply name_point_nonneg; assumption.
+  - apply row_point_nonneg; assumption.
+  - apply dir_point_nonneg; assumption.
 Qed.
 
 Lemma fs_point_nonneg : forall u v w,
@@ -13344,36 +14234,47 @@ Lemma fs_point_nonneg : forall u v w,
   forall fs, (0 <= fs_point u v w fs)%Q.
 Proof.
   intros u v w Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 fs. unfold fs_point.
-  apply Qmult_le_0_compat; [exact Hu0 | apply fs_factor_nonneg; assumption].
+  apply Qmult_le_0_compat; [apply Qmult_le_0_compat |];
+    apply list_point_nonneg; try assumption.
+  - apply name_point_nonneg; assumption.
+  - apply row_point_nonneg; assumption.
+  - apply dir_point_nonneg; assumption.
 Qed.
 
-(** One file system weighs at most the mass of the file systems
-    extending it (as lists), because [u <= 1] — [envp_point_le_factor]
-    on this coordinate, and the base case of the same induction. *)
+(** One image weighs at most the mass of the images extending it table
+    by table, because [0 <= u <= 1]: the base case of the cancellation. *)
 Lemma fs_point_le_factor : forall u v w,
-  (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (0 <= u)%Q -> (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
   forall fs, (fs_point u v w fs <= fs_factor u v w fs)%Q.
 Proof.
-  intros u v w Hu1 Hv0 Hv1 Hw0 Hw1 fs. unfold fs_point.
-  rewrite <- (Qmult_1_l (fs_factor u v w fs)) at 2.
-  apply Qmult_le_compat_r; [exact Hu1 | apply fs_factor_nonneg; assumption].
+  intros u v w Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 fs. unfold fs_point, fs_factor.
+  assert (Hn := name_point_nonneg v w Hv0 Hv1 Hw0 Hw1).
+  assert (Hr := row_point_nonneg w Hw0 Hw1).
+  assert (Hd := dir_point_nonneg v w Hv0 Hv1 Hw0 Hw1).
+  assert (N0 := list_point_nonneg u _ Hu0 Hu1 Hn (Fs.fs_tree fs)).
+  assert (N1 := list_point_le_factor u _ Hu1 Hn (Fs.fs_tree fs)).
+  assert (R0 := list_point_nonneg u _ Hu0 Hu1 Hr (Fs.fs_inodes fs)).
+  assert (R1 := list_point_le_factor u _ Hu1 Hr (Fs.fs_inodes fs)).
+  assert (D0 := list_point_nonneg u _ Hu0 Hu1 Hd (Fs.fs_dirs fs)).
+  assert (D1 := list_point_le_factor u _ Hu1 Hd (Fs.fs_dirs fs)).
+  apply Qmult_le_compat_nonneg;
+    [split; [apply Qmult_le_0_compat; assumption
+            | apply Qmult_le_compat_nonneg; split; assumption]
+    | split; assumption].
 Qed.
 
-(** Strict positivity at every list of pairs, sorted or not: every
-    factor of the running product is positive, so the product is.
-    [envp_point_pos]'s induction with two [geo_point_pos] per entry. *)
+(** Strict positivity at every image, whatever its three tables hold:
+    every factor of every running product is positive. *)
 Lemma fs_point_pos : forall u v w fs,
   (0 < u)%Q -> (u < 1)%Q -> (0 < v)%Q -> (v < 1)%Q -> (0 < w)%Q -> (w < 1)%Q ->
   (0 < fs_point u v w fs)%Q.
 Proof.
   intros u v w fs Hu0 Hu1 Hv0 Hv1 Hw0 Hw1. unfold fs_point.
-  apply Qmult_lt_0_compat; [exact Hu0 |].
-  induction fs as [| [pth d] fs IH]; [reflexivity |].
-  cbn [fs_factor]. apply Qmult_lt_0_compat; [| exact IH].
-  apply Qmult_lt_0_compat; [apply Qmult_lt_0_compat |].
-  - apply (Qlt_minus_iff u 1). exact Hu1.
-  - apply geo_point_pos; assumption.
-  - apply geo_point_pos; assumption.
+  apply Qmult_lt_0_compat; [apply Qmult_lt_0_compat |];
+    apply list_point_pos; try assumption; intros x.
+  - apply name_point_pos; assumption.
+  - apply row_point_pos; assumption.
+  - apply dir_point_pos; assumption.
 Qed.
 
 (** THE WEIGHT: the product of the four coordinates' laws, with no
@@ -13399,7 +14300,7 @@ Lemma base_weight_closed_form : forall ra qa re qe u v w ps argv envp fs s,
   (base_weight ra qa re qe u v w ps (mkFinCore argv envp fs s)
      == (ra * Qpow (1 - ra) (length argv) * entries_geo_product qa argv)
         * (re * Qpow (1 - re) (length envp) * entries_geo_product qe envp)
-        * (u * Qpow (1 - u) (length fs) * fs_entries_product v w fs)
+        * (u * u * u * Qpow (1 - u) (fs_count fs) * fs_entries_product v w fs)
         * (ps * Qpow (1 - ps) (length s) * Qpow (1 # 256) (length s)))%Q.
 Proof.
   intros ra qa re qe u v w ps argv envp fs s.
@@ -13520,18 +14421,19 @@ Qed.
     [_mismatch] rules, one per sibling; the positive is
     [full_support_base_positive] at concrete rates. *)
 Definition full_support_example_core : FinCore :=
-  mkFinCore [[Z_to_bv 8 65]] [[Z_to_bv 8 65]] [([Z_to_bv 8 65], [Z_to_bv 8 65])]
-    [Z_to_bv 8 65].
+  mkFinCore [[Z_to_bv 8 65]] [[Z_to_bv 8 65]]
+    (Fs.fs_create_file Fs.fs_empty [Z_to_bv 8 65] [Z_to_bv 8 65]) [Z_to_bv 8 65].
 
 Lemma full_support_base_bites : forall p r q,
-  geo_weight p [] [] [] full_support_example_core = 0%Q
-  /\ envp_geo_weight p r q [] [] full_support_example_core = 0%Q
-  /\ file_geo_weight p [] [] [] [Z_to_bv 8 65] [] full_support_example_core = 0%Q
-  /\ file_envp_geo_weight p r q [] [] [Z_to_bv 8 65] [] full_support_example_core
+  geo_weight p [] [] Fs.fs_empty full_support_example_core = 0%Q
+  /\ envp_geo_weight p r q [] Fs.fs_empty full_support_example_core = 0%Q
+  /\ file_geo_weight p [] [] Fs.fs_empty [Z_to_bv 8 65] [] full_support_example_core
      = 0%Q
-  /\ file_prefix_geo_weight [] p [] [] [] [Z_to_bv 8 65] [] full_support_example_core
+  /\ file_envp_geo_weight p r q [] Fs.fs_empty [Z_to_bv 8 65] [] full_support_example_core
      = 0%Q
-  /\ file_prefix_over_geo_weight [Z_to_bv 8 65] [] p [] [] [] [Z_to_bv 8 65] []
+  /\ file_prefix_geo_weight [] p [] [] Fs.fs_empty [Z_to_bv 8 65] [] full_support_example_core
+     = 0%Q
+  /\ file_prefix_over_geo_weight [Z_to_bv 8 65] [] p [] [] Fs.fs_empty [Z_to_bv 8 65] []
        full_support_example_core = 0%Q
   /\ (0 < base_weight (1 # 2) (1 # 2) (1 # 2) (1 # 2) (1 # 2) (1 # 2) (1 # 2)
                       (1 # 2) full_support_example_core)%Q.
@@ -13761,148 +14663,150 @@ Qed.
    The file-system enumeration, and its cancellation
    ========================================================================= *)
 
-(** Every file system extending [fs0] (as a list) by at most [M]
-    further entries, each with a path shorter than [Lp] and contents
-    shorter than [Lc].  It is [envp_enum] with a pair where that has an
-    entry: two nested [short_inputs] enumerations per step, one for the
-    path and one for the contents.  As with [envp_enum], duplicate-
-    freedom is never proved and never needed for the bounds. *)
-Fixpoint fs_enum (fs0 : Fs.Fs) (M Lp Lc : nat) : list Fs.Fs :=
-  match M with
-  | O => [fs0]
-  | S M' =>
-      fs0 :: List.flat_map (fun pth =>
-               List.flat_map (fun d => fs_enum (fs0 ++ [(pth, d)]) M' Lp Lc)
-                 (short_inputs Lc))
-             (short_inputs Lp)
-  end.
+(** The images whose names come from [T], whose inode rows from [R] and
+    whose folder rows from [D]: the three tables vary independently, so
+    a sum over this product is the product of the three sums
+    ([qsum_fs_product]). *)
+Definition fs_product (T : list Fs.Tree) (R : list (list (Fs.ino * Fs.Inode)))
+    (D : list (list (Fs.path * Fs.DirLinks))) : list Fs.Fs :=
+  List.flat_map (fun t =>
+    List.flat_map (fun r => List.map (fun d => Fs.mkFs t r d) D) R) T.
 
-Lemma fs_enum_complete : forall M Lp Lc fs0 rest,
-  (length rest <= M)%nat ->
-  (forall e, List.In e rest ->
-     (length (fst e) < Lp)%nat /\ (length (snd e) < Lc)%nat) ->
-  List.In (fs0 ++ rest) (fs_enum fs0 M Lp Lc).
+Lemma In_fs_product : forall T R D t r d,
+  List.In t T -> List.In r R -> List.In d D ->
+  List.In (Fs.mkFs t r d) (fs_product T R D).
 Proof.
-  intros M Lp Lc. induction M as [| M IH]; intros fs0 rest Hlen Hent.
-  - destruct rest as [| e rest]; [| cbn [length] in Hlen; lia].
-    rewrite List.app_nil_r. left. reflexivity.
-  - destruct rest as [| [pth d] rest].
-    + rewrite List.app_nil_r. left. reflexivity.
-    + destruct (Hent (pth, d) (or_introl eq_refl)) as [Hp Hd].
-      cbn [fst snd] in Hp, Hd.
-      right. apply List.in_flat_map. exists pth. split.
-      * apply short_inputs_complete. exact Hp.
-      * apply List.in_flat_map. exists d. split.
-        -- apply short_inputs_complete. exact Hd.
-        -- replace (fs0 ++ (pth, d) :: rest) with ((fs0 ++ [(pth, d)]) ++ rest)
-             by (rewrite <- List.app_assoc; reflexivity).
-           apply IH; [cbn [length] in Hlen; lia |].
-           intros x Hx. apply Hent. right. exact Hx.
+  intros T R D t r d Ht Hr Hd. unfold fs_product.
+  apply List.in_flat_map. exists t. split; [exact Ht |].
+  apply List.in_flat_map. exists r. split; [exact Hr |].
+  apply List.in_map. exact Hd.
 Qed.
 
-(** ONE STEP OF THE FILE-SYSTEM CANCELLATION, exactly: the file systems
-    one entry deeper than [fs0] carry [fs_factor fs0] times [(1 - u)]
-    times what the path enumeration weighs times what the contents
-    enumeration weighs — [qsum_envp_factor_step] with the second
-    [short_inputs_sum] inside the first. *)
-Lemma qsum_fs_factor_step : forall u v w fs0 Lp Lc,
-  (qsum (fun pth => qsum (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))
-                      (short_inputs Lc))
-     (short_inputs Lp)
-     == fs_factor u v w fs0 * (1 - u)
-        * (1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc))%Q.
+Lemma qsum_fs_product : forall u v w T R D,
+  (qsum (fs_point u v w) (fs_product T R D)
+     == qsum (list_point u (name_point v w)) T
+        * qsum (list_point u (row_point w)) R
+        * qsum (list_point u (dir_point v w)) D)%Q.
 Proof.
-  intros u v w fs0 Lp Lc.
-  rewrite (qsum_ext (fun pth => qsum (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))
-                                  (short_inputs Lc))
-             (fun pth => ((fs_factor u v w fs0 * (1 - u) * (1 - Qpow (1 - w) Lc))
-                          * geo_point v (length pth))%Q)).
-  2:{ intros pth _.
-      rewrite (qsum_ext (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))
-                 (fun d => ((fs_factor u v w fs0 * (1 - u)
-                             * geo_point v (length pth))
-                            * geo_point w (length d))%Q))
-        by (intros d _; rewrite fs_factor_app, fs_factor_one; ring).
-      rewrite (qsum_scale (fs_factor u v w fs0 * (1 - u)
-                           * geo_point v (length pth))%Q
-                 (fun d => geo_point w (length d)) (short_inputs Lc)).
-      rewrite short_inputs_sum, geo_prefix_sum_closed. ring. }
-  rewrite (qsum_scale (fs_factor u v w fs0 * (1 - u) * (1 - Qpow (1 - w) Lc))%Q
-             (fun pth => geo_point v (length pth)) (short_inputs Lp)).
-  rewrite short_inputs_sum, geo_prefix_sum_closed. ring.
+  intros u v w T R D. unfold fs_product. rewrite qsum_flat_map. cbv beta.
+  rewrite (qsum_ext
+             (fun t => qsum (fs_point u v w)
+                         (List.flat_map (fun r => List.map (fun d => Fs.mkFs t r d) D) R))
+             (fun t => ((qsum (list_point u (row_point w)) R
+                         * qsum (list_point u (dir_point v w)) D)
+                        * list_point u (name_point v w) t)%Q) T).
+  - rewrite (qsum_scale (qsum (list_point u (row_point w)) R
+                         * qsum (list_point u (dir_point v w)) D)%Q
+               (list_point u (name_point v w)) T). ring.
+  - intros t _. rewrite qsum_flat_map. cbv beta.
+    rewrite (qsum_ext
+               (fun r => qsum (fs_point u v w) (List.map (fun d => Fs.mkFs t r d) D))
+               (fun r => ((list_point u (name_point v w) t
+                           * qsum (list_point u (dir_point v w)) D)
+                          * list_point u (row_point w) r)%Q) R).
+    + rewrite (qsum_scale (list_point u (name_point v w) t
+                           * qsum (list_point u (dir_point v w)) D)%Q
+                 (list_point u (row_point w)) R). ring.
+    + intros r _. rewrite qsum_map. cbv beta.
+      rewrite (qsum_ext (fun d => fs_point u v w (Fs.mkFs t r d))
+                 (fun d => ((list_point u (name_point v w) t
+                             * list_point u (row_point w) r)
+                            * list_point u (dir_point v w) d)%Q) D)
+        by (intros d _; reflexivity).
+      rewrite (qsum_scale (list_point u (name_point v w) t
+                           * list_point u (row_point w) r)%Q
+                 (list_point u (dir_point v w)) D). ring.
 Qed.
 
-(** Three small facts about a rate in [[0, 1]] and its geometric tail,
-    stated once because eight rates each need them below. *)
-Lemma one_minus_unit : forall q,
-  (0 <= q)%Q -> (q <= 1)%Q -> (0 <= 1 - q)%Q /\ (1 - q <= 1)%Q.
+Lemma NoDup_fs_product : forall T R D,
+  List.NoDup T -> List.NoDup R -> List.NoDup D -> List.NoDup (fs_product T R D).
 Proof.
-  intros q Hq0 Hq1. split.
-  - apply (Qle_minus_iff q 1). exact Hq1.
-  - apply (proj2 (Qle_minus_iff (1 - q) 1)).
-    apply (Qle_trans _ q); [exact Hq0 | apply Qle_of_Qeq; ring].
+  intros T R D HT HR HD. unfold fs_product.
+  apply NoDup_flat_map; [exact HT | |].
+  - intros t _. apply NoDup_flat_map; [exact HR | |].
+    + intros r _. apply NoDup_map_inj; [| exact HD].
+      intros x y _ _ H. exact (f_equal Fs.fs_dirs H).
+    + intros r1 r2 fs _ _ H1 H2.
+      apply List.in_map_iff in H1 as [d1 [H1 _]].
+      apply List.in_map_iff in H2 as [d2 [H2 _]].
+      rewrite <- H1 in H2. exact (eq_sym (f_equal Fs.fs_inodes H2)).
+  - intros t1 t2 fs _ _ H1 H2.
+    apply List.in_flat_map in H1 as [r1 [_ H1]].
+    apply List.in_map_iff in H1 as [d1 [H1 _]].
+    apply List.in_flat_map in H2 as [r2 [_ H2]].
+    apply List.in_map_iff in H2 as [d2 [H2 _]].
+    rewrite <- H1 in H2. exact (eq_sym (f_equal Fs.fs_tree H2)).
 Qed.
 
-Lemma geo_tail_unit : forall q L,
-  (0 <= q)%Q -> (q <= 1)%Q ->
-  (0 <= Qpow (1 - q) L)%Q /\ (Qpow (1 - q) L <= 1)%Q.
-Proof.
-  intros q L Hq0 Hq1. destruct (one_minus_unit q Hq0 Hq1) as [H0 H1].
-  split; [apply Qpow_nonneg; exact H0 | apply Qpow_le_1; assumption].
-Qed.
+(** Every image extending [fs0] table by table, each table by at most
+    [M] further rows, each row's key shorter than [Lp] and what it carries
+    shorter than [Lc]: [list_enum] on each table.  As with [envp_enum],
+    duplicate-freedom is never proved and never needed for the bounds. *)
+Definition fs_enum (fs0 : Fs.Fs) (M Lp Lc : nat) : list Fs.Fs :=
+  fs_product (list_enum (name_inputs Lp Lc) (Fs.fs_tree fs0) M)
+             (list_enum (row_inputs Lc) (Fs.fs_inodes fs0) M)
+             (list_enum (dir_inputs Lp Lc) (Fs.fs_dirs fs0) M).
 
-Lemma geo_head_unit : forall q L,
-  (0 <= q)%Q -> (q <= 1)%Q ->
-  (0 <= 1 - Qpow (1 - q) L)%Q /\ (1 - Qpow (1 - q) L <= 1)%Q.
+Lemma fs_enum_complete : forall M Lp Lc fs0 t r d,
+  (length t <= M)%nat -> (length r <= M)%nat -> (length d <= M)%nat ->
+  (forall x, List.In x t -> (length (fst x) < Lp)%nat /\ (entry_len (snd x) < Lc)%nat) ->
+  (forall x, List.In x r -> (row_len x < Lc)%nat) ->
+  (forall x, List.In x d -> (length (fst x) < Lp)%nat /\ (dir_len x < Lc)%nat) ->
+  List.In (Fs.mkFs (Fs.fs_tree fs0 ++ t) (Fs.fs_inodes fs0 ++ r) (Fs.fs_dirs fs0 ++ d))
+    (fs_enum fs0 M Lp Lc).
 Proof.
-  intros q L Hq0 Hq1. destruct (geo_tail_unit q L Hq0 Hq1) as [H0 H1].
-  apply one_minus_unit; assumption.
+  intros M Lp Lc fs0 t r d Ht Hr Hd Hte Hre Hde. unfold fs_enum.
+  apply In_fs_product.
+  - apply list_enum_complete; [exact Ht |]. intros x Hx.
+    destruct (Hte x Hx) as [H1 H2]. apply name_inputs_complete; assumption.
+  - apply list_enum_complete; [exact Hr |]. intros x Hx.
+    apply row_inputs_complete. apply Hre. exact Hx.
+  - apply list_enum_complete; [exact Hd |]. intros x Hx.
+    destruct (Hde x Hx) as [H1 H2]. apply dir_inputs_complete; assumption.
 Qed.
 
 (** THE CANCELLATION on the file-system coordinate: the whole enumeration
-    weighs no more than the mass of the file systems extending [fs0].
-    [envp_enum_sum_le]'s induction; the step charges the continuations
-    [(1 - u)] times two partial sums each under [1], and the base case
-    is [fs_point_le_factor]. *)
+    weighs no more than the mass of the images extending [fs0], one
+    [list_enum_sum_le] per table. *)
 Lemma fs_enum_sum_le : forall u v w,
   (0 <= u)%Q -> (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q ->
   (0 <= w)%Q -> (w <= 1)%Q ->
   forall M Lp Lc fs0,
     (qsum (fs_point u v w) (fs_enum fs0 M Lp Lc) <= fs_factor u v w fs0)%Q.
 Proof.
-  intros u v w Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 M Lp Lc.
-  induction M as [| M IH]; intros fs0.
-  - cbn [fs_enum]. rewrite qsum_cons, (@qsum_nil _ (fs_point u v w)).
-    rewrite Qplus_0_r. apply fs_point_le_factor; assumption.
-  - cbn [fs_enum]. rewrite qsum_cons.
-    apply (Qle_trans _ (fs_point u v w fs0
-                        + qsum (fun pth =>
-                                  qsum (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))
-                                    (short_inputs Lc))
-                            (short_inputs Lp))%Q).
-    + apply Qplus_le_compat; [apply Qle_refl |].
-      apply (qsum_flat_map_le _ _
-               (fun pth => qsum (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))
-                             (short_inputs Lc))).
-      intros pth _.
-      apply (qsum_flat_map_le _ _
-               (fun d => fs_factor u v w (fs0 ++ [(pth, d)]))).
-      intros d _. apply IH.
-    + rewrite qsum_fs_factor_step. unfold fs_point.
-      apply (Qle_trans _ (u * fs_factor u v w fs0
-                          + fs_factor u v w fs0 * (1 - u) * 1 * 1)%Q);
-        [| apply Qle_of_Qeq; ring].
-      apply Qplus_le_compat; [apply Qle_refl |].
-      assert (HF : (0 <= fs_factor u v w fs0 * (1 - u))%Q).
-      { apply Qmult_le_0_compat; [apply fs_factor_nonneg; assumption |].
-        apply (Qle_minus_iff u 1). exact Hu1. }
-      destruct (geo_head_unit v Lp Hv0 Hv1) as [HGv0 HGv1].
-      destruct (geo_head_unit w Lc Hw0 Hw1) as [HGw0 HGw1].
-      apply Qmult_le_compat_nonneg; [| split; [exact HGw0 | exact HGw1]].
-      split.
-      * apply Qmult_le_0_compat; [exact HF | exact HGv0].
-      * apply Qmult_le_compat_nonneg;
-          [split; [exact HF | apply Qle_refl] | split; [exact HGv0 | exact HGv1]].
+  intros u v w Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 M Lp Lc fs0.
+  unfold fs_enum, fs_factor. rewrite qsum_fs_product.
+  assert (Hn := name_point_nonneg v w Hv0 Hv1 Hw0 Hw1).
+  assert (Hr := row_point_nonneg w Hw0 Hw1).
+  assert (Hd := dir_point_nonneg v w Hv0 Hv1 Hw0 Hw1).
+  assert (Sn : (qsum (list_point u (name_point v w))
+                  (list_enum (name_inputs Lp Lc) (Fs.fs_tree fs0) M)
+                <= list_factor u (name_point v w) (Fs.fs_tree fs0))%Q).
+  { apply list_enum_sum_le; try assumption.
+    rewrite qsum_name_inputs. exact (proj2 (name_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1)). }
+  assert (Sr : (qsum (list_point u (row_point w))
+                  (list_enum (row_inputs Lc) (Fs.fs_inodes fs0) M)
+                <= list_factor u (row_point w) (Fs.fs_inodes fs0))%Q).
+  { apply list_enum_sum_le; try assumption.
+    rewrite qsum_row_inputs. exact (proj2 (row_mass_unit w Lc Hw0 Hw1)). }
+  assert (Sd : (qsum (list_point u (dir_point v w))
+                  (list_enum (dir_inputs Lp Lc) (Fs.fs_dirs fs0) M)
+                <= list_factor u (dir_point v w) (Fs.fs_dirs fs0))%Q).
+  { apply list_enum_sum_le; try assumption.
+    rewrite qsum_dir_inputs. exact (proj2 (dir_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1)). }
+  assert (Pn : (0 <= qsum (list_point u (name_point v w))
+                       (list_enum (name_inputs Lp Lc) (Fs.fs_tree fs0) M))%Q)
+    by (apply qsum_nonneg; intros x _; apply list_point_nonneg; assumption).
+  assert (Pr : (0 <= qsum (list_point u (row_point w))
+                       (list_enum (row_inputs Lc) (Fs.fs_inodes fs0) M))%Q)
+    by (apply qsum_nonneg; intros x _; apply list_point_nonneg; assumption).
+  assert (Pd : (0 <= qsum (list_point u (dir_point v w))
+                       (list_enum (dir_inputs Lp Lc) (Fs.fs_dirs fs0) M))%Q)
+    by (apply qsum_nonneg; intros x _; apply list_point_nonneg; assumption).
+  apply Qmult_le_compat_nonneg;
+    [split; [apply Qmult_le_0_compat; assumption
+            | apply Qmult_le_compat_nonneg; split; assumption]
+    | split; assumption].
 Qed.
 
 (* =========================================================================
@@ -13925,20 +14829,41 @@ Definition cores_argv_entry_depth (cs : list FinCore) : nat :=
        (List.map (fun c => List.list_max
                              (List.map (fun e => length e) (core_argv c))) cs)).
 
+(** The file system's depths read all three tables: the entry count is
+    the longest table ([fs_width]), the key length covers the names and
+    the folder rows, and the carried length covers what a name, an inode
+    row and a folder row carry ([entry_len], [row_len], [dir_len]). *)
+Definition fs_width (fs : Fs.Fs) : nat :=
+  Nat.max (length (Fs.fs_tree fs))
+    (Nat.max (length (Fs.fs_inodes fs)) (length (Fs.fs_dirs fs))).
+
 Definition cores_fs_depth (cs : list FinCore) : nat :=
-  List.list_max (List.map (fun c => length (core_fs c)) cs).
+  List.list_max (List.map (fun c => fs_width (core_fs c)) cs).
 
 Definition cores_fs_path_depth (cs : list FinCore) : nat :=
-  S (List.list_max
-       (List.map (fun c => List.list_max
-                             (List.map (fun e => length (fst e)) (core_fs c)))
-          cs)).
+  Nat.max
+    (S (List.list_max
+          (List.map (fun c => List.list_max
+                                (List.map (fun e => length (fst e)) (Fs.fs_tree (core_fs c))))
+             cs)))
+    (S (List.list_max
+          (List.map (fun c => List.list_max
+                                (List.map (fun e => length (fst e)) (Fs.fs_dirs (core_fs c))))
+             cs))).
 
 Definition cores_fs_contents_depth (cs : list FinCore) : nat :=
-  S (List.list_max
-       (List.map (fun c => List.list_max
-                             (List.map (fun e => length (snd e)) (core_fs c)))
-          cs)).
+  Nat.max
+    (S (List.list_max
+          (List.map (fun c => List.list_max
+                                (List.map (fun e => entry_len (snd e)) (Fs.fs_tree (core_fs c))))
+             cs)))
+    (Nat.max
+       (S (List.list_max
+             (List.map (fun c => List.list_max (List.map row_len (Fs.fs_inodes (core_fs c))))
+                cs)))
+       (S (List.list_max
+             (List.map (fun c => List.list_max (List.map dir_len (Fs.fs_dirs (core_fs c))))
+                cs)))).
 
 Lemma cores_argv_depth_ge : forall cs c,
   List.In c cs -> (length (core_argv c) <= cores_argv_depth cs)%nat.
@@ -13948,7 +14873,7 @@ Proof.
 Qed.
 
 Lemma cores_fs_depth_ge : forall cs c,
-  List.In c cs -> (length (core_fs c) <= cores_fs_depth cs)%nat.
+  List.In c cs -> (fs_width (core_fs c) <= cores_fs_depth cs)%nat.
 Proof.
   intros cs c Hc. apply list_max_ge. apply List.in_map_iff.
   exists c. split; [reflexivity | exact Hc].
@@ -13986,19 +14911,74 @@ Proof.
 Qed.
 
 Lemma cores_fs_path_depth_gt : forall cs c e,
-  List.In c cs -> List.In e (core_fs c) ->
+  List.In c cs -> List.In e (Fs.fs_tree (core_fs c)) ->
   (length (fst e) < cores_fs_path_depth cs)%nat.
 Proof.
   intros cs c e Hc He. unfold cores_fs_path_depth.
-  exact (cores_inner_max_gt _ core_fs (fun e => length (fst e)) cs c e Hc He).
+  eapply Nat.lt_le_trans; [| apply Nat.le_max_l].
+  exact (cores_inner_max_gt _ (fun c => Fs.fs_tree (core_fs c))
+           (fun e => length (fst e)) cs c e Hc He).
+Qed.
+
+Lemma cores_fs_dir_path_depth_gt : forall cs c e,
+  List.In c cs -> List.In e (Fs.fs_dirs (core_fs c)) ->
+  (length (fst e) < cores_fs_path_depth cs)%nat.
+Proof.
+  intros cs c e Hc He. unfold cores_fs_path_depth.
+  eapply Nat.lt_le_trans; [| apply Nat.le_max_r].
+  exact (cores_inner_max_gt _ (fun c => Fs.fs_dirs (core_fs c))
+           (fun e => length (fst e)) cs c e Hc He).
 Qed.
 
 Lemma cores_fs_contents_depth_gt : forall cs c e,
-  List.In c cs -> List.In e (core_fs c) ->
-  (length (snd e) < cores_fs_contents_depth cs)%nat.
+  List.In c cs -> List.In e (Fs.fs_tree (core_fs c)) ->
+  (entry_len (snd e) < cores_fs_contents_depth cs)%nat.
 Proof.
   intros cs c e Hc He. unfold cores_fs_contents_depth.
-  exact (cores_inner_max_gt _ core_fs (fun e => length (snd e)) cs c e Hc He).
+  eapply Nat.lt_le_trans; [| apply Nat.le_max_l].
+  exact (cores_inner_max_gt _ (fun c => Fs.fs_tree (core_fs c))
+           (fun e => entry_len (snd e)) cs c e Hc He).
+Qed.
+
+Lemma cores_fs_row_depth_gt : forall cs c e,
+  List.In c cs -> List.In e (Fs.fs_inodes (core_fs c)) ->
+  (row_len e < cores_fs_contents_depth cs)%nat.
+Proof.
+  intros cs c e Hc He. unfold cores_fs_contents_depth.
+  eapply Nat.lt_le_trans; [| eapply Nat.le_trans; [apply Nat.le_max_l | apply Nat.le_max_r]].
+  exact (cores_inner_max_gt _ (fun c => Fs.fs_inodes (core_fs c)) row_len cs c e Hc He).
+Qed.
+
+Lemma cores_fs_dir_depth_gt : forall cs c e,
+  List.In c cs -> List.In e (Fs.fs_dirs (core_fs c)) ->
+  (dir_len e < cores_fs_contents_depth cs)%nat.
+Proof.
+  intros cs c e Hc He. unfold cores_fs_contents_depth.
+  eapply Nat.lt_le_trans; [| eapply Nat.le_trans; [apply Nat.le_max_r | apply Nat.le_max_r]].
+  exact (cores_inner_max_gt _ (fun c => Fs.fs_dirs (core_fs c)) dir_len cs c e Hc He).
+Qed.
+
+(** Every row of a core of the list is within the file-system depths:
+    the three hypotheses [fs_enum_complete] asks of a table's rows. *)
+Lemma cores_fs_within : forall cs c,
+  List.In c cs ->
+  (forall x, List.In x (Fs.fs_tree (core_fs c)) ->
+     (length (fst x) < cores_fs_path_depth cs)%nat
+     /\ (entry_len (snd x) < cores_fs_contents_depth cs)%nat)
+  /\ (forall x, List.In x (Fs.fs_inodes (core_fs c)) ->
+        (row_len x < cores_fs_contents_depth cs)%nat)
+  /\ (forall x, List.In x (Fs.fs_dirs (core_fs c)) ->
+        (length (fst x) < cores_fs_path_depth cs)%nat
+        /\ (dir_len x < cores_fs_contents_depth cs)%nat).
+Proof.
+  intros cs c Hc. split; [| split].
+  - intros x Hx. split;
+      [apply (cores_fs_path_depth_gt cs c x Hc Hx)
+      | apply (cores_fs_contents_depth_gt cs c x Hc Hx)].
+  - intros x Hx. apply (cores_fs_row_depth_gt cs c x Hc Hx).
+  - intros x Hx. split;
+      [apply (cores_fs_dir_path_depth_gt cs c x Hc Hx)
+      | apply (cores_fs_dir_depth_gt cs c x Hc Hx)].
 Qed.
 
 (** The four UNCONSTRAINED enumerations at the depths a list dictates:
@@ -14013,7 +14993,7 @@ Definition envp_free (cs : list FinCore) : list (list (list byte)) :=
   envp_enum [] (cores_envp_depth cs) (cores_entry_depth cs).
 
 Definition fs_free (cs : list FinCore) : list Fs.Fs :=
-  fs_enum [] (cores_fs_depth cs) (cores_fs_path_depth cs)
+  fs_enum Fs.fs_empty (cores_fs_depth cs) (cores_fs_path_depth cs)
     (cores_fs_contents_depth cs).
 
 Definition stdin_free (cs : list FinCore) : list (list byte) :=
@@ -14041,11 +15021,13 @@ Lemma fs_free_In : forall cs c,
   List.In c cs -> List.In (core_fs c) (fs_free cs).
 Proof.
   intros cs c Hc. unfold fs_free.
-  change (core_fs c) with ([] ++ core_fs c).
-  apply fs_enum_complete; [apply cores_fs_depth_ge; exact Hc |].
-  intros e He.
-  split; [apply (cores_fs_path_depth_gt cs c e Hc)
-         | apply (cores_fs_contents_depth_gt cs c e Hc)]; exact He.
+  assert (Hw := cores_fs_depth_ge cs c Hc).
+  destruct (cores_fs_within cs c Hc) as [Ht [Hr Hd]].
+  revert Hw Ht Hr Hd. destruct (core_fs c) as [t r d]. intros Hw Ht Hr Hd.
+  unfold fs_width in Hw.
+  cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs] in Hw, Ht, Hr, Hd.
+  apply Nat.max_lub_iff in Hw as [Hw1 Hw2]. apply Nat.max_lub_iff in Hw2 as [Hw2 Hw3].
+  apply (fs_enum_complete _ _ _ Fs.fs_empty t r d); assumption.
 Qed.
 
 Lemma stdin_free_In : forall cs c,
@@ -14080,8 +15062,10 @@ Lemma fs_free_sum_le : forall u v w,
   forall cs, (qsum (fs_point u v w) (fs_free cs) <= 1)%Q.
 Proof.
   intros u v w Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 cs. unfold fs_free.
-  apply (Qle_trans _ (fs_factor u v w []));
-    [apply fs_enum_sum_le; assumption | cbn [fs_factor]; apply Qle_refl].
+  apply (Qle_trans _ (fs_factor u v w Fs.fs_empty));
+    [apply fs_enum_sum_le; assumption |].
+  unfold fs_factor. cbn [Fs.fs_empty Fs.fs_tree Fs.fs_inodes Fs.fs_dirs list_factor].
+  apply Qle_of_Qeq. ring.
 Qed.
 
 Lemma stdin_free_sum_le : forall p,
@@ -14099,17 +15083,22 @@ Qed.
    ========================================================================= *)
 
 (** The cores this bound is about: argv extending [xs], environment
-    extending [es], file system extending [fs0] AS A LIST, standard
-    input extending [bs].  Four existentials, for the reason
+    extending [es], file system extending [fs0] TABLE BY TABLE
+    ([fs_app]: each of the three tables extends [fs0]'s as a list),
+    standard input extending [bs].  Four existentials, for the reason
     [in_envp_stdin_cylinder] has two.  The file-system prefix is a LIST
-    prefix — the first entries of the association list — which is the
-    shape the enumeration wants; a task describing a fire set by ONE
-    file's contents wants [full_support_base_file_bound] below
+    prefix of each table — the first rows of each association list —
+    which is the shape the enumeration wants; a task describing a fire
+    set by ONE file's contents wants [full_support_base_file_bound] below
     instead. *)
+Definition fs_app (fs0 ext : Fs.Fs) : Fs.Fs :=
+  Fs.mkFs (Fs.fs_tree fs0 ++ Fs.fs_tree ext) (Fs.fs_inodes fs0 ++ Fs.fs_inodes ext)
+          (Fs.fs_dirs fs0 ++ Fs.fs_dirs ext).
+
 Definition in_full_support_cylinder (xs es : list (list byte)) (fs0 : Fs.Fs)
     (bs : list byte) (c : FinCore) : Prop :=
   exists aext eext fext sext,
-    c = mkFinCore (xs ++ aext) (es ++ eext) (fs0 ++ fext) (bs ++ sext).
+    c = mkFinCore (xs ++ aext) (es ++ eext) (fs_app fs0 fext) (bs ++ sext).
 
 (** The cylinder's mass: one continuation factor per coordinate. *)
 Definition full_support_base_cylinder_mass (ra qa re qe u v w ps : Q)
@@ -14122,7 +15111,7 @@ Lemma full_support_base_cylinder_mass_closed_form :
   (full_support_base_cylinder_mass ra qa re qe u v w ps xs es fs0 bs
      == (Qpow (1 - ra) (length xs) * entries_geo_product qa xs)
         * (Qpow (1 - re) (length es) * entries_geo_product qe es)
-        * (Qpow (1 - u) (length fs0) * fs_entries_product v w fs0)
+        * (Qpow (1 - u) (fs_count fs0) * fs_entries_product v w fs0)
         * (Qpow (1 - ps) (length bs) * Qpow (1 # 256) (length bs)))%Q.
 Proof.
   intros ra qa re qe u v w ps xs es fs0 bs.
@@ -14169,7 +15158,7 @@ Proof.
     assert (Hstdin := cores_stdin_depth_ge cs c Hc).
     rewrite Heq in Hargv, Henvp, Hfs, Hstdin.
     cbn [core_argv core_envp core_fs core_stdin] in Hargv, Henvp, Hfs, Hstdin.
-    rewrite List.length_app in Hargv, Henvp, Hfs, Hstdin.
+    rewrite List.length_app in Hargv, Henvp, Hstdin.
     rewrite Heq. cbn [core_argv core_envp core_fs core_stdin].
     split; [| split; [| split]].
     + apply envp_enum_complete; [lia |].
@@ -14178,12 +15167,21 @@ Proof.
     + apply envp_enum_complete; [lia |].
       intros e He. apply (cores_entry_depth_gt cs c e Hc).
       rewrite Heq. cbn [core_envp]. apply List.in_or_app. right. exact He.
-    + apply fs_enum_complete;
-        [exact (Nat.le_trans _ _ _ (Nat.le_add_l _ _) Hfs) |].
-      intros e He.
-      split; [apply (cores_fs_path_depth_gt cs c e Hc)
-             | apply (cores_fs_contents_depth_gt cs c e Hc)];
-        rewrite Heq; cbn [core_fs]; apply List.in_or_app; right; exact He.
+    + destruct (cores_fs_within cs c Hc) as [Ht [Hr Hd]].
+      rewrite Heq in Ht, Hr, Hd.
+      cbn [core_fs fs_app Fs.fs_tree Fs.fs_inodes Fs.fs_dirs] in Ht, Hr, Hd.
+      unfold fs_width, fs_app in Hfs. cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs] in Hfs.
+      rewrite !List.length_app in Hfs.
+      apply Nat.max_lub_iff in Hfs as [Hft Hfs].
+      apply Nat.max_lub_iff in Hfs as [Hfr Hfd].
+      apply (fs_enum_complete _ _ _ fs0 (Fs.fs_tree fext) (Fs.fs_inodes fext)
+               (Fs.fs_dirs fext)).
+      * eapply Nat.le_trans; [apply Nat.le_add_l | exact Hft].
+      * eapply Nat.le_trans; [apply Nat.le_add_l | exact Hfr].
+      * eapply Nat.le_trans; [apply Nat.le_add_l | exact Hfd].
+      * intros x Hx. apply Ht. apply List.in_or_app. right. exact Hx.
+      * intros x Hx. apply Hr. apply List.in_or_app. right. exact Hx.
+      * intros x Hx. apply Hd. apply List.in_or_app. right. exact Hx.
     + apply bytes_cyl_In. lia.
 Qed.
 
@@ -14201,13 +15199,14 @@ Proof.
   intros ra qa re qe u v w ps Hra0 Hra1 Hqa0 Hqa1 Hre0 Hre1 Hqe0 Hqe1
     Hu0 Hu1 Hv0 Hv1 Hw0 Hw1 Hps0 Hps1 cs Hnd.
   apply (Qle_trans _ (full_support_base_cylinder_mass ra qa re qe u v w ps
-                        [] [] [] [])).
+                        [] [] Fs.fs_empty [])).
   - apply base_weight_cylinder_bound; try assumption.
-    intros c _. destruct c as [argv envp fs s].
-    exists argv, envp, fs, s. reflexivity.
+    intros c _. destruct c as [argv envp [t r d] s].
+    exists argv, envp, (Fs.mkFs t r d), s. reflexivity.
   - apply Qle_of_Qeq.
-    unfold full_support_base_cylinder_mass, strings_factor, geo_mass.
-    cbn [envp_factor fs_factor length]. rewrite Qpow_0. ring.
+    unfold full_support_base_cylinder_mass, strings_factor, geo_mass, fs_factor.
+    cbn [envp_factor length Fs.fs_empty Fs.fs_tree Fs.fs_inodes Fs.fs_dirs list_factor].
+    rewrite Qpow_0. ring.
 Qed.
 
 (** THE EXPORT: a list of records with duplicate-free cores, all lying
@@ -14423,26 +15422,36 @@ Qed.
    ========================================================================= *)
 
 (** The cores the composability bound prices: the file at [pth] — what [fs_file]
-    reads, the first entry with that key, or nothing — EXTENDS [bs].
-    Nothing else about the file system is fixed: not its entry count,
-    not any other entry, not the position of the entry at [pth]. *)
+    reads, the bytes of the inode the first name with that key holds, or
+    nothing — EXTENDS [bs].  Nothing else about the file system is fixed:
+    not its row counts, not any other row, not the position of the name
+    at [pth] or of the inode row it holds. *)
 Definition file_at_extends (pth : Fs.path) (bs : list byte) (c : FinCore) : Prop :=
   exists ext, fs_file pth (core_fs c) = bs ++ ext.
 
-(** THE INJECTION.  Strip the first [n] bytes off the contents of the
-    first entry keyed [pth], leave everything else alone.  On the cores
-    [file_at_extends pth bs] describes, with [n = length bs], it is
+(** THE INJECTION.  Strip the first [n] bytes off the bytes of the inode
+    row the name [pth] holds — the first row with that number, the one
+    [Fs.fs_ino_data] reads — and leave everything else alone.  On the
+    cores [file_at_extends pth bs] describes, with [n = length bs], it is
     weight-preserving up to the one factor [geo_mass w (length bs)]
     ([base_weight_strip]) and injective ([core_strip_inj]), and those
     two facts are the whole of the marginal bound: the stripped list is
     a duplicate-free list of cores, which weighs at most [1], and the
     original weighs the stripped list times the factor. *)
-Fixpoint fs_strip (pth : Fs.path) (n : nat) (fs : Fs.Fs) : Fs.Fs :=
-  match fs with
+Fixpoint rows_strip (i : Fs.ino) (n : nat) (t : list (Fs.ino * Fs.Inode))
+    : list (Fs.ino * Fs.Inode) :=
+  match t with
   | [] => []
-  | (q, d) :: r =>
-      if Fs.path_eqb pth q then (q, List.skipn n d) :: r
-      else (q, d) :: fs_strip pth n r
+  | (j, nd) :: r =>
+      if Z.eqb i j
+      then (j, Fs.mkInode (List.skipn n (Fs.ino_data nd)) (Fs.ino_outside nd)) :: r
+      else (j, nd) :: rows_strip i n r
+  end.
+
+Definition fs_strip (pth : Fs.path) (n : nat) (fs : Fs.Fs) : Fs.Fs :=
+  match Fs.fs_lookup fs pth with
+  | Some (Fs.EFile i) => Fs.fs_with_inodes fs (rows_strip i n (Fs.fs_inodes fs))
+  | _ => fs
   end.
 
 Definition core_strip (pth : Fs.path) (n : nat) (c : FinCore) : FinCore :=
@@ -14453,13 +15462,6 @@ Lemma skipn_length_app : forall {A : Type} (l1 l2 : list A),
 Proof.
   intros A l1 l2. induction l1 as [| x l1 IH]; [reflexivity |].
   cbn [length List.app List.skipn]. exact IH.
-Qed.
-
-Lemma Qpow_plus_exp : forall x m n, (Qpow x (m + n) == Qpow x m * Qpow x n)%Q.
-Proof.
-  intros x m n. induction m as [| m IH].
-  - cbn [Nat.add]. rewrite Qpow_0. ring.
-  - cbn [Nat.add]. rewrite !Qpow_succ, IH. ring.
 Qed.
 
 (** A byte string that extends [bs] weighs [geo_mass] of the prefix
@@ -14473,54 +15475,112 @@ Proof.
   rewrite List.length_app, Qpow_plus_exp. ring.
 Qed.
 
-Lemma fs_strip_zero : forall pth fs, fs_strip pth 0 fs = fs.
+Lemma cons_eq_inv : forall {A : Type} (a b : A) l1 l2,
+  a :: l1 = b :: l2 -> a = b /\ l1 = l2.
+Proof. intros A a b l1 l2 H. injection H as Ha Hl. split; assumption. Qed.
+
+Lemma rows_strip_zero : forall i t, rows_strip i 0 t = t.
 Proof.
-  intros pth fs. induction fs as [| [q d] r IH]; [reflexivity |].
-  cbn [fs_strip]. destruct (Fs.path_eqb pth q); [reflexivity |].
+  intros i t. induction t as [| [j nd] r IH]; [reflexivity |].
+  cbn [rows_strip]. destruct (Z.eqb i j); [destruct nd; reflexivity |].
   rewrite IH. reflexivity.
 Qed.
 
-Lemma fs_lookup_of_fs_file_cons : forall pth fs b l,
-  fs_file pth fs = b :: l -> Fs.fs_lookup fs pth = Some (b :: l).
+Lemma fs_strip_zero : forall pth fs, fs_strip pth 0 fs = fs.
 Proof.
-  intros pth fs b l H. unfold fs_file in H.
-  destruct (Fs.fs_lookup fs pth) as [d |]; cbn in H;
-    [rewrite H; reflexivity | discriminate H].
+  intros pth [t r d]. unfold fs_strip.
+  destruct (Fs.fs_lookup (Fs.mkFs t r d) pth) as [[i | | dk | b] |]; try reflexivity.
+  unfold Fs.fs_with_inodes. cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs].
+  rewrite rows_strip_zero. reflexivity.
 Qed.
 
-Lemma fs_factor_strip : forall u v w pth bs ext fs,
-  Fs.fs_lookup fs pth = Some (bs ++ ext) ->
-  (fs_factor u v w fs
-     == geo_mass w (length bs) * fs_factor u v w (fs_strip pth (length bs) fs))%Q.
+(** A file at [pth] that reads non-empty is a name holding an inode
+    whose row the table has. *)
+Lemma fs_file_cons_row : forall pth fs b l,
+  fs_file pth fs = b :: l ->
+  exists i nd, Fs.fs_lookup fs pth = Some (Fs.EFile i)
+    /\ Fs.itab_find (Fs.fs_inodes fs) i = Some nd /\ Fs.ino_data nd = b :: l.
 Proof.
-  intros u v w pth bs ext fs. induction fs as [| [q d] r IH]; intros Hlk.
-  - cbn [Fs.fs_lookup] in Hlk. discriminate Hlk.
-  - cbn [Fs.fs_lookup] in Hlk. cbn [fs_strip].
-    destruct (Fs.path_eqb pth q) eqn:Heq.
-    + injection Hlk as Hd. subst d. cbn [fs_factor].
-      rewrite skipn_length_app, geo_point_app. ring.
-    + cbn [fs_factor]. rewrite (IH Hlk). ring.
+  intros pth fs b l. unfold fs_file, Fs.fs_ino_data, Fs.fs_inode.
+  destruct (Fs.fs_lookup fs pth) as [[i | | dk | bd] |]; intros H;
+    try (cbn in H; discriminate H).
+  cbv iota beta in H.
+  destruct (Fs.itab_find (Fs.fs_inodes fs) i) as [nd |] eqn:Hf;
+    [| cbn in H; discriminate H].
+  exists i, nd. split; [reflexivity | split; [exact Hf | exact H]].
 Qed.
 
-Lemma fs_strip_inj : forall pth bs fs1 fs2 ext1 ext2,
-  Fs.fs_lookup fs1 pth = Some (bs ++ ext1) ->
-  Fs.fs_lookup fs2 pth = Some (bs ++ ext2) ->
-  fs_strip pth (length bs) fs1 = fs_strip pth (length bs) fs2 ->
+Lemma rows_factor_strip : forall u w i bs ext t nd,
+  Fs.itab_find t i = Some nd -> Fs.ino_data nd = bs ++ ext ->
+  (list_factor u (row_point w) t
+     == geo_mass w (length bs) * list_factor u (row_point w) (rows_strip i (length bs) t))%Q.
+Proof.
+  intros u w i bs ext t nd. induction t as [| [j m] r IH]; intros Hf Hd.
+  - cbn [Fs.itab_find] in Hf. discriminate Hf.
+  - cbn [Fs.itab_find] in Hf. cbn [rows_strip].
+    destruct (Z.eqb i j) eqn:Hij.
+    + injection Hf as Hm. subst m. cbn [list_factor]. unfold row_point.
+      cbn [fst snd Fs.ino_data Fs.ino_outside].
+      rewrite Hd, skipn_length_app, geo_point_app. ring.
+    + cbn [list_factor]. rewrite (IH Hf Hd). ring.
+Qed.
+
+Lemma fs_point_strip : forall u v w pth i nd bs ext fs,
+  Fs.fs_lookup fs pth = Some (Fs.EFile i) ->
+  Fs.itab_find (Fs.fs_inodes fs) i = Some nd -> Fs.ino_data nd = bs ++ ext ->
+  (fs_point u v w fs
+     == geo_mass w (length bs) * fs_point u v w (fs_strip pth (length bs) fs))%Q.
+Proof.
+  intros u v w pth i nd bs ext fs Hlk Hf Hd. unfold fs_strip. rewrite Hlk.
+  cbv iota beta.
+  unfold fs_point, list_point. cbn [Fs.fs_with_inodes Fs.fs_tree Fs.fs_inodes Fs.fs_dirs].
+  rewrite (rows_factor_strip u w i bs ext (Fs.fs_inodes fs) nd Hf Hd). ring.
+Qed.
+
+Lemma rows_strip_inj : forall i bs t1 t2 nd1 nd2 ext1 ext2,
+  Fs.itab_find t1 i = Some nd1 -> Fs.ino_data nd1 = bs ++ ext1 ->
+  Fs.itab_find t2 i = Some nd2 -> Fs.ino_data nd2 = bs ++ ext2 ->
+  rows_strip i (length bs) t1 = rows_strip i (length bs) t2 -> t1 = t2.
+Proof.
+  intros i bs t1. induction t1 as [| [j1 m1] r1 IH];
+    intros t2 nd1 nd2 ext1 ext2 H1 D1 H2 D2 Hs;
+    [cbn [Fs.itab_find] in H1; discriminate H1 |].
+  destruct t2 as [| [j2 m2] r2]; [cbn [Fs.itab_find] in H2; discriminate H2 |].
+  cbn [Fs.itab_find] in H1, H2. cbn [rows_strip] in Hs.
+  destruct (Z.eqb i j1) eqn:E1; destruct (Z.eqb i j2) eqn:E2;
+    apply cons_eq_inv in Hs as [Ha Hr]; pose proof (f_equal fst Ha) as Hj;
+    cbn [fst] in Hj; subst j2.
+  - injection H1 as Hm1. injection H2 as Hm2. subst nd1 nd2.
+    pose proof (f_equal (fun p => Fs.ino_data (snd p)) Ha) as Hd.
+    pose proof (f_equal (fun p => Fs.ino_outside (snd p)) Ha) as Ho.
+    cbn [fst snd Fs.ino_data Fs.ino_outside] in Hd, Ho.
+    rewrite D1, D2, !skipn_length_app in Hd. subst ext2 r2.
+    destruct m1 as [d1 o1], m2 as [d2 o2].
+    cbn [Fs.ino_data Fs.ino_outside] in D1, D2, Ho. subst d1 d2 o2. reflexivity.
+  - rewrite E1 in E2. discriminate E2.
+  - rewrite E1 in E2. discriminate E2.
+  - pose proof (f_equal snd Ha) as Hm. cbn [snd] in Hm. subst m2.
+    rewrite (IH r2 nd1 nd2 ext1 ext2 H1 D1 H2 D2 Hr). reflexivity.
+Qed.
+
+Lemma fs_strip_inj : forall pth b bs fs1 fs2 ext1 ext2,
+  fs_file pth fs1 = (b :: bs) ++ ext1 -> fs_file pth fs2 = (b :: bs) ++ ext2 ->
+  fs_strip pth (length (b :: bs)) fs1 = fs_strip pth (length (b :: bs)) fs2 ->
   fs1 = fs2.
 Proof.
-  intros pth bs fs1. induction fs1 as [| [q1 d1] r1 IH];
-    intros fs2 ext1 ext2 H1 H2 Hs.
-  - cbn [Fs.fs_lookup] in H1. discriminate H1.
-  - destruct fs2 as [| [q2 d2] r2]; [cbn [Fs.fs_lookup] in H2; discriminate H2 |].
-    cbn [Fs.fs_lookup] in H1, H2. cbn [fs_strip] in Hs.
-    destruct (Fs.path_eqb pth q1) eqn:Hq1; destruct (Fs.path_eqb pth q2) eqn:Hq2.
-    + injection H1 as Hd1. injection H2 as Hd2. subst d1 d2.
-      injection Hs as Hq Hsk Hr. subst q2 r2.
-      rewrite !skipn_length_app in Hsk. subst ext2. reflexivity.
-    + injection Hs as Hq _ _. subst q2. rewrite Hq1 in Hq2. discriminate Hq2.
-    + injection Hs as Hq _ _. subst q2. rewrite Hq1 in Hq2. discriminate Hq2.
-    + injection Hs as Hq Hd Hr. subst q2 d2.
-      rewrite (IH r2 ext1 ext2 H1 H2 Hr). reflexivity.
+  intros pth b bs fs1 fs2 ext1 ext2 F1 F2 Hs.
+  destruct (fs_file_cons_row pth fs1 b (bs ++ ext1) F1) as [i1 [nd1 [L1 [I1 D1]]]].
+  destruct (fs_file_cons_row pth fs2 b (bs ++ ext2) F2) as [i2 [nd2 [L2 [I2 D2]]]].
+  unfold fs_strip in Hs. rewrite L1, L2 in Hs. cbv iota beta in Hs.
+  destruct fs1 as [t1 r1 d1], fs2 as [t2 r2 d2].
+  unfold Fs.fs_with_inodes in Hs. cbn [Fs.fs_tree Fs.fs_inodes Fs.fs_dirs] in Hs, I1, I2.
+  injection Hs as Ht Hr Hd. subst t2 d2.
+  assert (Hi : i1 = i2).
+  { unfold Fs.fs_lookup in L1, L2. cbn [Fs.fs_tree] in L1, L2.
+    rewrite L1 in L2. injection L2. auto. }
+  subst i2.
+  rewrite (rows_strip_inj i1 (b :: bs) r1 r2 nd1 nd2 ext1 ext2 I1 D1 I2 D2 Hr).
+  reflexivity.
 Qed.
 
 Lemma base_weight_strip : forall ra qa re qe u v w ps pth bs c,
@@ -14533,10 +15593,9 @@ Proof.
   unfold base_weight, core_strip. cbn [core_argv core_envp core_fs core_stdin].
   destruct bs as [| b bs'].
   - cbn [length]. rewrite fs_strip_zero. unfold geo_mass. rewrite Qpow_0. ring.
-  - cbn [List.app] in Hext. apply fs_lookup_of_fs_file_cons in Hext.
-    unfold fs_point.
-    rewrite (fs_factor_strip u v w pth (b :: bs') ext (core_fs c) Hext).
-    ring.
+  - destruct (fs_file_cons_row pth (core_fs c) b (bs' ++ ext) Hext)
+      as [i [nd [L [I D]]]].
+    rewrite (fs_point_strip u v w pth i nd (b :: bs') ext (core_fs c) L I D). ring.
 Qed.
 
 Lemma core_strip_inj : forall pth bs c1 c2,
@@ -14550,9 +15609,7 @@ Proof.
   injection Heq as Ha He Hf Hs. subst a2 e2 s2.
   f_equal. destruct bs as [| b bs'].
   - cbn [length] in Hf. rewrite !fs_strip_zero in Hf. exact Hf.
-  - cbn [List.app] in H1, H2.
-    apply fs_lookup_of_fs_file_cons in H1, H2.
-    exact (fs_strip_inj pth (b :: bs') f1 f2 ext1 ext2 H1 H2 Hf).
+  - exact (fs_strip_inj pth b bs' f1 f2 ext1 ext2 H1 H2 Hf).
 Qed.
 
 Lemma core_strip_argv : forall pth n c, core_argv (core_strip pth n c) = core_argv c.
@@ -14851,158 +15908,40 @@ Qed.
    The lower certificate for [full_support_base]
    ========================================================================= *)
 
-(** THE FILE-SYSTEM WITNESS FAMILY: every list of exactly [m] pairs
-    whose paths are shorter than [Lp] and whose contents are shorter
-    than [Lc], and the union of those over [m < M].  It is [envps_len]
-    and [envps_upto] with a pair where they have an entry, and it is
-    duplicate-free for the same reason ([fss_len_nodup]).  [fs_enum] is
-    not reused, for the reason [envp_enum] is not: the certificate needs
-    a duplicate-free list and the bounds' enumeration is not one. *)
-Fixpoint fss_len (Lp Lc m : nat) : list Fs.Fs :=
-  match m with
-  | O => [[]]
-  | S m' =>
-      List.flat_map
-        (fun pth =>
-           List.flat_map
-             (fun d => List.map (fun fs => (pth, d) :: fs) (fss_len Lp Lc m'))
-             (short_inputs Lc))
-        (short_inputs Lp)
-  end.
-
-Fixpoint fss_upto (Lp Lc M : nat) : list Fs.Fs :=
-  match M with
-  | O => []
-  | S M' => fss_len Lp Lc M' ++ fss_upto Lp Lc M'
-  end.
-
-Lemma fss_len_In_length : forall Lp Lc m fs,
-  List.In fs (fss_len Lp Lc m) -> length fs = m.
-Proof.
-  intros Lp Lc m. induction m as [| m IH]; intros fs Hfs.
-  - destruct Hfs as [Heq | []]. rewrite <- Heq. reflexivity.
-  - cbn [fss_len] in Hfs.
-    apply List.in_flat_map in Hfs as [pth [_ Hfs]].
-    apply List.in_flat_map in Hfs as [d [_ Hfs]].
-    apply List.in_map_iff in Hfs as [fs' [Heq Hin]].
-    rewrite <- Heq. cbn [length]. rewrite (IH fs' Hin). reflexivity.
-Qed.
-
-Lemma fss_len_nodup : forall Lp Lc m, List.NoDup (fss_len Lp Lc m).
-Proof.
-  intros Lp Lc m. induction m as [| m IH].
-  - cbn [fss_len]. apply List.NoDup_cons; [intros [] | apply List.NoDup_nil].
-  - cbn [fss_len]. apply NoDup_flat_map.
-    + apply short_inputs_nodup.
-    + intros pth _. apply NoDup_flat_map.
-      * apply short_inputs_nodup.
-      * intros d _. apply NoDup_map_inj; [| exact IH].
-        intros x y _ _ Heq.
-        apply (f_equal (@List.tl (Fs.path * list byte))) in Heq.
-        cbn [List.tl] in Heq. exact Heq.
-      * intros d1 d2 fs _ _ H1 H2.
-        apply List.in_map_iff in H1 as [x1 [Hx1 _]].
-        apply List.in_map_iff in H2 as [x2 [Hx2 _]].
-        rewrite <- Hx1 in Hx2. injection Hx2. intros. symmetry. assumption.
-    + intros p1 p2 fs _ _ H1 H2.
-      apply List.in_flat_map in H1 as [d1 [_ H1]].
-      apply List.in_map_iff in H1 as [x1 [Hx1 _]].
-      apply List.in_flat_map in H2 as [d2 [_ H2]].
-      apply List.in_map_iff in H2 as [x2 [Hx2 _]].
-      rewrite <- Hx1 in Hx2. injection Hx2. intros. symmetry. assumption.
-Qed.
-
-Lemma fss_upto_In_length : forall Lp Lc M fs,
-  List.In fs (fss_upto Lp Lc M) -> (length fs < M)%nat.
-Proof.
-  intros Lp Lc M. induction M as [| M IH]; intros fs Hfs; [destruct Hfs |].
-  cbn [fss_upto] in Hfs. apply List.in_app_or in Hfs as [Hfs | Hfs].
-  - rewrite (fss_len_In_length Lp Lc M fs Hfs). lia.
-  - apply IH in Hfs. lia.
-Qed.
+(** THE FILE-SYSTEM WITNESS FAMILY: the images whose three tables each
+    hold fewer than [M] rows drawn from [name_inputs Lp Lc],
+    [row_inputs Lc] and [dir_inputs Lp Lc] — [lists_upto] on each table,
+    recombined by [fs_product] — and duplicate-free because each table's
+    family is.  [fs_enum] is not reused, for the reason [envp_enum] is
+    not: the certificate needs a duplicate-free list and the bounds'
+    enumeration is not one. *)
+Definition fss_upto (Lp Lc M : nat) : list Fs.Fs :=
+  fs_product (lists_upto (name_inputs Lp Lc) M) (lists_upto (row_inputs Lc) M)
+             (lists_upto (dir_inputs Lp Lc) M).
 
 Lemma fss_upto_nodup : forall Lp Lc M, List.NoDup (fss_upto Lp Lc M).
 Proof.
-  intros Lp Lc M. induction M as [| M IH]; [apply List.NoDup_nil |].
-  cbn [fss_upto]. apply List.NoDup_app.
-  - apply fss_len_nodup.
-  - exact IH.
-  - intros fs Hin1 Hin2. apply fss_upto_In_length in Hin2.
-    rewrite (fss_len_In_length Lp Lc M fs Hin1) in Hin2. lia.
+  intros Lp Lc M. unfold fss_upto.
+  apply NoDup_fs_product; apply lists_upto_nodup;
+    [apply name_inputs_nodup | apply row_inputs_nodup | apply dir_inputs_nodup].
 Qed.
 
-(** ONE FULL ENTRY-COUNT SLICE of file systems weighs a power, as
-    [qsum_entries_geo_product_envps_len] does for environments; the
-    base is the PRODUCT of what the path enumeration and the contents
-    enumeration collect, because each slot draws both. *)
-Lemma qsum_fs_entries_product_fss_len : forall v w Lp Lc m,
-  (qsum (fs_entries_product v w) (fss_len Lp Lc m)
-     == Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m)%Q.
-Proof.
-  intros v w Lp Lc m. induction m as [| m IH].
-  - cbn [fss_len]. unfold qsum. cbn [List.fold_right fs_entries_product].
-    rewrite Qpow_0. ring.
-  - cbn [fss_len]. rewrite qsum_flat_map. cbv beta.
-    rewrite (qsum_ext
-               (fun pth => qsum (fs_entries_product v w)
-                             (List.flat_map
-                                (fun d => List.map (fun fs => (pth, d) :: fs)
-                                            (fss_len Lp Lc m))
-                                (short_inputs Lc)))
-               (fun pth => ((Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m
-                             * (1 - Qpow (1 - w) Lc))
-                            * geo_point v (length pth))%Q)).
-    2:{ intros pth _. rewrite qsum_flat_map. cbv beta.
-        rewrite (qsum_ext
-                   (fun d => qsum (fs_entries_product v w)
-                               (List.map (fun fs => (pth, d) :: fs) (fss_len Lp Lc m)))
-                   (fun d => ((Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m
-                               * geo_point v (length pth))
-                              * geo_point w (length d))%Q)).
-        2:{ intros d _. rewrite qsum_map. cbv beta.
-            rewrite (qsum_ext (fun fs => fs_entries_product v w ((pth, d) :: fs))
-                       (fun fs => ((geo_point v (length pth) * geo_point w (length d))
-                                   * fs_entries_product v w fs)%Q))
-              by (intros fs _; cbn [fs_entries_product]; reflexivity).
-            rewrite (qsum_scale (geo_point v (length pth) * geo_point w (length d))%Q
-                       (fs_entries_product v w) (fss_len Lp Lc m)).
-            rewrite IH. ring. }
-        rewrite (qsum_scale (Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m
-                             * geo_point v (length pth))%Q
-                   (fun d => geo_point w (length d)) (short_inputs Lc)).
-        rewrite short_inputs_sum, geo_prefix_sum_closed. ring. }
-    rewrite (qsum_scale (Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m
-                         * (1 - Qpow (1 - w) Lc))%Q
-               (fun pth => geo_point v (length pth)) (short_inputs Lp)).
-    rewrite short_inputs_sum, geo_prefix_sum_closed, Qpow_succ. ring.
-Qed.
+(** What the witness family collects: one [envp_prefix_sum] per table,
+    each at its table's element mass. *)
+Definition fs_prefix_mass (u v w : Q) (Lp Lc M : nat) : Q :=
+  (envp_prefix_sum u (name_mass v w Lp Lc) M
+   * envp_prefix_sum u (row_mass w Lc) M
+   * envp_prefix_sum u (dir_mass v w Lp Lc) M)%Q.
 
-Lemma qsum_fs_point_fss_len : forall u v w Lp Lc m,
-  (qsum (fs_point u v w) (fss_len Lp Lc m)
-     == u * Qpow (1 - u) m
-        * Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) m)%Q.
-Proof.
-  intros u v w Lp Lc m.
-  rewrite (qsum_ext (fs_point u v w)
-             (fun fs => ((u * Qpow (1 - u) m) * fs_entries_product v w fs)%Q)).
-  2:{ intros fs Hfs. rewrite fs_point_closed_form.
-      rewrite (fss_len_In_length Lp Lc m fs Hfs). ring. }
-  rewrite (qsum_scale (u * Qpow (1 - u) m)%Q (fs_entries_product v w)
-             (fss_len Lp Lc m)).
-  rewrite qsum_fs_entries_product_fss_len. ring.
-Qed.
-
-(** The partial sum over entry counts is [envp_prefix_sum] at the
-    product base — the same [Fixpoint], because the file-system
-    coordinate is the environment coordinate with a different slot
-    total. *)
 Lemma qsum_fs_point_fss_upto : forall u v w Lp Lc M,
-  (qsum (fs_point u v w) (fss_upto Lp Lc M)
-     == envp_prefix_sum u ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) M)%Q.
+  (qsum (fs_point u v w) (fss_upto Lp Lc M) == fs_prefix_mass u v w Lp Lc M)%Q.
 Proof.
-  intros u v w Lp Lc M. induction M as [| M IH]; [reflexivity |].
-  cbn [fss_upto envp_prefix_sum].
-  rewrite qsum_app, IH, qsum_fs_point_fss_len. reflexivity.
+  intros u v w Lp Lc M. unfold fss_upto, fs_prefix_mass.
+  rewrite qsum_fs_product, !qsum_list_point_lists_upto.
+  rewrite (envp_prefix_sum_Qeq u _ _ M (qsum_name_inputs v w Lp Lc)),
+          (envp_prefix_sum_Qeq u _ _ M (qsum_row_inputs w Lc)),
+          (envp_prefix_sum_Qeq u _ _ M (qsum_dir_inputs v w Lp Lc)).
+  reflexivity.
 Qed.
 
 (* =========================================================================
@@ -15031,16 +15970,6 @@ Proof.
     apply (Qle_trans _ ((1 - x) * (1 - y))%Q); [| apply Qle_of_Qeq; ring].
     apply Qmult_le_0_compat;
       [apply (Qle_minus_iff x 1); exact Hx1 | apply (Qle_minus_iff y 1); exact Hy1].
-Qed.
-
-Lemma Qmult_unit : forall x y,
-  (0 <= x)%Q -> (x <= 1)%Q -> (0 <= y)%Q -> (y <= 1)%Q ->
-  (0 <= x * y)%Q /\ (x * y <= 1)%Q.
-Proof.
-  intros x y Hx0 Hx1 Hy0 Hy1. split.
-  - apply Qmult_le_0_compat; assumption.
-  - apply (Qle_trans _ (1 * 1)%Q); [| apply Qle_of_Qeq; ring].
-    apply Qmult_le_compat_nonneg; split; assumption.
 Qed.
 
 (** The partial sum is in the unit interval: nonnegative term by term,
@@ -15111,37 +16040,139 @@ Proof.
   - apply envp_prefix_sum_lower; assumption.
 Qed.
 
-(** THE FILE-SYSTEM COORDINATE'S MARGIN: two entry-length shortfalls,
-    one per half of the pair, and one entry-count tail. *)
-Lemma fs_prefix_margin : forall u v w Lp Lc M,
-  (0 <= u)%Q -> (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q ->
-  (0 <= w)%Q -> (w <= 1)%Q ->
-  (1 - (Qnat M * Qpow (1 - v) Lp + Qnat M * Qpow (1 - w) Lc + Qpow (1 - u) M)
-     <= envp_prefix_sum u ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) M)%Q.
+(** ONE LIST LAW'S MARGIN: its partial sum at entry-count depth [M] is
+    within [M * (1 - G) + (1 - u) ^ M] of [1] when one element collects
+    [G] — the element shortfall over [M] slots ([Qpow_one_minus_lower]
+    at [1 - G]) plus the entry-count tail. *)
+Lemma list_prefix_margin : forall u G M,
+  (0 <= u)%Q -> (u <= 1)%Q -> (0 <= G)%Q -> (G <= 1)%Q ->
+  (1 - (Qnat M * (1 - G) + Qpow (1 - u) M) <= envp_prefix_sum u G M)%Q.
 Proof.
-  intros u v w Lp Lc M Hu0 Hu1 Hv0 Hv1 Hw0 Hw1.
-  destruct (geo_tail_unit v Lp Hv0 Hv1) as [Hxv0 Hxv1].
-  destruct (geo_head_unit v Lp Hv0 Hv1) as [HGv0 HGv1].
-  destruct (geo_tail_unit w Lc Hw0 Hw1) as [Hxw0 Hxw1].
-  destruct (geo_head_unit w Lc Hw0 Hw1) as [HGw0 HGw1].
+  intros u G M Hu0 Hu1 HG0 HG1.
   destruct (geo_head_unit u M Hu0 Hu1) as [Hc0 Hc1].
-  destruct (Qmult_unit _ _ HGv0 HGv1 HGw0 HGw1) as [HG0 HG1].
-  apply (Qle_trans _ (Qpow ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) M
-                      * (1 - Qpow (1 - u) M))%Q).
+  apply (Qle_trans _ (Qpow G M * (1 - Qpow (1 - u) M))%Q).
   - apply Qprod_margin.
     + apply Qpow_nonneg. exact HG0.
     + apply Qpow_le_1; assumption.
     + exact Hc0.
     + exact Hc1.
-    + rewrite Qpow_mult. apply Qprod_margin.
-      * apply Qpow_nonneg. exact HGv0.
-      * apply Qpow_le_1; assumption.
-      * apply Qpow_nonneg. exact HGw0.
-      * apply Qpow_le_1; assumption.
-      * apply Qpow_one_minus_lower; assumption.
-      * apply Qpow_one_minus_lower; assumption.
+    + rewrite <- (Qpow_Qeq (1 - (1 - G)) G M) by ring.
+      apply Qpow_one_minus_lower.
+      * apply (Qle_minus_iff G 1). exact HG1.
+      * apply (proj2 (Qle_minus_iff (1 - G) 1)).
+        apply (Qle_trans _ G); [exact HG0 | apply Qle_of_Qeq; ring].
     + apply Qle_refl.
   - apply envp_prefix_sum_lower; assumption.
+Qed.
+
+(** What each table's element mass falls short of [1] by, in the two
+    tails [(1 - v) ^ Lp] and [(1 - w) ^ Lc]. *)
+Lemma name_mass_gap : forall v w Lp Lc,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (1 - name_mass v w Lp Lc <= Qpow (1 - v) Lp + Qpow (1 - w) Lc)%Q.
+Proof.
+  intros v w Lp Lc Hv0 Hv1 Hw0 Hw1. unfold name_mass, entry_mass.
+  destruct (geo_tail_unit v Lp Hv0 Hv1) as [P0 P1].
+  destruct (geo_tail_unit w Lc Hw0 Hw1) as [T0 T1].
+  set (P := Qpow (1 - v) Lp) in *. set (T := Qpow (1 - w) Lc) in *.
+  apply (proj2 (Qle_minus_iff _ _)).
+  apply (Qle_trans _ ((3 # 8) * T + (5 # 8) * (P * T))%Q).
+  - apply Qplus_nonneg; apply Qmult_le_0_compat; try q_lit; try assumption.
+    apply Qmult_le_0_compat; assumption.
+  - apply Qle_of_Qeq. ring.
+Qed.
+
+Lemma row_mass_gap : forall w Lc,
+  (0 <= w)%Q -> (w <= 1)%Q ->
+  (1 - row_mass w Lc <= 3 * Qpow (1 - w) Lc)%Q.
+Proof.
+  intros w Lc Hw0 Hw1. unfold row_mass.
+  destruct (geo_tail_unit w Lc Hw0 Hw1) as [T0 T1].
+  set (T := Qpow (1 - w) Lc) in *.
+  apply (proj2 (Qle_minus_iff _ _)).
+  apply (Qle_trans _ (T * T * (3 - T))%Q).
+  - apply Qmult_le_0_compat; [apply Qmult_le_0_compat; assumption |].
+    apply (Qle_trans _ (3 - 1)%Q); [q_lit |].
+    apply Qplus_le_compat; [apply Qle_refl | apply Qopp_le_compat; exact T1].
+  - apply Qle_of_Qeq. ring.
+Qed.
+
+Lemma dir_mass_gap : forall v w Lp Lc,
+  (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (1 - dir_mass v w Lp Lc <= Qpow (1 - v) Lp + 2 * Qpow (1 - w) Lc)%Q.
+Proof.
+  intros v w Lp Lc Hv0 Hv1 Hw0 Hw1. unfold dir_mass.
+  destruct (geo_tail_unit v Lp Hv0 Hv1) as [P0 P1].
+  destruct (geo_tail_unit w Lc Hw0 Hw1) as [T0 T1].
+  set (P := Qpow (1 - v) Lp) in *. set (T := Qpow (1 - w) Lc) in *.
+  apply (proj2 (Qle_minus_iff _ _)).
+  apply (Qle_trans _ (T * T + P * T * (2 - T))%Q).
+  - apply Qplus_nonneg; [apply Qmult_le_0_compat; assumption |].
+    apply Qmult_le_0_compat; [apply Qmult_le_0_compat; assumption |].
+    apply (Qle_trans _ (2 - 1)%Q); [q_lit |].
+    apply Qplus_le_compat; [apply Qle_refl | apply Qopp_le_compat; exact T1].
+  - apply Qle_of_Qeq. ring.
+Qed.
+
+(** THE FILE-SYSTEM COORDINATE'S MARGIN: three tables, each with its
+    entry-count tail and its element shortfall, charged together as six
+    times the one-table margin. *)
+Definition fs_margin (u v w : Q) (M Lp Lc : nat) : Q :=
+  (6 * (Qnat M * Qpow (1 - v) Lp + Qnat M * Qpow (1 - w) Lc + Qpow (1 - u) M))%Q.
+
+Lemma fs_prefix_mass_unit : forall u v w Lp Lc M,
+  (0 <= u)%Q -> (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q -> (0 <= w)%Q -> (w <= 1)%Q ->
+  (0 <= fs_prefix_mass u v w Lp Lc M)%Q /\ (fs_prefix_mass u v w Lp Lc M <= 1)%Q.
+Proof.
+  intros u v w Lp Lc M Hu0 Hu1 Hv0 Hv1 Hw0 Hw1. unfold fs_prefix_mass.
+  destruct (name_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1) as [N0 N1].
+  destruct (row_mass_unit w Lc Hw0 Hw1) as [R0 R1].
+  destruct (dir_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1) as [D0 D1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 N0 N1) as [SN0 SN1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 R0 R1) as [SR0 SR1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 D0 D1) as [SD0 SD1].
+  destruct (Qmult_unit _ _ SN0 SN1 SR0 SR1) as [P0 P1].
+  apply Qmult_unit; assumption.
+Qed.
+
+Lemma fs_prefix_margin : forall u v w Lp Lc M,
+  (0 <= u)%Q -> (u <= 1)%Q -> (0 <= v)%Q -> (v <= 1)%Q ->
+  (0 <= w)%Q -> (w <= 1)%Q ->
+  (1 - fs_margin u v w M Lp Lc <= fs_prefix_mass u v w Lp Lc M)%Q.
+Proof.
+  intros u v w Lp Lc M Hu0 Hu1 Hv0 Hv1 Hw0 Hw1. unfold fs_prefix_mass, fs_margin.
+  destruct (name_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1) as [N0 N1].
+  destruct (row_mass_unit w Lc Hw0 Hw1) as [R0 R1].
+  destruct (dir_mass_unit v w Lp Lc Hv0 Hv1 Hw0 Hw1) as [D0 D1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 N0 N1) as [SN0 SN1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 R0 R1) as [SR0 SR1].
+  destruct (envp_prefix_sum_unit u _ M Hu0 Hu1 D0 D1) as [SD0 SD1].
+  destruct (Qmult_unit _ _ SN0 SN1 SR0 SR1) as [P0 P1].
+  assert (GN := name_mass_gap v w Lp Lc Hv0 Hv1 Hw0 Hw1).
+  assert (GR := row_mass_gap w Lc Hw0 Hw1).
+  assert (GD := dir_mass_gap v w Lp Lc Hv0 Hv1 Hw0 Hw1).
+  destruct (geo_tail_unit v Lp Hv0 Hv1) as [Pv0 _].
+  destruct (geo_tail_unit u M Hu0 Hu1) as [Uu0 _].
+  assert (HM := Qnat_nonneg M).
+  apply (Qle_trans _ (1 - ((Qnat M * (1 - name_mass v w Lp Lc) + Qpow (1 - u) M)
+                           + (Qnat M * (1 - row_mass w Lc) + Qpow (1 - u) M)
+                           + (Qnat M * (1 - dir_mass v w Lp Lc) + Qpow (1 - u) M)))%Q).
+  - apply Qplus_le_compat; [apply Qle_refl |]. apply Qopp_le_compat.
+    apply (Qle_trans _ ((Qnat M * (Qpow (1 - v) Lp + Qpow (1 - w) Lc) + Qpow (1 - u) M)
+                        + (Qnat M * (3 * Qpow (1 - w) Lc) + Qpow (1 - u) M)
+                        + (Qnat M * (Qpow (1 - v) Lp + 2 * Qpow (1 - w) Lc)
+                           + Qpow (1 - u) M))%Q).
+    + repeat apply Qplus_le_compat; try apply Qle_refl;
+        apply Qmult_le_compat_l_nn; assumption.
+    + apply (proj2 (Qle_minus_iff _ _)).
+      apply (Qle_trans _ (4 * (Qnat M * Qpow (1 - v) Lp) + 3 * Qpow (1 - u) M)%Q).
+      * apply Qplus_nonneg; apply Qmult_le_0_compat; try q_lit;
+          try (apply Qmult_le_0_compat); assumption.
+      * apply Qle_of_Qeq. ring.
+  - apply Qprod_margin; [exact P0 | exact P1 | exact SD0 | exact SD1 | |
+                          apply list_prefix_margin; assumption].
+    apply Qprod_margin; [exact SN0 | exact SN1 | exact SR0 | exact SR1 | |];
+      apply list_prefix_margin; assumption.
 Qed.
 
 (** THE MARGIN ARITHMETIC OF THE CERTIFICATE, WITH THE EIGHT DEPTHS
@@ -15157,12 +16188,12 @@ Lemma full_support_margin_at_depths :
   (0 <= w)%Q -> (w <= 1)%Q -> (0 <= ps)%Q -> (ps <= 1)%Q ->
   (Qnat Ma * Qpow (1 - qa) La + Qpow (1 - ra) Ma
    + (Qnat Me * Qpow (1 - qe) Le + Qpow (1 - re) Me)
-   + (Qnat Mf * Qpow (1 - v) Lp + Qnat Mf * Qpow (1 - w) Lc + Qpow (1 - u) Mf)
+   + fs_margin u v w Mf Lp Lc
    + Qpow (1 - ps) k <= eps)%Q ->
   (1 - eps
      <= envp_prefix_sum ra (1 - Qpow (1 - qa) La) Ma
         * envp_prefix_sum re (1 - Qpow (1 - qe) Le) Me
-        * envp_prefix_sum u ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) Mf
+        * fs_prefix_mass u v w Lp Lc Mf
         * (1 - Qpow (1 - ps) k))%Q.
 Proof.
   intros ra qa re qe u v w ps eps Ma La Me Le Mf Lp Lc k
@@ -15170,25 +16201,20 @@ Proof.
     Hsum.
   destruct (geo_head_unit qa La Hqa0 Hqa1) as [HGa0 HGa1].
   destruct (geo_head_unit qe Le Hqe0 Hqe1) as [HGe0 HGe1].
-  destruct (geo_head_unit v Lp Hv0 Hv1) as [HGv0 HGv1].
-  destruct (geo_head_unit w Lc Hw0 Hw1) as [HGw0 HGw1].
-  destruct (Qmult_unit _ _ HGv0 HGv1 HGw0 HGw1) as [HGf0 HGf1].
+  destruct (fs_prefix_mass_unit u v w Lp Lc Mf Hu0 Hu1 Hv0 Hv1 Hw0 Hw1) as [HSf0 HSf1].
   destruct (envp_prefix_sum_unit ra _ Ma Hra0 Hra1 HGa0 HGa1) as [HSa0 HSa1].
   destruct (envp_prefix_sum_unit re _ Me Hre0 Hre1 HGe0 HGe1) as [HSe0 HSe1].
-  destruct (envp_prefix_sum_unit u _ Mf Hu0 Hu1 HGf0 HGf1) as [HSf0 HSf1].
   destruct (geo_head_unit ps k Hps0 Hps1) as [HSs0 HSs1].
   destruct (Qmult_unit _ _ HSa0 HSa1 HSe0 HSe1) as [HSae0 HSae1].
   destruct (Qmult_unit _ _ HSae0 HSae1 HSf0 HSf1) as [HSaef0 HSaef1].
   apply (Qle_trans _ (1 - (Qnat Ma * Qpow (1 - qa) La + Qpow (1 - ra) Ma
                            + (Qnat Me * Qpow (1 - qe) Le + Qpow (1 - re) Me)
-                           + (Qnat Mf * Qpow (1 - v) Lp + Qnat Mf * Qpow (1 - w) Lc
-                              + Qpow (1 - u) Mf)
+                           + fs_margin u v w Mf Lp Lc
                            + Qpow (1 - ps) k))%Q).
   - apply (proj2 (Qle_minus_iff (1 - eps) _)).
     apply (Qle_trans _ (eps + - (Qnat Ma * Qpow (1 - qa) La + Qpow (1 - ra) Ma
                                  + (Qnat Me * Qpow (1 - qe) Le + Qpow (1 - re) Me)
-                                 + (Qnat Mf * Qpow (1 - v) Lp
-                                    + Qnat Mf * Qpow (1 - w) Lc + Qpow (1 - u) Mf)
+                                 + fs_margin u v w Mf Lp Lc
                                  + Qpow (1 - ps) k))%Q);
       [apply (proj1 (Qle_minus_iff _ eps)); exact Hsum | apply Qle_of_Qeq; ring].
   - apply Qprod_margin; [exact HSaef0 | exact HSaef1 | exact HSs0 | exact HSs1 | | apply Qle_refl].
@@ -15198,7 +16224,10 @@ Proof.
 Qed.
 
 (** ... AND THE DEPTHS THAT MEET IT.  Each strictness buys exactly one
-    depth, eight in all, and each is asked for an eighth of the margin.
+    depth, eight in all: the five argv, envp and standard-input depths
+    are each asked for an eighth of the margin, and the three file-system
+    depths a forty-eighth each, because [fs_margin] charges them six
+    times over.
     An entry-count depth is [geo_gap_small] on its stop rate; an
     entry-length depth is chosen AFTER the entry count it has to cover
     ([entry_depth_for], which is the [M + 1] division
@@ -15246,25 +16275,31 @@ Lemma full_support_depths_above : forall ra qa re qe u v w ps eps,
   exists Ma La Me Le Mf Lp Lc k : nat,
     (Qnat Ma * Qpow (1 - qa) La + Qpow (1 - ra) Ma
      + (Qnat Me * Qpow (1 - qe) Le + Qpow (1 - re) Me)
-     + (Qnat Mf * Qpow (1 - v) Lp + Qnat Mf * Qpow (1 - w) Lc + Qpow (1 - u) Mf)
+     + fs_margin u v w Mf Lp Lc
      + Qpow (1 - ps) k <= eps)%Q.
 Proof.
   intros ra qa re qe u v w ps eps Hrapos Hra1 Hqapos Hqa1 Hrepos Hre1 Hqepos Hqe1
     Hupos Hu1 Hvpos Hv1 Hwpos Hw1 Hpspos Hps1 Heps.
   assert (Heps8 : (0 < eps * (1 # 8))%Q)
     by (apply Qmult_lt_0_compat; [exact Heps | reflexivity]).
+  assert (Heps48 : (0 < eps * (1 # 48))%Q)
+    by (apply Qmult_lt_0_compat; [exact Heps | reflexivity]).
   destruct (geo_gap_small ra (eps * (1 # 8)) Hrapos Hra1 Heps8) as [Ma HMa].
   destruct (entry_depth_for qa (eps * (1 # 8)) Ma Hqapos Hqa1 Heps8) as [La HLa].
   destruct (geo_gap_small re (eps * (1 # 8)) Hrepos Hre1 Heps8) as [Me HMe].
   destruct (entry_depth_for qe (eps * (1 # 8)) Me Hqepos Hqe1 Heps8) as [Le HLe].
-  destruct (geo_gap_small u (eps * (1 # 8)) Hupos Hu1 Heps8) as [Mf HMf].
-  destruct (entry_depth_for v (eps * (1 # 8)) Mf Hvpos Hv1 Heps8) as [Lp HLp].
-  destruct (entry_depth_for w (eps * (1 # 8)) Mf Hwpos Hw1 Heps8) as [Lc HLc].
+  destruct (geo_gap_small u (eps * (1 # 48)) Hupos Hu1 Heps48) as [Mf HMf].
+  destruct (entry_depth_for v (eps * (1 # 48)) Mf Hvpos Hv1 Heps48) as [Lp HLp].
+  destruct (entry_depth_for w (eps * (1 # 48)) Mf Hwpos Hw1 Heps48) as [Lc HLc].
   destruct (geo_gap_small ps (eps * (1 # 8)) Hpspos Hps1 Heps8) as [k Hk].
   exists Ma, La, Me, Le, Mf, Lp, Lc, k.
+  assert (Hf : (fs_margin u v w Mf Lp Lc
+                <= 6 * (eps * (1 # 48) + eps * (1 # 48) + eps * (1 # 48)))%Q).
+  { unfold fs_margin. apply Qmult_le_compat_l_nn; [| q_lit].
+    repeat apply Qplus_le_compat; assumption. }
   apply (Qle_trans _ (eps * (1 # 8) + eps * (1 # 8)
                       + (eps * (1 # 8) + eps * (1 # 8))
-                      + (eps * (1 # 8) + eps * (1 # 8) + eps * (1 # 8))
+                      + 6 * (eps * (1 # 48) + eps * (1 # 48) + eps * (1 # 48))
                       + eps * (1 # 8))%Q);
     [| apply Qle_of_Qeq; ring].
   repeat apply Qplus_le_compat; assumption.
@@ -15315,7 +16350,7 @@ Lemma full_support_base_mass_lower_witness :
         (full_support_lower_witness Ma La Me Le Mf Lp Lc k)
         == envp_prefix_sum ra (1 - Qpow (1 - qa) La) Ma
            * envp_prefix_sum re (1 - Qpow (1 - qe) Le) Me
-           * envp_prefix_sum u ((1 - Qpow (1 - v) Lp) * (1 - Qpow (1 - w) Lc)) Mf
+           * fs_prefix_mass u v w Lp Lc Mf
            * (1 - Qpow (1 - ps) k))%Q.
 Proof.
   intros ra qa re qe u v w ps Hra0 Hra1 Hqa0 Hqa1 Hre0 Hre1 Hqe0 Hqe1

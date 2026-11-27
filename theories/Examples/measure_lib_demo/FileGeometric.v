@@ -74,7 +74,7 @@ Definition file_demo_path : Fs.path :=
     their input from the path, so leaving standard input with any
     content at all would put weight on a coordinate nothing reads. *)
 Definition file_demo_envp : list (list byte) := [].
-Definition file_demo_fs0 : Fs.Fs := [].
+Definition file_demo_fs0 : Fs.Fs := Fs.fs_empty.
 Definition file_demo_stdin : list byte := [].
 
 Definition file_demo_p : Q := (1 # 8)%Q.
@@ -303,20 +303,20 @@ Qed.
     [file_demo_argv_names_path] buys, made concrete. *)
 Lemma file_demo_misconfiguration_is_invisible :
   ~ argv_names_path file_misconfigured_argv file_example_path
-  /\ (0 < cd_weight (file_geometric file_demo_p file_misconfigured_argv [] []
+  /\ (0 < cd_weight (file_geometric file_demo_p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path []
                        file_demo_p_nonneg file_demo_p_le_1)
-            (file_core file_misconfigured_argv [] [] file_example_path [] []))%Q
-  /\ (0 < cd_weight (file_geometric file_demo_p file_misconfigured_argv [] []
+            (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path [] []))%Q
+  /\ (0 < cd_weight (file_geometric file_demo_p file_misconfigured_argv [] Fs.fs_empty
                        file_example_path []
                        file_demo_p_nonneg file_demo_p_le_1)
-            (file_core file_misconfigured_argv [] [] file_example_path []
+            (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_core file_misconfigured_argv [] [] file_example_path []
+       (core_fs (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                    []))
      = fs_file file_other_path
-         (core_fs (file_core file_misconfigured_argv [] [] file_example_path []
+         (core_fs (file_core file_misconfigured_argv [] Fs.fs_empty file_example_path []
                      [Z_to_bv 8 65])).
 Proof.
   exact (file_geometric_needs_argv_to_name_the_path file_demo_p

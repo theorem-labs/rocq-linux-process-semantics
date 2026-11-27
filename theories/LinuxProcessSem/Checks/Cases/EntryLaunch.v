@@ -8,7 +8,7 @@
     proves the conjunct EQUAL to the set of start states a Linux
     v6.18.46 (commit 1f99e9ab748f) launch gives.
 
-    THE FIXTURE, acceptance item A1 of the start-state specification: argv
+    THE FIXTURE, A1: argv
     ["a"], no envp, exec file name "a", uid = gid = 1000, AT_HWCAP
     without V, CONFIG_RSEQ on, a guard gap of 256 pages,
     [vm.mmap_rnd_bits] 18, no vector unit, no cache leaf reported and
@@ -17,8 +17,8 @@
     [entry_launch_ok_va_is_linux], which is stated for every
     [State.VaSize], every entry and every input.
 
-    WHICH RESULT IS WHICH ACCEPTANCE BULLET.  A1 lists eleven things to
-    pin; each has one name here.
+    WHICH RESULT IS WHICH.  A1 pins eleven things; each has one name
+    here.
 
     - admitted without randomization, [ed_top] = 0x800000000000,
       sp = 0x7ffffffffdf0, base = 0x7ffff8000000:
@@ -49,14 +49,14 @@
       for the empty exec name: [a1_e2big_argv_refused] and
       [a1_empty_execfn_refused].
     - the block of the first admitted entry, byte for byte against a
-      hand computation from the spec's "The block":
+      hand computation of the block:
       [a1_block_length], [a1_block_addresses], [a1_block_head_words],
       [a1_block_auxv_is_linuxs] and [a1_block_is_linuxs_bytes].
     - [entry_launch_ok_va_is_linux]: the conjunct holds EXACTLY when
       some draws give that stack top, stack pointer and mmap base
       through the transcription [linux_launch_state] of
-      [randomize_stack_top] and [setup_arg_pages] (mm/util.c,
-      fs/exec.c), [create_elf_tables] (fs/binfmt_elf.c) and [mmap_base]
+      [randomize_stack_top] (mm/util.c) and [setup_arg_pages]
+      (fs/exec.c), [create_elf_tables] (fs/binfmt_elf.c) and [mmap_base]
       with [arch_mmap_rnd] (mm/util.c).
     - every valid input still has an entry, so the quantifier of every
       statement is not empty: [a1_witness_entry_is_valid], which fires
@@ -515,9 +515,10 @@ Definition a1_kernel (aslr : bool) : KernelBuild :=
 
 Definition a1_input_argv (argv : list (list byte)) (execfn : list byte)
     (kb : KernelBuild) : ProcInput :=
-  mkProcInput_full argv [] [] IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
+  mkProcInput_full argv [] (fst (Fs.migrate_image Fs.default_cwd []))
+                   Fs.default_cwd IEof (Z_to_bv 64 1000) (Z_to_bv 64 1000) []
                    net_silent default_nofile (Z_to_bv 64 0) hwcap_rv64gc
-                   false Sv48 default_urandom [] kb execfn true true false.
+                   false Sv48 default_urandom kb execfn true true false.
 
 (** The fixture's input with the launch facts left open, so that a
     refusal below can be stated for EVERY value of them. *)
@@ -526,7 +527,7 @@ Definition a1_input_kb (kb : KernelBuild) : ProcInput :=
 
 Definition a1_input (aslr : bool) : ProcInput := a1_input_kb (a1_kernel aslr).
 
-(** The three measurements the spec's "The block" names for this
+(** The three measurements of the block for this
     fixture, read off [StackLayout]'s own definitions: the vector is 29
     entries, [items] is 4, C = 512 and L = 4. *)
 Example a1_fixture_measurements :
@@ -966,7 +967,7 @@ Definition w8 (x : Z) : list Z :=
    x / 281474976710656 mod 256; x / 72057594037927936 mod 256].
 
 (** THE AUXILIARY VECTOR THIS LAUNCH PUBLISHES, computed by hand from
-    the spec's "The block" and Design "The vDSO pages":
+    the block's layout and the vDSO pages:
 
     - AT_SYSINFO_EHDR (33) is the vDSO text, directly below the mmap
       base.  Its length is now MEASURED rather than a formula over a

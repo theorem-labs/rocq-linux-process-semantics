@@ -71,8 +71,9 @@
     WARNING.  This soundness argument does NOT transfer to:
 
       - a string in a heap/brk or mmap buffer — there is no analogue of
-        the AT_RANDOM tail, and a string ending at the last byte of the
-        break or of an mmap region over-reads into unmapped memory;
+        the bytes above the argv strings, and a string ending at the last
+        byte of the break or of an mmap region over-reads into unmapped
+        memory;
       - a string ending at the top of ITS OWN mapping, for the same
         reason;
       - a caller-chosen buffer whose length is not tied to the layout.
@@ -595,9 +596,11 @@ Qed.
 (* An 8-byte load anywhere inside an argv string                       *)
 (*                                                                     *)
 (* musl's strlen reads a whole aligned word, so the load can straddle   *)
-(* the NUL terminator.  The stack image always ends with the 16         *)
-(* AT_RANDOM bytes (after the pad), so there are at least 16 readable   *)
-(* bytes past the last argv string's NUL and such a read never faults.  *)
+(* the NUL terminator.  Above the argv strings the stack image holds    *)
+(* the envp strings, the exec name with its NUL and the eight-byte      *)
+(* slot below the stack's top (fs/exec.c:1831-1840, mm/vma_exec.c:150,  *)
+(* Linux v6.18.46), so at least 8 readable bytes follow any byte of an  *)
+(* argv string, its NUL included, and such a read never faults.         *)
 (* See the over-read warning in this file's header.                     *)
 (* ------------------------------------------------------------------ *)
 

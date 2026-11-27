@@ -70,7 +70,10 @@
     [Obligations.demo_b_half_refutable]), is the weaker and checkable
     thing: against THIS weight and THIS total the multiplier cannot be
     dropped to [0] and cannot be halved, so [b = 1] is a real claim
-    rather than a number any distribution would satisfy. *)
+    rather than a number any distribution would satisfy.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith NArith List QArith.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -89,7 +92,7 @@ Import ListNotations.
     envp or file system differs from these weighs zero. *)
 Definition demo_argv : list (list byte) := [[]].
 Definition demo_envp : list (list byte) := [].
-Definition demo_fs : Fs.Fs := [].
+Definition demo_fs : Fs.Fs := Fs.standard_root Fs.default_cwd.
 
 (* =========================================================================
    The background

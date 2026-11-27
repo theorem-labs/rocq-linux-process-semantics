@@ -40,7 +40,8 @@
        own unconditional entries, in the order [auxv_entries] lists. *)
 
 From Stdlib Require Import ZArith NArith List Lia.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase MemImageType.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
 Import ListNotations.
 Open Scope bv_scope.
 
@@ -116,7 +117,7 @@ Definition hwcap_rv64gcv : word := Z_to_bv 64 0x20112D.
     vector's LENGTH is fixed by the type: every address in the block
     below is a function of (sp, the stack top, argv, envp, the exec
     name, CONFIG_RSEQ), and nothing a machine reports can move one.
-    [State.cache_words_of] derives the record from the launch's four
+    [Run.launch_cache_words] derives the record from the kernel build's four
     [State.CacheLeaf] facts with the kernel's own formulas. *)
 Record CacheWords := mkCacheWords {
   cw_l1i_size : word;
@@ -205,9 +206,9 @@ Record LaunchAuxv := mkLaunchAuxv {
       effective-id field, so [State.init_model] derives the effective
       and saved ids from the real ones and a set-id launch cannot be
       stated; SCOPE.md records the matching assumption that no file
-      capability and no LSM transition asks for secure mode
-      (security/commoncap.c [cap_bprm_creds_from_file],
-      security/selinux/hooks.c).
+      capability asks for secure mode, [cap_bprm_creds_from_file]
+      (security/commoncap.c) being the only hook the configuration of
+      record builds.
     - AT_RSEQ_FEATURE_SIZE is [offsetof(struct rseq, end)] = 28 and
       AT_RSEQ_ALIGN is [__alignof__(struct rseq)] = 32
       (include/uapi/linux/rseq.h).
@@ -468,7 +469,7 @@ Definition block_pad_len (rseq : bool) (sp top : word)
     the definition is total for every [sp] and [top].  Under
     [Run.entry_launch_ok_va] it is between 0 and 4110 and the image's
     length is exactly [top - sp]
-    ([Run.length_entry_stack_image_launch]).
+    ([PropExec.length_entry_stack_image_launch]).
 
     WHY 4110 AND NOT 4095.  [arch_align_stack]
     (arch/riscv/kernel/process.c, Linux v6.18.46, commit 1f99e9ab748f)
@@ -530,7 +531,7 @@ Qed.
 (** The block runs from [sp] to [top]: its head is [C], its tail is the
     strings and the eight-byte slot, and the pad is whatever lies
     between.  Clamped at 0 by [Z.to_nat], so this holds for every [sp]
-    and [top]; [Run.length_entry_stack_image_launch] reads it under the
+    and [top]; [PropExec.length_entry_stack_image_launch] reads it under the
     launch conjunct, where the pad is between 0 and 4110 and the sum
     collapses to [top - sp]. *)
 Lemma length_build_stack_bytes :

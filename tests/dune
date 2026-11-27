@@ -83,8 +83,7 @@
    placement/linux-6.18.46-defconfig.log
    --out PlacementReplayOffByOnePage.v --kb-thp 0 --expect reject
    --perturb 0 --perturb-pages -1)))
-; THE REAL-KERNEL START STATE (acceptance item A4 of the start-state
-; specification, tools/placement_conformance).
+; THE REAL-KERNEL START STATE (tools/placement_conformance).
 ; Each rule turns one start-state log of the probe into a Rocq file that
 ; states the recorded launch as LPS terms and closes three lemmas by
 ; computation: Run.entry_launch_ok_va of the recorded stack end, stack
@@ -232,8 +231,8 @@
 ; line, because the main theory is rooted at theories/ and Common/ is inside
 ; it -- but then dune has no edge ordering the two, and schedules this
 ; theory's files whenever it likes.  Measured: from a cold tree it never
-; bites; after `dune build tests/StartStateNorandmapsSeed1Fixture.vo`, which
-; reports/a4-start-state.md tells a reader to run, the next `dune build`
+; bites; after `dune build tests/StartStateNorandmapsSeed1Fixture.vo`, the
+; next `dune build`
 ; compiles VdsoReservedWitness.v while theories/Common is still building and
 ; fails with "Unable to locate library AxSymExec3".
 (rocq.theory

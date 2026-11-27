@@ -42,7 +42,7 @@ Definition check_mremap (old old_size new_size flags : word)
   else if page_align_is0_b new_size
   then check_ret_only eff (errno_ret EINVAL) m []
   else if (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z
-  then check_ret_only eff (errno_ret EINVAL) m []
+  then CheckUnmodeled
   else if page_align_is0_b old_size
   then CheckUnmodeled
   else
@@ -145,9 +145,8 @@ Proof.
   destruct (page_align_is0_b new_size) eqn:Hnew.
   { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
     apply pure_ok. }
-  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
-  { apply check_ret_only_ok_iff in H. destruct H as (-> & -> & ->).
-    apply pure_ok. }
+  destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask;
+    [discriminate|].
   destruct (page_align_is0_b old_size) eqn:Hold; [discriminate|].
   cbv zeta in H.
   destruct (negb (mremap_source_b (m_vmmaps m) old
@@ -287,7 +286,7 @@ Proof.
   destruct (page_align_is0_b new_size) eqn:Hnew.
   { now apply check_ret_only_no_unmodeled in H. }
   destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
-  { now apply check_ret_only_no_unmodeled in H. }
+  { apply unmodeled_intro. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { apply unmodeled_intro. }
   cbv zeta in H.
@@ -373,7 +372,7 @@ Proof.
   destruct (page_align_is0_b new_size) eqn:Hnew.
   { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
   destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
-  { sys_unfold. inv_ok. cbn. rewrite bv_eqb_refl. reflexivity. }
+  { sys_unfold. inv_ok; discriminate. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { sys_unfold. inv_ok; discriminate. }
   sys_unfold. cbv iota zeta in H. inv_ok.
@@ -472,7 +471,7 @@ Proof.
   destruct (page_align_is0_b new_size) eqn:Hnew.
   { sys_unfold. inv_ok; discriminate. }
   destruct (TASK_SIZE <? page_round_up_Z (bv_unsigned new_size))%Z eqn:Htask.
-  { sys_unfold. inv_ok; discriminate. }
+  { reflexivity. }
   destruct (page_align_is0_b old_size) eqn:Hold.
   { reflexivity. }
   sys_unfold. cbv iota zeta in H. inv_ok.

@@ -53,7 +53,7 @@ Open Scope bv_scope.
 Definition stdin_demo_argv : list (list byte) :=
   [[Z_to_bv 8 119; Z_to_bv 8 99]].
 Definition stdin_demo_envp : list (list byte) := [].
-Definition stdin_demo_fs : Fs.Fs := [].
+Definition stdin_demo_fs : Fs.Fs := Fs.fs_empty.
 
 Definition stdin_demo_p : Q := (1 # 8)%Q.
 

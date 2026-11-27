@@ -1,0 +1,1 @@
+conform -- foo bar baz   # argv[1..] joined by spaces, through one anonymous mmap

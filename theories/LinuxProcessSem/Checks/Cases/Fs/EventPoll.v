@@ -25,8 +25,8 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
     -EPERM at step 4 of [EventPoll.epoll_ctl_outcome] once the event
     struct is past. *)
 Definition epoll_model : Model :=
-  mkModel [(0, FdChannel 0); (3, FdFile [102] 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [104; 105])] None None None.
+  mkModel [(0, FdChannel 0); (3, FdFile 1 0)] (mkVmMaps [] [] 0 0 demo_limit) IEof
+    (raw_files [([102], [104; 105])]) None None None.
 
 (** Sixteen readable bytes at 4096: one [struct epoll_event] (riscv64
     does not pack it). *)
@@ -47,7 +47,8 @@ Example epoll_ctl_add_records_the_event_copy :
      = CheckReject.
 Proof. split; [check_eq | vm_compute; reflexivity]. Qed.
 
-(** [EPOLL_CTL_DEL] copies nothing: [ep_op_has_event] is false, the
+(** [EPOLL_CTL_DEL] copies nothing: [ep_op_has_event]
+    (include/linux/eventpoll.h:63-67, Linux v6.18.46) is false, the
     event pointer is never dereferenced however wild it is, and the
     ledger is empty.  A ledger that names the event struct is
     rejected. *)

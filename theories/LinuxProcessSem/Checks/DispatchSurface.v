@@ -239,9 +239,11 @@ Definition probe_mem : word -> option byte :=
     - clock_gettime (113) declines the default CLOCKID: [a0] is a clock
       id here rather than an fd, and AT_FDCWD truncated to 32 bits is no
       modeled clock, so the arm declines before it reaches an answer.
-    - clock_getres (114) also needs a valid CLOCKID.  Its [tp] must be
-      non-NULL in this probe because [probe_mem] makes address zero
-      writable, and QEMU could copy the result there.
+    - clock_getres (114) also needs a valid CLOCKID.  Its [tp] is the
+      non-NULL 4096 so that the probe reaches the copy-out: a NULL [tp]
+      answers 0 with nothing copied, since [SYSCALL_DEFINE2(clock_getres)]
+      (kernel/time/posix-timers.c) calls [put_timespec64] only for a
+      non-NULL [tp].
     - clone (220) declines the default FLAG WORD: [clone_fork_flags_b]
       admits the single word SIGCHLD and nothing else.
     - clone3 (435) declines the default SIZE and the default STRUCT: it
@@ -341,7 +343,7 @@ Definition probe_args (n : Z) : list word :=
        on the destination, which [probe_mem] makes writable. *)
     [Z_to_bv 64 CLOCK_REALTIME; z; z; z; z; z]
   else if Z.eqb n 114 then
-    (* The probe memory is writable at zero, so use a non-NULL [tp]. *)
+    (* A non-NULL [tp], so that the probe reaches the copy-out. *)
     [Z_to_bv 64 CLOCK_MONOTONIC; Z_to_bv 64 4096; z; z; z; z]
   else if Z.eqb n 98 then
     (* futex dispatches on the OP WORD, and the default a1 of 0 is

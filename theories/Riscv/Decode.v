@@ -1,8 +1,8 @@
 (** * Decode: the 32-bit RV64IMAFD_Zicsr_Zifencei decoder.
 
     [decode w = None] means "not a valid 32-bit instruction".  What counts
-    as valid is the RISC-V specification (RV64GC) and QEMU user mode, the
-    references SCOPE.md names for instructions.  binutils objdump is
+    as valid is the RISC-V specification (RV64GC), the reference SCOPE.md
+    names for instructions.  binutils objdump is
     narrower in places; those cases are flagged inline as policy notes for
     a comparison with objdump.
 

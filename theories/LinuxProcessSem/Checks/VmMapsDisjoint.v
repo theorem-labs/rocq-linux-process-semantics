@@ -95,7 +95,10 @@
     unchanged.  The model does not carry [RLIMIT_DATA], and does not need
     to: [brk_r_ok] admits [r = vm_brk h] on every grow, which is that
     same unchanged break, so a refusal it does not model is already an
-    admissible outcome. *)
+    admissible outcome.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -145,9 +148,10 @@ Definition wit_mmap_base : word := Z_to_bv 64 mmap_base_min.
 
     THE RESERVED LIST IS [State.init_reserved], not [wit_reserved]
     alone.  [State.init_model] reserves the image AND the vdso/vvar pair
-    [execve] installs above it ([setup_rt_sigreturn_trampoline] and
-    [_install_special_mapping], arch/riscv/kernel/vdso.c, Linux
-    v6.18.46, commit 1f99e9ab748f), placed at the ledger's [vdso_top].
+    [execve] installs above it ([_install_special_mapping] and
+    [vdso_install_vvar_mapping] from [__setup_additional_pages],
+    arch/riscv/kernel/vdso.c, Linux v6.18.46, commit 1f99e9ab748f),
+    placed at the ledger's [vdso_top].
     No step below touches that pair, so every [wit_sN] has to carry it
     too or the expected model would differ from the one the checker
     hands back in a field no step wrote. *)
@@ -1634,7 +1638,7 @@ Proof.
   difn H Eflag; [discriminate|].
   difn H Ealign; [apply check_ret_only_model in H; subst m'; exact Hwf|].
   difn H Enew; [apply check_ret_only_model in H; subst m'; exact Hwf|].
-  difn H Etask; [apply check_ret_only_model in H; subst m'; exact Hwf|].
+  difn H Etask; [discriminate|].
   difn H Eold; [discriminate|].
   difn H Esrc; [discriminate|].
   difn H Eeq; [apply check_ret_only_model in H; subst m'; exact Hwf|].
@@ -1721,6 +1725,11 @@ Qed.
    invariant survives the whole dispatcher rather than five of its arms.
    ------------------------------------------------------------------------- *)
 
+(** [check_pending_errno] is a leaf, and is never unfolded: its test
+    [errno_ret_in _ (eff_ret eff)] names no variable of an arm, so the
+    [if] case below could split on it before the arms are split, and take
+    every arm still in [H] apart once per branch (unfolded, it doubled
+    this file's peak memory). *)
 Ltac vm_step H :=
   match type of H with
   | CheckReject = CheckOk _ _ => discriminate H
@@ -1730,11 +1739,27 @@ Ltac vm_step H :=
       apply check_ret_only_model in H; subst
   | check_ret_only_copyins _ _ _ _ _ = CheckOk _ _ =>
       apply check_ret_only_copyins_model in H; subst
+  | check_pending_errno _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pending_errno_ok in H;
+      let Hm := fresh in
+      destruct H as (? & _ & _ & Hm & _); subst
   | Prelude.check_copyins_after _ _ _ = CheckOk _ _ =>
       apply check_copyins_after_model in H
   | check_copyin_prefix _ _ _ = CheckOk _ _ =>
       apply check_copyin_prefix_model in H
   | check_copyins _ _ _ = CheckOk _ _ => apply check_copyins_model in H
+  | check_walk_refusals _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_walk_refusals_ok_cases in H;
+      let Hm := fresh in
+      destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
+  | check_getname_refusals _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_getname_refusals_ok_cases in H;
+      let Hm := fresh in
+      destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
+  | check_open_write_existing _ _ _ _ = CheckOk _ _ =>
+      apply check_open_write_existing_ok_cases in H;
+      let Hm := fresh in
+      destruct H as [H | (_ & Hm & _)]; [|subst; reflexivity]
   | context [ if ?b then _ else _ ] => destruct b eqn:?
   | context [ match ?x with _ => _ end ] => destruct x eqn:?
   end.
@@ -1793,7 +1818,10 @@ Ltac vm_done H :=
   | apply check_sigpipe_writev_frame in H; exact H
   | elim (check_readv_gap_frame _ _ H)
   | (eapply check_open_result_frame in H;
-     [exact H | intros; reflexivity]) ].
+     [exact H | intros; reflexivity])
+  | (apply check_random_write_ok_inv in H; destruct H as (-> & _); reflexivity)
+  | (apply check_pwritev2_urandom_ok_inv in H; destruct H as (-> & _); reflexivity)
+  | (apply check_pwritev2_devnull_ok_inv in H; destruct H as (-> & _); reflexivity) ].
 
 Ltac vm_frame2 H :=
   repeat (vm_step H || vm_done H); try reflexivity.
@@ -1865,8 +1893,7 @@ Lemma check_write_frame : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H.
   unfold check_write, check_write_fault_extend, check_access_ok_zero,
-    check_eventfd_write, check_anon_write_fault, check_anon_fault_extend,
-    anon_place_fds in H.
+    check_eventfd_write in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
 
@@ -1887,7 +1914,7 @@ Lemma check_pwrite64_frame : forall i fd buf count pos eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count pos eff m m' evs H.
-  unfold check_pwrite64, check_write_fault_extend, check_anon_fault_extend in H.
+  unfold check_pwrite64, check_write_fault_extend in H.
   cbv zeta in H. vm_frame2 H.
 Qed.
 
@@ -1900,14 +1927,14 @@ Proof.
      [Checks/Sys/Fs/Open.v]; nothing they do reaches the address
      space, and naming them here is what lets [vm_frame2] see that. *)
   unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
-    Open.check_openat_sep, Open.check_openat_localtime,
-    Open.check_openat_devnull, Open.check_open_devnull,
-    Open.check_openat_urandom, Open.check_open_urandom,
-    Open.check_openat_procfd, Open.check_openat_tmp,
+    Open.check_openat_procfd,
     Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
     Open.check_openat_dir, Open.check_openat_append,
     Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
-    check_create_wronly, check_open_append, check_open_rdwr in H.
+    check_create_wronly, check_open_append, check_open_rdwr,
+    check_unused_fd_none in H.
+  unfold Open.check_open_devnull, Open.check_open_urandom,
+    Open.check_open_result_mk in H.
   vm_frame2 H.
 Qed.
 
@@ -1921,10 +1948,11 @@ Proof.
   intros fd off whence eff m m' evs H. unfold check_lseek in H. vm_frame2 H.
 Qed.
 
-Lemma check_getcwd_frame : forall size eff m m' evs,
-  check_getcwd size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_getcwd_frame : forall i buf size eff m m' evs,
+  check_getcwd i buf size eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros size eff m m' evs H. unfold check_getcwd in H. vm_frame2 H.
+  intros i buf size eff m m' evs H.
+  unfold check_getcwd, check_getcwd_alt in H. vm_frame2 H.
 Qed.
 
 Lemma check_getrandom_frame : forall i buf cap flags eff m m' evs,
@@ -1935,10 +1963,13 @@ Proof.
   unfold check_getrandom, check_getrandom_zero in H. vm_frame2 H.
 Qed.
 
-Lemma check_readlinkat_frame : forall dirfd eff m m' evs,
-  check_readlinkat dirfd eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
+Lemma check_readlinkat_frame : forall i dirfd pathp buf bufsiz eff m m' evs,
+  check_readlinkat i dirfd pathp buf bufsiz eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros dirfd eff m m' evs H. unfold check_readlinkat in H. vm_frame2 H.
+  intros i dirfd pathp buf bufsiz eff m m' evs H.
+  unfold check_readlinkat, Stat.check_readlinkat_body, Stat.check_readlink_copy in H.
+  vm_frame2 H.
 Qed.
 
 Lemma check_exit_frame : forall code eff m m' evs,
@@ -1963,21 +1994,19 @@ Lemma check_writev_frame : forall i fd iov iovcnt eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt eff m m' evs H.
-  unfold check_writev, check_write_fault_extend, check_anon_write_fault,
-    check_anon_fault_extend, anon_place_fds in H.
+  unfold check_writev, check_write_fault_extend in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
 
-(** pwritev2 (287) writes the unnamed file's contents into every
-    descriptor of it and nothing else, so the mappings come across
-    untouched, as [check_pwrite64]'s do. *)
+(** pwritev2 (287) writes the file's inode and nothing else, so the
+    mappings come across untouched, as [check_pwrite64]'s do. *)
 Lemma check_pwritev2_frame :
   forall i fd iov iovcnt pos_l pos_h flags eff m m' evs,
   check_pwritev2 i fd iov iovcnt pos_l pos_h flags eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H.
-  unfold check_pwritev2, check_anon_fault_extend in H.
+  unfold check_pwritev2, check_pwritev2_file, check_write_fault_extend in H.
   cbv zeta in H. vm_frame3 H.
 Qed.
 
@@ -1986,7 +2015,7 @@ Lemma check_readv_imported_frame : forall i fd r iovs0 eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd r iovs0 eff m m' evs H.
-  unfold check_readv_imported in H.
+  unfold check_readv_imported, check_readv_urandom in H.
   vm_frame3 H.
 Qed.
 
@@ -2254,9 +2283,20 @@ Lemma check_unlinkat_frame : forall i dirfd pathp flags eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i dirfd pathp flags eff m m' evs H.
-  unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp,
-    Namei.check_unlink_found, check_unlink_result, Namei.check_unlink_open_tmp,
-    check_unlink_open_result, check_unlink_type_result in H.
+  unfold check_unlinkat, Namei.check_unlinkat_body,
+    Namei.check_unlinkat_file, Namei.check_rmdir, check_unlink_result,
+    check_unlink_type_result in H.
+  vm_frame2 H.
+Qed.
+
+(** mkdirat (34), new in R22: it adds an entry to the image and touches
+    nothing else, so the frame is the same shape as unlinkat's. *)
+Lemma check_mkdirat_frame : forall i dirfd pathp eff m m' evs,
+  check_mkdirat i dirfd pathp eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp eff m m' evs H.
+  unfold check_mkdirat, Namei.check_mkdirat_body, check_mkdir_result in H.
   vm_frame2 H.
 Qed.
 
@@ -2300,109 +2340,166 @@ Proof.
   apply check_pselect_answer_model in H. subst m'. reflexivity.
 Qed.
 
-Lemma check_newfstatat_frame : forall i dirfd pathp flag eff m m' evs,
-  check_newfstatat i dirfd pathp flag eff m = CheckOk m' evs ->
+(** fstat's success arm changes the model on a call that also writes
+    user memory: it records a stat pin ([State.with_statpin]), through
+    the [post] of [Checks.Sys.Fs.Stat.check_fstat_deliver_gen].  That
+    setter rebuilds [ProcState] and carries [m_vmmaps] across untouched,
+    which is what the [model] rewrite database's [m_vmmaps_with_statpin]
+    says, so the frame holds -- but not because nothing moved. *)
+Lemma check_fstat_deliver_gen_frame : forall ok statbuf held post eff m m' evs,
+  (forall bs, m_vmmaps (post bs) = m_vmmaps m) ->
+  check_fstat_deliver_gen ok statbuf held post eff = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros i dirfd pathp flag eff m m' evs H.
-  unfold check_newfstatat in H. vm_frame2 H.
+  intros ok statbuf held post eff m m' evs Hp H.
+  apply check_fstat_deliver_gen_ok in H as (bs & _ & _ & _ & _ & _ & ->).
+  apply Hp.
 Qed.
 
-(** fstat's success arm changes the model
-    on a call that also writes user memory: it records the file's stat
-    pin ([State.with_statpin]).  That setter rebuilds [ProcState] and
-    carries [m_vmmaps] across untouched, which is what the [model]
-    rewrite database's [m_vmmaps_with_statpin] says, so the frame
-    holds -- but not because nothing moved. *)
-Lemma check_fstat_file_frame : forall i p statbuf eff m m' evs,
-  check_fstat_file i p statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_file_frame : forall i ino statbuf eff m m' evs,
+  check_fstat_file i ino statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros i p statbuf eff m m' evs H.
+  intros i ino statbuf eff m m' evs H.
   unfold check_fstat_file in H.
-  destruct (fs_lookup (m_fs m) p) as [data|]; [|discriminate].
   destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
     [|discriminate].
-  assert (Hdel : exists pin,
-             check_fstat_deliver statbuf (length data) p pin eff m
-             = CheckOk m' evs).
-  { destruct (statpin_lookup (m_statpins m) p) as [b0|]; [|eauto].
-    destruct (negb (stat_buf_wf b0)); [discriminate|eauto]. }
-  destruct Hdel as (pin & Hd).
-  apply check_fstat_deliver_ok in Hd
-    as (bs & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
-    [reflexivity|autorewrite with model; reflexivity].
+  destruct (statpin_lookup (m_statpins m) (IdIno ino)) as [sp|].
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_reg_fixed (sp_bytes sp))%bool);
+      [discriminate|].
+    eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. unfold file_pin_after.
+    destruct (Z.eqb _ _); [|autorewrite with model]; reflexivity.
+  - eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. autorewrite with model. reflexivity.
 Qed.
 
-Lemma check_fstat_chrdev_frame : forall ok p i statbuf eff m m' evs,
-  check_fstat_chrdev ok p i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_pinned_frame : forall id ok i statbuf eff m m' evs,
+  check_fstat_pinned id ok i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros ok p i statbuf eff m m' evs H.
-  unfold check_fstat_chrdev in H.
+  intros id ok i statbuf eff m m' evs H.
+  unfold check_fstat_pinned in H.
   destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
     [|discriminate].
-  assert (Hdel : exists pin,
-             check_fstat_deliver_by ok statbuf p pin eff m
-             = CheckOk m' evs).
-  { destruct (statpin_lookup (m_statpins m) p) as [b0|]; [|eauto].
-    destruct (negb (stat_buf_wf b0 && ok b0)%bool); [discriminate|eauto]. }
-  destruct Hdel as (pin & Hd).
-  apply check_fstat_deliver_by_ok in Hd
-    as (bs & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
-    [reflexivity|autorewrite with model; reflexivity].
+  destruct (statpin_lookup (m_statpins m) id) as [sp|].
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && ok (sp_bytes sp))%bool);
+      [discriminate|].
+    eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. unfold pinned_after.
+    destruct (sp_released sp); [autorewrite with model|]; reflexivity.
+  - eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. autorewrite with model. reflexivity.
 Qed.
 
-Lemma check_fstat_devnull_frame : forall i statbuf eff m m' evs,
-  check_fstat_devnull i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_chrdev_frame : forall ok k i statbuf eff m m' evs,
+  check_fstat_chrdev ok k i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
-Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
+Proof. intros. eapply check_fstat_pinned_frame. exact H. Qed.
 
-Lemma check_fstat_urandom_frame : forall i statbuf eff m m' evs,
-  check_fstat_urandom i statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_link_frame : forall k b i statbuf eff m m' evs,
+  check_fstat_link k b i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
-Proof. intros. eapply check_fstat_chrdev_frame. exact H. Qed.
+Proof. intros. eapply check_fstat_pinned_frame. exact H. Qed.
 
-(** The unnamed file's [fstat] records its pin in EVERY descriptor of the
-    file ([State.anon_update] under [State.with_fds]); that setter
-    rebuilds the fd table and carries [m_vmmaps] across untouched. *)
-Lemma check_fstat_anon_frame : forall i id af statbuf eff m m' evs,
-  check_fstat_anon i id af statbuf eff m = CheckOk m' evs ->
+Lemma check_fstat_dir_frame : forall k i statbuf eff m m' evs,
+  check_fstat_dir k i statbuf eff m = CheckOk m' evs ->
   m_vmmaps m' = m_vmmaps m.
 Proof.
-  intros i id af statbuf eff m m' evs H.
-  unfold check_fstat_anon in H.
+  intros k i statbuf eff m m' evs H.
+  unfold check_fstat_dir in H.
   destruct (negb (access_okb statbuf STAT_SIZE)); [vm_frame2 H|].
   destruct (read_bytes_map (in_wmem i) statbuf (Z_to_bv 64 STAT_SIZE)) as [w|];
     [|discriminate].
-  assert (Hdel : exists pin,
-             check_fstat_anon_deliver statbuf id (length (af_data af)) pin eff m
-             = CheckOk m' evs).
-  { destruct (af_pin af) as [b0|]; [|eauto].
-    destruct (negb (stat_buf_wf b0 && stat_is_reg b0 && stat_nlink_zero b0)%bool);
-      [discriminate|eauto]. }
-  destruct Hdel as (pin & Hd).
-  apply check_fstat_anon_deliver_ok in Hd
-    as (bs & _ & _ & _ & _ & _ & _ & [(b1 & _ & _ & ->)|(_ & ->)]);
-    reflexivity.
+  destruct (statpin_lookup (m_statpins m) (IdDir k)) as [sp|].
+  - destruct (negb (stat_buf_wf (sp_bytes sp) && stat_dir_fixed (sp_bytes sp))%bool);
+      [discriminate|].
+    eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. unfold dir_pin_after.
+    destruct (dir_rule_new _ _); [autorewrite with model|]; reflexivity.
+  - eapply check_fstat_deliver_gen_frame; [|exact H].
+    intros bs. autorewrite with model. reflexivity.
 Qed.
+
+Lemma check_fstat_devfd_frame : forall d k ok fd i statbuf eff m m' evs,
+  check_fstat_devfd d k ok fd i statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros d k ok fd i statbuf eff m m' evs H. unfold check_fstat_devfd in H.
+  revert H; destruct (dev_sole_node (m_fs m) d k); intro H;
+    [eapply check_fstat_chrdev_frame | eapply check_fstat_pinned_frame]; exact H.
+Qed.
+
+Lemma check_fstat_devnull_frame : forall fd i statbuf eff m m' evs,
+  check_fstat_devnull fd i statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
+
+Lemma check_fstat_urandom_frame : forall fd i statbuf eff m m' evs,
+  check_fstat_urandom fd i statbuf eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof. intros. eapply check_fstat_devfd_frame. exact H. Qed.
 
 Lemma check_fstat_frame : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd statbuf eff m m' evs H. unfold check_fstat in H.
   destruct (fd_lookup (m_fds m) fd) as [e|]; [|vm_frame2 H].
-  destruct e as [ch|p cur|p cur|p cur|p cur| |sk|pid pw|rd wr| |sid side st|ctx|fam|aid af];
+  destruct e as [ch|p cur|p cur|p cur|p cur|k|sk|pid pw|rd wr|urd uwr|sid side st|ctx|fam];
     cbv iota in H; try discriminate.
-  (* the unnamed file: past the agreement test *)
-  all: try (destruct (negb (anon_agree (m_fds m) aid af)); cbv iota in H;
-            [discriminate|]).
   all: first [eapply check_fstat_file_frame; exact H
+             |eapply check_fstat_dir_frame; exact H
              |eapply check_fstat_devnull_frame; exact H
-             |eapply check_fstat_urandom_frame; exact H
-             |eapply check_fstat_anon_frame; exact H].
+             |eapply check_fstat_urandom_frame; exact H].
+Qed.
+
+(** newfstatat's success arm, like [fstat]'s, records a stat pin
+    ([State.with_statpin]); that setter rebuilds [ProcState] and carries
+    [m_vmmaps] across untouched. *)
+Lemma check_newfstatat_frame : forall i dirfd pathp statbuf flag eff m m' evs,
+  check_newfstatat i dirfd pathp statbuf flag eff m = CheckOk m' evs ->
+  m_vmmaps m' = m_vmmaps m.
+Proof.
+  intros i dirfd pathp statbuf flag eff m m' evs H.
+  assert (Hbody : Stat.check_newfstatat_body i dirfd pathp statbuf flag
+                    (clear_copyins eff) m = CheckOk m' evs ->
+                  m_vmmaps m' = m_vmmaps m).
+  { clear H. intro H. unfold Stat.check_newfstatat_body in H.
+    destruct (read_cstr (in_mem i) pathp) as [p| |]; [|vm_frame2 H|vm_frame2 H].
+    assert (Hent : forall k e, Stat.check_stat_entry k e i statbuf (clear_copyins eff) m
+                               = CheckOk m' evs -> m_vmmaps m' = m_vmmaps m).
+    { intros k e He. unfold Stat.check_stat_entry in He.
+      destruct e as [ino| |dk|body];
+        [ eapply check_fstat_file_frame; exact He
+        | eapply check_fstat_dir_frame; exact He
+        | destruct dk; eapply check_fstat_chrdev_frame; exact He
+        | eapply check_fstat_link_frame; exact He ]. }
+    destruct (path_eqb p []).
+    - destruct (negb (statat_empty_path flag)); [vm_frame2 H|].
+      destruct (negb (bv_eqb dirfd AT_FDCWD32)).
+      { destruct (statat_fstat_fdb dirfd); [|discriminate].
+        eapply check_fstat_frame; exact H. }
+      destruct (Fs.fs_lookup (m_fs m) (m_cwd m)) as [e|]; [|discriminate].
+      exact (Hent _ _ H).
+    - destruct (negb (bv_eqb dirfd AT_FDCWD32)); [discriminate|].
+      destruct (Fs.resolve (statat_walk_mode flag) (m_fs m) (m_cwd m) p) as [[r lk] ts].
+      destruct r as [k e|par nm|q|q| | |dr nm'];
+        [ exact (Hent _ _ H) | vm_frame2 H | vm_frame2 H | vm_frame2 H | vm_frame2 H
+        | discriminate | discriminate ]. }
+  unfold check_newfstatat in H. cbv zeta in H.
+  (* [getname_flags]' own refusals, where the fetch reaches it, accept a
+     bare errno and leave the model as it was *)
+  destruct (statat_getname_runs i pathp flag); cbv iota in H.
+  1: apply check_getname_refusals_ok_cases in H as [H | (_ & -> & _ & _)];
+       [|reflexivity].
+  all: destruct (negb (modeled_statat_flags flag)); [discriminate|].
+  all: destruct (statat_null_name pathp flag); [discriminate|].
+  all: cbv iota zeta in H; apply check_copyins_after_ok_iff in H as (_ & H).
+  - apply check_walk_refusals_ok_cases in H as [H | (_ & -> & _ & _)];
+      [exact (Hbody H) | reflexivity].
+  - exact (Hbody H).
 Qed.
 
 Lemma check_getid_frame : forall sel eff m m' evs,
@@ -2655,9 +2752,9 @@ Qed.
 
 (** The send path.  [check_send_on_socket] is the shared body
     both entry points funnel through, and it is the only place either
-    touches the model: the delivering arm returns the model it was
-    handed and the [SendErr] arm rewrites the descriptor with [with_fds].
-    Neither moves a mapping.  Its [pre]/[acc] parameters carry the
+    touches the model: the delivering arm marks the connection [sent]
+    and the error arms consume the error, each rewriting the descriptor
+    with [with_fds].  None moves a mapping.  Its [pre]/[acc] parameters carry the
     copy-in ledger. *)
 Lemma check_send_on_socket_frame :
   forall pre acc fd sk total bs eff m m' evs,
@@ -2665,7 +2762,7 @@ Lemma check_send_on_socket_frame :
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros pre acc fd sk total bs eff m m' evs H.
-  unfold check_send_on_socket in H. vm_frame2 H.
+  unfold check_send_on_socket, check_end_err in H. vm_frame2 H.
 Qed.
 
 (** The three socket arms that need no socket.  None of them touches the
@@ -2716,7 +2813,7 @@ Lemma check_sendto_frame : forall i fd buf count flags addrp eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd buf count flags addrp eff m m' evs H.
-  unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
+  unfold check_sendto, check_access_ok_zero, check_send_on_socket, check_end_err in H.
   vm_frame3 H.
 Qed.
 
@@ -2725,7 +2822,7 @@ Lemma check_sendmsg_frame : forall i fd msgp flags eff m m' evs,
   m_vmmaps m' = m_vmmaps m.
 Proof.
   intros i fd msgp flags eff m m' evs H.
-  unfold check_sendmsg, check_send_on_socket in H. vm_frame2 H.
+  unfold check_sendmsg, check_send_on_socket, check_end_err in H. vm_frame2 H.
 Qed.
 
 (** pipe2 writes the descriptor pair into guest memory and installs two
@@ -2811,6 +2908,7 @@ Proof.
     | erewrite check_dup_frame by eassumption; exact Hwf
     | erewrite check_dup3_frame by eassumption; exact Hwf
     | erewrite check_unlinkat_frame by eassumption; exact Hwf
+    | erewrite check_mkdirat_frame by eassumption; exact Hwf
     | erewrite check_faccessat_frame by eassumption; exact Hwf
     | erewrite check_faccessat2_frame by eassumption; exact Hwf
     | erewrite check_pselect6_frame by eassumption; exact Hwf

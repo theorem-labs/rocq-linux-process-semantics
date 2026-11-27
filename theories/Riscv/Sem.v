@@ -140,10 +140,11 @@ Definition mul_div {n : N} (op : mulop) (a b : bv n) : bv n :=
     addresses to be naturally aligned to the operand width (4 for .w, 8
     for .d) and defines a misaligned one to raise an
     address-misaligned/access-fault exception — unlike plain loads and
-    stores, whose misaligned forms this model permits (qemu-user and
-    Linux-on-real-hardware both make them work).  A misaligned atomic
-    is SIGBUS under qemu-user, so [exec] gates all three on this check
-    and emits [EFault].  The check runs FIRST, before sc consults its
+    stores, whose misaligned forms this model permits (Linux on real
+    hardware makes them work, and so does qemu-user).  A misaligned
+    atomic raises that exception instead, so [exec] gates all three on
+    this check and emits [EFault] (qemu-user, which is not a supported
+    implementation, delivers SIGBUS for it).  The check runs FIRST, before sc consults its
     reservation: the spec raises the exception whether or not the sc
     would succeed, and Sail agrees.  One known divergence: QEMU 8.2.2's
     FAILING-sc path (reservation mismatch, [gen_sc] in
@@ -358,14 +359,27 @@ Definition resolve_rm (rm : bv 3) (c : core) : option rmode :=
 Definition accrue (fl : fflags) (c : core) : core :=
   with_fcsr (Z_to_bv 32 (Z.lor (bv_unsigned (c_fcsr c)) (fflags_bits fl))) c.
 
-(** A store or AMO from this hart to the reserved address invalidates
-    the LR/SC reservation, so a subsequent SC fails.  This matches
-    qemu-user, whose SC does a cmpxchg against the value
-    loaded by LR: overwriting the reserved cell makes the SC fail.
-    We compare the
-    access base address exactly — a same-address same-value rewrite
-    (ABA) or a partially overlapping store would diverge from qemu's
-    value comparison, a documented model boundary. *)
+(** A store or AMO from this hart whose access base address is the
+    reserved address invalidates the LR/SC reservation, so the next SC
+    fails; one at any other base address, one that overlaps the
+    reserved bytes included, leaves the reservation, and a matching SC
+    then succeeds.  The unprivileged ISA (Zalrsc; riscv-isa-manual's
+    zalrsc.adoc, read at commit 5f1104a0613a) decides neither case.  It
+    requires the SC to fail when its address is outside the reservation
+    set, when a store from ANOTHER hart, or a device's write to the
+    bytes the LR read, comes between the LR and it, or when another SC
+    does; a store by this hart is none of those, so a conforming hart
+    may let the SC succeed.  It may also fail it: the ISA permits an
+    implementation to fail an SC occasionally for any reason, and to
+    fail every unconstrained LR/SC sequence, which a store between LR
+    and SC makes the sequence.  The model picks one answer in each case,
+    failure after a store at the reserved address and success after any
+    other, and leaves out the other answer, which some conforming hart
+    gives (bugs/riscv-lrsc-reservation-granule.md records the
+    reservation granule the [Sc] arm compares and this function's
+    exact-address match).  qemu-user, a test tool whose answer is
+    outside the model, compares the value instead (SCOPE.md, "Which
+    store breaks a reservation"). *)
 Definition inval_resv (a : word) (c : core) : core :=
   match c_resv c with
   | Some r =>

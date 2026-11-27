@@ -19,7 +19,10 @@
     An arm reads its own arguments out of the [SyscallInput].  That is the
     same thing [arg 0], [arg 1] and so on do -- those
     readers are deterministic and change neither state nor events -- but
-    doing it directly is what lets one lookup serve arms of every arity. *)
+    doing it directly is what lets one lookup serve arms of every arity.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -39,7 +42,7 @@ Open Scope bv_scope.
 Open Scope sys_scope.
 
 Definition spec_table : list SpecArm :=
-  (* getcwd          *) mkSpecArm  17%Z (fun i => getcwd_spec (in_arg i 1) i) ::
+  (* getcwd          *) mkSpecArm  17%Z (fun i => getcwd_spec (in_arg i 0) (in_arg i 1) i) ::
   (* eventfd2        *) mkSpecArm  19%Z (fun i => eventfd2_spec (flag32 (in_arg i 1)) i) ::
   (* epoll_create1   *) mkSpecArm  20%Z (fun i => epoll_create1_spec (flag32 (in_arg i 0)) i) ::
   (* epoll_ctl       *) mkSpecArm  21%Z (fun i => epoll_ctl_spec (fd32 (in_arg i 0)) (int32 (in_arg i 1)) (fd32 (in_arg i 2)) (in_arg i 3) i) ::
@@ -49,6 +52,7 @@ Definition spec_table : list SpecArm :=
   (* fcntl           *) mkSpecArm  25%Z (fun i => fcntl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) (in_arg i 2) i) ::
   (* ioctl           *) mkSpecArm  29%Z (fun i => ioctl_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i) ::
   (* flock           *) mkSpecArm  32%Z (fun i => flock_spec (fd32 (in_arg i 0)) (cmd32 (in_arg i 1)) i) ::
+  (* mkdirat         *) mkSpecArm  34%Z (fun i => mkdirat_spec (fd32 (in_arg i 0)) (in_arg i 1) i) ::
   (* unlinkat        *) mkSpecArm  35%Z (fun i => unlinkat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
   (* ftruncate       *) mkSpecArm  46%Z (fun i => ftruncate_spec (fd32 (in_arg i 0)) (in_arg i 1) i) ::
   (* faccessat       *) mkSpecArm  48%Z (fun i => faccessat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) i) ::
@@ -65,8 +69,8 @@ Definition spec_table : list SpecArm :=
   (* pwrite64        *) mkSpecArm  68%Z (fun i => pwrite64_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
   (* pselect6        *) mkSpecArm  72%Z (fun i => pselect6_spec (nfds32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) (in_arg i 4) (in_arg i 5) i) ::
   (* ppoll           *) mkSpecArm  73%Z (fun i => ppoll_spec (in_arg i 0) (unfds32 (in_arg i 1)) (in_arg i 2) (in_arg i 3) (in_arg i 4) i) ::
-  (* readlinkat      *) mkSpecArm  78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) i) ::
-  (* newfstatat      *) mkSpecArm  79%Z (fun i => newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i) ::
+  (* readlinkat      *) mkSpecArm  78%Z (fun i => readlinkat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i) ::
+  (* newfstatat      *) mkSpecArm  79%Z (fun i => newfstatat_spec (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i) ::
   (* fstat           *) mkSpecArm  80%Z (fun i => fstat_spec (fd32 (in_arg i 0)) (in_arg i 1) i) ::
   (* fsync           *) mkSpecArm  82%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::
   (* fdatasync       *) mkSpecArm  83%Z (fun i => fsync_spec (fd32 (in_arg i 0)) i) ::

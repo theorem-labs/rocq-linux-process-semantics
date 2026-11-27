@@ -428,23 +428,23 @@ Lemma file_demo_over_misconfiguration_is_invisible :
   /\ (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                        file_example_alpha_nodup file_example_alpha_ne
                        file_example_hdr file_demo_over_p file_misconfigured_argv
-                       [] [] file_example_path []
+                       [] Fs.fs_empty file_example_path []
                        file_demo_over_p_nonneg file_demo_over_p_le_1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] []))%Q
   /\ (0 < cd_weight (file_geometric_prefix_over file_example_alpha
                        file_example_alpha_nodup file_example_alpha_ne
                        file_example_hdr file_demo_over_p file_misconfigured_argv
-                       [] [] file_example_path []
+                       [] Fs.fs_empty file_example_path []
                        file_demo_over_p_nonneg file_demo_over_p_le_1)
-            (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+            (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                file_example_path [] [Z_to_bv 8 65]))%Q
   /\ fs_file file_other_path
-       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] []
+       (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv [] Fs.fs_empty
                    file_example_path [] []))
      = fs_file file_other_path
          (core_fs (file_prefix_core file_example_hdr file_misconfigured_argv
-                     [] [] file_example_path [] [Z_to_bv 8 65])).
+                     [] Fs.fs_empty file_example_path [] [Z_to_bv 8 65])).
 Proof.
   exact (file_geometric_prefix_over_needs_argv_to_name_the_path file_demo_over_p
            file_demo_over_p_nonneg file_demo_over_p_le_1 eq_refl eq_refl).

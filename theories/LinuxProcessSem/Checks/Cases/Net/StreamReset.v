@@ -5,8 +5,7 @@
     [ppoll_record]), which answer to Linux net/unix/af_unix.c
     ([unix_release_sock], [unix_stream_read_generic], [unix_poll]),
     net/socket.c ([sock_read_iter]) and include/net/sock.h
-    ([sock_error], [sock_rcvlowat]), v6.18.46 (commit 1f99e9ab748f).  The
-    design is dispatch://OSSV-287/artifact/d2-design-md.
+    ([sock_error], [sock_rcvlowat]), v6.18.46 (commit 1f99e9ab748f).
 
     ONE FIXTURE: socketpair makes 3 and 4, 3 writes "h", and 4 closes
     without reading it.  On Linux that close leaves [sk_err =
@@ -19,7 +18,7 @@
 
     Every Example is stated through [check_syscall] and
     [syscall_spec_witness] alone, so the same text compiles against the
-    model before this change (f7da1a0, ossv287/poll-choices).  There
+    model before this change (f7da1a0).  There
     each one is FALSE except the controls of PART 3 and the guard and
     control of PART 4, because the model declined the survivor's empty
     read.  That is the fail-before half; this file is the pass-after
@@ -40,7 +39,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    ========================================================================= *)
 
 (** The start: [init_model]'s three channels, so the pair takes 3 and 4. *)
-Definition sr_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition sr_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** Addresses.  [sv_addr]: the 8-byte [int sv[2]].  [src_addr]: a source
     buffer whose first two bytes are "hi".  [dst_addr]: a 64-byte

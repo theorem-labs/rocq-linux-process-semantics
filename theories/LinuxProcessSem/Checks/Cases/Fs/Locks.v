@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -20,24 +23,24 @@ Open Scope bv_scope.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Fs.ReadWrite.
 
-(** One opener per file: fd 3 reads "f", fd 4 writes "g", fd 5 is a
-    directory reference. *)
+(** One opener per file: fd 3 reads "f" (inode 1), fd 4 writes "g"
+    (inode 2), fd 5 is a directory reference. *)
 Definition flock_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-      (3, FdFile [102] 7); (4, FdFileW [103] 9); (5, FdDir) ]
+      (3, FdFile 1 7); (4, FdFileW 2 9); (5, FdDir Fs.default_cwd) ]
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [120]); ([103], [121])] None None None.
+    (raw_files [([102], [120]); ([103], [121])]) None None None.
 
 (** The same table with a SECOND descriptor on "f" — what a second
     [openat] of the same name produces.  Only fd 6 differs. *)
 Definition flock_two_openers_model : Model :=
   mkModel
     [ (0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2);
-      (3, FdFile [102] 7); (4, FdFileW [103] 9); (5, FdDir);
-      (6, FdFile [102] 0) ]
+      (3, FdFile 1 7); (4, FdFileW 2 9); (5, FdDir Fs.default_cwd);
+      (6, FdFile 1 0) ]
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [120]); ([103], [121])] None None None.
+    (raw_files [([102], [120]); ([103], [121])]) None None None.
 
 (** SUCCESS IS INERT.  ADMISSION REASON: it pins model-internal state
     that no observation reveals.
@@ -80,7 +83,7 @@ Example flock_success_is_inert :
        (mkEffect 0 [] []) flock_model = CheckOk flock_model []
   /\ check_syscall (mkInput 32 [9999; 32; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EBADF) [] []) flock_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE SOLE-OPENER GATE IS WHAT DECIDES THE GRANT.  ADMISSION REASON:
     it compares two models, and no run holds two.
@@ -99,14 +102,14 @@ Proof. repeat split; check_eq. Qed.
     where it can be compared against the request that does. *)
 
 (** EVERY FILE KIND COUNTS AS AN OPENER, and this is the claim the
-    enumeration in [Fs.Locks.path_openers] cannot make.
+    enumeration in [Fs.Locks.ino_openers] cannot make.
 
     That fixpoint names every [State.FdEntry] constructor so that a
     later kind is a build error rather than a silent miscount, and the
     argument is sound as far as it goes -- but it is an argument about a
     missing ARM, not about an arm's ANSWER.  Replacing any counting arm
     with the skipping one the four non-file kinds take
-    (`path_openers r p`) compiles and closes every proof in the flock
+    (`ino_openers r i`) compiles and closes every proof in the flock
     stack.  [flock_sole_opener] then answers TRUE with a second
     descriptor of that kind already on the path, and [flock_spec]
     returns 0 for a lock the kernel makes conflict: an unsound ACCEPT,
@@ -114,12 +117,12 @@ Proof. repeat split; check_eq. Qed.
 
     Of the four counting arms, only [FdFile] is pinned elsewhere, by
     [flock_two_openers_model] holding two [FdFile] descriptors on one
-    name.  Without this example, the [FdFileW], [FdFileA] and [FdFileRW]
+    inode.  Without this example, the [FdFileW], [FdFileA] and [FdFileRW]
     arms could each take the skip with every proof still closing.
 
     So the example is over all four kinds rather than over one.
     For each: the sole opener is answered, a SECOND descriptor of the
-    same kind on the same name is declined, and a second descriptor of a
+    same kind on the same inode is declined, and a second descriptor of a
     DIFFERENT kind is declined too -- which is what says the count is
     over openers rather than over kinds, and is the half a per-kind
     counter would still pass.
@@ -132,7 +135,7 @@ Proof. repeat split; check_eq. Qed.
 Definition flock_openers_model (es : list (word * FdEntry)) : Model :=
   mkModel ([(0, FdChannel 0); (1, FdChannel 1); (2, FdChannel 2)] ++ es)
     (mkVmMaps [] [] 0 0 demo_limit) IEof
-    [([102], [120])] None None None.
+    (raw_files [([102], [120])]) None None None.
 
 (** LOCK_EX on fd 3, which is the descriptor each model below puts on
     "f"; the effect claims the success, so a decline shows up as
@@ -142,12 +145,12 @@ Definition flock_ex_on_3 (m : Model) : check_result :=
     (mkEffect 0 [] []) m.
 
 Example flock_every_file_kind_counts_as_an_opener :
-  let sole k := flock_openers_model [(3, k [102] (Z_to_bv 64 0))] in
-  let pair k := flock_openers_model
-                  [(3, k [102] (Z_to_bv 64 0)); (4, k [102] (Z_to_bv 64 5))] in
-  let mixed k := flock_openers_model
-                   [(3, k [102] (Z_to_bv 64 0));
-                    (4, FdFile [102] (Z_to_bv 64 5))] in
+  let sole (k : Fs.ino -> word -> FdEntry) :=
+    flock_openers_model [(3, k 1%Z (Z_to_bv 64 0))] in
+  let pair (k : Fs.ino -> word -> FdEntry) :=
+    flock_openers_model [(3, k 1%Z (Z_to_bv 64 0)); (4, k 1%Z (Z_to_bv 64 5))] in
+  let mixed (k : Fs.ino -> word -> FdEntry) :=
+    flock_openers_model [(3, k 1%Z (Z_to_bv 64 0)); (4, FdFile 1 (Z_to_bv 64 5))] in
   (* the sole opener of "f" is provably uncontended, on every kind *)
   flock_ex_on_3 (sole FdFile) = CheckOk (sole FdFile) []
   /\ flock_ex_on_3 (sole FdFileW) = CheckOk (sole FdFileW) []
@@ -172,7 +175,7 @@ Example flock_every_file_kind_counts_as_an_opener :
   (* and a kernel claiming the sole opener conflicted is refused *)
   /\ check_syscall (mkInput 32 [3; 2; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EAGAIN) [] []) (sole FdFileRW) = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 Example flock_second_opener_declines :
   check_syscall (mkInput 32 [3; 2; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
@@ -184,4 +187,4 @@ Example flock_second_opener_declines :
      = CheckOk flock_two_openers_model []
   /\ check_syscall (mkInput 32 [3; 8; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect (errno_ret EAGAIN) [] []) flock_two_openers_model = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.

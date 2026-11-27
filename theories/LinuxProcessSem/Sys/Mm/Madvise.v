@@ -59,10 +59,12 @@ Open Scope sys_scope.
     answers 0 only for a valid advice value at an aligned address, which
     is why the [w_is0 len] branch below sits behind both gates.  The
     advice gate declines rather than answering -EINVAL for an unknown
-    value because [madvise_behavior_valid]'s list depends on the kernel
+    value.  [madvise_behavior_valid]'s list depends on the kernel
     configuration (MADV_MERGEABLE needs CONFIG_KSM, MADV_HUGEPAGE
-    CONFIG_TRANSPARENT_HUGEPAGE, MADV_HWPOISON CONFIG_MEMORY_FAILURE), so
-    which values are "unknown" is not a fact about the source alone.
+    CONFIG_TRANSPARENT_HUGEPAGE, MADV_HWPOISON CONFIG_MEMORY_FAILURE),
+    and the configuration of record sets none of the three (SCOPE.md
+    names the second), so which values are unknown is settled there; the
+    decline is a priority-3 gap, and sound.
 
     The last two refusals are one test in [Z]: [PAGE_ALIGN(len_in)] wraps
     to 0 exactly when [page_round_up_Z len = 2^64], and [start + len]
@@ -70,12 +72,14 @@ Open Scope sys_scope.
     [two_pow_64 <= addr + nZ].  That test is [Mprotect.mprotect_spec]'s
     fourth gate with -EINVAL in place of -ENOMEM — errno choice is
     behavior, and [do_mprotect_pkey] and [is_valid_madvise] pick
-    different ones for the same shape.  QEMU's user-mode emulation agrees
-    on both refusals ([target_madvise], linux-user/mmap.c, 8.2.2: a
-    misaligned start and a [TARGET_PAGE_ALIGN] that wraps to zero or a
-    range [guest_range_valid_untagged] refuses are each -EINVAL, and a
-    zero [len_in] is 0), so the two argument errnos and the zero-length
-    success are inside the intersection the design priorities (README.md) require.
+    different ones for the same shape.  QEMU user mode, which is not a
+    supported implementation, gives the same two refusals and the same
+    zero-length success away from the wrap edge ([target_madvise],
+    linux-user/mmap.c, 8.2.2: a misaligned start and a
+    [TARGET_PAGE_ALIGN] that wraps to zero or a range
+    [guest_range_valid_untagged] refuses are each -EINVAL, and a zero
+    [len_in] is 0); at the edge itself it answers 0, a difference
+    SCOPE.md lists under "Where QEMU user mode differs".
 
     THE ANSWERED SHAPE.  Past the gates the kernel walks the VMAs the
     range meets ([madvise_walk_vmas]), applying [madvise_vma_behavior] to

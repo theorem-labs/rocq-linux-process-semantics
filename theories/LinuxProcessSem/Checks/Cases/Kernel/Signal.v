@@ -19,7 +19,10 @@
     signal, so two programs that block different signals differ only
     where one of them READS the mask back; under a real signal they
     differ everywhere.  That is the premise the spec's header states,
-    not a gap in these examples. *)
+    not a gap in these examples.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -42,7 +45,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
     THAT call. *)
 Example rt_sigreturn_unmodeled :
   check_syscall (mkInput 139 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -52,7 +55,7 @@ Proof. vm_compute. reflexivity. Qed.
     picture at all. *)
 Example kill_unmodeled :
   check_syscall (mkInput 129 [0; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -83,7 +86,7 @@ Definition mem_sigaction_zero : word -> option byte :=
 Example rt_sigaction_sigsegv_unmodeled :
   check_syscall (mkInput 134 [11; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -100,12 +103,12 @@ Example rt_sigaction_sigpipe_dfl_answered :
   check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckOk (with_sigpipe_install (mkSigpipeAction true 0 0)
-               (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))) [] /\
+               (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))) [] /\
   check_syscall (mkInput 134 [13; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckReject.
 Proof. split; vm_compute; reflexivity. Qed.
 
@@ -119,7 +122,7 @@ Proof. split; vm_compute; reflexivity. Qed.
 Example rt_sigaction_sigchld_unmodeled :
   check_syscall (mkInput 134 [17; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -169,7 +172,7 @@ Definition mem_sigaction_ign : word -> option byte :=
 Example rt_sigaction_sigabrt_handler_unmodeled :
   check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_handler
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -177,7 +180,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example rt_sigaction_sigabrt_ign_unmodeled :
   check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_ign
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -188,8 +191,8 @@ Example rt_sigaction_sigabrt_dfl_accepted :
   check_syscall (mkInput 134 [6; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [].
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [].
 Proof. vm_compute. reflexivity. Qed.
 
 (** ...and the acceptance the declines above are AGAINST, so that a spec
@@ -202,11 +205,11 @@ Example rt_sigaction_sigint_accepted :
   check_syscall (mkInput 134 [2; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
     (with_copyins [(4096, 24%nat)] (mkEffect 0 [] []))
-    (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
-  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)) [] /\
+    (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
+  = CheckOk (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)) [] /\
   check_syscall (mkInput 134 [2; 4096; 0; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckReject.
 Proof. split; vm_compute; reflexivity. Qed.
 
@@ -308,7 +311,7 @@ Definition mem_sigset_sigabrt : word -> option byte :=
     [sigmask_strip] to the value going OUT as well as the one coming in,
     would be indistinguishable from a correct one.  Byte 2 of 0x10006 is
     1, so both mistakes are caught. *)
-Definition sig_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition sig_model : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 Definition sig_entry_mask : word := Z_to_bv 64 65542.
 
@@ -611,7 +614,7 @@ Example rt_sigprocmask_how_truncates_size_does_not :
                      mem_sigset_sigsegv (fun _ => None))
        (mkEffect (errno_ret EINVAL) [] []) sig_model
      = CheckOk sig_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE COPY-FROM-USER LEDGER SEPARATES THE TWO -EINVALs, which is the
     one thing about this call that an empty ledger would silently get
@@ -864,7 +867,7 @@ Qed.
 Example rt_sigaction_oact_read_back_declined :
   check_syscall (mkInput 134 [2; 4096; 4096; 8; 0; 0] mem_sigaction_zero
                    (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -906,7 +909,7 @@ Definition wmem_pselect_timeout : word -> option byte :=
 Example pselect6_real_mask_declined :
   check_syscall (mkInput 72 [0; 0; 0; 0; 4128; 4096]
                    mem_pselect_mask_and_timeout wmem_pselect_timeout)
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -922,7 +925,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example pselect6_no_mask_is_not_declined :
   check_syscall (mkInput 72 [0; 0; 0; 0; 4128; 0]
                    mem_pselect_mask_and_timeout wmem_pselect_timeout)
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   <> CheckUnmodeled.
 Proof. vm_compute. discriminate. Qed.
 
@@ -952,7 +955,7 @@ Proof. vm_compute. discriminate. Qed.
 Example epoll_pwait_real_mask_declined :
   check_syscall (mkInput 22 [0; 4096; 1; 0; 4128; 8]
                    mem_pselect_mask_and_timeout (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -967,7 +970,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example epoll_pwait_no_mask_is_not_declined :
   check_syscall (mkInput 22 [0; 4096; 1; 0; 0; 0]
                    mem_pselect_mask_and_timeout (fun _ => None))
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   <> CheckUnmodeled.
 Proof. vm_compute. discriminate. Qed.
 
@@ -994,7 +997,7 @@ Proof. vm_compute. discriminate. Qed.
 Example ppoll_real_mask_declined :
   check_syscall (mkInput 73 [0; 0; 4128; 4096; 8; 0]
                    mem_pselect_mask_and_timeout wmem_pselect_timeout)
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   = CheckUnmodeled.
 Proof. vm_compute. reflexivity. Qed.
 
@@ -1007,7 +1010,7 @@ Proof. vm_compute. reflexivity. Qed.
 Example ppoll_no_mask_is_not_declined :
   check_syscall (mkInput 73 [0; 0; 4128; 0; 0; 0]
                    mem_pselect_mask_and_timeout wmem_pselect_timeout)
-    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))
+    (mkEffect 0 [] []) (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))
   <> CheckUnmodeled.
 Proof. vm_compute. discriminate. Qed.
 
@@ -1431,8 +1434,10 @@ Proof. vm_compute. reflexivity. Qed.
 
 (** NEGATIVE: signal 0, the permission-and-existence probe, is declined
     rather than answered 0.  [valid_signal(0)] passes and delivery is
-    skipped, so what the call returns is [security_task_kill]'s verdict —
-    an LSM question. *)
+    skipped, so what the call returns is [check_kill_permission]'s,
+    whose [security_task_kill] is the stub that answers 0 in the
+    configuration of record, which builds no LSM (SCOPE.md): the decline
+    costs coverage. *)
 Example tkill_signal_zero_declined :
   check_syscall (mkInput 130 [4242; 0; 0; 0; 0; 0] (fun _ => None)
                    (fun _ => None))

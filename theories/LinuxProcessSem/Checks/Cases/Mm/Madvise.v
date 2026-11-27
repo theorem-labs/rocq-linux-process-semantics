@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the spec and checker for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -101,7 +104,8 @@ Proof. check_eq. Qed.
     declines rather than answering 0.  Linux answers -EINVAL there for an
     invalid value ([is_valid_madvise] runs [madvise_behavior_valid]
     before [madvise_should_skip]'s zero-length exit) and 0 for a valid
-    one, and which values are valid is a configuration question; a
+    one; the configuration of record settles which values are valid,
+    but the arm declines the ones it does not answer; a
     mutant that tests [w_is0 len] first answers 0 for every value and
     keeps every other example in this file green. *)
 Example madvise_len_zero_other_advice_is_unmodeled :
@@ -307,7 +311,7 @@ Example madvise_lazy_first_touch_charges :
   /\ materialize_model_accesses madvise_lazy_granted [(65536, 1%nat)]
      = Some madvise_lazy_touched
   /\ vm_backing_used madvise_lazy_touched = 4096%Z.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** MADV_DONTNEED over the grant returns the charge: the post-model IS
     the pre-touch model — same mapping, same lazy provenance, no
@@ -326,7 +330,7 @@ Example madvise_dontneed_budget_back_to_pre_touch :
   /\ m_vm_lazy post = [(65536, 8192)]
   /\ m_vm_materialized post = []
   /\ m_vmmaps post = m_vmmaps madvise_lazy_touched.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** The pages are lazy again, not free: the next touch charges the page
     exactly as the first one did.  Documentary rather than a pin —
@@ -352,7 +356,7 @@ Example madvise_dontneed_only_the_range :
   = CheckOk madvise_lazy_touched []
   /\ vm_backing_used madvise_lazy_both_touched = 8192%Z
   /\ vm_backing_used madvise_lazy_touched = 4096%Z.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** The scenario the arm is for, end to end.  Two pages granted lazily
     and both touched fill the two-page budget: a further one-page eager

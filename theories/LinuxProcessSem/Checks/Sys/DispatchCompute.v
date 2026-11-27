@@ -1,7 +1,10 @@
 (** * LinuxProcessSem.Checks.Sys.DispatchCompute — what the dispatchers compute to
 
     Split from [Checks.Sys.Dispatch] because these need [check_syscall] and
-    [syscall_spec_witness], which dispatch over the table [Arm] builds. *)
+    [syscall_spec_witness], which dispatch over the table [Arm] builds.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -200,22 +203,22 @@ Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_readlinkat : forall i eff m,
   bv_unsigned (in_sysno i) = 78%Z ->
-  check_syscall i eff m = check_readlinkat (fd32 (in_arg i 0)) eff m.
+  check_syscall i eff m = check_readlinkat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_readlinkat : forall i m,
   bv_unsigned (in_sysno i) = 78%Z ->
-  syscall_spec_witness i m = readlinkat_witness (fd32 (in_arg i 0)) m.
+  syscall_spec_witness i m = readlinkat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (in_arg i 3) i m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_newfstatat : forall i eff m,
   bv_unsigned (in_sysno i) = 79%Z ->
-  check_syscall i eff m = check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) eff m.
+  check_syscall i eff m = check_newfstatat i (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) eff m.
 Proof. intros i eff m H. unfold check_syscall. rewrite H. reflexivity. Qed.
 
 Lemma syscall_witness_newfstatat : forall i m,
   bv_unsigned (in_sysno i) = 79%Z ->
-  syscall_spec_witness i m = newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (flag32 (in_arg i 3)) i m.
+  syscall_spec_witness i m = newfstatat_witness (fd32 (in_arg i 0)) (in_arg i 1) (in_arg i 2) (flag32 (in_arg i 3)) i m.
 Proof. intros i m H. unfold syscall_spec_witness. rewrite H. reflexivity. Qed.
 
 Lemma check_syscall_fstat : forall i eff m,

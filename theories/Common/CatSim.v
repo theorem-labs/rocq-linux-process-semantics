@@ -45,7 +45,9 @@
 
 From Stdlib Require Import ZArith NArith List Lia Bool.
 From LinuxProcessSemantics.EquivalenceDefinition Require Import Equivalence MustExit OmniEquivalence.
-From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs Vdso Run OmniRun.
+From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase RiscvSemantics MemImageType StackLayout Fs State Monad Specs.
+From LinuxProcessSemantics Require Import LinuxProcessSem.Vdso.
+From LinuxProcessSemantics.LinuxProcessSem Require Import Run OmniRun.
 From LinuxProcessSemantics.LinuxProcessSem.Checks.Sys Require Import Fs.ReadWrite.
 From LinuxProcessSemantics.Common Require Import SimInv ExitSim.
 
@@ -329,8 +331,16 @@ Proof.
     destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
-            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr;
-    [|discriminate].
+            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr.
+  2:{ (* a wholly readable source has no fault inside its first copy *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : (Z.of_nat (length (firstn c buf)) <? rw_count_clamp (ms_gpr ms 2))%Z
+                   = false).
+      { apply Z.ltb_ge. rewrite Hfl. unfold c. clear - Hlen.
+        unfold rw_count_clamp. lia. }
+      unfold fault_in_first_copyb in Hspec. rewrite Hx in Hspec.
+      cbn [andb] in Hspec. rewrite andb_false_r in Hspec.
+      cbv beta iota in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins [(ms_gpr ms 1, Z.to_nat (bv_unsigned ret))])
     eqn:Hreads; [|discriminate].
   inversion Hspec; clear Hspec; subst.
@@ -757,7 +767,7 @@ Fixpoint wevents (bufs : list (list byte)) : list event :=
 
 Definition wexit_post (bufs : list (list byte)) (code : word) (fs : Fs.Fs) : post :=
   fun tr o =>
-    (exists full, wpick (Z_to_bv 64 1) bufs full /\ tr = full ++ [ExitEv code fs])
+    (exists full, wpick (Z_to_bv 64 1) bufs full /\ tr = full ++ [ExitEv code (Fs.fs_observe fs)])
     /\ exits_with code tr o.
 
 (** WHAT A [to_wexit] RUN NEEDS OF THE MODEL: a reader on fd 1 if it
@@ -787,11 +797,11 @@ Proof.
     intros model Hh Hlazy Hfd Hbm.
   - (* tw_exit: the one transition is the exit *)
     apply (exec_step_only segs _ _
-             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
              (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))).
-    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
         with ([] ++ [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255))
-                       (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))])
+                       (Fs.fs_observe (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)))])
         by (cbn; reflexivity).
       apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
                (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model) []
@@ -855,7 +865,7 @@ Lemma to_wexit_star_admits : forall ms bufs code,
   wexit_ready bufs model ->
   bufs_modeled bufs ->
   wpick (Z_to_bv 64 1) bufs full ->
-  exists c, star segs (mkCfg ms model) (full ++ [ExitEv code (m_fs model)]) c.
+  exists c, star segs (mkCfg ms model) (full ++ [ExitEv code (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros ms bufs code Hte.
   induction Hte as
@@ -867,9 +877,9 @@ Proof.
     inversion Hpick; subst. cbn [app].
     exists (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)).
     apply star_one.
-    replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+    replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
       with ([] ++ [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255))
-                     (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))])
+                     (Fs.fs_observe (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)))])
       by (cbn; reflexivity).
     apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
              (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model) []
@@ -901,8 +911,8 @@ Proof.
   - (* tw_step *)
     destruct (IH model full Hh Hlazy Hfd Hbm Hpick) as [c Hstar].
     exists c.
-    replace (full ++ [ExitEv code (m_fs model)])
-      with ([] ++ (full ++ [ExitEv code (m_fs model)])) by reflexivity.
+    replace (full ++ [ExitEv code (Fs.fs_observe (m_fs model))])
+      with ([] ++ (full ++ [ExitEv code (Fs.fs_observe (m_fs model))])) by reflexivity.
     eapply star_step; [| exact Hstar].
     apply (sstep_instr segs ms model ms' model); [exact Hh | exact Hsvc |].
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity.
@@ -917,7 +927,7 @@ Lemma to_wexit_star_only : forall ms bufs code,
   bufs_modeled bufs ->
   forall tr c, star segs (mkCfg ms model) tr c ->
     exists full, wpick (Z_to_bv 64 1) bufs full /\
-      is_prefix tr (full ++ [ExitEv code (m_fs model)]).
+      is_prefix tr (full ++ [ExitEv code (Fs.fs_observe (m_fs model))]).
 Proof.
   intros ms bufs code Hte model Hh Hlazy Hfd Hbm tr c Hstar.
   destruct (exec_realizes _ _ _
@@ -952,7 +962,7 @@ Qed.
 (* hypothesis in the uaccess merge, so [wfirst_ok] is implied for any       *)
 (* non-empty [bufs] and is kept as a standalone statement, not removed.    *)
 (* Retiring it means restating [cat_launch], [cat_kill_*], the             *)
-(* [to_wexit_kill_*] lemmas, CatSimSigpipe.v and theories/Examples/README. *)
+(* [to_wexit_kill_*] lemmas, CatSimSigpipe.v and theories/Examples/README.md. *)
 (* ========================================================================= *)
 
 (** The first write the run reaches names a range [access_ok] passes.
@@ -984,7 +994,7 @@ Qed.
     model that records the kill. *)
 Definition wkill_post (fs : Fs.Fs) : post :=
   fun tr o =>
-    tr = [KillEv (Z_to_bv 64 SIGPIPE) fs]
+    tr = [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe fs)]
     /\ match o with
        | OHalt c => m_killed (cfg_model c) = Some (Z_to_bv 64 SIGPIPE)
        | OError _ => False
@@ -1000,7 +1010,7 @@ Lemma sstep_write_dead_inv : forall ms model x8 evs st,
   access_okb (ms_gpr ms 1) (bv_unsigned (ms_gpr ms 2)) = true ->
   w_is0 (ms_gpr ms 2) = false ->
   sstep segs (mkCfg ms model) evs st ->
-  evs = [KillEv (Z_to_bv 64 SIGPIPE) (m_fs model)]
+  evs = [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (m_fs model))]
   /\ st = SNext (mkCfg ms (with_killed (Z_to_bv 64 SIGPIPE) model)).
 Proof.
   intros ms model x8 evs st Hh Hd Hsvc Hno Hg Hok Hc Hss.
@@ -1050,11 +1060,11 @@ Proof.
     { rewrite in_mem_sys_input, read_bytes_map_read_byte. exact Hr. }
     pose proof (read_bytes_map_length _ _ _ _ Hrb) as Hlen.
     assert (Hc : w_is0 (ms_gpr ms 2) = false) by (apply w_is0_pos; lia).
-    apply (exec_step_only segs _ _ [KillEv (Z_to_bv 64 SIGPIPE) (m_fs model)]
+    apply (exec_step_only segs _ _ [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (m_fs model))]
              (mkCfg ms (with_killed (Z_to_bv 64 SIGPIPE) model))).
-    + replace [KillEv (Z_to_bv 64 SIGPIPE) (m_fs model)]
+    + replace [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (m_fs model))]
         with ([] ++ [KillEv (Z_to_bv 64 SIGPIPE)
-                       (m_fs (with_killed (Z_to_bv 64 SIGPIPE) model))])
+                       (Fs.fs_observe (m_fs (with_killed (Z_to_bv 64 SIGPIPE) model)))])
         by reflexivity.
       apply (sstep_killed segs ms model x8 (mkEffect (errno_ret EPIPE) [] [])
                (with_killed (Z_to_bv 64 SIGPIPE) model) [] (Z_to_bv 64 SIGPIPE)).
@@ -1088,7 +1098,7 @@ Lemma to_wexit_kill_obs_iff : forall ms bufs code model,
   to_wexit ms bufs code -> bufs <> [] -> wfirst_ok ms ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1dead model ->
   forall tr, obs_trace segs (mkCfg ms model) tr
-             <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (m_fs model)].
+             <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (m_fs model))].
 Proof.
   intros ms bufs code model Hte Hne Hfo Hh Hlazy Hd.
   apply exec_obs_iff.
@@ -1209,7 +1219,7 @@ Lemma cat_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   wexit_launch bufs inp ->
   forall tr, obs_trace (run_segments segs inp sp mb) (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
              <-> exists full, wpick (Z_to_bv 64 1) bufs full /\
-                 is_prefix tr (full ++ [ExitEv code (in_fs inp)]).
+                 is_prefix tr (full ++ [ExitEv code (Fs.fs_observe (in_fs inp))]).
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hbm Hl tr.
   set (fs0 := in_fs inp) in *.
@@ -1236,7 +1246,7 @@ Proof.
     destruct (to_wexit_star_admits (run_segments segs inp sp mb) ms bufs code Hte _ full Hh Hlazy Hfd Hbm Hw)
       as [c Hstar].
     rewrite Hfs in Hstar.
-    exists (full ++ [ExitEv code fs0]), c. split; assumption.
+    exists (full ++ [ExitEv code (Fs.fs_observe fs0)]), c. split; assumption.
 Qed.
 
 Lemma cat_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
@@ -1323,7 +1333,7 @@ Lemma cat_kill_obs_iff_te : forall segs pc ph sp brk0 mb rnd lim inp bufs code,
   sigpipe_fatal inp ->
   forall tr, obs_trace (run_segments segs inp sp mb)
                (init_config (run_segments segs inp sp mb) pc ph sp brk0 mb rnd lim inp) tr
-             <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (in_fs inp)].
+             <-> is_prefix tr [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (in_fs inp))].
 Proof.
   intros segs pc ph sp brk0 mb rnd lim inp bufs code Hte Hne Hfo Hr Hm tr.
   unfold init_config.
@@ -1658,8 +1668,17 @@ Proof.
     destruct zs as [|? ?]; destruct us as [|? ?];
       destruct cs as [|? ?]; try discriminate.
   destruct ((1 <=? bv_unsigned ret)%Z
-            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr;
-    [|discriminate].
+            && (bv_unsigned ret <=? Z.of_nat (length (firstn c buf)))%Z) eqn:Hgr.
+  2:{ (* see [write1_ok_inv]: a wholly readable source has no fault
+         inside its first copy *)
+      exfalso. cbv beta iota in Hspec.
+      assert (Hx : (Z.of_nat (length (firstn c buf)) <? rw_count_clamp (ms_gpr ms 2))%Z
+                   = false).
+      { apply Z.ltb_ge. rewrite Hfl. unfold c. clear - Hlen.
+        unfold rw_count_clamp. lia. }
+      unfold fault_in_first_copyb in Hspec. rewrite Hx in Hspec.
+      cbn [andb] in Hspec. rewrite andb_false_r in Hspec.
+      cbv beta iota in Hspec. discriminate Hspec. }
   destruct (access_ranges_eqb copyins [(ms_gpr ms 1, Z.to_nat (bv_unsigned ret))])
     eqn:Hreads; [|discriminate].
   inversion Hspec; clear Hspec; subst.

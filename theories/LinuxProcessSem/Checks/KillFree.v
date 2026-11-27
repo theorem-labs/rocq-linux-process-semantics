@@ -139,7 +139,11 @@ Qed.
 
 (** One step of taking a checker hypothesis apart.  [Checks.VmMapsDisjoint]'s
     [vm_step], with the event list kept: the conclusion here is about the
-    events as well as the model. *)
+    events as well as the model.  [check_pending_errno] is a leaf, as it is
+    there, and is never unfolded: its test [errno_ret_in _ (eff_ret eff)]
+    names no variable of an arm, so the [if] case below could split on it
+    before the arms are split, and take every arm still in [H] apart once
+    per branch (unfolded, it doubled this file's peak memory). *)
 Ltac kf_step H :=
   match type of H with
   | CheckReject = CheckOk _ _ => discriminate H
@@ -153,6 +157,10 @@ Ltac kf_step H :=
       apply check_ret_only_copyins_ok_iff in H;
       let H1 := fresh in let H2 := fresh in
       destruct H as (_ & H1 & H2); subst
+  | check_pending_errno _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pending_errno_ok in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as (? & _ & _ & H1 & H2); subst
   | check_write_oset _ _ _ _ _ = CheckOk _ _ =>
       apply check_write_oset_ok_iff in H;
       let H1 := fresh in let H2 := fresh in
@@ -166,6 +174,30 @@ Ltac kf_step H :=
   | check_copyin_prefix _ _ _ = CheckOk _ _ =>
       apply check_copyin_prefix_model in H
   | check_copyins _ _ _ = CheckOk _ _ => apply check_copyins_model in H
+  | check_walk_refusals _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_walk_refusals_ok_cases in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as [H | (_ & H1 & H2 & _)]; [|subst]
+  | check_getname_refusals _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_getname_refusals_ok_cases in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as [H | (_ & H1 & H2 & _)]; [|subst]
+  | check_open_write_existing _ _ _ _ = CheckOk _ _ =>
+      apply check_open_write_existing_ok_cases in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as [H | (_ & H1 & H2)]; [|subst]
+  | check_random_write _ _ _ _ _ = CheckOk _ _ =>
+      apply check_random_write_ok_inv in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as (H1 & H2 & _); subst
+  | check_pwritev2_urandom _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pwritev2_urandom_ok_inv in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as (H1 & H2); subst
+  | check_pwritev2_devnull _ _ _ _ _ _ = CheckOk _ _ =>
+      apply check_pwritev2_devnull_ok_inv in H;
+      let H1 := fresh in let H2 := fresh in
+      destruct H as (H1 & H2); subst
   | context [ if ?b then _ else _ ] => destruct b eqn:?
   | context [ match ?x with _ => _ end ] => destruct x eqn:?
   end.
@@ -451,7 +483,7 @@ Lemma check_readv_imported_kf : forall i fd r iovs0 eff m m' evs,
   check_readv_imported i fd r iovs0 eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd r iovs0 eff m m' evs H Hoff Hk.
-  unfold check_readv_imported in H. cbv beta iota zeta in H.
+  unfold check_readv_imported, check_readv_urandom in H. cbv beta iota zeta in H.
   repeat (kf_step H
           || exact (check_efault_or_kf _ _ _ _ _ H Hoff Hk)
           || kf_stream H Hoff Hk
@@ -604,8 +636,8 @@ Lemma check_read_kf : forall i fd buf count eff m m' evs,
   check_read i fd buf count eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
-  unfold check_read, check_read_urandom, check_socket_pending_error, check_access_ok_zero,
-    check_eventfd_read in H.
+  unfold check_read, check_read_urandom, check_socket_pending_error,
+    check_access_ok_zero, check_eventfd_read in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -615,8 +647,7 @@ Lemma check_write_kf : forall i fd buf count eff m m' evs,
 Proof.
   intros i fd buf count eff m m' evs H Hoff Hk.
   unfold check_write, check_write_fault_extend, check_access_ok_zero,
-    check_eventfd_write, check_anon_write_fault, check_anon_fault_extend,
-    anon_place_fds in H.
+    check_eventfd_write in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -634,7 +665,7 @@ Lemma check_pwrite64_kf : forall i fd buf count pos eff m m' evs,
   check_pwrite64 i fd buf count pos eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count pos eff m m' evs H Hoff Hk.
-  unfold check_pwrite64, check_write_fault_extend, check_anon_fault_extend in H.
+  unfold check_pwrite64, check_write_fault_extend in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -651,8 +682,7 @@ Lemma check_writev_kf : forall i fd iov iovcnt eff m m' evs,
   check_writev i fd iov iovcnt eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd iov iovcnt eff m m' evs H Hoff Hk.
-  unfold check_writev, check_write_fault_extend, check_anon_write_fault,
-    check_anon_fault_extend, anon_place_fds in H.
+  unfold check_writev, check_write_fault_extend in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -663,7 +693,7 @@ Lemma check_pwritev2_kf :
   kill_post m m' evs.
 Proof.
   intros i fd iov iovcnt pos_l pos_h flags eff m m' evs H Hoff Hk.
-  unfold check_pwritev2, check_anon_fault_extend in H.
+  unfold check_pwritev2, check_pwritev2_file, check_write_fault_extend in H.
   cbv zeta in H.
   kf_frame H m Hoff Hk.
 Qed.
@@ -672,7 +702,15 @@ Lemma check_openat_kf : forall i dirfd pathp flags eff m m' evs,
   check_openat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved, Open.check_openat_sep, Open.check_openat_localtime, Open.check_openat_devnull, Open.check_open_devnull, Open.check_openat_urandom, Open.check_open_urandom, Open.check_openat_procfd, Open.check_openat_tmp, Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl, Open.check_openat_dir, Open.check_openat_append, Open.check_openat_rdwr, Open.check_openat_rdwr_excl, check_create_wronly, check_open_append, check_open_rdwr in H.
+  unfold check_openat, Open.check_openat_body, Open.check_openat_resolved,
+    Open.check_openat_procfd,
+    Open.check_openat_read, Open.check_openat_create, Open.check_openat_excl,
+    Open.check_openat_dir, Open.check_openat_append,
+    Open.check_openat_rdwr, Open.check_openat_rdwr_excl,
+    check_create_wronly, check_open_append, check_open_rdwr,
+    check_unused_fd_none in H.
+  unfold Open.check_open_devnull, Open.check_open_urandom,
+    Open.check_open_result_mk in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -708,11 +746,11 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_readlinkat_kf : forall dirfd eff m m' evs,
-  check_readlinkat dirfd eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_readlinkat_kf : forall i dirfd pathp buf bufsiz eff m m' evs,
+  check_readlinkat i dirfd pathp buf bufsiz eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros dirfd eff m m' evs H Hoff Hk.
-  unfold check_readlinkat in H.
+  intros i dirfd pathp buf bufsiz eff m m' evs H Hoff Hk.
+  unfold check_readlinkat, Stat.check_readlinkat_body, Stat.check_readlink_copy in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -868,8 +906,17 @@ Lemma check_unlinkat_kf : forall i dirfd pathp flags eff m m' evs,
   check_unlinkat i dirfd pathp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i dirfd pathp flags eff m m' evs H Hoff Hk.
-  unfold check_unlinkat, Namei.check_unlinkat_body, Namei.check_unlinkat_tmp, Namei.check_unlink_found, check_unlink_result,
-    Namei.check_unlink_open_tmp, check_unlink_open_result, check_unlink_type_result in H.
+  unfold check_unlinkat, Namei.check_unlinkat_body,
+    Namei.check_unlinkat_file, Namei.check_rmdir, check_unlink_result,
+    check_unlink_type_result in H.
+  kf_frame H m Hoff Hk.
+Qed.
+
+Lemma check_mkdirat_kf : forall i dirfd pathp eff m m' evs,
+  check_mkdirat i dirfd pathp eff m = CheckOk m' evs -> kill_post m m' evs.
+Proof.
+  intros i dirfd pathp eff m m' evs H Hoff Hk.
+  unfold check_mkdirat, Namei.check_mkdirat_body, check_mkdir_result in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -905,22 +952,39 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_newfstatat_kf : forall i dirfd pathp flag eff m m' evs,
-  check_newfstatat i dirfd pathp flag eff m = CheckOk m' evs -> kill_post m m' evs.
+(** The two stat arms open [Stat.file_pin_after]'s [if] at the leaf:
+    it reads the delivered bytes, which stay bound until [kf_step] has
+    taken the effect apart, so the verdict's model still carries it when
+    [kf_step] injects the [CheckOk].  [dir_pin_after]'s and
+    [pinned_after]'s [if]s read only the pin and are split in [H] before
+    that. *)
+Lemma check_newfstatat_kf : forall i dirfd pathp statbuf flag eff m m' evs,
+  check_newfstatat i dirfd pathp statbuf flag eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros i dirfd pathp flag eff m m' evs H Hoff Hk.
-  unfold check_newfstatat in H.
-  kf_frame H m Hoff Hk.
+  intros i dirfd pathp statbuf flag eff m m' evs H Hoff Hk.
+  unfold check_newfstatat, Stat.check_newfstatat_body, check_stat_entry, check_fstat,
+    check_fstat_file, check_fstat_dir, check_fstat_devnull, check_fstat_urandom,
+    check_fstat_devfd,
+    check_fstat_chrdev, check_fstat_link, check_fstat_pinned, check_fstat_deliver_gen,
+    dir_pin_after, file_pin_after, pinned_after in H.
+  cbv beta iota zeta in H.
+  repeat (kf_step H || kf_done H Hoff Hk);
+    repeat (match goal with |- context [if ?b then _ else _] => destruct b end);
+    kf_close m Hoff Hk.
 Qed.
 
 Lemma check_fstat_kf : forall i fd statbuf eff m m' evs,
   check_fstat i fd statbuf eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd statbuf eff m m' evs H Hoff Hk.
-  unfold check_fstat, check_fstat_file, check_fstat_devnull, check_fstat_urandom,
-    check_fstat_chrdev, check_fstat_deliver, check_fstat_deliver_by,
-    check_fstat_anon, check_fstat_anon_deliver in H.
-  kf_frame H m Hoff Hk.
+  unfold check_fstat, check_fstat_file, check_fstat_dir, check_fstat_devnull,
+    check_fstat_urandom, check_fstat_devfd, check_fstat_chrdev,
+    check_fstat_pinned, check_fstat_deliver_gen,
+    dir_pin_after, file_pin_after, pinned_after in H.
+  cbv beta iota zeta in H.
+  repeat (kf_step H || kf_done H Hoff Hk);
+    repeat (match goal with |- context [if ?b then _ else _] => destruct b end);
+    kf_close m Hoff Hk.
 Qed.
 
 Lemma check_getid_kf : forall sel eff m m' evs,
@@ -1124,7 +1188,7 @@ Lemma check_sendto_kf : forall i fd buf count flags addrp eff m m' evs,
   check_sendto i fd buf count flags addrp eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd buf count flags addrp eff m m' evs H Hoff Hk.
-  unfold check_sendto, check_access_ok_zero, check_send_on_socket in H.
+  unfold check_sendto, check_access_ok_zero, check_send_on_socket, check_end_err in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1132,7 +1196,7 @@ Lemma check_sendmsg_kf : forall i fd msgp flags eff m m' evs,
   check_sendmsg i fd msgp flags eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
   intros i fd msgp flags eff m m' evs H Hoff Hk.
-  unfold check_sendmsg, check_send_on_socket in H.
+  unfold check_sendmsg, check_send_on_socket, check_end_err in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1194,11 +1258,11 @@ Proof.
   kf_frame H m Hoff Hk.
 Qed.
 
-Lemma check_getcwd_kf : forall size eff m m' evs,
-  check_getcwd size eff m = CheckOk m' evs -> kill_post m m' evs.
+Lemma check_getcwd_kf : forall i buf size eff m m' evs,
+  check_getcwd i buf size eff m = CheckOk m' evs -> kill_post m m' evs.
 Proof.
-  intros size eff m m' evs H Hoff Hk.
-  unfold check_getcwd in H.
+  intros i buf size eff m m' evs H Hoff Hk.
+  unfold check_getcwd, check_getcwd_alt in H.
   kf_frame H m Hoff Hk.
 Qed.
 
@@ -1331,6 +1395,7 @@ Proof.
     | eapply check_epoll_create1_kf; eassumption
     | eapply check_epoll_ctl_kf; eassumption
     | eapply check_epoll_pwait_kf; eassumption
+    | eapply check_mkdirat_kf; eassumption
     | fail 1 "checked_table_kill_free has no case for this dispatcher arm: give the new checker a *_kf lemma and add it to the list above" ].
 Qed.
 

@@ -7,7 +7,10 @@
     [Checks/Progress.v] keeps the dispatcher and
     re-exports this module. A witness here exhibits one admissible
     outcome for a spec in the matching [Sys] module, which is what
-    progress is proved from. *)
+    progress is proved from.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -26,13 +29,12 @@ Definition fsync_witness (fd : word) (m : Model) : outcome SyscallEffect :=
   | Some (FdEventfd _) => ret_outcome (errno_ret EINVAL) m    (* no [.fsync] in [eventfd_fops] *)
   | Some (FdPipe _ _)  => ret_outcome (errno_ret EINVAL) m
   | Some (FdDevNull _ _) => ret_outcome (errno_ret EINVAL) m
-  | Some FdUrandom => ret_outcome (errno_ret EINVAL) m
+  | Some (FdUrandom _ _) => ret_outcome (errno_ret EINVAL) m
   | Some (FdFileA _ _) => ret_outcome (Z_to_bv 64 0) m
   | Some (FdFileRW _ _) => ret_outcome (Z_to_bv 64 0) m
   | Some (FdFile _ _)  => ret_outcome (Z_to_bv 64 0) m
   | Some (FdFileW _ _) => ret_outcome (Z_to_bv 64 0) m
-  | Some FdDir         => ret_outcome (Z_to_bv 64 0) m
-  | Some (FdAnon _ _)  => ret_outcome (Z_to_bv 64 0) m   (* the [FdFile] answer: [noop_fsync] *)
+  | Some (FdDir _)     => ret_outcome (Z_to_bv 64 0) m
   end.
 
 Lemma fsync_witness_ok : forall fd i m, fsync_spec fd i m (fsync_witness fd m).

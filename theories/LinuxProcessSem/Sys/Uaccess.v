@@ -16,7 +16,10 @@
     TRUST BOUNDARY: this file is part of the trusted specification.
     [Specs.v] holds the dispatcher and re-exports this module; see that
     file's header for the representation and fail-closed conventions
-    every spec here follows. *)
+    every spec here follows.
+
+    Ported from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad.
@@ -297,7 +300,7 @@ Open Scope sys_scope.
     that file IS a byte list — [Fs.file_write] walks it on every write —
     and a run GROWS that file itself, a chain of writes each opening a
     legal hole reaching any length.  So this is not only about
-    [Fs.valid_fs]'s initial images, and bounding those would not close it;
+    [Fs.wf_fs]'s initial images, and bounding those would not close it;
     bounding it at all changes what the theorem quantifies over rather
     than what a syscall admits.
 

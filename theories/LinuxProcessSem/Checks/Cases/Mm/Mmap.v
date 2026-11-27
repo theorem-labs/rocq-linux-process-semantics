@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -87,26 +90,26 @@ Example munmap_partial_splits_the_mapping :
                    (fun _ => None) (fun _ => None))
     (mkEffectU 0 [] [] [(65536, 4096)] [] [])
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)))
   = CheckOk
       (with_vmmaps (mkVmMaps [] [(69632, 4096)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof))) []
+                 (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof))) []
   /\ check_syscall (mkInput 215 [65536; 4096; 0; 0; 0; 0]
                    (fun _ => None) (fun _ => None))
     (mkEffect 0 [] [])
     (with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)))
   = CheckReject.
 Proof. split; check_eq. Qed.
 
 (** The partial-unmap shapes, on a four-page mapping [0x10000, 0x14000). *)
 Definition four_page_model : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 16384)] 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 Definition maps_model (maps : list (word * word)) : Model :=
   with_vmmaps (mkVmMaps [] maps 0 0 demo_limit)
-              (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 (** Head trim: the first page goes. *)
 Example munmap_head_trim :
@@ -203,7 +206,7 @@ Example munmap_partial_over_image_is_unmodeled :
                    (fun _ => None) (fun _ => None))
     (mkEffectU 0 [] [] [(61440, 8192)] [] [])
     (with_vmmaps (mkVmMaps [(57344, 8192)] [(65536, 16384)] 0 0 demo_limit)
-                 (init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof)))
+                 (init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)))
   = CheckUnmodeled.
 Proof. check_eq. Qed.
 
@@ -1136,7 +1139,7 @@ Example mmap_fixed_noaccess_span_owns_more_and_backs_less :
   /\ vm_backed_bytes
        (mkVmMapsFull [] [(69632, 8192); (65536, 4096)]
           [(69632, 8192)] 0 0 16384 0 demo_sp) = 4096%Z.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** …and its destructive failure, which drops the request from BOTH
     ledgers. *)
@@ -1750,7 +1753,8 @@ Example mmap_fixed_aligned_top_page_rejects_addr :
 Proof. check_eq. Qed.
 
 (** The length still answers first.  [len > mmap_end - mmap_min_addr]
-    in the generic search (mm/mmap.c:697), with [mmap_end] the Sv48
+    in the top-down search (mm/mmap.c:747, in
+    [generic_get_unmapped_area_topdown]), with [mmap_end] the Sv48
     [TASK_SIZE] and [mmap_min_addr] 4096, is -ENOMEM before the address
     is returned: at [TASK_SIZE - 4096 + 1] (rounded up to [TASK_SIZE])
     only -ENOMEM; at [TASK_SIZE - 4096] the address itself. *)
@@ -1830,9 +1834,9 @@ Proof. check_eq. Qed.
     decline cannot be mistaken for the model simply not knowing the fd. *)
 
 Definition mmap_file_model : Model :=
-  with_fs [([102], [104; 105; 106; 107])]
+  with_fs (raw_files [([102], [104; 105; 106; 107])])
     (with_fds
-      ((Z_to_bv 64 3, FdFile [102] (Z_to_bv 64 0)) :: m_fds noaccess_base)
+      ((Z_to_bv 64 3, FdFile 1 (Z_to_bv 64 0)) :: m_fds noaccess_base)
       noaccess_base).
 
 (** THE CLOSED-fd CORNER IS ANSWERED, and the rest of the file-backed
@@ -2277,7 +2281,7 @@ Definition noaccess_brk_model : Model :=
   with_vmmaps
     (mkVmMapsFull [(4096, 4096)] [(65536, 4096)] [(65536, 4096)]
       65536 69632 demo_limit 0 demo_sp)
-    (init_model [(4096, 4096)] 65536 0 demo_sp demo_limit (demo_input [] IEof)).
+    (init_model [(4096, 4096)] 65536 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 (** Reason 3.  A brk QUERY resolves to the unchanged break and must leave
     the no-access ledger alone — [brk_model_next]'s subtraction is gated on
@@ -2359,7 +2363,7 @@ Proof. check_eq. Qed.
 
 Definition brk_reserved : list (word * word) := [(4096, 4096)].
 
-Definition m_est : Model := init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input [] IEof).
+Definition m_est : Model := init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 Definition brk_in (req : word) : SyscallInput :=
   mkInput 214 [req; 0; 0; 0; 0; 0] (fun _ => None) (fun _ => None).
@@ -2445,7 +2449,7 @@ Proof. check_eq. Qed.
 
 Definition m_grown : Model :=
   with_vmmaps (mkVmMaps brk_reserved [(65536, 65536)] 65536 131072 demo_limit)
-              (init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input [] IEof)).
+              (init_model brk_reserved 65536 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof)).
 
 Example brk_shrink_unmaps_freed_tail :
   check_syscall (brk_in 65536)
@@ -3007,7 +3011,7 @@ Proof. reflexivity. Qed.
     4096.  A one-page grow fits; a two-page grow can only fail (the
     break comes back unchanged), never move the break. *)
 
-Definition m_tight_brk : Model := init_model brk_reserved 65536 0 demo_sp 4096 (demo_input [] IEof).
+Definition m_tight_brk : Model := init_model brk_reserved 65536 0 demo_sp 4096 (demo_input Fs.fs_empty IEof).
 
 Example brk_grow_within_budget_grants :
   check_syscall (brk_in 69632) (mkEffect 69632 [] [(65536, 4096)]) m_tight_brk
@@ -3132,7 +3136,7 @@ Example munmap_metadata_cannot_be_recharged_after_removal :
                 mmap_lazy_materialized in
   m_vm_lazy post = [] /\ m_vm_materialized post = [] /\
   vm_backing_used post = 0%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** A lazy reservation may not make memory FREE.
 
@@ -3157,7 +3161,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     an obligation discharged because it was unreachable is not a test. *)
 Definition lazy_align_base : Model :=
   with_vmmaps (mkVmMaps [] [(65536, 8192)] 0 0 8192)
-    (init_model [] 0 0 demo_sp 8192 (demo_input [] IEof)).
+    (init_model [] 0 0 demo_sp 8192 (demo_input Fs.fs_empty IEof)).
 
 Example lazy_unaligned_reservation_frees_no_backing :
   let m := vm_add_lazy 67584 6144 lazy_align_base in
@@ -3167,7 +3171,7 @@ Example lazy_unaligned_reservation_frees_no_backing :
   vm_backing_used m = 4096%Z /\
   materialize_model_accesses m [(69632, 1%nat)] = Some touched /\
   vm_backing_used touched = 8192%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** A brk shrink is also a sparse-lifecycle boundary.  Start with a one-page
     heap, replace it by MAP_FIXED|MAP_NORESERVE, touch the page, then shrink
@@ -3175,7 +3179,7 @@ Proof. cbv zeta. repeat split; check_eq. Qed.
     mmap spends the released page's budget. *)
 Definition brk_sparse_grown : Model :=
   with_vmmaps (mkVmMaps brk_reserved [(65536, 4096)] 65536 69632 4096)
-    (init_model brk_reserved 65536 0 demo_sp 4096 (demo_input [] IEof)).
+    (init_model brk_reserved 65536 0 demo_sp 4096 (demo_input Fs.fs_empty IEof)).
 
 Definition brk_sparse_fixed : Model :=
   with_mmap_replacement 16434 65536 4096 brk_sparse_grown.
@@ -3206,7 +3210,7 @@ Example brk_shrink_clears_sparse_ledgers :
   let post := with_brk_next brk_sparse_touched 65536 65536 in
   m_vm_lazy post = [] /\ m_vm_materialized post = [] /\
   vm_backing_used post = 0%Z.
-Proof. cbv zeta. repeat split; check_eq. Qed.
+Proof. cbv zeta. split_conj; check_eq. Qed.
 
 (** 0x20000 is a HINT: this ledger's [vm_mmap_base] is 0, so only a
     hint can name a low address, and Linux returns a free page-aligned
@@ -3268,7 +3272,7 @@ Proof. check_eq. Qed.
    ------------------------------------------------------------------------- *)
 
 Definition placement_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** A LOW FIRST GRANT, NOW REFUSED.  A first NULL-hint grant at
     0x80000000 is page-aligned, positive, below the ceiling and free,
@@ -3675,9 +3679,9 @@ Qed.
 Definition hi_sp : word := Z_to_bv 64 (sp_window_lo + 0x10000000).
 
 Definition top_lo_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 mmap_base_max) demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 Definition top_hi_model : Model :=
-  init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 (Z_to_bv 64 mmap_base_max) hi_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** BOTH CALLS NAME [demo_top] AS A HINT, and [State.alloc_top] is
     what separates the model's two answers.  Linux honours a free
@@ -3747,10 +3751,10 @@ Proof. check_eq. Qed.
     [demo_top] asked to grow two pages crosses the top. *)
 Definition brk_top_lo_model : Model :=
   init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 mmap_base_max)
-    demo_sp demo_limit (demo_input [] IEof).
+    demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 Definition brk_top_hi_model : Model :=
   init_model [] (Z_to_bv 64 (demo_top - 4096)) (Z_to_bv 64 mmap_base_max)
-    hi_sp demo_limit (demo_input [] IEof).
+    hi_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 Example brk_grow_across_demo_top_rejected_under_low_sp :
   check_syscall (brk_in (Z_to_bv 64 (demo_top + 4096)))
@@ -4425,7 +4429,7 @@ Definition budget_ledgers (m : Model)
    vm_noaccess (m_vmmaps m), m_vm_lazy m).
 
 Definition budget_s0 : Model :=
-  init_model brk_reserved 65536 0 demo_sp 8192 (demo_input [] IEof).
+  init_model brk_reserved 65536 0 demo_sp 8192 (demo_input Fs.fs_empty IEof).
 
 (** The budget trace's own call builder: four argument words rather
     than the two [mmap_at_in] above fixes, because this section varies

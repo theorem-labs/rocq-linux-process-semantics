@@ -7,7 +7,10 @@
     [Checks/Examples.v] keeps what is not per-syscall and
     re-exports this module. These are worked examples
     over the specs and checkers for the matching [Sys] module, read off
-    without running a binary. *)
+    without running a binary.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -27,7 +30,7 @@ Definition getrandom_dest : word -> option byte :=
   fun a => if bv_leu 4096 a && bv_ltu a 4608 then Some 0 else None.
 
 Definition getrandom_model : Model :=
-  init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+  init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** One getrandom(4096, buflen, 0) over that zone. *)
 
@@ -65,7 +68,7 @@ Example getrandom_small_request_is_delivered_in_full :
   /\ check_syscall (getrandom_call 16)
        (mkEffect 17 [(4096, some_bytes 17)] []) getrandom_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE BOUND IS INCLUSIVE.  ADMISSION REASON: it pins the exact edge
     of the narrowing, which no execution reaches — a real kernel
@@ -83,7 +86,7 @@ Example getrandom_small_bound_is_inclusive :
   /\ check_syscall (getrandom_call 257)
        (mkEffect 255 [(4096, some_bytes 255)] []) getrandom_model
      = CheckOk getrandom_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** A LARGE REQUEST STILL ADMITS THE SHORT COUNT AND -EINTR, and still
     refuses the bare 0.  ADMISSION REASON: the environment cannot be
@@ -106,7 +109,7 @@ Example getrandom_large_request_still_admits_the_short_count :
   /\ check_syscall (getrandom_call 300)
        (mkEffect 0 [] []) getrandom_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (* =========================================================================
    THE DESTINATION THAT WALKED OFF THE TOP OF THE ADDRESS SPACE
@@ -169,7 +172,7 @@ Example getrandom_wrapping_small_request_is_efault :
   /\ check_syscall (getrandom_wrap_call 16)
        (mkEffect 16 [(getrandom_wrap_buf, some_bytes 16)] []) getrandom_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** The same above the small-request bound, where the bare walk admitted
     a short delivery as well. *)
@@ -183,7 +186,7 @@ Example getrandom_wrapping_large_request_is_efault :
   /\ check_syscall (getrandom_wrap_call 300)
        (mkEffect 5 [(getrandom_wrap_buf, some_bytes 5)] []) getrandom_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** THE NEIGHBOURS, and the half that says the arm still works: the last
     [n] bytes [State.access_okb] accepts, mapped end to end.  The small
@@ -213,7 +216,7 @@ Example getrandom_at_the_top_still_delivers :
   /\ check_syscall (getrandom_top_call 300)
        (mkEffect (errno_ret EFAULT) [] []) getrandom_model
      = CheckReject.
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** A range [State.access_okb] ADMITS with nothing behind it is declined,
     not answered -EFAULT: the house rule [Kernel.Sys.prlimit64_spec]'s

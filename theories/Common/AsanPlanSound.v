@@ -171,9 +171,10 @@ Variable KC : nat.
     [vm_reserved] with the image's reservations AND with what the kernel maps
     for the process besides the image: the vvar pages and the vDSO text,
     taken as one unhinted [get_unmapped_area] span (Linux v6.18.46, commit
-    1f99e9ab748f, arch/riscv/kernel/vdso.c:124
-    [arch_setup_additional_pages]), which a top-down layout answers from the
-    gap just below [mm->mmap_base].
+    1f99e9ab748f, arch/riscv/kernel/vdso.c:124 in
+    [__setup_additional_pages], which [arch_setup_additional_pages] calls),
+    which a top-down layout answers from the gap just below
+    [mm->mmap_base].
 
     [co_res] used to read [vm_reserved … = segments_reserved SEGS], which
     ASSERTED that there is nothing else in the ledger.  A consumer could then
@@ -288,9 +289,10 @@ Definition fds3 (e : FdEntry) : list (word * FdEntry) := (Z_to_bv 64 3, e) :: fd
 Definition fds_ok (E : env) (f : afd) (model : Model) : Prop :=
   match f with
   | AP.FdStd => m_fds model = fds_std
-  | AP.FdDir => m_fds model = fds3 State.FdDir
-  | AP.FdFile k len off => exists p c,
-        m_fds model = fds3 (State.FdFile p (edenot E off)) /\ fs_lookup (m_fs model) p = Some c
+  | AP.FdDir => exists d, m_fds model = fds3 (State.FdDir d)
+  | AP.FdFile k len off => exists i c,
+        m_fds model = fds3 (State.FdFile i (edenot E off))
+     /\ Fs.fs_ino_data (m_fs model) i = c
      /\ uE E len = flen c /\ uE E off <= uE E len
      /\ (forall j, (65536 * Z.of_nat j < 2 ^ 26)%Z -> eb E (k + j)%nat = chunk j c)
   end.

@@ -336,12 +336,11 @@ Definition set_rlimit_core (bs : list byte) : Sys unit :=
 Definition set_utsname (bs : list byte) : Sys unit :=
   modify (with_utsname bs).
 Definition set_setsid_succeeded : Sys unit := modify with_setsid_succeeded.
-(** Record the [struct stat] a file was first seen with.  Called on
-    exactly one branch of [Sys.Fs.Stat.fstat_spec] -- the one where
-    [State.statpin_lookup] was [None] -- so a path's pin is written
-    once; see [State.procst_statpins]. *)
-Definition set_statpin (p : Fs.path) (bs : list byte) : Sys unit :=
-  modify (with_statpin p bs).
+(** Record the [struct stat] an identity was first seen with, or a
+    folder's rule once a stat has chosen it; see [State.with_statpin]
+    and [State.procst_statpins]. *)
+Definition set_statpin (id : StatId) (sp : StatPin) : Sys unit :=
+  modify (with_statpin id sp).
 
 
 Definition set_sigmask (sm : word) : Sys unit := modify (with_sigmask sm).

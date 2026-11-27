@@ -53,8 +53,9 @@ Definition w1x_byte : byte := Z_to_bv 8 0x93.
     which declares the death, and the reader launch is [Run.valid_input],
     which does not. *)
 Definition w1x_input (reader : bool) : ProcInput :=
-  mkProcInput_full [[]] [] [] IEof demo_uid demo_gid demo_groups net_silent
-    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom []
+  mkProcInput_full [[]] [] (fst (Fs.migrate_image Fs.default_cwd [])) Fs.default_cwd IEof
+    demo_uid demo_gid demo_groups net_silent
+    default_nofile (Z_to_bv 64 0) demo_hwcap false Sv48 default_urandom
     default_kernel default_execfn reader true (negb reader).
 
 (** THE TWO LAUNCHES, EACH UNDER ITS OWN PREDICATE.  [Run.valid_input]
@@ -328,12 +329,12 @@ Example w1x_sigpipe_pair : forall lim,
   /\ dies_by_signal (run w1x_image lim (demo_entry_of (w1x_input false)) (w1x_input false))
   /\ (forall tr e,
         bh_traces (run w1x_image lim (demo_entry_of (w1x_input false)) (w1x_input false)) tr ->
-        In e tr -> e = KillEv (Z_to_bv 64 SIGPIPE) (in_fs (w1x_input false)))
+        In e tr -> e = KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (in_fs (w1x_input false))))
   (* a reader: the byte, then exit 0 *)
   /\ must_exit_with (Z_to_bv 64 0) w1x_image lim (demo_entry_of (w1x_input true))
        (w1x_input true)
   /\ bh_traces (run w1x_image lim (demo_entry_of (w1x_input true)) (w1x_input true))
-       [WriteEv (Z_to_bv 64 1) w1x_byte; ExitEv (Z_to_bv 64 0) (in_fs (w1x_input true))]
+       [WriteEv (Z_to_bv 64 1) w1x_byte; ExitEv (Z_to_bv 64 0) (Fs.fs_observe (in_fs (w1x_input true)))]
   /\ ~ dies_by_signal (run w1x_image lim (demo_entry_of (w1x_input true)) (w1x_input true)).
 Proof.
   intros lim.
@@ -364,8 +365,8 @@ Proof.
              (w1x_te false) ltac:(discriminate) (w1x_wfirst false) eq_refl w1x_fatal). }
   split.
   { unfold dies_by_signal. cbn [run bh_traces w1x_image].
-    exists [KillEv (Z_to_bv 64 SIGPIPE) (in_fs (w1x_input false))],
-      (Z_to_bv 64 SIGPIPE), (in_fs (w1x_input false)).
+    exists [KillEv (Z_to_bv 64 SIGPIPE) (Fs.fs_observe (in_fs (w1x_input false)))],
+      (Z_to_bv 64 SIGPIPE), (Fs.fs_observe (in_fs (w1x_input false))).
     split; [apply Hdead; apply is_prefix_refl | left; reflexivity]. }
   split.
   { intros tr e Htr Hin.

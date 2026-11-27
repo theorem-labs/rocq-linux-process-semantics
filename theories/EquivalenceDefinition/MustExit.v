@@ -189,11 +189,11 @@ Lemma sstep_next_halts_by_exit : forall segs c evs c',
   sstep segs c evs (SNext c') ->
   m_halted (cfg_model c') = None
   \/ (exists evs0 code,
-        evs = evs0 ++ [ExitEv code (m_fs (cfg_model c'))]
+        evs = evs0 ++ [ExitEv code (Fs.fs_observe (m_fs (cfg_model c')))]
         /\ m_halted (cfg_model c') = Some code
         /\ m_killed (cfg_model c') = None)
   \/ (exists evs0 sig,
-        evs = evs0 ++ [KillEv sig (m_fs (cfg_model c'))]
+        evs = evs0 ++ [KillEv sig (Fs.fs_observe (m_fs (cfg_model c')))]
         /\ m_killed (cfg_model c') = Some sig).
 Proof.
   intros segs c evs c' Hss.
@@ -415,7 +415,7 @@ Proof.
                      | (evs0 & sig & Hevs & Hsig)]];
         [congruence | | congruence].
       assert (Hcc : code0 = code) by congruence. subst code0.
-      exists evs0, (m_fs (cfg_model c1)), c1. split; [| exact Hh1].
+      exists evs0, (Fs.fs_observe (m_fs (cfg_model c1))), c1. split; [| exact Hh1].
       rewrite <- Hevs. exact (star_one _ _ _ _ Hss).
     + destruct (IH evs c1 Hss Hh1) as (tr & fs & c' & Hstar & Hh').
       exists (evs ++ tr), fs, c'. split; [| exact Hh'].
@@ -586,11 +586,11 @@ Lemma sstep_cfg_next_halts_by_exit : forall segs cfg c evs c',
   sstep_cfg segs cfg c evs (SNext c') ->
   m_halted (cfg_model c') = None
   \/ (exists evs0 code,
-        evs = evs0 ++ [ExitEv code (m_fs (cfg_model c'))]
+        evs = evs0 ++ [ExitEv code (Fs.fs_observe (m_fs (cfg_model c')))]
         /\ m_halted (cfg_model c') = Some code
         /\ m_killed (cfg_model c') = None)
   \/ (exists evs0 sig,
-        evs = evs0 ++ [KillEv sig (m_fs (cfg_model c'))]
+        evs = evs0 ++ [KillEv sig (Fs.fs_observe (m_fs (cfg_model c')))]
         /\ m_killed (cfg_model c') = Some sig).
 Proof.
   intros segs cfg c evs c' Hss.
@@ -651,7 +651,7 @@ Proof.
                      | (evs0 & sig & Hevs & Hsig)]];
         [congruence | | congruence].
       assert (Hcc : code0 = code) by congruence. subst code0.
-      exists evs0, (m_fs (cfg_model c1)), c1. split; [| exact Hh1].
+      exists evs0, (Fs.fs_observe (m_fs (cfg_model c1))), c1. split; [| exact Hh1].
       rewrite <- Hevs. rewrite <- (app_nil_r evs).
       eapply star_cfg_step; [exact Hss | apply star_cfg_refl].
     + destruct (IH evs c1 Hss Hh1) as (tr & fs & c' & Hstar & Hh').
@@ -1248,7 +1248,7 @@ Proof.
                      | (evs0 & sig & Hevs & Hsig)]];
         [congruence | | congruence].
       assert (Hcc : code0 = k) by congruence. subst code0.
-      exists evs0, k, (m_fs (cfg_model c1)), c1.
+      exists evs0, k, (Fs.fs_observe (m_fs (cfg_model c1))), c1.
       split; [exact Hin1 | split; [| exact Hh1]].
       rewrite <- Hevs. exact (star_one _ _ _ _ Hss).
     + destruct (IH evs c1 Hss Hh1) as (tr & code & fs & c' & Hin' & Hstar & Hh').
@@ -1473,7 +1473,7 @@ Proof.
                      | (evs0 & sig & Hevs & Hsig)]];
         [congruence | | congruence].
       assert (Hcc : code0 = k) by congruence. subst code0.
-      exists evs0, k, (m_fs (cfg_model c1)), c1.
+      exists evs0, k, (Fs.fs_observe (m_fs (cfg_model c1))), c1.
       split; [exact Hin1 | split; [| exact Hh1]].
       rewrite <- Hevs. rewrite <- (app_nil_r evs).
       eapply star_cfg_step; [exact Hss | apply star_cfg_refl].

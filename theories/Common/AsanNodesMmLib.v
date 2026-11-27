@@ -2355,7 +2355,7 @@ Proof.
     set (len2 := (n_res A + n_resx A + length (a_maps cs))%nat) in *.
     assert (Z.of_nat len1 * (nZ + 4095) <= Z.of_nat len2 * (nhi + 4095)) by nia. nia. }
   assert (HnZ0 : 0 < nZ) by lia.
-  destruct (LinuxProcessSemantics.LinuxProcessSem.Checks.Placement.linux_place_admissible
+  destruct (Placement.linux_place_admissible
               (m_vmmaps model) _ (Z_to_bv 64 0) nZ g HnZ0 HnZal Hpl)
     as (Hal & Hpos & Hhi & Hfree).
   pose proof (alloc_top_lt (m_vmmaps model)) as Hat. unfold two_pow_64 in Hat.

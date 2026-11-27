@@ -7,7 +7,10 @@
     [Checks/ExecutableSpecs.v] keeps the dispatcher
     and the four top-level theorems and re-exports this module. The
     checkers here are executable, and their proofs relate them to the
-    relational specs in the matching [Sys] module. *)
+    relational specs in the matching [Sys] module.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase Fs State Monad Specs.
@@ -45,9 +48,8 @@ Definition check_getdents64 (fd count : word) (eff : SyscallEffect) (m : Model)
   | Some (FdDgram _)   => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdEventfd _) => check_ret_only eff (errno_ret ENOTDIR) m []
   | Some (FdDevNull _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
-  | Some FdUrandom => check_ret_only eff (errno_ret ENOTDIR) m []
-  | Some (FdAnon _ _)  => check_ret_only eff (errno_ret ENOTDIR) m []
-  | Some FdDir =>
+  | Some (FdUrandom _ _) => check_ret_only eff (errno_ret ENOTDIR) m []
+  | Some (FdDir _) =>
       if getdents64_no_room count then
         match eff with
         | mkEffectU ret [] [] [] [] [] =>
@@ -119,7 +121,7 @@ Proof.
   (* THE DIRECTORY ARM (sixth: [State.FdEntry]'s constructors are
      [FdChannel], [FdFile], [FdFileW], [FdFileA], [FdFileRW], [FdDir],
      [FdSocket], [FdPipe], [FdDevNull], [FdUrandom], [FdStream],
-     [FdEventfd], [FdDgram], [FdAnon], then the closed fd).  THE INDEX MOVES WITH
+     [FdEventfd], [FdDgram], then the closed fd).  THE INDEX MOVES WITH
      THE TYPE: every constructor added ahead of [FdDir] shifts it, and
      the goal this selects is silently a different arm if it is not
      moved with it.  [getdents64_errnos] IS UNFOLDED BEFORE

@@ -463,8 +463,9 @@ Proof. repeat split; vm_compute; reflexivity. Qed.
     of these is an answer the checker must reject rather than record:
     the two nearest integers, an errno, and the -EPERM
     [ALLOW_ERROR_INJECTION] would make reachable on a kernel running a
-    [bpf_override_return] program — which [Kernel.Sched.Syscalls.sched_yield_spec]
-    names as the residual this model does not describe.  A
+    [bpf_override_return] program, an override the configuration of
+    record cannot attach ([Kernel.Sched.Syscalls.sched_yield_spec] says
+    why).  A
     [CheckUnmodeled] is impossible here and no case asserts one: the arm
     has no fail-closed branch at all. *)
 Example sched_yield_nonzero_answers_rejected :

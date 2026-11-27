@@ -22,7 +22,10 @@
     [Fcntl.setfl_noop_on] ENUMERATES its fd kinds, so each kind's answer
     is a spelled-out arm rather than a consequence of one, and a reader
     checking that enumeration should find all five values in one place.
-    These read the arms back. *)
+    These read the arms back.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -36,10 +39,10 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export
   Prelude Fs.ReadWrite.
 
 Definition fcntl_model : Model :=
-  mkModel [(0, FdChannel 0); (1, FdChannel 1); (3, FdFile [102] 0);
-           (4, FdFileW [103] 0); (5, FdDir); (6, FdSocket SkFresh);
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (3, FdFile 1 0);
+           (4, FdFileW 2 0); (5, FdDir Fs.default_cwd); (6, FdSocket SkFresh);
            (7, FdPipe 0 false); (8, FdPipe 0 true)]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [([102], [104; 105])] None None
+    (mkVmMaps [] [] 0 0 demo_limit) IEof (raw_files [([102], [104; 105])]) None None
     None.
 
 (** The same table with an APPEND fd (from
@@ -47,10 +50,10 @@ Definition fcntl_model : Model :=
     fd at 4.  Two kinds, one call, one model: that pairing is what makes
     the contrast below a claim about the fd KIND. *)
 Definition fcntl_append_model : Model :=
-  mkModel [(0, FdChannel 0); (1, FdChannel 1); (3, FdFile [102] 0);
-           (4, FdFileW [103] 0); (5, FdDir); (6, FdSocket SkFresh);
-           (7, FdPipe 0 false); (8, FdPipe 0 true); (10, FdFileA [104] 0)]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [([102], [104; 105])] None None
+  mkModel [(0, FdChannel 0); (1, FdChannel 1); (3, FdFile 1 0);
+           (4, FdFileW 2 0); (5, FdDir Fs.default_cwd); (6, FdSocket SkFresh);
+           (7, FdPipe 0 false); (8, FdPipe 0 true); (10, FdFileA 3 0)]
+    (mkVmMaps [] [] 0 0 demo_limit) IEof (raw_files [([102], [104; 105])]) None None
     None.
 
 (** F_SETFL AND F_GETFL DECLINE ON AN APPEND FD, and no real run can
@@ -238,7 +241,7 @@ Example fcntl_setfl_unread_flags_are_zero :
        (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model []
   /\ check_syscall (mkInput 25 [3; 4; 2147483648; 0; 0; 0] (fun _ => None) (fun _ => None))
        (mkEffect 0 [] []) fcntl_model = CheckOk fcntl_model [].
-Proof. repeat split; check_eq. Qed.
+Proof. split_conj; check_eq. Qed.
 
 (** [fd] is 32 bits ([Syscall.fd32]) — pinned on the arm that SUCCEEDS.
     On a CLOSED fd both spellings answer -EBADF whether or not the high half was dropped,
@@ -475,7 +478,7 @@ Definition fcntl_pair_model : Model :=
   mkModel [(0, FdChannel 0); (1, FdChannel 1);
            (3, FdStream 0 false (fcntl_pair_end false));
            (4, FdStream 0 true (fcntl_pair_end true))]
-    (mkVmMaps [] [] 0 0 demo_limit) IEof [] None None None.
+    (mkVmMaps [] [] 0 0 demo_limit) IEof Fs.fs_empty None None None.
 
 (** F_GETFL ON A STREAM END is O_RDWR plus O_NONBLOCK exactly when the
     end carries it ([Fcntl.stream_f_flags]): 2 on fd 3, 2050 on fd 4.

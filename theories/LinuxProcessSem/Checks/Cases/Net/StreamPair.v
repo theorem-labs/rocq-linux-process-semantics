@@ -3,8 +3,7 @@
     Mirrors the stream-pair arms of [Sys/Net/Socket.v], [Sys/Fs/ReadWrite.v]
     and [Sys/Fs/Select.v], which answer to Linux net/unix/af_unix.c,
     net/socket.c, net/core/sock.c and fs/select.c (v6.18.46, commit
-    1f99e9ab748f).  The examples are the acceptance cases A1 to A3 of
-    dispatch://OSSV-287.
+    1f99e9ab748f).
 
     PART 1 (A1 to A3) and PART 3 (A5's pair calls, A6's bind) name no
     constructor this change adds: every Example there is stated through
@@ -36,7 +35,7 @@ From LinuxProcessSemantics.LinuxProcessSem.Checks.Cases Require Export Prelude.
    ========================================================================= *)
 
 (** The start: [init_model]'s three channels, so the pair takes 3 and 4. *)
-Definition sp_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input [] IEof).
+Definition sp_m0 : Model := init_model [] 0 0 demo_sp demo_limit (demo_input Fs.fs_empty IEof).
 
 (** Addresses.  [sv_addr]: the 8-byte [int sv[2]].  [src_addr]: a source
     buffer whose first two bytes are "hi" and whose next 8190 are zero.
@@ -177,7 +176,7 @@ Example a1_pair_refuses_invented_bytes :
            (read_in 3 64) (read_ok [Z_to_bv 8 104]) = Some CheckReject.
 Proof. split; check_eq. Qed.
 
-(** A1, the declining case — the acceptance pair of spec v3: the two runs
+(** A1, the declining case, one of a pair of runs: the two runs
     differ only in whether the peer wrote first.  With no write, the
     blocking read of the empty queue, whose peer is open, DECLINES: Linux
     would sleep in [unix_stream_data_wait] forever, and the model declines
@@ -425,8 +424,9 @@ Example a3_rcvbuf_is_reported :
 Proof. check_eq. Qed.
 
 (** A3: every level other than SOL_SOCKET.  setsockopt at IPPROTO_TCP —
-    curl's TCP_NODELAY — is -EOPNOTSUPP ([unix_setsockopt]'s first test),
-    and NOT the -ENOPROTOOPT an AF_INET socket gives for an unknown level. *)
+    a client's TCP_NODELAY — is -EOPNOTSUPP ([unix_setsockopt]'s first
+    test), and NOT the -ENOPROTOOPT an AF_INET socket gives for an unknown
+    level. *)
 Example a3_setsockopt_tcp_level_is_eopnotsupp :
   is_ok (after pair (setsockopt_in 3 6 1 1) (errno_eff EOPNOTSUPP)) = true
   /\ after pair (setsockopt_in 3 6 1 1) (errno_eff ENOPROTOOPT) = Some CheckReject
@@ -482,23 +482,20 @@ Example close_moves_nothing_but_the_entry :
 Proof. vm_compute. split; repeat first [reflexivity | (apply bv_eq; reflexivity) | progress f_equal]. Qed.
 
 (* =========================================================================
-   PART 3 — A5: the calls curl_fuzzer_proto_http makes on its pair
+   PART 3 — A5: two traced call sequences on a pair
    ========================================================================= *)
 
-(** The sequences below are the two that the census of
-    curl_fuzzer_proto_http (curl-fuzzer de8de30, release recipe
-    v2026.10.0-src, plain build sha256 42869c82...) found on its pair, as
-    calls with their arguments and results.  The census:
-    /home/sami/work/workers/curl-lps-pair/a5/SUMMARY.md, section 4, on
-    ossv-agent-open5; the sequences are rows 1 and 3 of its
-    [pairs/pairs.sequences.tsv].  Descriptor numbers differ (the model
-    gives 3 and 4, the traced process 5 and 6) and the byte counts are
-    shortened; every call, flag word and result kind is the traced one.
-    sv[0] = 3 is the mock server's end, sv[1] = 4 curl's.
+(** The sequences below are two that one traced program made on its
+    pair, its sequences 1 and 3, as calls with their arguments and
+    results; the trace is not in this repository.  Descriptor numbers
+    differ (the model gives 3 and 4, the traced process 5 and 6) and the
+    byte counts are shortened; every call, flag word and result kind is
+    the traced one.  sv[0] = 3 is the server's end, sv[1] = 4 the
+    client's.
 
     So these replay the pair half of A5 through the checker.  They say
     nothing about the calls that are not on the pair (eventfd2, the IPv6
-    probe socket, rt_sigaction), which the census also found. *)
+    probe socket, rt_sigaction), which the same program also makes. *)
 
 (** fcntl(fd, F_GETFL) = [r]; fcntl(fd, F_SETFL, O_RDWR | O_NONBLOCK) = 0
     (0x802, the word the traced kernel saw). *)
@@ -567,8 +564,8 @@ Example a5_sequence_1_is_accepted :
 Proof. vm_compute. split; reflexivity. Qed.
 
 (** Sequence 3, the chunked responses: a part sent, read, then -EAGAIN on
-    curl's end; the mock server reads the request, then -EAGAIN on its own;
-    the next part; and only then SHUT_WR and end of file. *)
+    the client's end; the server reads the request, then -EAGAIN on its
+    own; the next part; and only then SHUT_WR and end of file. *)
 Definition a5_sequence_3 : list (SyscallInput * SyscallEffect) :=
   [ (socketpair_in 1, socketpair_ok);
     getfl 3 2; setfl_nonblock 3;
@@ -595,17 +592,17 @@ Example a5_sequence_3_is_accepted :
 Proof. vm_compute. split; reflexivity. Qed.
 
 (** The control that keeps the two above from being vacuous: the same
-    sequence with curl's FIRST recvfrom claiming end of file — before the
-    mock server's SHUT_WR, with bytes queued — is refused at that step. *)
+    sequence with the client's FIRST recvfrom claiming end of file — before
+    the server's SHUT_WR, with bytes queued — is refused at that step. *)
 Example a5_sequence_with_a_false_eof_is_refused :
   run_accepted sp_m0
     (firstn 10 a5_sequence_3 ++ [recvfrom_got 4 1024 []]) = None.
 Proof. check_eq. Qed.
 
-(** bind(fd, sa_addr, len) where [sa_addr] holds the [struct sockaddr_in]
-    curl binds, {AF_INET, port 12345, 0.0.0.0}: [sin_family] 2
-    little-endian, [sin_port] 12345 = 0x3039 big-endian, [sin_addr] and
-    [sin_zero] zero.  The rest of memory is [sp_rmem]'s. *)
+(** bind(fd, sa_addr, len) where [sa_addr] holds a [struct sockaddr_in]
+    {AF_INET, port 12345, 0.0.0.0}: [sin_family] 2 little-endian,
+    [sin_port] 12345 = 0x3039 big-endian, [sin_addr] and [sin_zero] zero.
+    The rest of memory is [sp_rmem]'s. *)
 Definition sa_addr : word := Z_to_bv 64 36864.
 Definition sin_any_12345 : list byte :=
   [Z_to_bv 8 2; Z_to_bv 8 0; Z_to_bv 8 48; Z_to_bv 8 57] ++ repeat (Z_to_bv 8 0) 12.
@@ -616,12 +613,11 @@ Definition bind_in (fd len : Z) : SyscallInput :=
               else sp_rmem 0 4 4 1 a)
     sp_wmem.
 
-(** A6, the census's kind D6 (dispatch://OSSV-286/artifact/census-wave3-md):
-    curl binds that 16-byte AF_INET address on its end, sv[1] = 4.  Linux
-    copies the 16 bytes in ([move_addr_to_kernel]) and [unix_bind] answers
-    -EINVAL, because [unix_validate_addr] finds a family other than
-    AF_UNIX; nothing moves.  The success curl asks for is refused, and so
-    is the -EINVAL without the copy-in. *)
+(** A6: a program binds that 16-byte AF_INET address on its end of the
+    pair, sv[1] = 4.  Linux copies the 16 bytes in ([move_addr_to_kernel])
+    and [unix_bind] answers -EINVAL, because [unix_validate_addr] finds a
+    family other than AF_UNIX; nothing moves.  The success the program
+    asks for is refused, and so is the -EINVAL without the copy-in. *)
 Example a6_bind_af_inet_on_a_pair_end_is_einval :
   match run_accepted sp_m0 pair with
   | Some m =>
@@ -630,6 +626,34 @@ Example a6_bind_af_inet_on_a_pair_end_is_einval :
       /\ check_syscall (bind_in 4 16) (with_copyins [(sa_addr, 16%nat)] (mkEffect 0 [] [])) m
            = CheckReject
       /\ check_syscall (bind_in 4 16) (errno_eff EINVAL) m = CheckReject
+  | None => False
+  end.
+Proof. vm_compute. split; [|split]; reflexivity. Qed.
+
+(** GETSOCKNAME INTO A BUFFER THAT TAKES NOTHING IS DECLINED.  [uaddr] =
+    49152 is below TASK_SIZE and in no mapping, and [*ulen] is 128.  Linux
+    answers -EFAULT, but the supported kernels differ on [*ulen]:
+    v6.18.46's [move_addr_to_user] stores 2 there before the copy
+    (net/socket.c:276-314, v6.18.46), while v6.16's and v6.17's store it
+    with [__put_user] after the copy and so never reach it
+    (net/socket.c:276-301, v6.17; the same text in v6.16).  Both -EFAULT
+    answers are [CheckUnmodeled]; the writable destination of
+    [getsockname_unnamed] is still answered. *)
+Definition getsockname_fault_in : SyscallInput :=
+  mk_opt 204 [Z_to_bv 64 4; Z_to_bv 64 49152; len_addr; 0; 0; 0] 0 128.
+
+Example getsockname_into_an_unmapped_buffer_is_declined :
+  match run_accepted sp_m0 pair with
+  | Some m =>
+      check_syscall getsockname_fault_in
+        (with_copyins [(len_addr, 4%nat)]
+           (mkEffect (errno_ret EFAULT) [(len_addr, [2; 0; 0; 0])] [])) m
+        = CheckUnmodeled
+      /\ check_syscall getsockname_fault_in
+           (with_copyins [(len_addr, 4%nat)] (errno_eff EFAULT)) m
+         = CheckUnmodeled
+      /\ check_syscall (fst (getsockname_unnamed 4)) (snd (getsockname_unnamed 4)) m
+         = CheckOk m []
   | None => False
   end.
 Proof. vm_compute. split; [|split]; reflexivity. Qed.

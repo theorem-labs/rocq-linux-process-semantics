@@ -101,7 +101,10 @@
     ADMISSION REASON (the third at the top of [Checks/Examples.v]): what
     is pinned here is that a [Run.run]'s TRACE SET contains a
     [State.KillEv], which is a statement about the model's own execution
-    relation, not about anything a real run reveals. *)
+    relation, not about anything a real run reveals.
+
+    Ported in part from theorem-labs/linux-process-semantics
+    r22/namespace-core at 6ff3d045 (issue #1011). *)
 
 From Stdlib Require Import ZArith List Bool Lia String PrimString.
 From LinuxProcessSemantics.LinuxProcessSem Require Import
@@ -152,13 +155,10 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
-    (* [Fs.fs_image_real], the FIFTH conjunct: the image is the empty
-       one, with no key to be non-canonical and no key under another,
-       so the boolean computes to [true]. *)
-    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
+  all: try valid_image_vm.
   all: try valid_urandom_default.
   (* [Run.valid_launch]'s first half: the launch name is
      [State.default_execfn], "a" -- one byte, no NUL -- so it is a name
@@ -275,7 +275,7 @@ Definition abrt_model (lim : Z) : Model :=
 Definition abrt_c (lim : Z) : config := mkCfg (abrt_s 0) (abrt_model lim).
 
 (** Every state and every syscall input below carries the run's segment
-    list inside a closure ([ms_rom], and [Specs.sys_input]'s readers), so
+    list inside a closure ([ms_rom], and [Run.sys_input]'s readers), so
     a [vm_compute] over one reads the measured vDSO image back under its
     binder.  Opening the state's definitions and abstracting the pair
     first keeps the computation to the image's own segment —
@@ -412,7 +412,7 @@ Proof. intros lim. abrt_open2. vm_compute. reflexivity. Qed.
 
 (** The trace the run ends on. *)
 Definition abrt_trace (lim : Z) : list event :=
-  [KillEv (Z_to_bv 64 6) (m_fs (abrt_killed_model lim))].
+  [KillEv (Z_to_bv 64 6) (Fs.fs_observe (m_fs (abrt_killed_model lim)))].
 
 Lemma abrt_kill_sstep : forall lim,
   sstep abrt_rsegs
@@ -421,8 +421,8 @@ Lemma abrt_kill_sstep : forall lim,
     (SNext (mkCfg (abrt_t 3) (abrt_killed_model lim))).
 Proof.
   intros lim. unfold abrt_trace.
-  change [KillEv (Z_to_bv 64 6) (m_fs (abrt_killed_model lim))]
-    with ([] ++ [KillEv (Z_to_bv 64 6) (m_fs (abrt_killed_model lim))]).
+  change [KillEv (Z_to_bv 64 6) (Fs.fs_observe (m_fs (abrt_killed_model lim)))]
+    with ([] ++ [KillEv (Z_to_bv 64 6) (Fs.fs_observe (m_fs (abrt_killed_model lim)))]).
   eapply sstep_killed;
     [ reflexivity
     | exact abrt_svc_tkill
@@ -465,7 +465,7 @@ Proof.
   intros lim.
   rewrite abrt_entry_fields. cbn [run bh_traces abrt_image].
   rewrite abrt_config.
-  exists (abrt_trace lim), (Z_to_bv 64 6), (m_fs (abrt_killed_model lim)).
+  exists (abrt_trace lim), (Z_to_bv 64 6), (Fs.fs_observe (m_fs (abrt_killed_model lim))).
   split.
   - exists (abrt_trace lim), (mkCfg (abrt_t 3) (abrt_killed_model lim)).
     split; [exact (abrt_star lim) | apply is_prefix_refl].
@@ -717,12 +717,10 @@ Proof.
     try (unfold valid_nofile; apply Z.leb_le; vm_compute; reflexivity);
     try (unfold valid_sigmask; apply bv_eq; vm_compute; reflexivity);
     try (unfold valid_hwcap; left; reflexivity);
-    (* [Fs.fs_image_real], the FIFTH conjunct, as at
-       [abrt_input_valid]: the image is empty. *)
-    try (unfold fs_image_real; vm_compute; reflexivity);
     try lia; try reflexivity;
     repeat first [ apply Forall_nil | apply Forall_cons | split
                  | cbn; lia | reflexivity | intros [] ].
+  all: try valid_image_vm.
   all: try valid_urandom_default.
   (* [Run.valid_launch], as at [abrt_input_valid]: the launch name is
      [State.default_execfn], one byte and no NUL, and the launch is
@@ -1039,12 +1037,13 @@ Lemma syscall_kill_step : forall ms model x8 eff0 m0 sig,
      check_syscall (sys_input blk_rsegs ms x8) eff model = CheckOk m' evs ->
      eff = eff0 /\ m' = m0 /\ evs = []) ->
   m_killed m0 = Some sig -> m_halted m0 <> None ->
-  sstep blk_rsegs (mkCfg ms model) [KillEv sig (m_fs m0)] (SNext (mkCfg ms m0))
+  sstep blk_rsegs (mkCfg ms model) [KillEv sig (Fs.fs_observe (m_fs m0))] (SNext (mkCfg ms m0))
   /\ (forall evs st, sstep blk_rsegs (mkCfg ms model) evs st ->
-        evs = [KillEv sig (m_fs m0)] /\ st = SNext (mkCfg ms m0)).
+        evs = [KillEv sig (Fs.fs_observe (m_fs m0))] /\ st = SNext (mkCfg ms m0)).
 Proof.
   intros ms model x8 eff0 m0 sig Hh Hsvc Hchk Hdet Hk0 Hh0. split.
-  - change [KillEv sig (m_fs m0)] with ([] ++ [KillEv sig (m_fs m0)]).
+  - change [KillEv sig (Fs.fs_observe (m_fs m0))]
+      with ([] ++ [KillEv sig (Fs.fs_observe (m_fs m0))]).
     eapply sstep_killed;
       [ exact Hh | exact Hsvc | apply check_syscall_ok_iff; exact Hchk | exact Hk0 ].
   - intros evs st Hss. inversion Hss; subst; try congruence.
@@ -1510,11 +1509,11 @@ Qed.
     is delivered, at SIG_DFL, and the process dies. *)
 Lemma blk_sc8 : forall lim t,
   sstep blk_rsegs (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim))
-    [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
+    [KillEv (Z_to_bv 64 SIGABRT) (Fs.fs_observe (m_fs (blk_m8 t lim)))]
     (SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim)))
   /\ (forall evs st,
         sstep blk_rsegs (mkCfg (blk_leg (blk_L7 t) 4) (blk_m7 t lim)) evs st ->
-        evs = [KillEv (Z_to_bv 64 SIGABRT) (m_fs (blk_m8 t lim))]
+        evs = [KillEv (Z_to_bv 64 SIGABRT) (Fs.fs_observe (m_fs (blk_m8 t lim)))]
         /\ st = SNext (mkCfg (blk_leg (blk_L7 t) 4) (blk_m8 t lim))).
 Proof.
   intros lim t.
@@ -1558,7 +1557,7 @@ Proof.
   destruct (blk_sc8 lim t) as [S8 O8]. eapply exec_step_only; [exact S8 | exact O8 |].
   apply exec_halt; [intro Hx; vm_compute in Hx; discriminate Hx |].
   cbv beta. unfold blk_post. split; [intros [] |].
-  exists (Z_to_bv 64 SIGABRT), (m_fs (blk_m8 t lim)).
+  exists (Z_to_bv 64 SIGABRT), (Fs.fs_observe (m_fs (blk_m8 t lim))).
   cbn [app In]. left. reflexivity.
 Qed.
 

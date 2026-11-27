@@ -2004,7 +2004,7 @@ Qed.
 Theorem asan_init_obs_iff : forall tr,
   obs_trace segs (mkCfg ms1 model) tr
   <-> (exists full, wpick (Z_to_bv 64 1) [buf] full
-        /\ is_prefix tr (full ++ [ExitEv cs (m_fs model)])).
+        /\ is_prefix tr (full ++ [ExitEv cs (Fs.fs_observe (m_fs model))])).
 Proof.
   intro tr.
   rewrite (srealizes_obs_iff segs _ _ asan_init_srealizes tr).

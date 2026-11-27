@@ -44,7 +44,7 @@ Open Scope bv_scope.
     different addresses for the same call. *)
 Definition place_model : Model :=
   init_model [] (Z_to_bv 64 0x11000) (Z_to_bv 64 mmap_base_min)
-    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
+    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input Fs.fs_empty IEof).
 
 (** The SAME launch with transparent huge pages, and the only field
     that differs is [kb_thp]: written as a projection-wise copy of
@@ -308,7 +308,7 @@ Proof. vm_compute. reflexivity. Qed.
     answered with the old break is admitted. *)
 Definition place_brk_model : Model :=
   init_model [] (Z_to_bv 64 23387528560640) (Z_to_bv 64 mmap_base_min)
-    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input [] IEof).
+    (Z_to_bv 64 sp_window_lo) target_alloc_limit (demo_input Fs.fs_empty IEof).
 
 Example vdso_brk_grow_into_the_pair_rejected :
   check_syscall

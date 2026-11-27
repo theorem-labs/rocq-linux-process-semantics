@@ -22,6 +22,7 @@
 
 From Stdlib Require Import ZArith List.
 From LinuxProcessSemantics.LinuxProcessSem Require Import BvBase State.
+From LinuxProcessSemantics.LinuxProcessSem Require Fs.
 From LinuxProcessSemantics.LinuxProcessSem.Checks Require Import CheckedInput.
 Import ListNotations.
 Open Scope Z_scope.
@@ -242,8 +243,20 @@ Definition raw_kernel_default : RawKernelBuild :=
   mkRawKernelBuild false 1 true 256 0 true 0 raw_cache_absent
     224 212992 212992 4194304 4194304.
 
+(** The standard root at the default working directory, in the raw
+    vocabulary: "/", "/dev", the two devices, "/tmp" and "/work".  A
+    launch needs it: [Run.valid_image] asks for the five standard
+    entries and for the working directory to be a folder of the
+    image. *)
+Definition raw_work : list Z := [47; 119; 111; 114; 107].
+Definition raw_std_image : list (list Z * RawEntry) :=
+  [([47], RawDir); ([47; 100; 101; 118], RawDir);
+   ([47; 100; 101; 118; 47; 110; 117; 108; 108], RawDevNull);
+   ([47; 100; 101; 118; 47; 117; 114; 97; 110; 100; 111; 109], RawDevUrandom);
+   ([47; 116; 109; 112], RawDir); (raw_work, RawDir)].
+
 Definition raw_seed : RawProcInput :=
-  mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+  mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
     raw_kernel_default [97] true true false.
 
 Example seed_is_accepted :
@@ -278,88 +291,93 @@ Proof. vm_compute. reflexivity. Qed.
 (* word: the credentials and the launch limits *)
 Example seed_uid_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 18446744073709551616 0 [] [] 1024 0 4397
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] raw_std_image raw_work [] 18446744073709551616 0 [] [] 1024 0 4397
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_group_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [18446744073709551616] [] 1024 0 4397
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [18446744073709551616] [] 1024 0 4397
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_nofile_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [] [] 18446744073709551616 0 4397
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 18446744073709551616 0 4397
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_sigmask_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 18446744073709551616 4397
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 18446744073709551616 4397
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_hwcap_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 18446744073709551616
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 18446744073709551616
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* byte: argv, envp, the file system, standard input, the random device *)
 Example seed_argv_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [[256]] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [[256]] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_envp_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [[256]] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [] [[256]] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_fs_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [([97], [256])] [] 0 0 [] [] 1024 0 4397
-       false Sv48 [] [] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] [] (raw_std_image ++ [(raw_work ++ [47; 97], RawFile [256])])
+       raw_work [] 0 0 [] [] 1024 0 4397
+       false Sv48 [] raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_stdin_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [256] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [] [] raw_std_image raw_work [256] 0 0 [] [] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_urandom_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [256] []
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 [256]
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
+(** A byte out of range in a file under /tmp, which is a folder of the
+    image like any other. *)
 Example seed_tmp_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 []
-       [([97], [256])] raw_kernel_default [97] true true false) = None.
+    (mkRawProcInput [] []
+       (raw_std_image ++ [([47; 116; 109; 112; 47; 97], RawFile [256])])
+       raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
+       raw_kernel_default [97] true true false) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 (* bv 32 and bv 16: a network peer's address and port *)
 Example seed_peer_addr_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 []
-       [mkRawPeer 4294967296 80 [] RneFin] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 []
+       [mkRawPeer 4294967296 80 [] RneFin] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_peer_port_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 []
-       [mkRawPeer 0 65536 [] RneFin] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 []
+       [mkRawPeer 0 65536 [] RneFin] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
@@ -367,8 +385,8 @@ Proof. vm_compute. reflexivity. Qed.
 (* byte: what a peer says *)
 Example seed_peer_byte_out_of_range_refused :
   init_model_checked [] 4096 4096 4096 0
-    (mkRawProcInput [] [] [] [] 0 0 []
-       [mkRawPeer 0 80 [256] RneFin] 1024 0 4397 false Sv48 [] []
+    (mkRawProcInput [] [] raw_std_image raw_work [] 0 0 []
+       [mkRawPeer 0 80 [256] RneFin] 1024 0 4397 false Sv48 []
        raw_kernel_default [97] true true false)
   = None.
 Proof. vm_compute. reflexivity. Qed.
@@ -389,9 +407,12 @@ Definition raw_kernel_live : RawKernelBuild :=
 
 (* the in-range control for the seed's structured fields *)
 Definition raw_seed_full : RawProcInput :=
-  mkRawProcInput [[112; 0]] [[65; 0]] [([97], [1; 255])] [0; 255] 1000 1000
+  mkRawProcInput [[112; 0]] [[65; 0]]
+    (raw_std_image ++ [(raw_work ++ [47; 97], RawFile [1; 255]);
+                       ([47; 116; 109; 112; 47; 98], RawFile [2])])
+    raw_work [0; 255] 1000 1000
     [1000] [mkRawPeer 2130706433 80 [255] RneRst] 1024 0 4397 false Sv48
-    [7] [([98], [2])] raw_kernel_live [47; 97] true true false.
+    [7] raw_kernel_live [47; 97] true true false.
 
 Example seed_structured_fields_in_range_accepted :
   exists m, init_model_checked [(4096, 4096)] 8192 12288 16384 65536
@@ -415,10 +436,10 @@ Qed.
 (** The seed with the kernel build or the exec file name replaced, so
     that each pair below differs in exactly the value under test. *)
 Definition seed_with_kernel (k : RawKernelBuild) : RawProcInput :=
-  mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] [] k [97]
+  mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 [] k [97]
     true true false.
 Definition seed_with_execfn (fn : list Z) : RawProcInput :=
-  mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+  mkRawProcInput [] [] raw_std_image raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
     raw_kernel_default fn true true false.
 
 (* [N]: which vDSO image the build carries *)
@@ -692,30 +713,28 @@ Proof. vm_compute. reflexivity. Qed.
 (* the neighbour the boundary still converts                           *)
 (* ------------------------------------------------------------------ *)
 
-(** [revision/linux-only] added [Fs.fs_image_real] to
-    [Run.valid_input] over [State.in_image_fs]; the boundary enforces
-    it here, and this pair is what says the enforcement is not
-    vacuous.  [fs_image_real] is a [bool], so a test that read the
-    wrong thing would still type-check and still answer: only an
-    image it must refuse beside an image it must convert shows which
-    test was written.
+(** [Run.valid_image] is the launch condition over [State.in_image_fs]
+    and [State.in_cwd]; the boundary enforces it here, and these pairs
+    are what say the enforcement is not vacuous.  [valid_imageb] is a
+    [bool], so a test that read the wrong thing would still type-check
+    and still answer: only an image it must refuse beside an image it
+    must convert shows which test was written.
 
-    "a" and "a/b": the first key is a regular file and the second
-    says the same name is the directory "b" lives under.  No Linux
-    file system holds both -- one name in one directory is one inode
-    -- and the model would answer a read open with the regular file
-    while a write-create answered EISDIR.  It is
-    [Checks.Cases.Fs.Open.prefix_key_image] in the raw vocabulary.
-    Beside it "a" and "ab", which differ in one byte of the second
-    key and name two files. *)
-Definition seed_with_image (img : list (list Z * list Z)) : RawProcInput :=
-  mkRawProcInput [] [] img [] 0 0 [] [] 1024 0 4397 false Sv48 [] []
+    "/work/a" and "/work/a/b": the first key is a regular file and the
+    second says the same name is the folder "b" lives under.  No Linux
+    file system holds both -- one name in one directory is one inode --
+    and [Fs.wf_fs] refuses an entry whose parent is not a directory.
+    Beside it "/work/a" and "/work/ab", which differ in one byte of the
+    second key and name two files. *)
+Definition seed_with_image (img : list (list Z * RawEntry)) : RawProcInput :=
+  mkRawProcInput [] [] img raw_work [] 0 0 [] [] 1024 0 4397 false Sv48 []
     raw_kernel_default [97] true true false.
 
-Definition raw_image_prefix_key : list (list Z * list Z) :=
-  [([97], [104]); ([97; 47; 98], [104])].
-Definition raw_image_flat_keys : list (list Z * list Z) :=
-  [([97], [104]); ([97; 98], [104])].
+Definition raw_work_a : list Z := raw_work ++ [47; 97].
+Definition raw_image_prefix_key : list (list Z * RawEntry) :=
+  raw_std_image ++ [(raw_work_a, RawFile [104]); (raw_work_a ++ [47; 98], RawFile [104])].
+Definition raw_image_two_files : list (list Z * RawEntry) :=
+  raw_std_image ++ [(raw_work_a, RawFile [104]); (raw_work_a ++ [98], RawFile [104])].
 
 Example seed_unreal_image_refused :
   init_model_checked [] 4096 4096 4096 0
@@ -726,61 +745,202 @@ Proof. vm_compute. reflexivity. Qed.
     the image is a VALUE -- every byte of it is a [byte], so
     [fs_of_raw] converts it -- and it is no launch. *)
 Example seed_unreal_image_is_a_value :
-  option_map (fun fs => map (fun pf => map bv_unsigned (fst pf)) fs)
-    (fs_of_raw raw_image_prefix_key) = Some [[97]; [97; 47; 98]].
+  option_map (fun fs => map (fun pf => map bv_unsigned (fst pf)) (Fs.fs_tree fs))
+    (fs_of_raw [(raw_work_a, RawFile [104]); (raw_work_a ++ [47; 98], RawFile [104])])
+  = Some [raw_work_a; raw_work_a ++ [47; 98]].
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_unreal_image_is_no_launch :
-  image_shape_b raw_image_prefix_key = false.
+  image_shape_b raw_image_prefix_key raw_work = false.
 Proof. vm_compute. reflexivity. Qed.
 
-Example seed_flat_image_is_a_launch :
-  image_shape_b raw_image_flat_keys = true.
+Example seed_two_files_image_is_a_launch :
+  image_shape_b raw_image_two_files raw_work = true.
 Proof. vm_compute. reflexivity. Qed.
 
-(** The neighbour, converted, with the seed's [State.in_image_fs] read
-    back out: the two keys and their contents, in the model's sorted
-    order. *)
-Example seed_flat_image_converted :
+(** The neighbour, converted, with the two files of the seed's
+    [State.in_image_fs] read back out through the inode each name holds,
+    and its eight names. *)
+Definition file_bytes (fs : Fs.Fs) (k : list Z) : option (list Z) :=
+  match bytes_of_Z k with
+  | Some k' =>
+      match Fs.fs_lookup fs k' with
+      | Some (Fs.EFile i) => Some (map bv_unsigned (Fs.fs_ino_data fs i))
+      | _ => None
+      end
+  | None => None
+  end.
+
+Example seed_two_files_image_converted :
   option_map
-    (fun inp => map (fun pf => (map bv_unsigned (fst pf),
-                                map bv_unsigned (snd pf)))
-                  (in_image_fs inp))
-    (proc_input_of_raw (seed_with_image raw_image_flat_keys))
-  = Some [([97], [104]); ([97; 98], [104])].
+    (fun inp => (file_bytes (in_image_fs inp) raw_work_a,
+                 file_bytes (in_image_fs inp) (raw_work_a ++ [98]),
+                 length (Fs.fs_tree (in_image_fs inp))))
+    (proc_input_of_raw (seed_with_image raw_image_two_files))
+  = Some (Some [104], Some [104], 8%nat).
 Proof. vm_compute. reflexivity. Qed.
 
 (** A key that is not canonical is refused by the same clause and
-    converted by [fs_of_raw] just as readily: "./a" names the file
-    "a", which the flat map would keep as a file of its own. *)
+    converted by [fs_of_raw] just as readily: "/work/./a" names the
+    file "/work/a". *)
 Example seed_noncanonical_image_refused :
   init_model_checked [] 4096 4096 4096 0
-    (seed_with_image [([46; 47; 97], [104])]) = None.
+    (seed_with_image (raw_std_image ++ [(raw_work ++ [47; 46; 47; 97], RawFile [104])]))
+  = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Example seed_canonical_image_converted :
-  option_map
-    (fun inp => map (fun pf => (map bv_unsigned (fst pf),
-                                map bv_unsigned (snd pf)))
-                  (in_image_fs inp))
-    (proc_input_of_raw (seed_with_image [([97], [104])]))
-  = Some [([97], [104])].
+  option_map (fun inp => file_bytes (in_image_fs inp) raw_work_a)
+    (proc_input_of_raw (seed_with_image (raw_std_image ++ [(raw_work_a, RawFile [104])])))
+  = Some (Some [104]).
 Proof. vm_compute. reflexivity. Qed.
 
-(** The /tmp declaration beside it, which carries NO reality
-    condition in [Run] -- [State.fs_seed_tmp] seeds it into
-    [State.in_fs] under absolute keys and no clause constrains the
-    declaration -- so the same nesting the image is refused for is
-    converted there. *)
-Example seed_nested_tmp_converted :
-  exists m, init_model_checked [] 4096 4096 4096 0
-              (mkRawProcInput [] [] [] [] 0 0 [] [] 1024 0 4397 false Sv48 []
-                 [([97], [104]); ([97; 47; 98], [104])]
-                 raw_kernel_default [97] true true false) = Some m.
-Proof.
-  unfold init_model_checked.
-  destruct (pairs_of_Z []) eqn:E1; [|vm_compute in E1; discriminate E1].
-  destruct (word_of_Z 4096) eqn:E2; [|vm_compute in E2; discriminate E2].
-  destruct (proc_input_of_raw _) eqn:E3; [|vm_compute in E3; discriminate E3].
-  eexists. reflexivity.
-Qed.
+(** /tmp is a folder of the image like any other, so the same nesting
+    under it is refused too. *)
+Example seed_nested_tmp_refused :
+  init_model_checked [] 4096 4096 4096 0
+    (seed_with_image
+       (raw_std_image ++ [([47; 116; 109; 112; 47; 97], RawFile [104]);
+                          ([47; 116; 109; 112; 47; 97; 47; 98], RawFile [104])]))
+  = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The working directory must be a folder of the image: the seed with
+    "/work" dropped is no launch, and so is one whose working directory
+    names the file "/work/a". *)
+Example seed_missing_cwd_is_no_launch :
+  image_shape_b (removelast raw_std_image) raw_work = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_cwd_on_a_file_is_no_launch :
+  image_shape_b (raw_std_image ++ [(raw_work_a, RawFile [104])]) raw_work_a = false.
+Proof. vm_compute. reflexivity. Qed.
+
+(** ...and it must lie outside /proc and /sys
+    ([Run.outside_proc_sysb]): with the folders /proc, /sys and
+    /sys/kernel in the image, the working directory /work is a launch,
+    and /proc and /sys/kernel are not. *)
+Definition raw_proc : list Z := [47; 112; 114; 111; 99].
+Definition raw_sys_kernel : list Z := [47; 115; 121; 115; 47; 107; 101; 114; 110; 101; 108].
+Definition raw_proc_sys_image : list (list Z * RawEntry) :=
+  raw_std_image ++ [(raw_proc, RawDir); ([47; 115; 121; 115], RawDir);
+                    (raw_sys_kernel, RawDir)].
+
+Example seed_work_beside_proc_and_sys_is_a_launch :
+  image_shape_b raw_proc_sys_image raw_work = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_proc_cwd_is_no_launch :
+  image_shape_b raw_proc_sys_image raw_proc = false.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_sys_kernel_cwd_is_no_launch :
+  image_shape_b raw_proc_sys_image raw_sys_kernel = false.
+Proof. vm_compute. reflexivity. Qed.
+
+(** The standard root is part of the launch: without /dev/null the
+    image is no launch. *)
+Example seed_without_devnull_is_no_launch :
+  image_shape_b (List.filter (fun ke => match snd ke with RawDevNull => false | _ => true end)
+                   raw_std_image) raw_work = false.
+Proof. vm_compute. reflexivity. Qed.
+
+(* ------------------------------------------------------------------ *)
+(* Symbolic links and second names of one file                         *)
+(* ------------------------------------------------------------------ *)
+
+(** "/work/b" is a second name of "/work/a", and "/work/l" a symbolic
+    link whose body is "a".  The second name sits at the head of the
+    list, which [fs_of_raw] applies last, so its target is already a
+    file when it is read.  Converted: both names hold ONE inode, whose
+    link count is the two names the tree shows, and the link holds its
+    body. *)
+Definition raw_work_b : list Z := raw_work ++ [47; 98].
+Definition raw_work_l : list Z := raw_work ++ [47; 108].
+Definition raw_image_links : list (list Z * RawEntry) :=
+  [(raw_work_b, RawName raw_work_a)]
+  ++ raw_std_image ++ [(raw_work_a, RawFile [104]); (raw_work_l, RawLink [97])].
+
+Definition entry_at (fs : Fs.Fs) (k : list Z) : option Fs.Entry :=
+  match bytes_of_Z k with Some k' => Fs.fs_lookup fs k' | None => None end.
+
+Definition ino_at (fs : Fs.Fs) (k : list Z) : option (Fs.ino * nat) :=
+  match entry_at fs k with
+  | Some (Fs.EFile i) => Some (i, Fs.fs_ino_nlink fs i)
+  | _ => None
+  end.
+
+Definition link_at (fs : Fs.Fs) (k : list Z) : option (list Z) :=
+  match entry_at fs k with
+  | Some (Fs.ELink b) => Some (map bv_unsigned b)
+  | _ => None
+  end.
+
+Example seed_links_image_is_a_launch :
+  image_shape_b raw_image_links raw_work = true.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_links_image_converted :
+  option_map
+    (fun inp => (ino_at (in_image_fs inp) raw_work_a,
+                 ino_at (in_image_fs inp) raw_work_b,
+                 file_bytes (in_image_fs inp) raw_work_b,
+                 link_at (in_image_fs inp) raw_work_l))
+    (proc_input_of_raw (seed_with_image raw_image_links))
+  = Some (Some (1%Z, 2%nat), Some (1%Z, 2%nat), Some [104], Some [97]).
+Proof. vm_compute. reflexivity. Qed.
+
+(** Two [RawFile]s with the same bytes are two files: each is its own
+    inode with one link.  This is the control that shows the shared
+    inode above comes from [RawName] and not from equal contents. *)
+Example seed_two_files_are_two_inodes :
+  option_map
+    (fun inp => (ino_at (in_image_fs inp) raw_work_a,
+                 ino_at (in_image_fs inp) raw_work_b))
+    (proc_input_of_raw
+       (seed_with_image
+          (raw_std_image ++ [(raw_work_a, RawFile [104]); (raw_work_b, RawFile [104])])))
+  = Some (Some (2%Z, 1%nat), Some (1%Z, 1%nat)).
+Proof. vm_compute. reflexivity. Qed.
+
+(** A second name whose target is not a regular file is not a value:
+    of a directory ("/work"), of a link ("/work/l"), of a missing key
+    ("/work/z"), and of a target the list makes only AFTER the name is
+    applied (the name at the tail is applied first, when nothing is at
+    "/work/a" yet). *)
+Example seed_second_name_of_a_folder_refused :
+  fs_of_raw ([(raw_work_b, RawName raw_work)] ++ raw_std_image) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_second_name_of_a_link_refused :
+  fs_of_raw ([(raw_work_b, RawName raw_work_l)] ++ raw_std_image
+             ++ [(raw_work_l, RawLink [97])]) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_second_name_of_nothing_refused :
+  fs_of_raw ([(raw_work_b, RawName (raw_work ++ [47; 122]))] ++ raw_std_image) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_second_name_before_its_target_refused :
+  fs_of_raw (raw_std_image ++ [(raw_work_a, RawFile [104]); (raw_work_b, RawName raw_work_a)])
+  = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A byte out of range in a link's body or in a second name's target
+    is a value question like any other byte of the image. *)
+Example seed_link_body_byte_out_of_range_refused :
+  init_model_checked [] 4096 4096 4096 0
+    (seed_with_image (raw_std_image ++ [(raw_work_l, RawLink [256])])) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+Example seed_second_name_byte_out_of_range_refused :
+  fs_of_raw ([(raw_work_b, RawName (raw_work ++ [47; 256]))] ++ raw_std_image
+             ++ [(raw_work_a, RawFile [104])]) = None.
+Proof. vm_compute. reflexivity. Qed.
+
+(** A link whose body is empty, or names nothing, is still a launch:
+    no clause limits a body ([Fs.wf_fs]). *)
+Example seed_dangling_link_is_a_launch :
+  image_shape_b (raw_std_image ++ [(raw_work_l, RawLink []);
+                                   (raw_work ++ [47; 109], RawLink [122])]) raw_work = true.
+Proof. vm_compute. reflexivity. Qed.

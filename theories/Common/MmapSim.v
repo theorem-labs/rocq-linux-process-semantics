@@ -1156,11 +1156,11 @@ Qed.
 (* ------------------------------------------------------------------------- *)
 
 Definition twm_post (bufs : list (list byte)) (code : word) (fs : Fs.Fs) : post :=
-  fun tr o => tr = wevents bufs ++ [ExitEv code fs] /\ exits_with code tr o.
+  fun tr o => tr = wevents bufs ++ [ExitEv code (Fs.fs_observe fs)] /\ exits_with code tr o.
 
 Definition twm_rest_post (rest : list byte) (bufs : list (list byte)) (code : word)
     (fs : Fs.Fs) : post :=
-  fun tr o => tr = map (WriteEv (Z_to_bv 64 1)) rest ++ wevents bufs ++ [ExitEv code fs]
+  fun tr o => tr = map (WriteEv (Z_to_bv 64 1)) rest ++ wevents bufs ++ [ExitEv code (Fs.fs_observe fs)]
               /\ exits_with code tr o.
 
 Lemma twm_exec_mut :
@@ -1193,11 +1193,11 @@ Proof.
   - (* twm_exit *)
     intros ms model x8 Hsvc Hx8 Hbm Hh Hlazy Hfd.
     apply (exec_step_only segs _ _
-             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+             [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
              (mkCfg ms (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))).
-    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (m_fs model)]
+    + replace [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) (Fs.fs_observe (m_fs model))]
         with ([] ++ [ExitEv (bv_and (ms_gpr ms 0) (Z_to_bv 64 255))
-                       (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model))])
+                       (Fs.fs_observe (m_fs (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model)))])
         by (cbn; reflexivity).
       apply (sstep_exit segs ms model x8 (mkEffect (Z_to_bv 64 0) [] [])
                (with_halted (bv_and (ms_gpr ms 0) (Z_to_bv 64 255)) model) []
@@ -1313,7 +1313,7 @@ Lemma twm_star_admits : forall ms model bufs code,
   twm ms model bufs code ->
   bufs_modeled bufs ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
-  exists c, star segs (mkCfg ms model) (wevents bufs ++ [ExitEv code (m_fs model)]) c.
+  exists c, star segs (mkCfg ms model) (wevents bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros ms model bufs code Hte Hbm Hh Hlazy Hfd.
   destruct (exec_realizes _ _ _ (twm_exec ms model bufs code Hte Hbm Hh Hlazy Hfd))
@@ -1327,7 +1327,7 @@ Lemma twm_star_only : forall ms model bufs code,
   bufs_modeled bufs ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
   forall tr c, star segs (mkCfg ms model) tr c ->
-    is_prefix tr (wevents bufs ++ [ExitEv code (m_fs model)]).
+    is_prefix tr (wevents bufs ++ [ExitEv code (Fs.fs_observe (m_fs model))]).
 Proof.
   intros ms model bufs code Hte Hbm Hh Hlazy Hfd tr c Hstar.
   destruct (exec_realizes _ _ _
@@ -1520,8 +1520,8 @@ Qed.
     branches at the mmap node and then runs its [twm] straight line. *)
 Definition tmw_post (bf : list (list byte)) (cf : word) (bs : list (list byte)) (cs : word)
     (fs : Fs.Fs) : post :=
-  fun tr o => (tr = wevents bf ++ [ExitEv cf fs] /\ exits_with cf tr o)
-              \/ (tr = wevents bs ++ [ExitEv cs fs] /\ exits_with cs tr o).
+  fun tr o => (tr = wevents bf ++ [ExitEv cf (Fs.fs_observe fs)] /\ exits_with cf tr o)
+              \/ (tr = wevents bs ++ [ExitEv cs (Fs.fs_observe fs)] /\ exits_with cs tr o).
 
 Lemma tmw_exec : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
@@ -1575,7 +1575,7 @@ Lemma tmw_star_admits_fail : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
   bufs_modeled bf ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
-  exists c, star segs (mkCfg ms model) (wevents bf ++ [ExitEv cf (m_fs model)]) c.
+  exists c, star segs (mkCfg ms model) (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros ms model bf cf bs cs Hte.
   induction Hte as
@@ -1585,8 +1585,8 @@ Proof.
                 Hbm Hh Hlazy Hfd) as [c Hstar].
     rewrite <- apply_effect_no_write in Hstar.
     exists c.
-    replace (wevents bf ++ [ExitEv cf (m_fs model)])
-      with ([] ++ (wevents bf ++ [ExitEv cf (m_fs model)])) by reflexivity.
+    replace (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))])
+      with ([] ++ (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))])) by reflexivity.
     eapply star_step; [| exact Hstar].
     apply (sstep_syscall segs ms model x8 (mkEffect (errno_ret ENOMEM) [] [])
              model model []).
@@ -1597,8 +1597,8 @@ Proof.
     + apply materialize_model_accesses_no_lazy. exact Hlazy.
   - destruct (IH Hbm Hh Hlazy Hfd) as [c Hstar].
     exists c.
-    replace (wevents bf ++ [ExitEv cf (m_fs model)])
-      with ([] ++ (wevents bf ++ [ExitEv cf (m_fs model)])) by reflexivity.
+    replace (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))])
+      with ([] ++ (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))])) by reflexivity.
     eapply star_step; [| exact Hstar].
     apply (sstep_instr segs ms model ms' model); [assumption | assumption |].
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity.
@@ -1608,7 +1608,7 @@ Lemma tmw_star_admits_succ : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
   bufs_modeled bs ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
-  exists c, star segs (mkCfg ms model) (wevents bs ++ [ExitEv cs (m_fs model)]) c.
+  exists c, star segs (mkCfg ms model) (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))]) c.
 Proof.
   intros ms model bf cf bs cs Hte.
   induction Hte as
@@ -1624,8 +1624,8 @@ Proof.
                 (eq_trans (mmap_model_lazy _ _ _) Hlazy) Hfd') as [c Hstar].
     rewrite mmap_model_fs in Hstar.
     exists c.
-    replace (wevents bs ++ [ExitEv cs (m_fs model)])
-      with ([] ++ (wevents bs ++ [ExitEv cs (m_fs model)])) by reflexivity.
+    replace (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))])
+      with ([] ++ (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))])) by reflexivity.
     eapply star_step; [| exact Hstar].
     apply (sstep_syscall segs ms model x8 (mkEffect a [] [(a, n)])
              (mmap_model a n model) (mmap_model a n model) []).
@@ -1637,8 +1637,8 @@ Proof.
       exact (eq_trans (mmap_model_lazy _ _ _) Hlazy).
   - destruct (IH Hbm Hh Hlazy Hfd) as [c Hstar].
     exists c.
-    replace (wevents bs ++ [ExitEv cs (m_fs model)])
-      with ([] ++ (wevents bs ++ [ExitEv cs (m_fs model)])) by reflexivity.
+    replace (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))])
+      with ([] ++ (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))])) by reflexivity.
     eapply star_step; [| exact Hstar].
     apply (sstep_instr segs ms model ms' model); [assumption | assumption |].
     rewrite (mi_account_step_no_lazy segs ms model Hlazy), Hstep. reflexivity.
@@ -1648,8 +1648,8 @@ Qed.
 Definition two_traces (bf : list (list byte)) (cf : word)
     (bs : list (list byte)) (cs : word)
     (fs : Fs.Fs) (tr : list event) : Prop :=
-  is_prefix tr (wevents bf ++ [ExitEv cf fs]) \/
-  is_prefix tr (wevents bs ++ [ExitEv cs fs]).
+  is_prefix tr (wevents bf ++ [ExitEv cf (Fs.fs_observe fs)]) \/
+  is_prefix tr (wevents bs ++ [ExitEv cs (Fs.fs_observe fs)]).
 
 Lemma tmw_star_only : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
@@ -1730,7 +1730,7 @@ Lemma tmw_exec_not_fail_only : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
   bufs_modeled bs ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
-  ~ is_prefix (wevents bs ++ [ExitEv cs (m_fs model)]) (wevents bf ++ [ExitEv cf (m_fs model)]) ->
+  ~ is_prefix (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))]) (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))]) ->
   ~ OmniRun.exec segs (mkCfg ms model) (twm_post bf cf (m_fs model)).
 Proof.
   intros ms model bf cf bs cs Hte Hbs Hh Hlazy Hfd Hnp Hex.
@@ -1743,7 +1743,7 @@ Lemma tmw_exec_not_succ_only : forall ms model bf cf bs cs,
   tmw ms model bf cf bs cs ->
   bufs_modeled bf ->
   m_halted model = None -> m_vm_lazy model = [] -> fd1chan model ->
-  ~ is_prefix (wevents bf ++ [ExitEv cf (m_fs model)]) (wevents bs ++ [ExitEv cs (m_fs model)]) ->
+  ~ is_prefix (wevents bf ++ [ExitEv cf (Fs.fs_observe (m_fs model))]) (wevents bs ++ [ExitEv cs (Fs.fs_observe (m_fs model))]) ->
   ~ OmniRun.exec segs (mkCfg ms model) (twm_post bs cs (m_fs model)).
 Proof.
   intros ms model bf cf bs cs Hte Hbf Hh Hlazy Hfd Hnp Hex.
@@ -1798,11 +1798,11 @@ Proof.
     + destruct (tmw_star_admits_fail segs ms _ bf cf bs cs Hte Hbf Hh Hlazy Hfd)
         as [c Hstar].
       rewrite Hfs in Hstar.
-      exists (wevents bf ++ [ExitEv cf (in_fs inp)]), c. split; assumption.
+      exists (wevents bf ++ [ExitEv cf (Fs.fs_observe (in_fs inp))]), c. split; assumption.
     + destruct (tmw_star_admits_succ segs ms _ bf cf bs cs Hte Hbs Hh Hlazy Hfd)
         as [c Hstar].
       rewrite Hfs in Hstar.
-      exists (wevents bs ++ [ExitEv cs (in_fs inp)]), c. split; assumption.
+      exists (wevents bs ++ [ExitEv cs (Fs.fs_observe (in_fs inp))]), c. split; assumption.
 Qed.
 
 Lemma mmap_no_error_run_te : forall segs pc ph sp brk0 mb rnd lim inp bf cf bs cs,
