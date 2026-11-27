@@ -5178,8 +5178,8 @@ jobs:
   # comment of this run for the head stands. A review, a rescreen, an approval or an answer of a pull request on the
   # route screen holds nothing when a word of another run on its head outranks the own word of this run (the step "Skip
   # the posts of this run when a review or hold of the head is newer than this run's read"). When the post job of such
-  # a run withdrew an import check run of the head with the conclusion success, it writes only the state label and the
-  # label comment that a relabel of the head gives now.
+  # a run, or the withdrawal of such an answer, withdrew an import check run of the head with the conclusion success,
+  # it writes only the state label and the label comment that a relabel of the head gives now.
   hold:
     needs: [trust, gather, screen, review, post]
     if: >-
@@ -5375,16 +5375,11 @@ jobs:
       # read no head, and a hold at the limit ran no screen: this step does not run for them. A read that fails fails
       # this step, and nothing is held.
       # The post job of such a run can have withdrawn an import check run of the head with the conclusion success, for
-      # a screen of this run that held the head (its output withdrew names the head). Then a label comment that says
-      # that the workflow recorded the check can stand with no such check run, as the comment job's step that skips its
-      # posts says (OSSV-613's architect, 2026-11-27 15:50Z). So when this step skips the posts and withdrew names the
-      # head, it also writes the output relabel, the time now, and one more line to its log, as that step does. With
-      # it, the three steps after this one run as the three steps of the comment job with the same names run: as a
-      # relabel of the head that reads the item at that time. They give the item the state label and the label comment
-      # that a relabel of the head gives now. This run still posts no hold comment. An answer has no post job, so its
-      # run never writes the output relabel. When the post job withdrew nothing, this step writes no output relabel,
-      # and those three steps do not run. A step of the three that fails fails the job, and its last step leaves no
-      # label comment that says that the workflow recorded the check while no such check run stands (rules.py unclaim).
+      # a screen of this run that held the head (its output withdrew names the head). The withdrawal of an answer below
+      # can withdraw one too, after this step. Then a label comment that says that the workflow recorded the check can
+      # stand with no such check run. So the step "Run the steps of a relabel when this run gave way after it withdrew
+      # a success of the head", after the withdrawal of an answer, reads the output gave_way of this step. The comment
+      # of that step says what it does then.
       - name: Skip the posts of this run when a review or hold of the head is newer than this run's read
         id: way
         if: >-
@@ -5396,8 +5391,6 @@ jobs:
           # The kind of the own word of this run: hold when its screen held the head, else read.
           OWN: >-
             ${{ (steps.screened.outputs.held == 'true' || steps.answered.outputs.held == 'true') && 'hold' || 'read' }}
-          # The head whose import check runs with the conclusion success the post job of this run withdrew, or empty.
-          WITHDREW: ${{ needs.post.outputs.withdrew }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
@@ -5420,51 +5413,6 @@ jobs:
           echo "$line"
           printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
           echo "gave_way=true" >> "$GITHUB_OUTPUT"
-          # The post job of this run withdrew a success of the head: the steps after this one run as a relabel of the
-          # head that reads the item now (the comment above this step).
-          [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
-          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "#$NUMBER: the post job of this run withdrew an import check run of $HEAD with the conclusion" \
-            "success. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
-          echo "relabel=$now" >> "$GITHUB_OUTPUT"
-      # The three steps of a relabel of the head, as in the comment job (the comment of each there): the author-kind
-      # table for the task relabel (*answers), the decision of the post job of a relabel (*decide), and the label step
-      # of a relabel (*label). They run only when the step before gave the output relabel.
-      - name: Read the author-kind table for a relabel of the head
-        id: relabel_answers
-        if: steps.way.outputs.relabel != ''
-        env:
-          TASK: relabel
-        run: *answers
-      - name: Decide the import check of the head as a relabel decides it now
-        id: relabeled
-        if: steps.way.outputs.relabel != ''
-        env:
-          TASK: relabel
-          RECORD: ${{ steps.relabel_answers.outputs.record }}
-          WITHDRAW: ${{ steps.relabel_answers.outputs.withdraw }}
-          APP_KEY_SET: 'false'
-          ROUTE: review
-          VERDICT: ''
-          STARTED: ${{ steps.way.outputs.relabel }}
-          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
-        run: *decide
-      - name: Set the state label as a relabel of the head sets it now
-        if: steps.way.outputs.relabel != ''
-        env:
-          TASK: relabel
-          STARTED: ${{ steps.way.outputs.relabel }}
-          POSTED: ${{ steps.relabeled.outcome }}
-          KIND: pr
-          VERDICT: ''
-          OWED_LINE: ${{ steps.owed.outputs.line }}
-          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
-          RECORDED: ${{ steps.relabeled.outputs.decision == 'record' && 'true' || 'false' }}
-          DECISION: ${{ steps.relabeled.outputs.decision }}
-          STANDING: ${{ steps.relabeled.outputs.standing }}
-          IMPORTS: ${{ steps.relabeled.outputs.imports }}
-          RELABEL_RUN: ''
-        run: *label
       # The hold comment, the label review-held, the state label and the label comment, unless the step before skipped
       # the posts of this run.
       - name: Label it and say that it was held
@@ -5842,9 +5790,11 @@ jobs:
       # record the check run that says that the head is not approved, for an author whom the rules that hold back treat
       # as outside (.github/review/rules.py holds_back). They run after the hold comment and the label, also when this
       # run gave way to a newer word: a failed read or write of the App fails this job, but the hold stands, and the
-      # line of the step "Record a withdrawal that this run owes" stays. The rescreen pass tries no App write of an
-      # answer again (held.sh due_retry), so RETRY is false, and each error says to re-run this run. Only while the
-      # environment post holds the App's key.
+      # line of the step "Record a withdrawal that this run owes" stays. When this run gave way and they withdrew an
+      # import check run of the head with the conclusion success, the steps after them run as a relabel of the head
+      # (the step "Run the steps of a relabel when this run gave way after it withdrew a success of the head"). The
+      # rescreen pass tries no App write of an answer again (held.sh due_retry), so RETRY is false, and each error says
+      # to re-run this run. Only while the environment post holds the App's key.
       - name: Find the import check runs that the screen of this answer withdraws
         id: withdraw
         if: env.APP_KEY_SET == 'true' && steps.answered.outputs.held == 'true'
@@ -5884,6 +5834,84 @@ jobs:
           WHY: ${{ steps.withdraw.outputs.why }}
           STARTED: ${{ needs.trust.outputs.started }}
         run: *not-approved
+      # The post job of a run whose posts this job skipped can have withdrawn an import check run of the head with the
+      # conclusion success, for a screen of this run that held the head: its output withdrew names the head. An answer
+      # has no post job, but the withdrawal of an answer above can have withdrawn one, for the screen of the answer:
+      # the output head of the step "Withdraw the import check runs of the head" names the head. Each of the two names
+      # the head only after GitHub took the change of each such check run to the conclusion neutral. Then a label
+      # comment that says that the workflow recorded the check can stand with no such check run, as the run of the
+      # newer word need not write the label again (OSSV-613's architect, 2026-11-27 15:50Z and 17:21Z). So when the
+      # step "Skip the posts of this run when a review or hold of the head is newer than this run's read" gave the
+      # output gave_way, and one of the two names the head, this step writes the output relabel, the time now, and one
+      # line to its log. This step runs after the withdrawal of an answer, so that time is after the withdrawal.
+      # With it, the three steps after this one run as the three steps of the comment job with the same names run: as
+      # a relabel of the head that reads the item at that time. They give the item the state label and the label
+      # comment that a relabel of the head gives now. That label comment says that the workflow recorded the check only
+      # while such a check run stands: the last of the three reads the check runs again before it writes that. This run
+      # still posts no hold comment. No step between the step that skips the posts and this one posts on the item for
+      # such a run: the step "Label it and say that it was held" reads the output gave_way, and the steps of the
+      # withdrawal of an answer write only check runs. When neither of the two names the head, this step writes no
+      # output relabel, and those three steps do not run. A step of the three that fails fails the job, and its last
+      # step leaves no label comment that says that the workflow recorded the check while no such check run stands
+      # (rules.py unclaim).
+      - name: Run the steps of a relabel when this run gave way after it withdrew a success of the head
+        id: withdrew
+        if: steps.way.outputs.gave_way == 'true'
+        env:
+          # The head whose import check runs with the conclusion success this run withdrew, or empty: the output
+          # withdrew of the post job, or the output head of the step "Withdraw the import check runs of the head" of
+          # this job. Only an answer runs that step, and an answer has no post job, so at most one of the two is set.
+          WITHDREW: ${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}
+        run: |
+          set -euo pipefail
+          [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          # This run withdrew a success of the head, in its post job or in the withdrawal of an answer: the steps after
+          # this one run as a relabel of the head that reads the item now (the comment above this step).
+          [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "#$NUMBER: this run withdrew an import check run of $HEAD with the conclusion success, and this job" \
+            "skipped the posts of this run. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER" \
+            "at $now."
+          echo "relabel=$now" >> "$GITHUB_OUTPUT"
+      # The three steps of a relabel of the head, as in the comment job (the comment of each there): the author-kind
+      # table for the task relabel (*answers), the decision of the post job of a relabel (*decide), and the label step
+      # of a relabel (*label). They run only when the step before gave the output relabel, and they read the item at
+      # that time.
+      - name: Read the author-kind table for a relabel of the head
+        id: relabel_answers
+        if: steps.withdrew.outputs.relabel != ''
+        env:
+          TASK: relabel
+        run: *answers
+      - name: Decide the import check of the head as a relabel decides it now
+        id: relabeled
+        if: steps.withdrew.outputs.relabel != ''
+        env:
+          TASK: relabel
+          RECORD: ${{ steps.relabel_answers.outputs.record }}
+          WITHDRAW: ${{ steps.relabel_answers.outputs.withdraw }}
+          APP_KEY_SET: 'false'
+          ROUTE: review
+          VERDICT: ''
+          STARTED: ${{ steps.withdrew.outputs.relabel }}
+          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
+        run: *decide
+      - name: Set the state label as a relabel of the head sets it now
+        if: steps.withdrew.outputs.relabel != ''
+        env:
+          TASK: relabel
+          STARTED: ${{ steps.withdrew.outputs.relabel }}
+          POSTED: ${{ steps.relabeled.outcome }}
+          KIND: pr
+          VERDICT: ''
+          OWED_LINE: ${{ steps.owed.outputs.line }}
+          IMPORT_PATHS: ${{ vars.REPO_PAIRS_IMPORT_PATHS }}
+          RECORDED: ${{ steps.relabeled.outputs.decision == 'record' && 'true' || 'false' }}
+          DECISION: ${{ steps.relabeled.outputs.decision }}
+          STANDING: ${{ steps.relabeled.outputs.standing }}
+          IMPORTS: ${{ steps.relabeled.outputs.imports }}
+          RELABEL_RUN: ''
+        run: *label
       # The line <head> screen <run> <read> that the step "Record a withdrawal that this run owes" wrote, once the post
       # job finished the withdrawal of the head (its output pending), or the steps of the withdrawal of an answer above
       # did (clear, withdrawn or neutral names the head). Once the hold comment of this run for the head stands (its
@@ -5892,7 +5920,7 @@ jobs:
       # posted no
       # hold comment: a run that judged nothing, a newer run, or a stale hold. GitHub runs this step only when no step
       # before it failed, so a hold comment that GitHub refused to post, or a withdrawal that failed, leaves the line. A
-      # run whose posts were skipped writes nothing on the item, and the line stays. For an author whose write access
+      # run whose posts were skipped posts no hold comment, so the line stays. For an author whose write access
       # GitHub did not give, rules.py takes no line out. But after the withdrawal of an answer, which comes after the
       # label step, it rewrites a label comment that says that the workflow recorded the check on the head, when no
       # such check run stands now: the state decide, with the text that a run withdrew it (rules.py unrecord;
