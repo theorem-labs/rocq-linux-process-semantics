@@ -1186,9 +1186,9 @@ due_approve() {
 # died there too. Such a job wrote no line <!-- withdraw-owed <head> <why> <run> <read> --> and posted no review
 # comment, whatever the verdict of the run's review: pass, blocking, person, or refused, which posts no comment and
 # whose word only that line or a check run of the post job carries. When the post job of the run failed or was
-# cancelled too, it can have written the check run or the withdrawal before it failed, or neither. Either way, no line
-# and no review comment of the run carries its word, so a relabel can miss that word. A comment job that failed at a
-# later step (its label step, say) recorded what it owes.
+# cancelled too, it can have written the check run or the withdrawal before it failed, or neither. Either way, while
+# the newest attempt of the run recorded nothing, the run gets the re-run of its failed jobs (due_rerun) and no relabel
+# (due_retry, due_variable). A comment job that failed at a later step (its label step, say) recorded what it owes.
 unrecorded() {
   [ "$(jq -rs 'any(.[] | select(.name == "comment" and (.conclusion == "failure" or .conclusion == "cancelled"));
       [.steps[]?] | (map(.conclusion == "failure" or .conclusion == "cancelled") | index(true)) as $died
@@ -1233,11 +1233,11 @@ unrecorded_run() {
 # trust job stopped (OSSV-221's architect, 2026-11-22 16:06Z and 2026-11-23 01:37Z). After REVIEW_TRIES of them, the
 # automated <work> of the head is not tried again (head_stopped <work>). A run whose post job failed or was cancelled and
 # whose comment job failed or was cancelled before it recorded what the run owes (unrecorded: at its checkout, or at
-# either step that records a withdrawal, whatever the verdict) is no run of the retry. No line and no review comment of
-# that run carries its word, so a relabel can miss that word. The retry gives way, and starts nothing for it, at any
-# time (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)). The pass runs the failed jobs of that run again
-# (due_rerun), the post job too, an hour after it ended, and at REVIEW_TRIES attempts it starts the stop of the import
-# check of the head (head_stopped import), whose hold ends this retry of the head (consider).
+# either step that records a withdrawal, whatever the verdict) is no run of the retry: while the newest attempt of that
+# run recorded nothing, the retry starts nothing for it, at any time (OSSV-613's architect, 2026-11-27 00:24Z, choice
+# (a)). The pass runs the failed jobs of that run again (due_rerun), the post job too, an hour after it ended, and at
+# REVIEW_TRIES attempts it starts the stop of the import check of the head (head_stopped import), whose hold ends this
+# retry of the head (consider).
 due_retry() {
   local created ended run event task f tried post early trust tries how=failed last="" latest="" untrusted=""
   local top="" top_run="" found=""
@@ -1261,8 +1261,7 @@ due_retry() {
     if [ "$post" = signin ] || [ "$post" = failure ] || [ "$post" = cancelled ]; then
       if unrecorded "$run"; then
         echo "#$number: the post job of run $run did not succeed, and its comment job failed or was cancelled before" \
-          "it recorded what the run owes. So no line and no review comment of run $run carries its word, and a" \
-          "relabel can miss that word. The App's retry starts no relabel for run $run."
+          "it recorded what the run owes. The App's retry starts no relabel for run $run."
         return 0
       fi
       found=1
@@ -1318,11 +1317,10 @@ unclaimed() {
 # does): the post job of that run does not run again. The App's retry takes a run whose post job failed or was
 # cancelled (due_retry), but for a run whose comment job failed or was cancelled before it recorded what the run owes
 # (unrecorded: at its checkout, or at either step that records a withdrawal, whatever the verdict of its review, which
-# the pass cannot read). Such a run wrote neither its review comment nor the line of a withdrawal that it owes, so no
-# line and no review comment of that run carries its word, and a relabel can miss that word. Its post job can have
-# written its check run or its withdrawal before it failed, or neither. This takes it too: the failed jobs of that run
-# run again, the post job among them (its withdrawal or its check run) and the comment job (the line, or the review
-# comment), each bound the same, and the App's retry (due_retry) and the relabel of a new value of
+# the pass cannot read). Such a run wrote neither its review comment nor the line of a withdrawal that it owes. Its
+# post job can have written its check run or its withdrawal before it failed, or neither. This takes it too: the failed
+# jobs of that run run again, the post job among them (its withdrawal or its check run) and the comment job (the line,
+# or the review comment), each bound the same, and the App's retry (due_retry) and the relabel of a new value of
 # REPO_PAIRS_IMPORT_PATHS (due_variable) give way to it (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)).
 # Until an hour after it ended, this waits, and those two give way, so that none starts a run for the head (v). But
 # under the stop of the import check of the head (a hold of the work import that is not tried again names the head),
@@ -1385,9 +1383,9 @@ due_rerun() {
       unrecorded "$id" || continue
       if [ -n "$import_stop" ]; then
         echo "#$number: the post job of run $id did not succeed, and its comment job recorded nothing that the run" \
-          "owes. A hold of the import check that is not tried again names $head. So the failed jobs of run $id, whose" \
-          "post job could record the check, do not run again. The label comment of that stop names Sami's step when" \
-          "GitHub said whether the author has write access."
+          "owes. The stop of the import check, a hold that is not tried again, names $head. So the failed jobs of run" \
+          "$id, whose post job could record the check, do not run again. The label comment of that stop names Sami's" \
+          "step when GitHub said whether the author has write access."
         continue
       fi
       owes=1
@@ -1409,7 +1407,7 @@ due_rerun() {
   [ "$how" != cancelled ] || how="was cancelled"
   if [ -n "$owes" ]; then
     echo "#$number: the post job of run $run did not succeed, and its comment job $how before it recorded what" \
-      "the run owes. So no line and no review comment of run $run carries its word."
+      "the run owes."
   fi
   if [[ ! $ended < $hour ]]; then
     echo "#$number: the $which job of run $run $how, less than an hour ago: tried again later."
@@ -1433,9 +1431,9 @@ due_rerun() {
     # The work of each hold that is not tried again and names the head (holds).
     stood=$(awk -v h="$head" '$3 == "-" && $9 == h { print $1 }' <<< "$hold")
     if [ -n "$owes" ] && [ "$outsider" = true ]; then
-      echo "#$number: no line and no review comment of run $run carries its word. So the rescreen pass starts the" \
-        "stop of the import check of $head, whose hold ends the App's retry of $head. The comment job of that stop" \
-        "writes its label comment, which names Sami's step, when GitHub said whether the author has write access."
+      echo "#$number: the rescreen pass starts the stop of the import check of $head, whose hold ends the App's retry" \
+        "of $head. The comment job of that stop writes its label comment, which names Sami's step, when GitHub said" \
+        "whether the author has write access."
       head_stopped import "$attempt"
       return 0
     fi
@@ -1463,10 +1461,10 @@ due_rerun() {
       return 0
     fi
     if [ -n "$import_stop" ]; then
-      echo "#$number: a hold of the import check that is not tried again names $head. So the rescreen pass starts no" \
-        "relabel, whose post job could write a check run of $head. It starts the stop of the import check of $head" \
-        "again. The comment job of that stop writes its label comment when GitHub said whether the author has write" \
-        "access."
+      echo "#$number: the stop of the import check, a hold that is not tried again, names $head. So the rescreen pass" \
+        "starts no relabel, whose post job could write a check run of $head. It starts the stop of the import check" \
+        "of $head again. The comment job of that stop writes its label comment when GitHub said whether the author" \
+        "has write access."
       head_stopped import "$attempt"
       return 0
     fi
@@ -1509,8 +1507,9 @@ due_rerun() {
         "($idle of them). After $REVIEW_TRIES such relabels, the rescreen pass starts the stop of the import check" \
         "of $head instead."
     fi
-    what="the last step of run $run did not succeed, so the label comment can still say that the workflow recorded"
-    what+=" the check"
+    what="a failed job of run $run did not finish its last step"
+    # Only the label comment of an outside author's pull request can say that the workflow recorded the check.
+    [ "$outsider" != true ] || what="the label comment can still say that the workflow recorded the check: $what"
     owe "$ended" relabel "" "$head" - "$what"
     taken=1
     return 0
@@ -1787,10 +1786,9 @@ due_unreviewed() {
 # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
 # R12 again by the value now and sets the label again. Once an hour. But while a run of the head whose post job did not
 # succeed recorded nothing that it owes (unrecorded_run), this gives way as the App's retry does (due_retry), and
-# starts no relabel of the head. No line and no review comment of that run carries its word, so a relabel can miss that
-# word. due_rerun runs the failed jobs of that run again an hour after it ended, or at REVIEW_TRIES attempts starts
-# the stop of the import check of the head, under whose hold consider calls this no more (OSSV-613's architect,
-# 2026-11-27 00:24Z, choice (a), (v)).
+# starts no relabel of the head. due_rerun runs the failed jobs of that run again an hour after it ended, or at
+# REVIEW_TRIES attempts starts the stop of the import check of the head, under whose hold consider calls this no more
+# (OSSV-613's architect, 2026-11-27 00:24Z, choice (a), (v)).
 due_variable() {
   local found checks at value same ended run owing why
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1825,8 +1823,7 @@ due_variable() {
   owing=$(unrecorded_run) || return 1
   if [ -n "$owing" ]; then
     echo "#$number: $why. But the post job of run $owing did not succeed, and its comment job recorded nothing that" \
-      "the run owes. So no line and no review comment of run $owing carries its word, and a relabel can miss that" \
-      "word. This pass starts no relabel of $head for the value."
+      "the run owes. This pass starts no relabel of $head for the value."
     return 0
   fi
   read -r _ ended run <<< "$(runs_of relabel "$head" workflow_dispatch | tail -n 1)"
