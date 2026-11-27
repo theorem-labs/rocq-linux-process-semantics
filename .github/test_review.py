@@ -22682,7 +22682,7 @@ class ImportCheckTest(ReaderRunner):
         (OSSV-221's architect, 2026-11-23 03:06Z). After a screened pass of run 110 that read #7 after that hold,
         relabel 3 reads that pass as the newest word on HEAD, newer than that source, and no line: it records the
         check run again. If relabel 1 wrote the line of run 100, which posts no comment, the line would stay, and no
-        relabel would record. The line counts from its read, the time of the hold of run 80 (owed_word), so the
+        relabel would record. The line counts from its read, the time of the hold of run 80 (line_word), so the
         screened pass of run 90 does not outrank it (OSSV-221's architect, 2026-11-25 01:13Z, G1)."""
         listed, _others = self.recorded()
         hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(300), "updated_at": ago(300),

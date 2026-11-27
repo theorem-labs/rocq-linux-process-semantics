@@ -5024,8 +5024,12 @@ jobs:
   # no review, so it is held only at the limit, with the marker <!-- review-held-limit <run> <tries> approve -->, by
   # its screen, whose hold says that the checks of the pull request have not run, or when its gather or screen job
   # failed. A gather or screen job that failed judged nothing of the item, so no screen held it: its hold is
-  # transient, or its last try, and never a hold of the screen. It names no read, and no reader counts it as a word on
-  # the head (OSSV-221's architect, 2026-11-25 01:13Z, G2). A gather or screen job is cancelled when it runs out of
+  # transient, or its last try, and never a hold of the screen (OSSV-221's architect, 2026-11-25 01:13Z, G2). It
+  # names no read. The steps that record or withdraw the import check run, and the steps that give way to a newer
+  # word, count no hold but a hold of the screen (rules.py screen_hold). So none of them counts it. The comment job's
+  # label step counts it as a hold, from when GitHub last changed it (rules.py word_time, stays and relabel_facts).
+  # That step counts an answer's hold that is tried again only in a run of an answer (stays). A gather or screen job
+  # is cancelled when it runs out of
   # time, and a screen job also when a newer run of the same item and task cancels it (the screen job's concurrency).
   # A cancelled gather or screen job gets no hold, and no later job of its run writes on the item. The item waits for
   # its next event or the rescreen pass (held.sh due_unreviewed, due_answer, due_draft, due_approve and held_work).
@@ -5536,8 +5540,11 @@ jobs:
             # The gather job or the screen job of this run failed (UNSCREENED), so no screen judged the item
             # (OSSV-221's architect, 2026-11-25 01:13Z, G2). As for a review that did not finish, the hold is transient
             # and counts a try: the rescreen pass tries it again, and the last try waits on Sami. It is never a hold of
-            # the screen: its text never says that the screen held the item, and it names no read. So no reader counts
-            # it as a word on the head (.github/review/rules.py hold_fact and comment_word).
+            # the screen: its text never says that the screen held the item (.github/review/rules.py hold_fact), and it
+            # names no read. The steps that record or withdraw the import check run, and the steps that give way to a
+            # newer word, count no hold but a hold of the screen (rules.py screen_hold). So none of them counts it. The
+            # comment job's label step counts it as a hold, from when GitHub last changed it (rules.py word_time, stays
+            # and relabel_facts). That step counts an answer's hold that is tried again only in a run of an answer.
             tries=$((tries + 1))
             if (( tries < REVIEW_TRIES )); then
               kind=transient
