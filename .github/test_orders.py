@@ -66,9 +66,10 @@ import check runs") of either word leaves neither that output nor a check run, a
 The comment job derives that output itself: its step "Record the withdrawal of a refused review whose post job did not
 finish", for a post job that failed or was cancelled over a review that the fresh reader refused (its review job's
 output refused=review), runs the script of the step "Record a withdrawal that the post job owes" (the two never both
-run), which takes "HEAD refused" as the output owed when the post job gave none, under the conditions of the post
-job's own write (its output key_set, which test_review.post_outputs fills in from the post job's env, and the table's
-withdraw). So that step writes the line, and the older answer's hold job gives way to it. When the comment job of a run
+run), which takes "HEAD refused" as the output owed when the post job gave none, under the table's withdraw and an
+output key_set that is not false (an empty one, when GitHub gives no output of a post job that did not succeed, counts
+as true; test_review.post_outputs fills it in from the post job's env). So that step writes the line, and the older
+answer's hold job gives way to it. When the comment job of a run
 whose post job did not succeed fails or is cancelled before it records what the run owes, of any word (at its
 checkout, at that step, or at the step "Record a withdrawal that the post job owes": the sweep fails their reads and
 their writes, and cancels them, after a refusal of refusedline too), the run recorded neither its line nor its review

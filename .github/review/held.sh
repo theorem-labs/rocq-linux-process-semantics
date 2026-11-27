@@ -707,9 +707,8 @@ waits_of() {
 : > "$seen/stops"
 # stop_note: the sentences of the error line of stopped, head_stopped, left_stopped, answer_stopped and draft_stopped
 # that say what the run of the stop writes.
-stop_note="A run of the task stop writes its hold comment, unless a newer comment or a newer head of the item stops"
-stop_note+=" that run first. It writes the label comment of the stop when GitHub said whether the author has write"
-stop_note+=" access."
+stop_note="A run of the task stop writes its hold comment, unless that run ends before it writes it. Its log then says"
+stop_note+=" why."
 # halt <stop> <fact> <work> <title> <text>: the work of #number is not tried again, at a bound of its tries
 # (stopped, head_stopped, left_stopped, answer_stopped and draft_stopped). The rescreen pass writes nothing for it: it
 # starts a run of review.yml with the task stop, named "stop #<n>[ at <head>] for <stop>", at most one for each item in
@@ -1412,7 +1411,8 @@ due_rerun() {
       "the run owes."
   fi
   if [[ ! $ended < $hour ]]; then
-    echo "#$number: the $which job of run $run $how, less than an hour ago: tried again later."
+    echo "#$number: the $which job of run $run $how. Run $run ended at $ended, less than an hour ago. The rescreen" \
+      "pass decides it again later."
     return 0
   fi
   read -r attempt <<< "$(awk -v r="$run" '$1 == r { print $13; exit }' "$seen/runs")"

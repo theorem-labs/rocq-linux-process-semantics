@@ -2880,10 +2880,10 @@ jobs:
         && (steps.withdraw.outputs.owed || steps.decide.outputs.owed || steps.own.outputs.owed) || '' }}
       withdrawn: ${{ steps.withdraw.outputs.clear || steps.withdrawn.outputs.head || steps.neutral.outputs.head }}
       # Whether the environment post holds the App's key, as this job read it when it started (APP_KEY_SET): true or
-      # false, never the key. No step writes it, so GitHub fills it in also for a job that failed or was cancelled
-      # before its first step ended. The comment job has no key. It reads this output to take, for a post job that ended
-      # before it wrote owed, the condition of the post job's own write of owed for a review that the fresh reader
-      # refused: only while the environment post holds the key.
+      # false, never the key. No step writes it. The comment job has no key. For a post job that ended before it wrote
+      # owed, over a review that the fresh reader refused, the comment job writes the line of that refusal only when
+      # this output is not false. GitHub can give no output of a post job that was cancelled, so there an empty value
+      # counts as true (OSSV-613's architect, 2026-11-27 09:24Z).
       key_set: ${{ env.APP_KEY_SET }}
       # The decision held, withdrawn or newer of the own record of a run on the route screen (screened_run in the
       # decision step): a run that read the item at or after this run held the head, withdrew its import check run, or
@@ -4097,20 +4097,23 @@ jobs:
       # reader refused (the review job's output refused is review), has a step of its own after this one: "Record the
       # withdrawal of a refused review whose post job did not finish". It runs the script of this step (one YAML
       # anchor), which takes as the output owed, when the post job gave none, what the post job's step gives,
-      # "<head> refused" with the head that the review read, under the conditions of that step: the environment post
-      # holds the App's key (the post job's output key_set), the event is workflow_run or workflow_dispatch, and the
-      # author-kind table's withdraw holds for the task and the trust job's outside, read as the post job reads it
-      # (OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4). The line then names this run and STARTED, as for
-      # the output owed of the post job itself. The two steps never both run: this one runs for each other post job
-      # that gave owed or withdrawn, and the step after it for each post job of a refused review that did not succeed,
-      # whatever it gave. The rescreen pass cannot read the verdict of a job, so it reads the step at which this job
-      # died (held.sh unrecorded): when this job failed or was cancelled at its checkout, at this step or at the step
-      # after it (or before its first step), and the post job did not succeed, the run recorded nothing that it owes,
-      # whatever its verdict, and no relabel can read a word that neither a line, nor a review comment, nor a check run
-      # carries. So the pass runs the failed jobs of the run again (the post job too), an hour after it ended, but not
-      # under the stop of the import check of the head, which ends each App write of the head (OSSV-613's architect,
-      # 2026-11-27 00:24Z, choice (a)). The review job's outputs stand in each attempt, and the re-run derives the same
-      # output owed. The label step reads the line from whichever of the two ran.
+      # "<head> refused" with the head that the review read, when the event is workflow_run or workflow_dispatch and
+      # the author-kind table's withdraw holds for the task and the trust job's outside, read as the post job reads it
+      # (OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4), and the post job's output key_set is not false.
+      # GitHub can give no output of a post job that was cancelled, so an empty key_set counts as true: while the
+      # environment post holds no key, the App writes no import check run, so the line then carries only the refusal,
+      # and each reader gives the state of the refused review (2026-11-27 09:24Z, round 31, R7). A key_set of false
+      # (the environment post holds no key) gives no line, as the post job then writes no owed. The line names this run
+      # and STARTED, as for the output owed of the post job itself. The two steps never both run: this one runs for
+      # each other post job that gave owed or withdrawn, and the step after it for each post job of a refused review
+      # that did not succeed, whatever it gave. The rescreen pass cannot read the verdict of a job, so it reads the step
+      # at which this job died (held.sh unrecorded): when this job failed or was cancelled at its checkout, at this step
+      # or at the step after it (or before its first step), and the post job did not succeed, the run recorded nothing
+      # that it owes, whatever its verdict, and no relabel can read a word that neither a line, nor a review comment,
+      # nor a check run carries. So the pass runs the failed jobs of the run again (the post job too), an hour after it
+      # ended, but not under the stop of the import check of the head, which ends each App write of the head
+      # (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)). The review job's outputs stand in each attempt, and the
+      # re-run derives the same output owed. The label step reads the line from whichever of the two ran.
       # The label step after it keeps the line. For an author whose write access GitHub did not give, the line goes in
       # all the same, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z), but no line
       # goes out. For such an author, the label step changes no label comment. So when the post job finished the
@@ -4159,9 +4162,11 @@ jobs:
           [[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}"; exit 1; }
           # The output owed of a post job that failed or was cancelled before it wrote owed or withdrawn, for a review
           # that the fresh reader refused: "<head> refused", as the post job's step "Write the output owed for the
-          # withdrawal of the import check runs" gives it, under the conditions of that step (the comment above).
+          # withdrawal of the import check runs" gives it, for the events and the author-kind table's withdraw of that
+          # step, unless the post job's output key_set is false (the environment post holds no key). An empty key_set,
+          # which GitHub can give for a post job that was cancelled, counts as true (the comment above).
           if [ -z "${OWED:-}" ] && [ -z "${WITHDRAWN:-}" ] && [ "${REFUSED:-}" = review ] \
-            && { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } && [ "${KEY_SET:-}" = true ] \
+            && { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } && [ "${KEY_SET:-}" != false ] \
             && { [ "${EVENT:-}" = workflow_run ] || [ "${EVENT:-}" = workflow_dispatch ]; } \
             && { [ "$TASK" = review ] || [ "$TASK" = rescreen ]; }; then
             answers=$(python3 .github/review/rules.py answers "$TASK" "${OUTSIDE:-}" "${OUTSIDER:-}") \
@@ -4170,9 +4175,8 @@ jobs:
               [[ ${REVIEW_HEAD:-} =~ ^[0-9a-f]{40}$ ]] \
                 || { echo "::error::the review job gave no head commit: ${REVIEW_HEAD:-}"; exit 1; }
               OWED="$REVIEW_HEAD refused"
-              echo "#$NUMBER: the post job of this run ended with the result $POSTED before it wrote its output owed." \
-                "The fresh reader refused the review of $REVIEW_HEAD, so this step records the withdrawal that the" \
-                "post job owes for it: $OWED."
+              echo "#$NUMBER: the post job of this run ended with the result $POSTED, and it gave no output owed." \
+                "The fresh reader refused the review of $REVIEW_HEAD, so this step records that refusal: $OWED."
             fi
           fi
           [ -n "${OWED:-}" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
@@ -4644,7 +4648,14 @@ jobs:
           # a held draft. unsettled: true when the newest hold of another such work, tried again or not (the screen's,
           # which waits on Sami), is one that its work posted nothing since. own: true when the newest hold of this
           # run's work is tried again. Each comment comes with its time as a word in the field word
-          # (.github/review/rules.py words, word_time), which rules.py stays reads below.
+          # (.github/review/rules.py words, word_time), which the filter below and rules.py stays read: a review counts
+          # from when its run read the item (its marker <!-- review-read <time> -->), a hold of the screen from when its
+          # run read the item (its marker <!-- review-held-read <time> -->), and any other comment, an answer or another
+          # hold among them, from when GitHub last changed it. A hold of the screen with no such marker counts from when
+          # GitHub last changed it too, and a review with none counts from then for a blocking finding or the verdict
+          # person, and at no time for a pass. A review or an answer counts as posted since a hold when its word is
+          # after the word of that hold (OSSV-613's architect, round 31, R4). A review of the same time as the hold is
+          # not after it: the hold outranks it in the order of the words on a head (rules.py word_key).
           found=$(gh api --paginate "repos/$REPO/issues/$NUMBER/comments" --jq '.[] | @json' \
             | python3 .github/review/rules.py words) \
             || { echo "::error::the comments of #$NUMBER could not be read"; exit 1; }
@@ -4657,14 +4668,14 @@ jobs:
             || { echo "::error::the hold comments of #$NUMBER could not be ordered."; exit 1; }
           # shellcheck disable=SC2016 # $ENV and the names bound in the filter are jq's
           held=$(W=$work NEWEST=$newest jq -rs 'map(select(.user.login == "github-actions[bot]")
-              | {at: (.updated_at // ""), made: (.created_at // .updated_at // ""), body: (.body // "")}) as $ours
+              | {at: (.word // ""), body: (.body // "")}) as $ours
             | [$ENV.NEWEST | split("\n")[] | select(. != "") | fromjson
-                | {work: .work, at: (.updated_at // ""), body: (.body // "")}
+                | {work: .work, at: (.word // ""), body: (.body // "")}
                 | .tried = (.body | test("\n<!-- review-held-(limit|cap|transient) [0-9]+ "))
                 | .head = ((.body | capture("\n<!-- review-held-head (?<h>[0-9a-f]{40}) -->(\n|$)") | .h) // "")]
               as $holds
             | def posted: . as $h
-                | if .work == "answer" then any($ours[]; (.body | startswith("<!-- review-answer ")) and .made > $h.at)
+                | if .work == "answer" then any($ours[]; (.body | startswith("<!-- review-answer ")) and .at > $h.at)
                   elif .work == "draft" then any($ours[]; (.body | startswith("<!-- review-label -->"))
                     and (.body | test("\n<!-- (issue-draft [0-9]+-[0-9]+|issue-reply-posted [0-9]+) -->(\n|$)")))
                   else any($ours[]; (.body | startswith("<!-- review -->")) and .at > $h.at

@@ -5754,7 +5754,8 @@ class PostLabelTest(Runner):
         leaves the state as it is: one that came after a review's run started does not stop the review's state label,
         and keeps review-held on; it stops the labels of an answer's run, whose answer did not read its comment. A
         review names its head only in its marker on the line after <!-- review -->, where the workflow writes it: the
-        text of a review of before the move off pull_request_target can hold that marker, and names no head."""
+        text of a review of before the move off pull_request_target can hold that marker, and names no head. Each
+        review counts from when its run read the item, the marker <!-- review-read <time> --> (rules.py word_time)."""
         def hold(marker, at, title="review"):
             return {"user": {"login": BOT}, "created_at": at, "updated_at": at,
                     "body": f"<!-- review-held -->\n**Automated {title} held.**\n\nHeld.\n\n{marker}\n"
@@ -5766,7 +5767,8 @@ class PostLabelTest(Runner):
         held_answer = hold("<!-- review-held-limit 51 0 answer 900 -->", "2026-11-02T08:30:00Z", "answer")
         first_answer = hold("<!-- review-held-limit 51 0 answer 900 -->", "2026-11-02T07:00:00Z", "answer")
         screened = hold("", "2026-11-02T08:00:00Z")
-        review, other = posted(review_of(HEAD)["body"]), posted(review_of(OTHER_HEAD)["body"])
+        read = {"run": 60, "read": "2026-11-02T09:00:00Z"}
+        review, other = posted(review_of(HEAD, **read)["body"]), posted(review_of(OTHER_HEAD, **read)["body"])
         answer = posted("<!-- review-answer 900 -->\nThe answer.")
         planted = posted(f"<!-- review -->\n**Automated review** of commit {OTHER_HEAD[:12]}\n\nFine.\n"
                          f"<!-- review-head {HEAD} -->\n**Automated review** of commit {HEAD[:12]}\n")
@@ -5851,6 +5853,62 @@ class PostLabelTest(Runner):
                 self.setUp()
                 self.assertEqual(self.changed_step("comment", self.STEP, old, new, lambda: self.take_off(
                     HEAD, HEAD, comments=comments, TASK="rescreen")), [self.DELETE])
+
+    # The label step whose filter reads the time of each comment and of each newest hold from when GitHub last changed
+    # it (updated_at), as before OSSV-613's architect's round 31, R4.
+    UPDATED = (('{at: (.word // ""), body: (.body // "")}) as $ours',
+                '{at: (.updated_at // ""), body: (.body // "")}) as $ours'),
+               ('{work: .work, at: (.word // "")', '{work: .work, at: (.updated_at // "")'))
+
+    def test_a_review_counts_as_posted_since_a_hold_by_the_time_of_the_model_not_by_when_it_posted(self):
+        """OSSV-613's architect, round 31, R4: the label step reads a review of the head of a hold as posted since that
+        hold by the time of each in the one model (rules.py words, word_time), not by when GitHub last changed them: a
+        review counts from when its run read the item (its marker <!-- review-read <time> -->), and a hold of the
+        screen from when its run read the item. Answer run 130 of mallory's #7 at HEAD started at STARTED, and its own
+        hold of the answer is tried again. The screen of run 120 held the review of HEAD: its run read #7 at 09:00, and
+        its hold comment posted at 09:20. A review comment of HEAD posted at 09:30. When its run read #7 at 08:50, or at
+        09:00 (the time of the hold, which outranks a review of the same time), or when it is a pass with no marker of
+        its read (which counts at no time), the review is not after the hold: the work of the hold posted nothing
+        since, so the step reads unsettled, and review-held stays on. When its run read #7 at 09:10, the review is after
+        the hold, and review-held comes off. For a rescreen of #7, a hold of the approval of HEAD that the rescreen pass
+        tries again posted at 09:00: after the review whose run read #7 at 08:50, the step reads pending, and
+        review-held stays on; the review whose run read #7 at 09:10 takes it off. The control, the label step that
+        reads each time from when GitHub last changed the comment (UPDATED), reads the review as posted after the hold
+        in each case, and takes review-held off."""
+        own = limit_hold(130, "2026-11-02T08:00:00Z", tries=0, task="answer", comment="900", head=HEAD)
+        screen = {"id": 50, "user": {"login": BOT}, "created_at": "2026-11-02T09:20:00Z",
+                  "updated_at": "2026-11-02T09:20:00Z",
+                  "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
+                          "request, so the automated review did not run. You do not need to do anything.\n\n"
+                          f"<!-- review-held-head {HEAD} -->\n<!-- review-held-read 2026-11-02T09:00:00Z -->\n"
+                          "<!-- review-held-run 120 -->"}
+        approval = limit_hold(140, "2026-11-02T09:00:00Z", tries=0, task="approve", head=HEAD)
+
+        def review(read):
+            """The review comment of HEAD that posted at 09:30, whose run read #7 at read (none: no such marker)."""
+            return review_of(HEAD, at="2026-11-02T09:30:00Z", **({} if read is None else {"run": 110, "read": read}))
+
+        def updated(run):
+            (old, new), (held_old, held_new) = self.UPDATED
+            return self.changed_step("comment", self.STEP, old, new, lambda: self.changed_step(
+                "comment", self.STEP, held_old, held_new, run))
+
+        for case, task, hold, read, off in (
+                ("an older read, unsettled", "answer", screen, "2026-11-02T08:50:00Z", False),
+                ("the read of the hold, unsettled", "answer", screen, "2026-11-02T09:00:00Z", False),
+                ("no marker, unsettled", "answer", screen, None, False),
+                ("a newer read, settled", "answer", screen, "2026-11-02T09:10:00Z", True),
+                ("an older read, pending", "rescreen", approval, "2026-11-02T08:50:00Z", False),
+                ("a newer read, not pending", "rescreen", approval, "2026-11-02T09:10:00Z", True)):
+            comments = [own, hold, review(read)] if task == "answer" else [hold, review(read)]
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(self.take_off(HEAD, HEAD, comments=comments, TASK=task), [self.DELETE] if off else [])
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(updated(lambda: self.take_off(HEAD, HEAD, comments=comments, TASK=task)),
+                                 [self.DELETE])
 
     def test_a_posted_review_ends_the_conflict_state(self):
         """The author resolved the conflict and pushed, and the review of the new head posted: waits-on-author comes
@@ -12666,9 +12724,8 @@ class ScheduleTest(Scheduled):
                 self.assertEqual((rc, started), (1, [("7", "stop", "", HEAD if pr else "", stop)]), out)
                 self.assertIn(f"::error::#7: after run 10, which settled its hold, {self.TRIES} runs of {runs} were "
                               "tries that settled nothing, with no new hold. The work of the hold is not tried again. "
-                              "A run of the task stop writes its hold comment, unless a newer comment or a newer head "
-                              "of the item stops that run first. It writes the label comment of the stop when GitHub "
-                              "said whether the author has write access.", out)
+                              "A run of the task stop writes its hold comment, unless that run ends before it writes "
+                              "it. Its log then says why.", out)
                 _trust, steps = write_stop(self, stop, head=HEAD if pr else "")
                 self.assertEqual(steps[STOP_STEP], "success", self.logs)
                 posts = [a[len("body="):] for c in writes(self.api) for a in c
@@ -13455,6 +13512,10 @@ class ScheduleTest(Scheduled):
                             "inputs.account": "" if task == "relabel" else "mallory"})
         self.ran(run, title, made=ended + 10, ended=ended, jobs=jobs, attempt=attempt)
 
+    def ended(self, run):
+        """The time when run <run> ended, as the list of the runs of this workflow gives it (its updated_at)."""
+        return next(r["updated_at"] for r in self.listed_runs if r["id"] == run)
+
     def commented_jobs(self, comment="failure", post=None):
         """The jobs after the trust job of a run whose screen passed HEAD and whose review gave its verdict: its post
         job post (one that decided the import check of HEAD, when None), and its comment job, which failed at its label
@@ -13521,7 +13582,8 @@ class ScheduleTest(Scheduled):
                                                                   "due_rerun() { return 0; }")
                 want = [["--method", "POST", rerun]] if ended > 60 else []
                 said = (f"#7: {how}. Its failed jobs run again: try {attempt + 1} of {self.TRIES}." if want
-                        else f"#7: {how}, less than an hour ago: tried again later.")
+                        else f"#7: {how}. Run 10 ended at {self.ended(10)}, less than an hour ago. The rescreen pass "
+                             "decides it again later.")
                 self.assertEqual((rc, runs, wrote), (0, [], want), out)
                 self.assertIn(said, out)
                 self.assertEqual((control[0], control[2], control[3]), (0, [], []), control[1])
@@ -13842,9 +13904,8 @@ class ScheduleTest(Scheduled):
                 self.assertNotIn("will name the next step for Sami", out)
                 if want[1] == [stopped]:
                     self.assertIn(f"::error::#7 at {HEAD}: {checked} It is not tried again. A run of the task stop "
-                                  "writes its hold comment, unless a newer comment or a newer head of the item stops "
-                                  "that run first. It writes the label comment of the stop when GitHub said whether "
-                                  "the author has write access.", out)
+                                  "writes its hold comment, unless that run ends before it writes it. Its log then "
+                                  "says why.", out)
                 if last != "failure":
                     continue
                 if case in ("a", "b"):
@@ -13938,8 +13999,8 @@ class ScheduleTest(Scheduled):
                     else:
                         # (v): a pass less than an hour after the run ended starts nothing for #7.
                         self.assertEqual((rc, runs, again), (0, [], []), out)
-                        self.assertIn(f"#7: the comment job of run 10 {said}, less than an hour ago: tried again "
-                                      "later.", out)
+                        self.assertIn(f"#7: the comment job of run 10 {said}. Run 10 ended at {self.ended(10)}, less "
+                                      "than an hour ago. The rescreen pass decides it again later.", out)
                         self.assertNotIn("Its failed jobs run again", out)
                         self.assertIn(self.YIELDED, out)
                         self.assertEqual((control[0], control[2], control[3]), (0, [], [rerun]), control[1])
@@ -14194,8 +14255,8 @@ class ScheduleTest(Scheduled):
                     self.assertIn(f"#7: the comment job of run 10 was cancelled. Its failed jobs run again: try 2 of "
                                   f"{self.TRIES}.", out)
                 else:
-                    self.assertIn("#7: the comment job of run 10 was cancelled, less than an hour ago: tried again "
-                                  "later.", out)
+                    self.assertIn(f"#7: the comment job of run 10 was cancelled. Run 10 ended at {self.ended(10)}, "
+                                  "less than an hour ago. The rescreen pass decides it again later.", out)
 
     def test_a_head_with_no_value_recorded_gets_a_relabel_whose_reason_says_that_no_value_is_recorded(self):
         """OSSV-613's architect, round 30 (the fresh reader of check b7): due_variable gives the reason of a relabel
@@ -24535,6 +24596,41 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(outcomes[OWE_REFUSED], "success", self.logs[-4:])
         self.assertIn(line, (bodies[:1] or [""])[0].split("\n"), (outcomes, self.logs[-4:]))
 
+    def test_an_empty_key_set_counts_as_true_and_only_a_key_set_of_false_leaves_no_line_of_a_refused_review(self):
+        """OSSV-613's architect, 2026-11-27 09:24Z, round 31, R7: for a post job that did not succeed over a review that
+        the fresh reader refused, the comment job's step "Record the withdrawal of a refused review whose post job did
+        not finish" reads the post job's output key_set, which GitHub can leave out for a post job that was cancelled.
+        An empty key_set counts as true, and only a key_set of false (the environment post holds no key) leaves no
+        line. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused its review.
+        Its post job was cancelled, with no output owed and none withdrawn. With no key_set, and with key_set true, the
+        step writes the line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment 40; with key_set false
+        it writes no line. The control, the step that writes the line only for a key_set of true, as before that
+        ruling, writes no line with no key_set (the case of
+        test_a_cancelled_post_job_with_no_outputs_still_leaves_the_line_of_its_refused_review)."""
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
+        label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
+                 "body": rules.label_comment("working")}
+        line = f"<!-- withdraw-owed {HEAD} refused 130 {rescreen['started']} -->"
+
+        def carried(post):
+            """Whether a label comment that the comment job of run 130 wrote, after a cancelled post job that gave the
+            outputs post, holds the line, once the step succeeded."""
+            outcomes, _wrote, bodies = self.refused_comment_job({"result": "cancelled", "post": post}, rescreen, "130",
+                                                                [label])
+            self.assertEqual(outcomes[OWE_REFUSED], "success", self.logs[-4:])
+            return any(line in b.split("\n") for b in bodies)
+
+        for case, post, want in (("no key_set", {}, True), ("key_set true", {"key_set": "true"}, True),
+                                 ("key_set false", {"key_set": "false"}, False)):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+                self.assertEqual(carried(post), want, self.logs[-4:])
+        self.tearDown()
+        self.setUp()
+        self.assertFalse(self.changed_step("comment", OWE_REFUSED, '[ "${KEY_SET:-}" != false ]',
+                                           '[ "${KEY_SET:-}" = true ]', lambda: carried({})), self.logs[-4:])
+
     def test_an_older_pass_records_nothing_while_the_line_of_a_newer_refused_review_stands(self):
         """The tester's audit of round 27 (F1): a review that the fresh reader refuses withdraws on any verdict, as a
         blocking one does (OSSV-221's architect, 2026-11-25 10:21Z), and a failure path that records an approval
@@ -24728,8 +24824,8 @@ class ImportCheckTest(ReaderRunner):
                                         self.SKIP: "success", self.LABEL: "success"}, found["log"])
         self.assertEqual([line in b.split("\n") for _m, _e, b in wrote], [True, True], wrote)
         self.assertIn(f"**Next step:** {rules.STATES['refused-review'][1]}", wrote[-1][2])
-        self.assertIn(f"The fresh reader refused the review of {HEAD}, so this step records the withdrawal that the post "
-                      f"job owes for it: {HEAD} refused.", found["log"])
+        self.assertIn(f"The fresh reader refused the review of {HEAD}, so this step records that refusal: {HEAD} "
+                      "refused.", found["log"])
         self.assertEqual((found["holds"], found["labels"], found["states"]), ([], [], []), found["summary"])
         self.assertIn(f"#7 at {HEAD}: decision skip, cause refused, read {found['answer']['started']}, run 100, from "
                       f"{line.split()[-2]}\n", found["summary"])
@@ -24856,7 +24952,7 @@ class ImportCheckTest(ReaderRunner):
                 if runs:
                     ran, wrote = self.comment_job(ctx, [label], labels=("review-held",))
                     self.assertEqual((ran[OWE_REFUSED], OWE in ran), ("success", False), self.logs[-4:])
-                    self.assertNotIn("so this step records the withdrawal", "\n".join(self.logs))
+                    self.assertNotIn("so this step records that refusal", "\n".join(self.logs))
                     self.assertFalse(any("withdraw-owed" in b for _m, _e, b in wrote), wrote)
 
     def test_the_two_steps_that_record_what_the_post_job_owes_never_both_run_for_one_run(self):
