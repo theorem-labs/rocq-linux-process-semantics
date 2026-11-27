@@ -4024,6 +4024,55 @@ class HoldTest(Holding):
                 else:
                     self.assertIn("A newer run of #7 (review) cancelled this run's review", out)
 
+    def test_a_cancelled_review_whose_read_of_the_newer_runs_fails_holds_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the hold job's step "Label it and say that it
+        was held" (STEP) reads three things of GitHub only for a review job that was cancelled, on a route other than
+        limit, to find a newer run of the same item and task, which cancelled it and decides: the runs of this
+        workflow since a day ago (GET actions/workflows/review.yml/runs); for a newer CI run of a review, the open pull
+        requests (GET pulls?state=open), whose heads give the pull request of its head; and the jobs of such a run
+        (GET actions/runs/<id>/jobs), whose trust job tells whether it can still decide. A hold at the limit
+        (OUTSIDE_HOURLY_LIMIT, the route limit) and a hold at the cap (SCREENED_HOURLY_CAP, whose review job failed)
+        read none of the three, and post their hold while GitHub refuses all three. The rule of each of these reads: a
+        read that GitHub refuses fails the step, with the error that the runs of this workflow, the open pull requests
+        or the jobs of run 101 could not be read. The step then posts or edits no hold comment, adds no label and
+        writes no label comment, so it never holds a review that a newer run of the item can decide. The controls,
+        the step that takes each refused read as an empty answer, leave no error: the first two post the hold of a
+        review that did not finish, and the third reads run 101 as a run that can still decide."""
+        runs, pulls = f"repos/{REPO}/actions/workflows/review.yml/runs", f"repos/{REPO}/pulls"
+        jobs, prs = f"repos/{REPO}/actions/runs/101/jobs", [(7, "mallory", HEAD)]
+        pushed = (101, f"review {HEAD} by mallory", "success", "workflow_run")
+        for hold, route, kwargs in (("the limit", "limit", {}),
+                                    ("the cap", "screen", {"review": "failure", "capped": True})):
+            with self.subTest(hold=hold):
+                self.tearDown()
+                self.setUp()
+                for endpoint in (runs, pulls, jobs):
+                    self.refuse(endpoint, 502, "Bad Gateway")
+                self.hold(route, origin="50", prs=prs, runs=[pushed], **kwargs)
+                self.assertEqual([c for c in self.calls() if c in (runs, pulls, jobs)], [])
+        for read, endpoint, run, error, unread in (
+                ("the runs of this workflow", runs, (101, "review #7"),
+                 "::error::the runs of this workflow could not be read",
+                 '|| { echo "::error::the runs of this workflow could not be read"; exit 1; }'),
+                ("the open pull requests", pulls, pushed, "::error::the open pull requests could not be read",
+                 '|| { echo "::error::the open pull requests could not be read"; exit 1; }'),
+                ("the jobs of run 101", jobs, (101, "review #7"), "::error::the jobs of run 101 could not be read",
+                 '|| { echo "::error::the jobs of run $id could not be read"; exit 1; }')):
+            with self.subTest(read=read):
+                self.tearDown()
+                self.setUp()
+                self.refuse(endpoint, 502, "Bad Gateway")
+
+                def held():
+                    self.forget()
+                    rc, out, posts, _body = self.run_hold("screen", review="cancelled", origin="50", prs=prs,
+                                                          runs=[run])
+                    return rc, error in out, posts, writes(self.api)
+
+                want = (1, True, [], [])
+                self.assertEqual(held(), want)
+                self.assertNotEqual(self.changed_step("hold", self.STEP, unread, "|| true", held), want)
+
     def test_a_later_hold_replaces_the_comment(self):
         _calls, post, _body = self.hold("screen", comments=[
             {"id": 4, "user": {"login": "mallory"}, "body": "<!-- review-held --> forged"},
@@ -8974,6 +9023,28 @@ class AnswerFixTest(ReaderRunner):
                 want = (1, True, None, [])
                 self.assertEqual(posted(), want, self.logs)
                 self.assertNotEqual(self.changed_step("comment", self.POST_FIX, old, new, posted), want, self.logs)
+
+    def test_an_answer_whose_read_of_the_comments_fails_posts_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's step "Post the answer"
+        (POST_ANSWER) reads the comments of #7 (GET issues/<n>/comments) just before it posts, for this run's answer,
+        which an earlier attempt of the job posted, and for the answer of another run that answered a comment of this
+        answer first (its output other). The rule of that read: a read that GitHub refuses fails the step, with the
+        error that the comments of #7 could not be read. The step then posts no answer and gives no output other, so
+        the step "Leave the answer to a later run" does not mark the run as one that another run answered first. The
+        control, the step that takes the refused read as an empty answer, leaves no such error and asks GitHub to post
+        the answer, also when it posted before or another run answered first."""
+        answer = f"<!-- review-answer 900 -->\n**Automated answer**\n\nYes.\n\n---\n{self.ANSWER_FOOT}"
+        self.refuse(f"repos/{REPO}/issues/7/comments", 502, "Bad Gateway")
+
+        def answered():
+            rc, out, got = self.post_answer(answer)
+            return rc, "::error::the comments of #7 could not be read" in out, got, writes(self.api)
+
+        want = (1, True, {}, [])
+        self.assertEqual(answered(), want, self.logs)
+        self.assertNotEqual(self.changed_step("comment", self.POST_ANSWER, '  || { echo "::error::the comments of '
+                                              '#$NUMBER could not be read"; exit 1; }', "  || true", answered), want,
+                            self.logs)
 
     def test_a_blocking_verdict_whose_list_holds_no_blocking_finding_is_the_person_verdict_and_starts_no_fix(self):
         """.github/review.md ("The verdict"): the verdict blocking needs a blocking finding, a change item whose
@@ -21165,6 +21236,145 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((got["result"], got["steps"][self.DECIDE]), ("failure", "failure"), self.logs)
                 self.assertNotRecorded(got)
                 self.assertIn(error, "\n".join(self.logs[start:]))
+
+    def test_a_decision_hand_whose_read_of_the_import_check_runs_fails_decides_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): for the decision hand, the post job's step
+        "Decide the import check of the head" (DECIDE) reads, in its function standing, every import check run of the
+        head (GET commits/<head>/check-runs, filter=all), for one of the OSS Verify App with the conclusion success and
+        the marker line of the variable now: its output standing, which the label step counts as recorded. The step
+        makes that read, as its first read of the check runs, for a review by hand of mallory's #7 whose newest review
+        comment of HEAD is a screened pass (by_hand, the cause earlier), for a relabel after a screened pass and a pass
+        by hand (relabeled, the state earlier), and, in replaced, for a relabel and a review by hand whose newest review
+        comment is a pass with no screen that took the place of the screened pass (the state unscreened, the cause
+        standing). Check run 901 of that screened pass stands in each case, so when GitHub gives the check runs, the
+        decision is hand and standing is true. A relabel whose screened pass outranks the line of a withdrawal makes
+        that read too, but only after import_checks read the same check runs, so a refusal of them fails the step
+        there first, with the same error. The rule of the read of standing: a read that GitHub refuses fails the step,
+        with the error that the import check runs of HEAD could not be read. The step then gives no decision, standing
+        is false, and the post job fails and writes nothing: no check run is recorded or withdrawn. The label step of
+        a relabel whose post job failed writes nothing. That of a review by hand reads the check runs again, which
+        GitHub refuses too, and its label comment does not say that the workflow recorded the check. The controls, the
+        step that takes the refused read as an empty answer, pass with no error, and decide hand (screen in replaced)
+        with standing false while 901 stands."""
+        listed, _others = self.recorded()
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        screened = review_of(HEAD, at=ago(90))
+        unscreened = review_of(HEAD, at=ago(30), screened=False)
+        hand, relabel = dict(self.BY_HAND, started=ago(1)), dict(self.RELABEL, started=ago(-1))
+        error = f"::error::the import check runs of {HEAD} could not be read."
+        unread = ('    || { echo "::error::the import check runs of $HEAD could not be read."; exit 1; }\n'
+                  '  stands=false\n')
+        for case, trust, comments, cause in (
+                ("a review by hand after a screened pass", hand, [screened, old], "earlier"),
+                ("a relabel after a screened pass and a pass by hand", relabel,
+                 [screened, review_of(HEAD, at=ago(30), id_=31, screened=False, run=90), old], "earlier"),
+                ("a relabel after a pass by hand in the place of the screened pass", relabel, [unscreened, old],
+                 "standing"),
+                ("a review by hand after a pass by hand in the place of the screened pass", hand, [unscreened, old],
+                 "standing")):
+            with self.subTest(case=case):
+                self.tearDown()
+                self.setUp()
+
+                def decided():
+                    start = len(self.logs)
+                    got = self.judge(["README.md"], "pass", self.LPS, trust=trust, event="workflow_dispatch",
+                                     comments=comments, listed=[listed])
+                    return got, "\n".join(self.logs[start:])
+
+                got, logs = decided()
+                self.assertEqual((got["result"], got["post"]["decision"], got["post"]["standing"]),
+                                 ("success", "hand", "true"), self.logs)
+                self.assertIn(f"#7 at {HEAD}: decision hand, cause {cause}, read {trust['started']}\n", logs)
+                self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
+
+                def refused():
+                    got, logs = decided()
+                    return ((got["result"], got["steps"][self.DECIDE]), error in logs, got["post"]["decision"],
+                            got["post"]["standing"], got["writes"], [rules.says_recorded(b) for b in got["comments"]])
+
+                want = (("failure", "failure"), True, "", "false", [], [] if trust is relabel else [False])
+                self.assertEqual(refused(), want, self.logs)
+                self.assertNotEqual(self.changed_step("post", self.DECIDE, unread, "    || true\n  stands=false\n",
+                                                      refused), want, self.logs)
+
+    def test_a_relabel_whose_rule_cannot_read_what_the_workflow_wrote_of_the_head_writes_nothing(self):
+        """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's label step of a relabel
+        (LABEL) sets the state of the head with rules.py relabel, which reads before it writes: the comments of #7 of
+        github-actions[bot] (GET issues/<n>/comments, read_comments), the import check runs of the head (GET
+        commits/<head>/check-runs with filter=all, import_checks), then the reviews of the pull request (GET
+        pulls/<n>/reviews), for its fix reviews, and the history of the head (GET commits?sha=<head>), for the fix
+        reviews since the author's last own push, each of the last two only when the facts need it (relabel_facts).
+        Here the relabel makes all four reads: the newest review comment of HEAD is a screened blocking review, with no
+        will-fix and no hold after it, and the pull request has two fix reviews of earlier heads, so the relabel reads
+        the history to tell whether the fix stopped (fix_stop). It did, and the label comment says so. No read of the
+        four is out of a relabel's reach; only facts skip the last two. relabel_facts reads no reviews when a hold
+        outranks the review side or the workflow wrote nothing of the head, and no history unless the verdict is
+        blocking with no will-fix and two fix reviews or more of other heads. The rule of each read: a read that GitHub
+        refuses makes rules.py fail with the error of the refused call, before any write, and the step fails with it:
+        no state label and no label comment. The stand-in gh refuses the read of the comments by rules.py alone (its
+        --jq filter, with a 422), as the step reads the comments first with a filter of its own, and each other read
+        with a 502. The control, the step that does not fail when rules.py fails, passes."""
+        h1, h2 = "12" * 20, "34" * 20
+        relabel = dict(self.RELABEL, started=ago(-1))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("change")}
+        got = self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                         comments=[review_of(HEAD, "blocking", at=ago(90)), old])
+        self.assertEqual(got["result"], "success", self.logs)
+        self.serve(f"repos/{REPO}/pulls/7/reviews", [fix_review(h1), fix_review(h2)])
+        self.serve(f"repos/{REPO}/commits", [history(HEAD, h2, suggested=True), history(h2, h1, suggested=True),
+                                             history(h1, OTHER_HEAD)])
+        ctx = {f"needs.trust.outputs.{k}": v for k, v in relabel.items()}
+        ctx.update({"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                    "github.repository": REPO, "github.token": self.RUN_TOKEN, "needs.trust.result": "success",
+                    "env.POST_REVIEW": WF["env"]["POST_REVIEW"], "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
+                    **{f"needs.{job}.result": "skipped" for job in ("gather", "screen", "review")},
+                    "needs.post.result": got["result"],
+                    **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
+        self.assertTrue(evaluate(JOBS["comment"]["if"], ctx) and evaluate(step("comment", self.LABEL)["if"], ctx))
+
+        def labelled():
+            self.forget()
+            s = step("comment", self.LABEL)
+            env = filled({**WF["env"], **JOBS["comment"]["env"], **s["env"]}, ctx)
+            return self.run_script(s["run"], **{k: v for k, v in env.items() if k not in ("GH_TOKEN", "REPO")})[:2]
+
+        comments, checks = f"repos/{REPO}/issues/7/comments", f"repos/{REPO}/commits/{HEAD}/check-runs"
+        reviews, commits = f"repos/{REPO}/pulls/7/reviews", f"repos/{REPO}/commits"
+        rc, out = labelled()
+        self.assertEqual((rc, [e for e in (comments, checks, reviews, commits) if e not in self.calls()]), (0, []),
+                         out)
+        ((_method, _endpoint, body),) = label_comments(self.api)
+        self.assertTrue(body.startswith(f"<!-- review-label -->\n**Next step:** {rules.STATES['fix-stop'][1]}\n"),
+                        body)
+        mine = (f".[] | select(.user.login == {json.dumps(BOT)})"
+                " | {id, user: {login: .user.login}, body, updated_at} | @json")
+        bad = "::error::rules.py: gh: Bad Gateway (HTTP 502)"
+        line = '"${facts[@]}" "${markers[@]}"\n  exit\n'
+        for read, endpoint, kind, error in (
+                ("the comments", comments, "refuse", "::error::rules.py: gh: Validation Failed (HTTP 422)"),
+                ("the import check runs", checks, "fail", bad),
+                ("the reviews", reviews, "fail", bad),
+                ("the history of the head", commits, "fail", bad)):
+            with self.subTest(read=read):
+                if kind == "refuse":
+                    self.refuse_field(endpoint, mine)
+                else:
+                    self.refuse(endpoint, 502, "Bad Gateway")
+
+                def relabelled():
+                    rc, out = labelled()
+                    return rc, error in out, writes(self.api)
+
+                want = (1, True, [])
+                try:
+                    self.assertEqual(relabelled(), want)
+                    self.assertNotEqual(self.changed_step("comment", self.LABEL, line,
+                                                          line.replace("\n", " || true\n", 1), relabelled), want)
+                finally:
+                    os.remove(os.path.join(self.api, f"{endpoint.replace('/', '_')}.{kind}"))
 
     def test_a_screened_run_records_nothing_after_a_newer_runs_blocking_review_that_withdrew_nothing(self):
         """The tester's audit of round 20, F1 (no failure on the path; the decide step's rule: a run on the route
