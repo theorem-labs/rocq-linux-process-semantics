@@ -29,8 +29,8 @@ labels").
     python3 .github/review/rules.py replaced-hold <work> <screen> <head> <started> < <comments.jsonl>
     python3 .github/review/rules.py stays <head> <started> <kind> <work> < <words.jsonl>
     python3 .github/review/rules.py outranks <time> <kind> <time> <kind>
-    python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <task> <verdict> <kind> <route>
-        <checks.jsonl>
+    python3 .github/review/rules.py withdraw-word <number> <head> <started> <run> <task> <verdict> <author kind>
+        <route> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
         <directory>
     python3 .github/review/rules.py not-approved <number> <head> <why> <run> <read> <request.json> [<import paths>]

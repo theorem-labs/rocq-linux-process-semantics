@@ -3433,11 +3433,12 @@ jobs:
       # <!-- withdraw-owed <head> <why> <run> <read> --> (held.sh, consider). Such a relabel records no check run. After
       # REVIEW_TRIES failed tries, this run among them, the head is not tried again: the pass starts the stop of the
       # import check of the head (held.sh, head_stopped), whose comment job writes the label comment of that stop when
-      # the label rule allows it. A later run of the head whose trust job failed or was cancelled (it
-      # ran out of time, say) counts a try too (held.sh failures). So the error says so. The pass tries no App write of
-      # another author's pull request again (held.sh, consider and access_of), so for such an author, and for a run
-      # whose name gives no head, the error says to re-run this run. The error of a run with no start time names no
-      # next step. No withdraw-owed line can name the read of that run (rules.py owe), so no relabel withdraws for it.
+      # GitHub said whether the author has write access. A later run of the head whose trust job failed or was
+      # cancelled (it ran out of time, say) counts a try too (held.sh failures). So the error says so. The pass tries
+      # no App write of another author's pull request again (held.sh, consider and access_of), so for such an author,
+      # and for a run whose name gives no head, the error says to re-run this run. The error of a run with no start
+      # time names no next step. No withdraw-owed line can name the read of that run (rules.py owe), so no relabel
+      # withdraws for it.
       - name: Find the import check runs that a later review or screen withdraws
         id: withdraw
         if: >-
@@ -3507,8 +3508,8 @@ jobs:
           if [ "$RETRY" = true ] && [ "$NAMED" = "$head" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
             again+=" run ends. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the import"
-            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
-            again+=" allows it."
+            again+=" check of this head. The comment job of that stop writes its label comment when GitHub said"
+            again+=" whether the author has write access."
           fi
           # Each import check run of the OSS Verify App for this pull request on the head, with its conclusion,
           # completed_at and summary, and the output text that a withdrawal keeps.
@@ -3680,8 +3681,8 @@ jobs:
           if [ "$RETRY" = true ] && [ "$NAMED" = "$HEAD" ]; then
             again=" The rescreen pass tries this withdrawal again in a relabel of this head, an hour or more after this"
             again+=" run ends. After $REVIEW_TRIES failed tries, this one included, it starts the stop of the import"
-            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
-            again+=" allows it."
+            again+=" check of this head. The comment job of that stop writes its label comment when GitHub said"
+            again+=" whether the author has write access."
           fi
           read -r -a ids <<< "$CHECKS"
           for id in "${ids[@]}"; do
@@ -3736,8 +3737,8 @@ jobs:
             again+=" conclusion success. It leaves one only when the run that recorded it read #$NUMBER after that"
             again+=" verdict or screen. It records no check run that says that the head is not approved. After"
             again+=" $REVIEW_TRIES failed tries, this one included, the rescreen pass starts the stop of the import"
-            again+=" check of this head; its comment job writes the label comment of that stop when the label rule"
-            again+=" allows it."
+            again+=" check of this head. The comment job of that stop writes its label comment when GitHub said"
+            again+=" whether the author has write access."
           fi
           request=$RUNNER_TEMP/not-approved.json
           # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -3884,8 +3885,8 @@ jobs:
           refuse() {
             echo "::error::$1 This run approves no run of $HEAD. The rescreen pass tries the approval of $HEAD again" \
               "in a later run, at most once an hour. After $REVIEW_TRIES failed tries, it does not try again: it" \
-              "starts the stop of the approval of $HEAD, whose comment job writes the label comment of that stop" \
-              "when the label rule allows it."
+              "starts the stop of the approval of $HEAD. The comment job of that stop writes its label comment when" \
+              "GitHub said whether the author has write access."
             exit 1
           }
           [[ $count =~ ^[0-9]+$ ]] || refuse "#$NUMBER gives no count of changed files."
@@ -4785,7 +4786,7 @@ jobs:
               [ "$unposted" = true ] \
                 || { echo "::error::the import check runs of $HEAD could not be read, so the labels stay."; exit 1; }
               echo "#$NUMBER: the import check runs of $HEAD could not be read, and the post job of this run did not" \
-                "succeed, so this step counts no such check run as recorded, and writes no label comment that says" \
+                "succeed. So this step counts no such check run as recorded, and writes no label comment that says" \
                 "that the workflow recorded the check."
               found=""
             fi
