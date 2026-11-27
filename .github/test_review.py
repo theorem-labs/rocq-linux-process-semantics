@@ -8183,30 +8183,28 @@ class SoundnessScanTest(unittest.TestCase):
 
     def test_the_rule_on_this_repositorys_own_head_counts_each_file_but_a_markdown_file_that_no_dune_file_marks(self):
         """proofs on this repository's own head: each changed file that is not a Markdown file counts, wherever it is,
-        a .v file as a proof, and the job reads each dune file. Of its dune files only theories/Examples/dune and
-        tests/dune hold .md, in comments, so a Markdown file below theories/Examples/ or tests/ counts by the nearest of
-        them, also below theories/Examples/vdso_clock/, whose own dune file holds no .md. No dune file holds a word, a
-        glob or a path that makes each Markdown file count: its (include_subdirs qualified), the comment line with the
-        word include in theories/Examples/dune, and its globs of *.vo, *.hex and *MemImage_seg_*.hex add nothing. So
-        README.md, SCOPE.md, theories/README.md, reports/a4-start-state.md and the others do not count. main as the
-        same commit changes nothing, and a list shorter than changed_files is not whole."""
+        a .v file as a proof, and the job reads each dune file. Of its dune files only theories/Examples/dune holds .md,
+        in comments, so a Markdown file below theories/Examples/ counts by it, also below theories/Examples/vdso_clock/,
+        whose own dune file holds no .md. No dune file holds a word, a glob or a path that makes each Markdown file
+        count: its (include_subdirs qualified), the comment line with the word include in theories/Examples/dune, and
+        its globs of *.vo, *.hex and *MemImage_seg_*.hex add nothing. So README.md, SCOPE.md, theories/README.md,
+        reports/a4-start-state.md, tests/placement/README.md and the others do not count. main as the same commit
+        changes nothing, and a list shorter than changed_files is not whole."""
         counted = {"theories/A.v": "proof", "dune-project": "other", "theories/Examples/dune": "other",
                    "rocq-linux-process-semantics-core.opam": "other", "tools/gen_checker.py": "other",
                    "tests/placement/linux-6.18.46-defconfig.log": "other",
                    "theories/Examples/rwx_flag_ns/SourceMemImage_seg_000.hex": "other",
                    "tests/extraction/checked_input_smoke.ml": "other", "tools/check_one.py": "other",
-                   "theories/Examples/README.md": "named", "theories/Examples/vdso_clock/notes.md": "named",
-                   "tests/placement/README.md": "named"}
+                   "theories/Examples/README.md": "named", "theories/Examples/vdso_clock/notes.md": "named"}
         others = ["README.md", "SCOPE.md", "theories/README.md", "reports/a4-start-state.md",
-                  "tools/placement_conformance/README.md", "docs/guide.md"]
+                  "tests/placement/README.md", "tools/placement_conformance/README.md", "docs/guide.md"]
         files = [{"filename": p, "previous_filename": None} for p in [*counted, *others]]
         facts = rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR))
         self.assertEqual((facts["whole"], facts["unparsed"]), (True, []))
         self.assertEqual({f["path"]: f["why"] for f in facts["files"]}, counted)
         self.assertEqual({f["path"]: (f["by"], f["what"]) for f in facts["files"] if f["why"] == "named"},
                          {"theories/Examples/README.md": ("theories/Examples/dune", ".md"),
-                          "theories/Examples/vdso_clock/notes.md": ("theories/Examples/dune", ".md"),
-                          "tests/placement/README.md": ("tests/dune", ".md")})
+                          "theories/Examples/vdso_clock/notes.md": ("theories/Examples/dune", ".md")})
         self.assertEqual(rules.proofs("HEAD", files, len(files), cwd=os.path.dirname(GITHUB_DIR), main="HEAD"), facts)
         self.assertFalse(rules.proofs("HEAD", files, len(files) + 1, cwd=os.path.dirname(GITHUB_DIR))["whole"])
 
