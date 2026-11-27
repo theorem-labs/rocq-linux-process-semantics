@@ -16426,9 +16426,10 @@ class TriggerTest(unittest.TestCase):
         """b4 (R7): the tests of the review workflow run on each pull request, so a pull request that changes only a
         workflow file of the review (rescreen.yml, say) or only a file of .github/review/ runs them. Since main's #158
         they have their own workflow, review-tests.yml, with no path selection: its pull_request trigger names no paths,
-        no paths-ignore and no branches, and no test job has an if. Its third test job runs .github/test_orders.py in 60
+        no paths-ignore and no branches, and no test job has an if. Its third test job runs .github/test_orders.py in 77
         shards, so that each shard ends in under 10 minutes (OSSV-221's architect, 2026-11-24 14:36Z; OSSV-613's
-        architect, 2026-11-26 02:17Z; 60 for the refused review of round 30). The failure sweep of test_orders.py
+        architect, 2026-11-26 02:17Z; 60 for the refused review of round 30; 77 for the review by hand of round 33,
+        item 1: the 1,534 combinations of test_orders.py, 164,959 job runs). The failure sweep of test_orders.py
         (ORDERS_FAILURES) runs on the build cluster and never in this workflow, so no env of that job, of its steps or
         of the workflow sets ORDERS_FAILURES. It runs on pull_request alone: no push to main and no run by hand starts
         it (OSSV-221's architect, 2026-11-24 01:33Z). The controls, b4's negative control: a copy of review-tests.yml
@@ -16447,7 +16448,7 @@ class TriggerTest(unittest.TestCase):
                               "python3 .github/test_screen.py",
                               "python3 .github/parallel_tests.py --processes 4 .github/test_orders.py"})
             orders = wf["jobs"]["review-workflow-orders"]
-            self.assertEqual(orders["strategy"]["matrix"]["shard"], list(range(60)))
+            self.assertEqual(orders["strategy"]["matrix"]["shard"], list(range(77)))
             for env in (wf.get("env"), orders.get("env"), *(s.get("env") for s in orders["steps"])):
                 self.assertNotIn("ORDERS_FAILURES", env or {})
 
