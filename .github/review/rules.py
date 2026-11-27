@@ -866,20 +866,16 @@ LOG_DECISIONS = {
     "hand": ("This run records no import check run with the conclusion success. No word that this step reads gives a "
              "reason to withdraw one, except a word that a screened pass outranks. A screened pass is a screened "
              "review comment that passes, or an import check run with the conclusion success that names its run. In "
-             "the post job, a later step can still withdraw for the newest word that withdraws, unless a screened "
-             "review that passes outranks it. That word is a review comment, the withdraw-owed line or a hold of the "
-             "screen. An import check run is that word only while a success that it withdraws stands. In a review by "
-             "hand, the verdict of this run's own review can also withdraw. In the steps of a relabel in the comment "
-             "job or the hold job, no step records or withdraws a check run. The last of these steps writes the state "
-             "label and the label comment that a relabel of the head gives now."),
-    "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
-                 "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
-                 "keep line of the step that finds those check runs names that time in the field from. The later step "
-                 "also withdraws each one that names no read, and each one when from is none. Both steps are in the "
-                 "post job. They run only while the GitHub environment named post holds the key of the OSS Verify "
-                 "App. In the steps of a relabel in the comment job or the hold job, no step records or withdraws a "
-                 "check run. The last of these steps writes the state label and the label comment that a relabel of "
-                 "the head gives now."),
+             "the post job, a later step can still withdraw for the newest word that withdraws, including the own "
+             "verdict of a review by hand. Only a screened review comment that passes and outranks that word stops "
+             "it. In the steps of a relabel in the comment job or the hold job, no step records or withdraws a check "
+             "run."),
+    "screened": ("This run records no import check run with the conclusion success. In the post job, later steps "
+                 "withdraw only while the GitHub environment named post holds the key of the OSS Verify App. They "
+                 "withdraw each import check run with the conclusion success whose run read the item at or before a "
+                 "time, or that names no read. The withdraw or keep line of the step that finds those check runs names "
+                 "that time in the field from. When from is none, they withdraw each one. In the steps of a relabel in "
+                 "the comment job or the hold job, no step records or withdraws a check run."),
     "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line whose "
                   "reason no workflow comment gives (cause unposted). So this run records no import check run with "
                   "the conclusion success."),
@@ -899,11 +895,12 @@ LOG_DECISIONS = {
     "not-approved": ("This job records the check run that says that the head is not approved for the import. The field "
                      "check names that check run in the line of the step that records it."),
     # The step of the comment job and of the hold job that gives way to a newer word.
-    "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label. A "
-             "withdraw-owed line that an earlier step wrote stays. Two cases differ. This run withdrew an import check "
-             "run of the head with the conclusion success. Or its post job recorded one, and the newer word is a pass. "
-             "Then three later steps run as a relabel of the head. None of them records or withdraws a check run. The "
-             "last of them writes the state label and the label comment that a relabel of the head gives now."),
+    "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, unless "
+             "this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This run relabels the "
+             "head in three later steps when GitHub took the withdrawal of each check run that its withdraw line "
+             "names. In the comment job, it also relabels the head when its post job recorded the import check run "
+             "and the cause is pass. None of the three steps records or withdraws a check run. The last of the three "
+             "writes the state label and the label comment that a relabel of the head gives now."),
 }
 LOG_CAUSES = {
     "blocking": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the "

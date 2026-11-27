@@ -17676,34 +17676,47 @@ class DecisionLogTest(unittest.TestCase):
         prints there says what happens there: skip (the line before the three steps after a give-way), record, hand,
         screened and the cause rule. No step of the three records or withdraws a check run. The last one writes the
         state label and the label comment that a relabel of the head gives now and, for the decision record,
-        counts a success that stands, or gives the decision gone. The workflow facts that the sentences rest on are
-        asserted here too. No step and no command prints a meaning: only its word goes into a log line."""
+        counts a success that stands, or gives the decision gone. By b7's second fresh reader at 1ce9a9c2, skip says
+        exactly when the three steps run: GitHub took the withdrawal of each check run that the withdraw line of this
+        run names, or, in the comment job, the post job recorded the import check run and the cause is pass. GitHub can
+        refuse a later withdrawal after it took an earlier one: then the output withdrew stays empty and the steps do
+        not run. hand says that only a screened review comment that passes stops the later withdrawal, as a success
+        lifts nothing there (rules.py lifts). skip, hand and screened have 6 sentences or fewer each. The workflow facts
+        that the sentences rest on are asserted here too. No step and no command prints a meaning: only its word goes
+        into a log line."""
         steps = ImportCheckTest.RELABEL_STEPS
         after = "In the steps of a relabel in the comment job or the hold job, no step "
-        writes = ("The last of these steps writes the state label and the label comment that a relabel of the head "
-                  "gives now.")
         said = {
-            "skip": ("Two cases differ. This run withdrew an import check run of the head with the conclusion success. "
-                     "Or its post job recorded one, and the newer word is a pass. "
-                     "Then three later steps run as a relabel of the head. None of them records or withdraws a check "
-                     "run. The last of them writes the state label and the label comment that a relabel of the head "
-                     "gives now."),
+            "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, "
+                     "unless this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This "
+                     "run relabels the head in three later steps when GitHub took the withdrawal of each check run "
+                     "that its withdraw line names. In the comment job, it also relabels the head when its post job "
+                     "recorded the import check run and the cause is pass. None of the three steps records or "
+                     "withdraws a check run. The last of the three writes the state label and the label comment that "
+                     "a relabel of the head gives now."),
             "record": ("In the post job, this run records the import check run of the head. It does so while the "
                        "GitHub environment named post holds the key of the OSS Verify App. " + after +
                        "records a check run. The label step of that relabel reads the import check runs of the head "
                        "again, while the variable REPO_PAIRS_IMPORT_PATHS is set. It counts the check as recorded if "
                        "one with the conclusion success and the marker of the import's paths stands. It gives the "
                        "decision gone if none stands."),
-            "hand": after + "records or withdraws a check run. " + writes,
-            "screened": after + "records or withdraws a check run. " + writes}
+            "hand": ("In the post job, a later step can still withdraw for the newest word that withdraws, including "
+                     "the own verdict of a review by hand. Only a screened review comment that passes and outranks "
+                     "that word stops it. " + after + "records or withdraws a check run."),
+            "screened": ("This run records no import check run with the conclusion success. In the post job, later "
+                         "steps withdraw only while the GitHub environment named post holds the key of the OSS Verify "
+                         "App. They withdraw each import check run with the conclusion success whose run read the item "
+                         "at or before a time, or that names no read. The withdraw or keep line of the step that finds "
+                         "those check runs names that time in the field from. When from is none, they withdraw each "
+                         "one. " + after + "records or withdraws a check run.")}
         for word, sentences in said.items():
             with self.subTest(decision=word):
                 self.assertIn(sentences, rules.LOG_DECISIONS[word])
-        self.assertIn("In the post job, a later step can still withdraw for the newest word that withdraws",
-                      rules.LOG_DECISIONS["hand"])
+                self.assertLessEqual(len(re.split(r"(?<=\.)\s+", rules.LOG_DECISIONS[word])), 6)
+        self.assertEqual((rules.LOG_DECISIONS["skip"], rules.LOG_DECISIONS["screened"]),
+                         (said["skip"], said["screened"]))
+        self.assertNotIn("screened review that passes", rules.LOG_DECISIONS["hand"])
         self.assertNotIn(". A later step can still withdraw", rules.LOG_DECISIONS["hand"])
-        self.assertIn("Both steps are in the post job. They run only while the GitHub environment named post holds the "
-                      "key", rules.LOG_DECISIONS["screened"])
         self.assertIn("The decide step of the post job applies the rules of R12 (import_decision). In the steps of a "
                       "relabel in the comment job or the hold job, the decide step applies them too. The rules read "
                       "the verdict,", rules.LOG_CAUSES["rule"])
@@ -17715,6 +17728,16 @@ class DecisionLogTest(unittest.TestCase):
         self.assertIn("approved=$RECORDED", label)
         self.assertIn('rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED"', label)
         self.assertIn("rules.py relabel", label)
+        # The facts of the conditions of skip: the output withdrew is written only after GitHub took each withdrawal
+        # (a refusal exits first), and only the comment job's step reads the post job's output recorded, with the
+        # cause pass.
+        withdrawn = step("post", "Withdraw the import check runs of the head")["run"]
+        self.assertEqual(JOBS["post"]["outputs"]["withdrew"], "${{ steps.withdrawn.outputs.head }}")
+        self.assertIn("could not be withdrawn.$again\"; exit 1; }", withdrawn)
+        self.assertGreater(withdrawn.index('echo "head=$HEAD"'), withdrawn.index("\ndone\n"))
+        self.assertIn('if [ "${POST_RECORDED:-}" != true ] || [ "$cause" != pass ]; then',
+                      step("comment", ImportCheckTest.SKIP)["run"])
+        self.assertNotIn("recorded", str(step("hold", ImportCheckTest.HOLD_RELABEL)).lower())
         for job, gives, ifs in (
                 ("comment", ImportCheckTest.SKIP,
                  "steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''"),
@@ -23838,7 +23861,7 @@ class ImportCheckTest(ReaderRunner):
                                [("post", "110"), ("post", "100"), ("comment", "100"), ("comment", "110")], "110",
                                "hand")}
         said = (f"#7: the review of this run passed {HEAD} with no screen, and an import check run of {HEAD} with the "
-                "conclusion success stands. So this step writes no state label and no label comment, and the steps "
+                "conclusion success stands. So this step writes no state label and no label comment. The steps "
                 f"after it run as a relabel of {HEAD} that reads #7 at ")
         for case, (runs, order, hand, decision) in cases.items():
             with self.subTest(case=case):
@@ -24008,7 +24031,7 @@ class ImportCheckTest(ReaderRunner):
                          ["success"] * 5 + ["skipped"], self.logs[-8:])
         self.assertEqual([c["id"] for c in comments if f"<!-- review-screened {HEAD} -->" in c["body"]], [], comments)
         # The decision of the relabel that the label step of run 120 starts, at the read that it names.
-        relabels = re.compile(rf"the steps after it run as a relabel of {HEAD} that reads #7 at "
+        relabels = re.compile(rf"The steps after it run as a relabel of {HEAD} that reads #7 at "
                               rf"({rules.TIME.pattern})\.")
 
         def decided(logs):

@@ -4932,7 +4932,7 @@ jobs:
           if [ "$relabel" = true ]; then
             at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
             echo "#$NUMBER: the review of this run passed $HEAD with no screen, and an import check run of $HEAD with" \
-              "the conclusion success stands. So this step writes no state label and no label comment, and the steps" \
+              "the conclusion success stands. So this step writes no state label and no label comment. The steps" \
               "after it run as a relabel of $HEAD that reads #$NUMBER at $at."
             echo "relabel=$at" >> "$GITHUB_OUTPUT"
             exit 0
