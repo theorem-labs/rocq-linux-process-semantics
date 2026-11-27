@@ -1188,7 +1188,8 @@ due_approve() {
 # whose word only that line or a check run of the post job carries. When the post job of the run failed or was
 # cancelled too, it can have written the check run or the withdrawal before it failed, or neither. Either way, while
 # the newest attempt of the run recorded nothing, the run gets the re-run of its failed jobs (due_rerun) and no relabel
-# (due_retry, due_variable). A comment job that failed at a later step (its label step, say) recorded what it owes.
+# (due_retry, due_variable, due_conflict). A comment job that failed at a later step (its label step, say) recorded what
+# it owes.
 unrecorded() {
   [ "$(jq -rs 'any(.[] | select(.name == "comment" and (.conclusion == "failure" or .conclusion == "cancelled"));
       [.steps[]?] | (map(.conclusion == "failure" or .conclusion == "cancelled") | index(true)) as $died
@@ -1320,13 +1321,14 @@ unclaimed() {
 # the pass cannot read). Such a run wrote neither its review comment nor the line of a withdrawal that it owes. Its
 # post job can have written its check run or its withdrawal before it failed, or neither. This takes it too: the failed
 # jobs of that run run again, the post job among them (its withdrawal or its check run) and the comment job (the line,
-# or the review comment), each bound the same, and the App's retry (due_retry) and the relabel of a new value of
-# REPO_PAIRS_IMPORT_PATHS (due_variable) give way to it (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)).
-# Until an hour after it ended, this waits, and those two give way, so that none starts a run for the head (v). But
-# under the stop of the import check of the head (a hold of the work import that is not tried again names the head),
-# this takes no such run: its post job again would be an App write of the head, which could record the check, and that
-# stop ends each App write of the head; its label comment names Sami's step. A run whose post job succeeded or was
-# skipped still runs its failed jobs again under that stop (item 3b).
+# or the review comment), each bound the same, and the App's retry (due_retry), the relabel of a new value of
+# REPO_PAIRS_IMPORT_PATHS (due_variable) and the relabel of a merge conflict that is gone (due_conflict) give way to it
+# (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)). Until an hour after it ended, this waits, and those three give
+# way, so that none starts a run for the head (v). But under the stop of the import check of the head (a hold of the
+# work import that is not tried again names the head), this takes no such run: its post job again would be an App
+# write of the head, which could record the check, and that stop ends each App write of the head; its label comment
+# names Sami's step. A run whose post job succeeded or was skipped still runs its failed jobs again under that stop
+# (item 3b).
 # A re-run is one more attempt of the run (its run_attempt, the column 13 of $seen/runs). It starts only while that
 # attempt is below REVIEW_TRIES, and the log gives the number of the attempt that starts. At REVIEW_TRIES attempts the
 # failed jobs do not run again, and the log gives the count. Then unclaimed gives whether the last step of each comment
@@ -1503,12 +1505,8 @@ due_rerun() {
         "($idle of them). After $REVIEW_TRIES such relabels, the rescreen pass starts the stop of the import check" \
         "of $head instead."
     fi
-    what="the step \"Leave no label that says the workflow recorded the check\" of run $run did not succeed"
-    # Only the label comment of an outside author's pull request can say that the workflow recorded the check.
-    if [ "$outsider" = true ]; then
-      what+=", so the label comment can still say that the workflow recorded the check repo-pairs/import-approved"
-    fi
-    owe "$ended" relabel "" "$head" - "$what"
+    owe "$ended" relabel "" "$head" - \
+      "the step \"Leave no label that says the workflow recorded the check\" of run $run did not succeed"
     taken=1
     return 0
   fi
@@ -1566,11 +1564,16 @@ ci_over() {
 # waits-on-author and the line. A head with the line whose conflict is gone, with no push: a relabel, which
 # sets its label again from what the workflow wrote of it and takes the line out. Each relabel of the head
 # since the line counts: one that its trust job refused is started again at the next run, one that ran an
-# hour after it ended, and after REVIEW_TRIES of them the head is not tried again (head_stopped). While the
-# head has a conflict or the line, or GitHub has not computed its merge state, no other reason takes it
-# (taken).
+# hour after it ended, and after REVIEW_TRIES of them the head is not tried again (head_stopped). But while a
+# run of the head whose post job did not succeed recorded nothing that it owes (unrecorded_run), the relabel
+# gives way, as the App's retry (due_retry) and the relabel of a new value of REPO_PAIRS_IMPORT_PATHS
+# (due_variable) do: a relabel cannot read the word of that run, and can record a second success over a
+# refusal (I1 of test_orders.py). Then this starts no relabel of the head and empties taken again, so that
+# consider goes on to the reasons after it, among them the re-run of the failed jobs of that run (due_rerun;
+# OSSV-613's architect, 2026-11-27 00:24Z, choice (a)). Else, while the head has a conflict or the line, or
+# GitHub has not computed its merge state, no other reason takes it (taken).
 due_conflict() {
-  local at since tries ended run f early
+  local at since tries ended run f early owing
   merge_of || return 1
   if [ "$merge" = null ]; then
     echo "#$number: GitHub has not computed whether $head has a merge conflict: left for the next run."
@@ -1605,6 +1608,13 @@ due_conflict() {
       echo "#$number: relabel run $run of $head ended at $ended, less than an hour ago: tried again later."
       return 0
     fi
+  fi
+  owing=$(unrecorded_run) || return 1
+  if [ -n "$owing" ]; then
+    echo "#$number: the merge conflict of $head is gone. But the post job of run $owing did not succeed, and its" \
+      "comment job recorded nothing that the run owes. This pass starts no relabel of $head for the conflict."
+    taken=""
+    return 0
   fi
   owe "$opened" relabel "" "$head" - "the merge conflict of $head is gone"
 }
@@ -1783,10 +1793,10 @@ due_unreviewed() {
 # the head (filter=all): by default GitHub lists only the newest of each name. When it is not the value now
 # (IMPORT_PATHS, none when empty), or the head has a review of now and neither line: a relabel, which decides
 # R12 again by the value now and sets the label again. Once an hour. But while a run of the head whose post job did not
-# succeed recorded nothing that it owes (unrecorded_run), this gives way as the App's retry does (due_retry), and
-# starts no relabel of the head. due_rerun runs the failed jobs of that run again an hour after it ended, or at
-# REVIEW_TRIES attempts starts the stop of the import check of the head, under whose hold consider calls this no more
-# (OSSV-613's architect, 2026-11-27 00:24Z, choice (a), (v)).
+# succeed recorded nothing that it owes (unrecorded_run), this gives way, as the App's retry (due_retry) and the relabel
+# of a merge conflict that is gone (due_conflict) do, and starts no relabel of the head. due_rerun runs the failed jobs
+# of that run again an hour after it ended, or at REVIEW_TRIES attempts starts the stop of the import check of the head,
+# under whose hold consider calls this no more (OSSV-613's architect, 2026-11-27 00:24Z, choice (a), (v)).
 due_variable() {
   local found checks at value same ended run owing why
   # shellcheck disable=SC2016 # $ENV is jq's, read from this step's environment
@@ -1929,10 +1939,12 @@ consider() {
   # run. Of the App's writes, such a re-run makes only those of a hold job (a withdrawal, and the check run that says
   # that the head is not approved for the import), and those of the post job of a run whose post job did not succeed and
   # whose comment job recorded nothing that it owes (unrecorded), but never under the stop of the import: due_rerun
-  # takes no such run under it. The App's retry and the relabel of a new value of REPO_PAIRS_IMPORT_PATHS
-  # (due_variable) give way to such a run: due_rerun runs its failed jobs again, the post job too, and at REVIEW_TRIES
-  # attempts starts the stop of the import check, under whose hold this calls neither, so that no relabel of the head
-  # follows (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)).
+  # takes no such run under it. The App's retry, the relabel of a new value of REPO_PAIRS_IMPORT_PATHS (due_variable)
+  # and the relabel of a merge conflict that is gone (due_conflict, above) give way to such a run: due_rerun runs its
+  # failed jobs again, the post job too, and at REVIEW_TRIES attempts starts the stop of the import check. Under the
+  # hold of that stop this calls neither the App's retry nor due_variable, and due_conflict, which this calls before
+  # it reads that hold, still gives way while the newest attempt of the run recorded nothing, so that no relabel of
+  # the head follows (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)).
   if [ -n "$(awk -v h="$head" '$3 == "-" && $9 == h' <<< "$hold")" ]; then
     if [ -z "$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")" ]; then
       withdraws=$(relabel_withdraws "$number" "$head") \
