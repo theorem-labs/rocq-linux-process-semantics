@@ -158,7 +158,7 @@ The checks above have no exception for a site or a combination. A hurt order of 
 job is cancelled at its first step, "Run actions/checkout", so before either of its steps that record a withdrawal
 runs, ends with the re-run of that run's failed jobs, in the place of a relabel: its post job again, whose write lands
 at the second attempt, and its comment job again, which writes the line, so that I1, I3 and I4 hold after it
-(OSSV-613's architect, 2026-11-27 00:24Z, choice (a), which withdraws the exception to I3 of 2026-11-26 22:30Z).
+(OSSV-613's architect, 2026-11-27 00:24Z, choice (a)).
 test_refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal pins the end of
 those orders (in shard 0 alone).
 """
@@ -209,6 +209,12 @@ TRIES = int(WF["env"]["REVIEW_TRIES"])
 # The files in which the stand-in gh records its calls and its injection (FAKE_GH): no part of what GitHub serves.
 RECORDS = {"calls", "args", "inputs", "tokens", "sleeps", "inject", "inject.read", "inject.write", "injected"}
 TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+
+def next_step(label):
+    """The step that the label comment label names in its line **Next step:** <step>, or "" when it has no such line."""
+    return next((line[len("**Next step:** "):] for line in label.split("\n") if line.startswith("**Next step:** ")),
+                "")
 
 
 def result_of(outcomes):
@@ -601,8 +607,7 @@ class OrderTest(T.ReaderRunner):
         if (RECORDED in label) != bool(success):
             found.append(("I2", (RECORDED in label, [c["id"] for c in success])))
         if all(r["kind"] != "unknown" for r in newest):
-            step = next((line[len("**Next step:** "):] for line in label.split("\n")
-                         if line.startswith("**Next step:** ")), "")
+            step = next_step(label)
             states = STEPS.get(step, set())
             want = {self.state_of(r, bool(success)) for r in newest}
             if not states & want:
@@ -756,8 +761,7 @@ class OrderTest(T.ReaderRunner):
         line or its check run carries: it waives I4 for no word."""
         labels = [c for c in w["comments"] if c["body"].startswith(rules.FIRST)]
         label = labels[-1]["body"] if labels else ""
-        step = next((line[len("**Next step:** "):] for line in label.split("\n")
-                     if line.startswith("**Next step:** ")), "")
+        step = next_step(label)
         return any(rules.STATES[state][0] == rules.THEOREM for state in STEPS.get(step, set()) - {"refused-review"})
 
     def retry(self, runs, by_id, w, done, broke, made):
@@ -982,7 +986,7 @@ def describe(runs):
 
 
 # The site of a cancel of the sweep at the first step of the comment job, its checkout (the module's text).
-CHECKOUT = ("cancel", "Run actions/checkout")
+CHECKOUT_SITE = ("cancel", "Run actions/checkout")
 
 
 def leaves_of(tree):
@@ -1035,15 +1039,15 @@ def method(combination):
 
 
 def refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_label_of_the_refusal(self):
-    """The end of the orders that the exception to I3 of OSSV-613's architect, 2026-11-26 22:30Z, covered, which choice
-    (a) of 2026-11-27 00:24Z withdraws (the module's text). Run 100 of refusedline (read 30 minutes ago) spends its
-    refused write in its post job, and its comment job is cancelled at its first step, so that neither of its steps that
-    record a withdrawal runs; answer run 110 (read 40 minutes ago) holds HEAD, whatever the order of the jobs. The retry
-    of the pass runs the failed jobs of run 100 again, its post job (whose write lands at attempt 2) and its comment job
-    (which writes the line <!-- withdraw-owed HEAD refused 100 <read> -->), and starts no relabel, which could not read
-    the refusal. After it: no import check run with the conclusion success stands, and no run recorded one; the
-    refusal is on the item; the label comment gives the state of the refusal (refused-review); and no invariant breaks,
-    with no waiver of I4 for a label comment that names Sami's step."""
+    """The end of the orders of refusedline whose refused run's comment job is cancelled at its first step, its
+    checkout: the re-run of that run's failed jobs, in the place of a relabel (OSSV-613's architect, 2026-11-27 00:24Z,
+    choice (a); the module's text). Run 100 of refusedline (read 30 minutes ago) spends its refused write in its post
+    job, and its comment job is cancelled at its first step, so that neither of its steps that record a withdrawal
+    runs; answer run 110 (read 40 minutes ago) holds HEAD, whatever the order of the jobs. The retry of the pass runs
+    the failed jobs of run 100 again, its post job (whose write lands at attempt 2) and its comment job (which writes
+    the line <!-- withdraw-owed HEAD refused 100 <read> -->), and starts no relabel, which could not read the refusal.
+    After it: no import check run with the conclusion success stands, and no run recorded one; the refusal is on the
+    item; the label comment gives the state of the refusal (refused-review); and no invariant breaks."""
     combination = (("outsider", "refusedline", 1), ("outsider", "answer", 0))
     runs = run_specs(combination)
     self.start = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -1058,7 +1062,7 @@ def refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_lab
             ends.append((order, end, done, broke, made))
             return
         for (name, rid), sub in tree:
-            site = CHECKOUT if (name, rid) == ("comment", "100") else None
+            site = CHECKOUT_SITE if (name, rid) == ("comment", "100") else None
             walk(sub, self.job(name, by_id[rid], w, site=site), order + [f"{name} {rid}"])
 
     walk(interleavings(runs), self.world(), [])
@@ -1072,10 +1076,8 @@ def refusedline_with_the_comment_job_cancelled_at_its_checkout_ends_with_the_lab
             self.assertIn("comment 100 attempt 2", done)
             self.assertTrue(self.on_the_item(by_id["100"], end), end["comments"])
             labels = [c["body"] for c in end["comments"] if c["body"].startswith(rules.FIRST)]
-            step = next((line[len("**Next step:** "):] for line in labels[-1].split("\n")
-                         if line.startswith("**Next step:** ")), "")
+            step = next_step(labels[-1])
             self.assertIn("refused-review", STEPS.get(step, set()), labels[-1])
-
 
 
 SHARD = os.environ.get("ORDERS_SHARD", "0/1")

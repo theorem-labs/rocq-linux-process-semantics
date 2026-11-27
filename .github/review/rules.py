@@ -2786,7 +2786,7 @@ def own_word(task, verdict, kind="", route=""):
     none for a review by hand, whose pass ran no screen. Any other verdict gives none."""
     if task == "relabel":
         return "-"
-    if verdict in ("blocking", "person", "refused", "screen"):
+    if verdict in VERDICT_WITHDRAWS or verdict == "screen":
         return verdict
     if verdict != "pass":
         return "-"
@@ -2855,9 +2855,8 @@ def withdraw_word(comments, head, checks, started, run, own):
     if found.carrier == "own":
         return own, "own", "-", started or "-", "-"
     kind = "owed" if found.carrier == "line" else "held" if found.kind == "hold" else "earlier"
-    named = found.run and found.read
-    return ("screen" if found.kind == "hold" else found.kind, kind, found.run if named else "-",
-            found.read if named else "-", "-")
+    at = since(found)
+    return ("screen" if found.kind == "hold" else found.kind, kind, found.run if at else "-", at or "-", "-")
 
 
 def owed_why(words, state, why, started="", own=""):
@@ -2939,8 +2938,8 @@ def replaced_hold(comments, work, screen, head, started=""):
         body = c.get("body") or ""
         if not (of_bot(c) and body.startswith("<!-- review-held -->") and hold_work(body) == work):
             continue
-        fact, named, at = hold_fact(body), HELD_HEAD.search(body), word_time(c)
-        if fact == "screen_held" and not (screen and (named.group(1) if named else "") == head):
+        fact, at = hold_fact(body), word_time(c)
+        if fact == "screen_held" and not (screen and named_head(body) == head):
             continue
         if screen and started and at > started:
             continue
@@ -2964,9 +2963,8 @@ def stays(comments, head, started, own, work):
     holds = []
     for c in comments:
         body = c.get("body") or ""
-        named = HELD_HEAD.search(body)
         if of_bot(c) and body.startswith("<!-- review-held -->") and (
-                (named.group(1) if named else "") == head
+                named_head(body) == head
                 and (work == "answer" or not (hold_work(body) == "answer" and TRIED_AGAIN.search(body)))):
             holds.append(Word(c.get("word") or "", "hold", "", "hold", hold_fact(body), False, None, c))
     why, run, read = owed_line(comments, head)
@@ -3591,6 +3589,12 @@ def hold_fact(body):
     return "tries_used_up"
 
 
+def named_head(body):
+    """The head that the hold comment body names (HELD_HEAD), or "" when it names none."""
+    named = HELD_HEAD.search(body)
+    return named.group(1) if named else ""
+
+
 def held_head(number, head):
     """The one check of each writer of a hold comment, before it writes anything: the hold job, and the comment job's
     step that writes a stop of the rescreen pass (halt, which names the head that the trust job of that run read). True
@@ -3694,6 +3698,15 @@ def check_lines(path):
     if not all(isinstance(c, dict) for c in checks):
         raise ValueError(f"{path} holds a line that is not a check run")
     return checks
+
+
+def stdin_comments():
+    """The comments on standard input, one JSON object on each line, as the API lists them (with loads). A ValueError
+    when a line is not an object."""
+    comments = [loads(line) for line in sys.stdin if line.strip()]
+    if not all(isinstance(c, dict) for c in comments):
+        raise ValueError("a line of standard input is not a comment")
+    return comments
 
 
 def main(argv):
@@ -3874,9 +3887,7 @@ def main(argv):
                     print(json.dumps(dict(c, word=word_time(c)), ensure_ascii=False))
             return 0
         if len(argv) == 1 and argv[0] == "holds":
-            comments = [loads(line) for line in sys.stdin if line.strip()]
-            if not all(isinstance(c, dict) for c in comments):
-                raise ValueError("a line of standard input is not a comment")
+            comments = stdin_comments()
             for work, c in newest_holds(comments).items():
                 print(json.dumps(dict(c, work=work), ensure_ascii=False))
             return 0
@@ -3884,9 +3895,7 @@ def main(argv):
         # whose STARTED is not a time before it calls replaced_hold, and halt gives none.
         if (len(argv) == 5 and argv[0] == "replaced-hold" and (argv[1] == "review" or argv[1] in TITLE_WORK.values())
                 and argv[2] in ("true", "false") and (HEAD.fullmatch(argv[3]) or argv[3] == "-")):
-            comments = [loads(line) for line in sys.stdin if line.strip()]
-            if not all(isinstance(c, dict) for c in comments):
-                raise ValueError("a line of standard input is not a comment")
+            comments = stdin_comments()
             found = replaced_hold(comments, argv[1], argv[2] == "true", "" if argv[3] == "-" else argv[3],
                                   "" if argv[4] == "-" else argv[4])
             if found is not None:
@@ -3909,9 +3918,7 @@ def main(argv):
             return 0
         if (len(argv) == 5 and argv[0] == "stays" and (HEAD.fullmatch(argv[1]) or argv[1] == "-")
                 and TIME.fullmatch(argv[2]) and argv[3] in RANKS and argv[4] in ("review", "answer", "draft")):
-            comments = [loads(line) for line in sys.stdin if line.strip()]
-            if not all(isinstance(c, dict) for c in comments):
-                raise ValueError("a line of standard input is not a comment")
+            comments = stdin_comments()
             last, tried, stay = stays(comments, "" if argv[1] == "-" else argv[1], argv[2], argv[3], argv[4])
             print(f"{last or '-'} {str(tried).lower()} {str(stay).lower()}")
             return 0

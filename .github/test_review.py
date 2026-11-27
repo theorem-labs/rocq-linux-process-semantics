@@ -478,6 +478,16 @@ def held_sh():
         return f.read()
 
 
+def changed_held(name, old, new):
+    """held.sh's function name with its text old, which it holds once, replaced by new: the shell text of a control
+    (controlled), which defines name again."""
+    text = held_sh()
+    start = text.index(f"\n{name}() {{\n") + 1
+    body = text[start:text.index("\n}\n", start) + 3]
+    assert body.count(old) == 1, old
+    return body.replace(old, new)
+
+
 # The jq definition of work that held.sh held (works) until the work of a hold comment went to rules.py hold_work
 # (OSSV-613's architect, round 30, item 1): the start of the jq filter of each control that puts an order of the holds
 # in jq back.
@@ -596,14 +606,7 @@ class Runner(unittest.TestCase):
     def changed_trust(self, change, run):
         """run() with the trust step changed, as a control: its script holds change[1] in the place of change[0], which
         it holds once. Its result."""
-        found = step("trust", TRUST)
-        script = found["run"]
-        self.assertEqual(script.count(change[0]), 1, change[0])
-        found["run"] = script.replace(*change)
-        try:
-            return run()
-        finally:
-            found["run"] = script
+        return self.changed_step("trust", TRUST, *change, run)
 
     def changed_step(self, job, name, old, new, run):
         """run() with the step name of job changed, as a control: its script holds new in the place of old, which it
@@ -5100,6 +5103,14 @@ def run_post(test, ctx, tokens, mint=True):
 # The if of a step that GitHub runs after a step that failed or was cancelled, and in no other case: the last step of
 # the comment job and of the hold job (rules.py unclaim). No other step of a job has a status function in its if.
 AFTER_FAILURE = "failure() || cancelled()"
+# The last step of the comment job and of the hold job (rules.py unclaim), whose if is AFTER_FAILURE.
+UNCLAIM = "Leave no label that says the workflow recorded the check"
+# The comment job's two steps that come first after its checkout and record a withdrawal (held.sh unrecorded): the
+# step that records what the post job owes (OWE), and the step that records the withdrawal of a refused review whose
+# post job did not finish (OWE_REFUSED), which runs the script of the step OWE (OSSV-613's architect, 2026-11-26
+# 20:57Z and 22:03Z, round 30, item 4). The two never both run.
+OWE = "Record a withdrawal that the post job owes"
+OWE_REFUSED = "Record the withdrawal of a refused review whose post job did not finish"
 
 
 def run_job(test, job, ctx, tokens, mint=True, cancel=None):
@@ -5520,7 +5531,7 @@ class ApproveTest(Holding):
                     steps = self.post(trust, "clean")
                     return ((steps[self.HELD], steps[MINT_B], steps[self.APPROVE]),
                             error in "\n".join(self.logs[start:]), self.approvals(), writes(self.api),
-                            filled(JOBS["post"]["outputs"], self.ctx)["steering"])
+                            post_outputs(self.ctx)["steering"])
 
                 want = (("failure", "skipped", "skipped"), True, [], [], "")
                 self.assertEqual(held(), want, self.logs)
@@ -5545,14 +5556,13 @@ class ApproveTest(Holding):
         self.serve(f"repos/{REPO}/labels", {"name": THEOREM_LABEL})
         self.serve_files(7, ".github/workflows/mine.yml")
         steps = self.post(trust, "clean")
-        self.assertEqual((steps[self.HELD], filled(JOBS["post"]["outputs"], self.ctx)["steering"]), ("success", HEAD),
-                         self.logs)
+        self.assertEqual((steps[self.HELD], post_outputs(self.ctx)["steering"]), ("success", HEAD), self.logs)
         self.refuse(f"repos/{REPO}/pulls/7", 502, "Bad Gateway")
 
         def said():
             start = len(self.logs)
             steps = self.commented(trust)
-            return ((steps[self.STEERED], steps[ImportCheckTest.UNCLAIM]),
+            return ((steps[self.STEERED], steps[UNCLAIM]),
                     "::error::no head of #7" in "\n".join(self.logs[start:]), writes(self.api))
 
         want = (("failure", "success"), True, [])
@@ -5786,7 +5796,7 @@ class PostLabelTest(Runner):
                 self.assertEqual(state_labels(self.api), labels)
 
     # rules.py whose stays reads the holds of each head, as before OSSV-613's architect's round 30, item 1.
-    EACH_HEAD = ('                (named.group(1) if named else "") == head\n                and (work == "answer"',
+    EACH_HEAD = ('                named_head(body) == head\n                and (work == "answer"',
                  '                (work == "answer"')
 
     def test_only_a_hold_of_its_own_head_stops_the_labels_of_a_run(self):
@@ -5825,13 +5835,10 @@ class PostLabelTest(Runner):
         so review-held stays on for it. When the screen's run read #7 at 09:05, its hold is the newest, which waits on
         Sami, and review-held comes off. The control, the label step that takes the newest hold of each work by when
         GitHub last changed it again, in jq, takes review-held off in both cases."""
-        found = step("comment", self.STEP)
-        script = found["run"]
         old = 'newest=$(python3 .github/review/rules.py holds <<< "$found") \\\n'
         new = (f"newest=$(jq -c -s '{WORK_JQ}map(select(.user.login == \"github-actions[bot]\""
                ' and ((.body // "") | startswith("<!-- review-held -->"))) | .work = ((.body // "") | work))'
                ' | group_by(.work)[] | max_by(.updated_at // "")\' <<< "$found") \\\n')
-        self.assertEqual(script.count(old), 1)
         tried = limit_hold(130, "2026-11-02T09:00:00Z", tries=0, task="answer", comment="900", head=HEAD)
         for case, read, off in (("an older read", "2026-11-02T08:50:00Z", False),
                                 ("a newer read", "2026-11-02T09:05:00Z", True)):
@@ -5843,11 +5850,8 @@ class PostLabelTest(Runner):
                                  [self.DELETE] if off else [])
                 self.tearDown()
                 self.setUp()
-                found["run"] = script.replace(old, new)
-                try:
-                    self.assertEqual(self.take_off(HEAD, HEAD, comments=comments, TASK="rescreen"), [self.DELETE])
-                finally:
-                    found["run"] = script
+                self.assertEqual(self.changed_step("comment", self.STEP, old, new, lambda: self.take_off(
+                    HEAD, HEAD, comments=comments, TASK="rescreen")), [self.DELETE])
 
     def test_a_posted_review_ends_the_conflict_state(self):
         """The author resolved the conflict and pushed, and the review of the new head posted: waits-on-author comes
@@ -13280,8 +13284,8 @@ class ScheduleTest(Scheduled):
         review, ended 140 minutes ago, and the CI review run 11 of HEAD, whose post job succeeded, ended 30 minutes
         ago: the hour counts from the end of run 11, so the line names run 11, not run 10. (c) Run 10 is a rescreen of
         HEAD that the pass started, and it ended 30 minutes ago: the hour counts from the end of run 10. In each case
-        the pass starts nothing. Before, each case said that the post job of run 10 failed less than an hour ago, which
-        is false in (b)."""
+        the pass starts nothing, and its line says that the post job of run 10 failed and that the run from whose end
+        the hour counts ended less than an hour ago: run 10 in (a) and (c), run 11 in (b)."""
         failed = post_job({self.DECIDE: "success", MINT_A: "failure"})
         done = post_job({self.DECIDE: "success"})
         screened = [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)")]
@@ -13464,15 +13468,11 @@ class ScheduleTest(Scheduled):
         return [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"),
                 post or post_job({self.DECIDE: "success"}), job]
 
-    # The last step of the comment job and of the hold job (rules.py unclaim), which GitHub runs only after a step of
-    # its job failed or was cancelled (AFTER_FAILURE).
-    UNCLAIM = "Leave no label that says the workflow recorded the check"
-
     def unclaimed(self, job, conclusion="success"):
         """job, a comment job or a hold job as attempt_job gives it, with its last step (UNCLAIM) at conclusion:
         success, failure or cancelled, or skipped, a step that did not run, as attempt_job gives each step after the
         one that failed."""
-        self.assertEqual(job["steps"][-1]["name"], self.UNCLAIM)
+        self.assertEqual(job["steps"][-1]["name"], UNCLAIM)
         return dict(job, steps=[*job["steps"][:-1], dict(job["steps"][-1], conclusion=conclusion)])
 
     def reruns(self):
@@ -13655,16 +13655,6 @@ class ScheduleTest(Scheduled):
                         self.assertIn(f"{said}That run is at attempt {attempt} of {self.TRIES}: its failed jobs do "
                                       "not run again.", out)
 
-    @staticmethod
-    def rerun_changed(old, new):
-        """held.sh's due_rerun with its text old, which it holds once, replaced by new: the shell text of a control
-        (controlled), which defines due_rerun again."""
-        text = held_sh()
-        start = text.index("\ndue_rerun() {\n") + 1
-        body = text[start:text.index("\n}\n", start) + 3]
-        assert body.count(old) == 1, old
-        return body.replace(old, new)
-
     def test_at_review_tries_attempts_a_last_step_that_did_not_succeed_gets_a_relabel_or_the_stop_of_the_import(self):
         """OSSV-613's architect, round 30, item 2: the bounded retry reaches each case in which a label comment that
         says that the workflow recorded the check can stand falsely. Run 10 of mallory's #7 ended 61 minutes ago at
@@ -13694,10 +13684,7 @@ class ScheduleTest(Scheduled):
         the stop. No log line says what the label comment of the author's item becomes, which the label rule decides
         for the author's kind."""
         tries = self.TRIES
-        screen = {"id": 50, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
-                  "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
-                          "request, so the automated review did not run. You do not need to do anything.\n\n"
-                          f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 10 -->"}
+        screen = ImportCheckTest.screen_held(10, ago(70))
         checked = (f"The automated check of the head commit {HEAD[:12]} for the import into the internal repository "
                    f"did not finish after {tries} tries.")
         text = f"{checked} The workflow does not try it again."
@@ -13713,11 +13700,13 @@ class ScheduleTest(Scheduled):
         idle_jobs = self.stopped_jobs()
         relabel, stopped = ("7", "relabel", "", HEAD, ""), ("7", "stop", "", HEAD, "head-import")
         succeeded, failed = "unclaimed() { return 0; }", "unclaimed() { return 1; }"
-        ruleless = self.rerun_changed("""if [ -n "$(awk '$1 == "import"' <<< "$stood")" ]; then""", "if false; then")
-        unstopped = self.rerun_changed('if [ -n "$stop" ]; then', "if false; then")
-        unread = self.rerun_changed("[[ $made > $ended ]] || continue", "continue")
-        busy = self.rerun_changed('if [ "$early" = stopped ]; then idle=$((idle + 1)); continue; fi', ":")
-        unbound = self.rerun_changed("if (( idle >= REVIEW_TRIES )); then", "if false; then")
+        stop_line = '\n      echo "#$number: the stop of the import check of $head names it'
+        ruleless = changed_held("due_rerun", 'if [ -n "$import_stop" ]; then' + stop_line,
+                                "if false; then" + stop_line)
+        unstopped = changed_held("due_rerun", 'if [ -n "$stop" ]; then', "if false; then")
+        unread = changed_held("due_rerun", "[[ $made > $ended ]] || continue", "continue")
+        busy = changed_held("due_rerun", 'if [ "$early" = stopped ]; then idle=$((idle + 1)); continue; fi', ":")
+        unbound = changed_held("due_rerun", "if (( idle >= REVIEW_TRIES )); then", "if false; then")
         later = "comment job writes the label comment of that stop when the label rule allows it."
         answer_said = f"#7: run 10 is an answer, so the rescreen pass starts one relabel of {HEAD}."
         hold_said = (f"#7: a hold that is not tried again names {HEAD} already, so the rescreen pass starts one "
@@ -13810,15 +13799,8 @@ class ScheduleTest(Scheduled):
                 elif case in ("d", "j"):
                     self.assertStopped("head-import", "Automated check for the import held.", text, edited=True)
 
-
-    # The comment job's steps that come first after its checkout and record a withdrawal (held.sh unrecorded): the step
-    # that records what the post job owes, and the step that records the withdrawal of a refused review whose post job
-    # did not finish (the two never both run). Its checkout, as GitHub's API names it, and its first step after the two,
-    # which skips the posts of a run that a newer word outranks.
-    OWES_STEP = "Record a withdrawal that the post job owes"
-    REFUSED_STEP = "Record the withdrawal of a refused review whose post job did not finish"
+    # The comment job's checkout, as GitHub's API names it: the step before OWE and OWE_REFUSED.
     CHECKOUT_STEP = f"Run {CHECKOUT}"
-    SKIP_STEP = next(s["name"] for s in JOBS["comment"]["steps"] if s.get("id") == "way")
     # The steps of the post job of a run of each verdict that ran, the last of which failed or was cancelled: its App
     # write, the record of the import check of HEAD for a pass, else the withdrawal of the import check runs of HEAD.
     WITHDRAWING = ("Read the author-kind table", "Write the output owed for the withdrawal of the import check runs",
@@ -13827,26 +13809,6 @@ class ScheduleTest(Scheduled):
     POST_STEPS = {"pass": ("Read the author-kind table", "Decide the import check of the head", MINT_A,
                            "Record the import check of the head"),
                   "blocking": WITHDRAWING, "person": WITHDRAWING, "refused": WITHDRAWING}
-
-    @staticmethod
-    def retry_changed(old, new):
-        """held.sh's due_retry with its text old, which it holds once, replaced by new: the shell text of a control
-        (controlled), which defines due_retry again."""
-        text = held_sh()
-        start = text.index("\ndue_retry() {\n") + 1
-        body = text[start:text.index("\n}\n", start) + 3]
-        assert body.count(old) == 1, old
-        return body.replace(old, new)
-
-    @staticmethod
-    def variable_changed(old, new):
-        """held.sh's due_variable with its text old, which it holds once, replaced by new: the shell text of a control
-        (controlled), which defines due_variable again."""
-        text = held_sh()
-        start = text.index("\ndue_variable() {\n") + 1
-        body = text[start:text.index("\n}\n", start) + 3]
-        assert body.count(old) == 1, old
-        return body.replace(old, new)
 
     def unrecorded_jobs(self, verdict, died, how="failure", post="failure", last="success"):
         """The jobs after the trust job of a run whose screen passed HEAD and whose review gave verdict (pass, blocking,
@@ -13861,10 +13823,10 @@ class ScheduleTest(Scheduled):
         if died is None:
             return [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), posted,
                     {"name": "comment", "status": "completed", "conclusion": how, "steps": []}]
-        recording = {"pass": None, "refused": self.REFUSED_STEP}.get(verdict, self.OWES_STEP)
+        recording = {"pass": None, "refused": OWE_REFUSED}.get(verdict, OWE)
         job = self.unclaimed(attempt_job("comment", died), last)
         steps = [dict(s, conclusion=how if s["name"] == died else "skipped"
-                      if s["name"] in (self.OWES_STEP, self.REFUSED_STEP) and s["name"] != recording
+                      if s["name"] in (OWE, OWE_REFUSED) and s["name"] != recording
                       else s["conclusion"]) for s in job["steps"]]
         return [attempt_job("gather"), self.screened(), attempt_job("review", name="review (screened)"), posted,
                 dict(job, conclusion=how, steps=steps)]
@@ -13891,15 +13853,15 @@ class ScheduleTest(Scheduled):
         starts nothing either (due_retry gives way); held.sh whose due_rerun has no bound of the hour runs the failed
         jobs again at once."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
-        skipping = self.rerun_changed('unrecorded "$id" || continue', "continue")
-        hourless = self.rerun_changed("if [[ ! $ended < $hour ]]; then", "if false; then")
+        skipping = changed_held("due_rerun", 'unrecorded "$id" || continue', "continue")
+        hourless = changed_held("due_rerun", "if [[ ! $ended < $hour ]]; then", "if false; then")
         # (verdict, the step at which the comment job died, how it died, the post job's conclusion)
         cases = (("pass", self.CHECKOUT_STEP, "cancelled", "failure"),
                  ("pass", None, "cancelled", "cancelled"),
-                 ("blocking", self.OWES_STEP, "failure", "failure"),
+                 ("blocking", OWE, "failure", "failure"),
                  ("blocking", self.CHECKOUT_STEP, "failure", "cancelled"),
-                 ("person", self.OWES_STEP, "cancelled", "failure"),
-                 ("refused", self.REFUSED_STEP, "failure", "failure"),
+                 ("person", OWE, "cancelled", "failure"),
+                 ("refused", OWE_REFUSED, "failure", "failure"),
                  ("refused", self.CHECKOUT_STEP, "cancelled", "failure"))
         for verdict, died, how, post in cases:
             for ended in (61, 30):
@@ -13940,15 +13902,12 @@ class ScheduleTest(Scheduled):
         that the post job owes". The control, the old code: held.sh whose due_retry does not give way starts the
         relabel of the App's retry."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
-        hold = {"id": 50, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
-                "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
-                        "request, so the automated review did not run. You do not need to do anything.\n\n"
-                        f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 10 -->"}
+        hold = ImportCheckTest.screen_held(10, ago(70))
         relabel = ("7", "relabel", "", HEAD, "")
-        unyielding = self.retry_changed('if unrecorded "$run"; then', "if false; then")
+        unyielding = changed_held("due_retry", 'if unrecorded "$run"; then', "if false; then")
         for held in (True, False):
             for verdict, died, how in (("refused", self.CHECKOUT_STEP, "cancelled"),
-                                       ("blocking", self.OWES_STEP, "failure")):
+                                       ("blocking", OWE, "failure")):
                 with self.subTest(held=held, verdict=verdict):
                     self.tearDown()
                     self.setUp()
@@ -13978,7 +13937,7 @@ class ScheduleTest(Scheduled):
         again."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
         for verdict in ("refused", "blocking"):
-            for failed in (self.SKIP_STEP, self.LABEL):
+            for failed in (ApproveTest.SKIP, self.LABEL):
                 with self.subTest(verdict=verdict, failed=failed):
                     self.tearDown()
                     self.setUp()
@@ -14008,17 +13967,16 @@ class ScheduleTest(Scheduled):
         tries = self.TRIES
         text = (f"The automated check of the head commit {HEAD[:12]} for the import into the internal repository did "
                 f"not finish after {tries} tries. The workflow does not try it again.")
-        screen = {"id": 50, "user": {"login": BOT}, "created_at": ago(70), "updated_at": ago(70),
-                  "body": "<!-- review-held -->\n**Automated review held.**\n\nThe automated screen held this pull "
-                          "request, so the automated review did not run. You do not need to do anything.\n\n"
-                          f"<!-- review-held-head {HEAD} -->\n<!-- review-held-run 10 -->"}
+        screen = ImportCheckTest.screen_held(10, ago(70))
         stop = {"id": 51, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
                 "body": f"<!-- review-held -->\n**Automated check for the import held.**\n\n{text}\n\n"
                         f"<!-- review-held-head {HEAD} -->"}
         relabel, stopped = ("7", "relabel", "", HEAD, ""), ("7", "stop", "", HEAD, "head-import")
-        skipping = self.rerun_changed('unrecorded "$id" || continue', "continue")
-        unyielding = self.retry_changed('if unrecorded "$run"; then', "if false; then")
-        restopping = self.rerun_changed('if [ -n "$stopped" ]; then', "if false; then")
+        skipping = changed_held("due_rerun", 'unrecorded "$id" || continue', "continue")
+        unyielding = changed_held("due_retry", 'if unrecorded "$run"; then', "if false; then")
+        unrecorded_line = '\n        echo "#$number: the post job of run $id did not succeed'
+        restopping = changed_held("due_rerun", 'if [ -n "$import_stop" ]; then' + unrecorded_line,
+                                  "if false; then" + unrecorded_line)
         for held, last in ((False, "success"), (False, "failure"), (True, "failure")):
             with self.subTest(held=held, last=last):
                 jobs = self.unrecorded_jobs("refused", self.CHECKOUT_STEP, "cancelled", last=last)
@@ -14081,7 +14039,9 @@ class ScheduleTest(Scheduled):
         stop = {"id": 51, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
                 "body": f"<!-- review-held -->\n**Automated check for the import held.**\n\n{text}\n\n"
                         f"<!-- review-held-head {HEAD} -->"}
-        restopping = self.rerun_changed('if [ -n "$stopped" ]; then', "if false; then")
+        unrecorded_line = '\n        echo "#$number: the post job of run $id did not succeed'
+        restopping = changed_held("due_rerun", 'if [ -n "$import_stop" ]; then' + unrecorded_line,
+                                  "if false; then" + unrecorded_line)
         for case, jobs in (("a pass", self.unrecorded_jobs("pass", self.CHECKOUT_STEP, "cancelled")),
                            ("a refused review", self.unrecorded_jobs("refused", self.CHECKOUT_STEP, "cancelled")),
                            ("a post job that succeeded", self.commented_jobs())):
@@ -14118,7 +14078,7 @@ class ScheduleTest(Scheduled):
         due_variable does not give way, starts the relabel of HEAD, and no re-run."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
         relabel = ("7", "relabel", "", HEAD, "")
-        unyielding = self.variable_changed('if [ -n "$owing" ]; then', "if false; then")
+        unyielding = changed_held("due_variable", 'if [ -n "$owing" ]; then', "if false; then")
         for ended, want in ((30, []), (61, [rerun])):
             with self.subTest(ended=ended):
                 self.tearDown()
@@ -14319,7 +14279,7 @@ class CatchUpScheduleTest(Scheduled):
             ctx = self.ctx(trust)
             steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
             return (steps[CATCH_UP], "::error::pull request #7 could not be read." in "\n".join(self.logs[start:]),
-                    writes(self.api), filled(JOBS["post"]["outputs"], ctx)["caught"])
+                    writes(self.api), post_outputs(ctx)["caught"])
 
         want = ("failure", True, [], "")
         self.assertEqual(caught_up(), want, self.logs)
@@ -14347,7 +14307,7 @@ class CatchUpScheduleTest(Scheduled):
             start = len(self.logs)
             steps = run_job(self, "comment", self.ctx(trust, **{"needs.post.result": "success",
                                                                 "needs.post.outputs.caught": HEAD}), {})
-            return ((steps[mark], steps[ImportCheckTest.UNCLAIM]),
+            return ((steps[mark], steps[UNCLAIM]),
                     "::error::rules.py: gh: Bad Gateway (HTTP 502)" in "\n".join(self.logs[start:]), writes(self.api))
 
         want = (("failure", "failure"), True, [])
@@ -14545,7 +14505,7 @@ class LeftClosedTest(Scheduled):
             ctx = self.ctx(trust)
             steps = run_job(self, "post", ctx, ApproveTest.TOKENS)
             return (steps[CATCH_UP], "::error::the events of #7 could not be read." in "\n".join(self.logs[start:]),
-                    writes(self.api), filled(JOBS["post"]["outputs"], ctx)["caught"])
+                    writes(self.api), post_outputs(ctx)["caught"])
 
         want = ("failure", True, [], "")
         self.assertEqual(tried(), want, self.logs)
@@ -19427,8 +19387,6 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((rc, [c[:3] for c in writes(self.api)]),
                                  (0, [want or ["--method", "PATCH", f"repos/{REPO}/issues/comments/30"]]), out)
 
-    OWE = "Record a withdrawal that the post job owes"
-
     def owe(self, got, trust, comments):
         """The comment job's step OWE after the post job that judge ran gave got, with the trust job's outputs trust and
         #7's comments: the label comments that it posted or edited, or None when its if does not hold. Its if and its
@@ -19438,7 +19396,7 @@ class ImportCheckTest(ReaderRunner):
         ctx.update({"needs.trust.result": "success", "needs.post.result": got["result"],
                     "env.POST_REVIEW": WF["env"]["POST_REVIEW"],
                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
-        s = step("comment", self.OWE)
+        s = step("comment", OWE)
         if not evaluate(s["if"], ctx):
             return None
         self.forget()
@@ -19617,7 +19575,7 @@ class ImportCheckTest(ReaderRunner):
                 self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
                 self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
                 outcomes = run_job(self, "comment", ctx, self.TOKENS)
-                self.assertEqual((outcomes[self.OWE], outcomes["Post the review, or replace the one posted before"],
+                self.assertEqual((outcomes[OWE], outcomes["Post the review, or replace the one posted before"],
                                   outcomes[self.LABEL]), ("success", "failure", "skipped"), self.logs)
                 # The label comment as the comment job left it: its own edit when it made one, else as it was.
                 label = ([dict(old, updated_at=ago(30), body=b) for _m, _e, b in label_comments(self.api)] or [old])[-1]
@@ -19710,7 +19668,7 @@ class ImportCheckTest(ReaderRunner):
                 self.serve(f"repos/{REPO}/issues/7/labels", [{"name": "review-held"}])
                 self.refuse(f"repos/{REPO}/issues/comments/30", 502, "Bad Gateway")
                 outcomes = run_job(self, "comment", ctx, self.TOKENS)
-                self.assertEqual((outcomes[self.OWE], outcomes["Post the review, or replace the one posted before"]),
+                self.assertEqual((outcomes[OWE], outcomes["Post the review, or replace the one posted before"]),
                                  ("success", "failure"), self.logs)
                 label = ([dict(old, updated_at=ago(30), body=b) for _m, _e, b in label_comments(self.api)] or [old])[-1]
                 os.remove(refused)
@@ -19846,7 +19804,7 @@ class ImportCheckTest(ReaderRunner):
                     "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
         outcomes = {}
-        for name in (self.OWE, self.LABEL):
+        for name in (OWE, self.LABEL):
             s = step("comment", name)
             self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
             self.forget()
@@ -19857,7 +19815,7 @@ class ImportCheckTest(ReaderRunner):
             self.assertEqual(rc, 0, out)
             ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
             outcomes[name] = [body for _method, _endpoint, body in label_comments(self.api)]
-        self.assertEqual(outcomes[self.OWE], [])
+        self.assertEqual(outcomes[OWE], [])
         self.assertEqual([line in body.split("\n") for body in outcomes[self.LABEL]], [True], outcomes)
 
     def test_the_owed_line_survives_the_label_steps_exit_for_a_hold_made_after_the_run_started(self):
@@ -19885,7 +19843,7 @@ class ImportCheckTest(ReaderRunner):
                     "vars.REPO_PAIRS_IMPORT_PATHS": self.LPS,
                     **{f"needs.post.outputs.{k}": v for k, v in got["post"].items()}})
         outcomes, logs = {}, {}
-        for name in (self.OWE, self.LABEL):
+        for name in (OWE, self.LABEL):
             s = step("comment", name)
             self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
             self.forget()
@@ -19897,7 +19855,7 @@ class ImportCheckTest(ReaderRunner):
             self.assertEqual(rc, 0, logs[name])
             ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
             outcomes[name] = [body for _method, _endpoint, body in label_comments(self.api)]
-        self.assertEqual((outcomes[self.OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[self.OWE])
+        self.assertEqual((outcomes[OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[OWE])
         self.assertIn(f"#7 at {HEAD}: decision stay, cause hold, read {trust['started']}, from {held['updated_at']}\n",
                       logs[self.LABEL])
         self.assertIn(f"repos/{REPO}/pulls/7", self.calls())
@@ -19943,7 +19901,7 @@ class ImportCheckTest(ReaderRunner):
                 ("a limit hold, which is tried again", limit_hold(41, at=ago(0), tries=0, head=HEAD), "working")):
             with self.subTest(case=case):
                 ctx, outcomes, logs = dict(base), {}, {}
-                for name in (self.OWE, self.LABEL):
+                for name in (OWE, self.LABEL):
                     s = step("comment", name)
                     self.assertTrue(evaluate(s.get("if", "true"), ctx), name)
                     self.forget()
@@ -19955,7 +19913,7 @@ class ImportCheckTest(ReaderRunner):
                     self.assertEqual(rc, 0, logs[name])
                     ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in outs.items()} if "id" in s else {})
                     outcomes[name] = label_comments(self.api)
-                self.assertEqual((outcomes[self.OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[self.OWE])
+                self.assertEqual((outcomes[OWE], ctx.get("steps.owed.outputs.line")), ([], line), logs[OWE])
                 self.assertIn(f"#7 at {HEAD}: decision stay, cause hold, read {trust['started']}, from "
                               f"{held['updated_at']}\n", logs[self.LABEL])
                 self.assertEqual(outcomes[self.LABEL], [("POST", f"repos/{REPO}/issues/7/comments",
@@ -20380,7 +20338,7 @@ class ImportCheckTest(ReaderRunner):
                         os.remove(os.path.join(self.api, refusal))
                     ran, wrote = self.comment_job(dict(ctx), comments, labels=("review-held",))
                     self.assertEqual(ran, {"Run actions/checkout": "success",
-                                           (self.OWE_REFUSED if refused else self.OWE): "success",
+                                           (OWE_REFUSED if refused else OWE): "success",
                                            self.SKIP: "success", self.LABEL: "success"}, self.logs)
                     marked = rules.with_marker(old["body"], line) if refused else old["body"]
                     self.assertEqual(wrote, ([("PATCH", f"repos/{REPO}/issues/comments/40", marked)] if refused else [])
@@ -20637,10 +20595,10 @@ class ImportCheckTest(ReaderRunner):
                 def posted():
                     start = len(self.logs)
                     outcomes, _labels = self.comment_job_whole(ctx, [passed, label], labels=("review-held",))
-                    return ({n: outcomes[n] for n in (self.REVIEW, self.LABEL, self.UNCLAIM)},
+                    return ({n: outcomes[n] for n in (self.REVIEW, self.LABEL, UNCLAIM)},
                             "::error::no head of #7" in "\n".join(self.logs[start:]), writes(self.api))
 
-                want = ({self.REVIEW: "failure", self.LABEL: "skipped", self.UNCLAIM: "success"}, True, [])
+                want = ({self.REVIEW: "failure", self.LABEL: "skipped", UNCLAIM: "success"}, True, [])
                 self.assertEqual(posted(), want, self.logs)
                 self.assertNotEqual(self.changed_step("comment", self.REVIEW, read + '|| { echo "::error::no head of '
                                                       '#$NUMBER"; exit 1; }', read + "|| true", posted), want,
@@ -21914,7 +21872,6 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(self.successes(checks), [],
                                  ([(c["id"], c["conclusion"], rules.recorded_by(c)) for c in checks], self.logs[-4:]))
 
-
     # The control of the rule of word_time (OSSV-221's architect, 2026-11-24 01:20Z and 01:26Z): rules.py whose
     # word_time gives each review comment the time when GitHub last changed it, as each reader did before that rule.
     POSTED = ('    read = REVIEW_READ.match(body, m.end())\n'
@@ -21978,6 +21935,12 @@ class ImportCheckTest(ReaderRunner):
                         "request, so the automated review did not run. You do not need to do anything.\n\n"
                         f"<!-- review-held-head {HEAD} -->\n{named}<!-- review-held-run {run} -->"}
 
+    def held_call(self, call, text=None, **env):
+        """run_script's result for call, a line of shell that calls a function of held.sh, after the text of held.sh,
+        or of text, a changed copy of held.sh as a control, with env in the environment."""
+        script = f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{text or held_sh()}\n{call}\n'
+        return self.run_script(script, **env)
+
     def relabel_withdraws(self, comments, workspace=None):
         """What held.sh relabel_withdraws gives for HEAD of #7, whose comments are comments: why the relabel that the
         rescreen pass starts withdraws, or -. It reads the import check runs of HEAD too: GitHub lists none of them
@@ -21987,9 +21950,8 @@ class ImportCheckTest(ReaderRunner):
         if not os.path.exists(os.path.join(self.api, f"repos/{REPO}/commits/{HEAD}/check-runs".replace("/", "_")
                                            + ".json")):
             self.serve_checks([])
-        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{held_sh()}\n'
-                                     f"relabel_withdraws 7 {HEAD}\n",
-                                     **({"GITHUB_WORKSPACE": workspace} if workspace else {}))
+        rc, out, _ = self.held_call(f"relabel_withdraws 7 {HEAD}",
+                                    **({"GITHUB_WORKSPACE": workspace} if workspace else {}))
         self.assertEqual(rc, 0, out)
         return out.strip()
 
@@ -24409,7 +24371,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertIn(f"::error::the import check run 901 of {HEAD} could not be withdrawn.", "\n".join(self.logs))
         outcomes, wrote, bodies = self.refused_comment_job(got, rescreen, "130", [passed, label])
         line = f"<!-- withdraw-owed {HEAD} refused 130 {started} -->"
-        self.assertEqual((outcomes[self.OWE_REFUSED], outcomes[self.OWE], outcomes[self.REVIEW]),
+        self.assertEqual((outcomes[OWE_REFUSED], outcomes[OWE], outcomes[self.REVIEW]),
                          ("success", "skipped", "skipped"), self.logs[-4:])
         self.assertEqual(bodies[0], rules.with_marker(label["body"], line))
         self.assertNotIn(("POST", f"repos/{REPO}/issues/7/comments"), wrote)
@@ -24513,17 +24475,14 @@ class ImportCheckTest(ReaderRunner):
     # The steps of the post job that come before the step that writes the output owed of its own review (OWN), and
     # that step: a post job that ends at one of them leaves neither the output owed nor the output withdrawn.
     POST_SITES = ("Run actions/checkout", "Read the author-kind table", OWN)
-    # The comment job's step that records the withdrawal of a refused review whose post job did not finish, which runs
-    # the script of the step OWE (OSSV-613's architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4), and the start
-    # of the if that OWE had before that step: the post job gave owed or withdrawn.
-    OWE_REFUSED = "Record the withdrawal of a refused review whose post job did not finish"
+    # The start of the if that the step OWE had before the step OWE_REFUSED: the post job gave owed or withdrawn.
     OWE_BEFORE = "env.POST_REVIEW == 'true' && (needs.post.outputs.owed != '' || needs.post.outputs.withdrawn != '')"
 
     def before_derivation(self, run):
         """run() with the comment job as before the step OWE_REFUSED: the step OWE with the if that it had, and no step
         OWE_REFUSED (its if is false), so that a post job that gave neither owed nor withdrawn leaves no line. Its
         result."""
-        owe, refused = step("comment", self.OWE), step("comment", self.OWE_REFUSED)
+        owe, refused = step("comment", OWE), step("comment", OWE_REFUSED)
         saved = owe["if"], refused["if"]
         self.assertTrue(saved[0].startswith(self.OWE_BEFORE), saved[0])
         owe["if"], refused["if"] = self.OWE_BEFORE, "false"
@@ -24630,7 +24589,7 @@ class ImportCheckTest(ReaderRunner):
         the older answer gave way to that line: it posted no hold comment and no label comment, and it set no state
         label."""
         line, wrote = found["line"], found["wrote"]
-        self.assertEqual(found["ran"], {"Run actions/checkout": "success", self.OWE_REFUSED: "success",
+        self.assertEqual(found["ran"], {"Run actions/checkout": "success", OWE_REFUSED: "success",
                                         self.SKIP: "success", self.LABEL: "success"}, found["log"])
         self.assertEqual([line in b.split("\n") for _m, _e, b in wrote], [True, True], wrote)
         self.assertIn(f"**Next step:** {rules.STATES['refused-review'][1]}", wrote[-1][2])
@@ -24711,11 +24670,11 @@ class ImportCheckTest(ReaderRunner):
                     self.setUp()
                     found = self.refused_scenario(site, control=control, fail=call)
                     ran, wrote = found["first"]
-                    named = ("Run actions/checkout", self.OWE_REFUSED, self.UNCLAIM)
-                    self.assertEqual({k: v for k, v in ran.items() if k in named + (self.OWE, self.SKIP, self.LABEL)},
-                                     {"Run actions/checkout": "success", self.OWE_REFUSED: "failure",
-                                      self.OWE: "skipped", self.SKIP: "skipped", self.LABEL: "skipped",
-                                      self.UNCLAIM: last}, ran)
+                    named = ("Run actions/checkout", OWE_REFUSED, UNCLAIM)
+                    self.assertEqual({k: v for k, v in ran.items() if k in named + (OWE, self.SKIP, self.LABEL)},
+                                     {"Run actions/checkout": "success", OWE_REFUSED: "failure",
+                                      OWE: "skipped", self.SKIP: "skipped", self.LABEL: "skipped",
+                                      UNCLAIM: last}, ran)
                     self.assertEqual({k for k, v in ran.items() if v != "skipped"}, set(named), ran)
                     # The stand-in gh records a write that it refused, which landed nowhere: the label comment of the
                     # first run is what the test served.
@@ -24756,12 +24715,12 @@ class ImportCheckTest(ReaderRunner):
                 self.assertTrue(evaluate(JOBS["comment"]["if"], ctx))
                 # Only the first case runs a step, OWE_REFUSED, whose script derives nothing: no key. In each other case
                 # neither step runs, as before the rule.
-                runs = evaluate(step("comment", self.OWE_REFUSED)["if"], ctx)
+                runs = evaluate(step("comment", OWE_REFUSED)["if"], ctx)
                 self.assertEqual(bool(runs), case == "no key", case)
-                self.assertFalse(evaluate(step("comment", self.OWE)["if"], ctx), case)
+                self.assertFalse(evaluate(step("comment", OWE)["if"], ctx), case)
                 if runs:
                     ran, wrote = self.comment_job(ctx, [label], labels=("review-held",))
-                    self.assertEqual((ran[self.OWE_REFUSED], self.OWE in ran), ("success", False), self.logs[-4:])
+                    self.assertEqual((ran[OWE_REFUSED], OWE in ran), ("success", False), self.logs[-4:])
                     self.assertNotIn("so this step records the withdrawal", "\n".join(self.logs))
                     self.assertFalse(any("withdraw-owed" in b for _m, _e, b in wrote), wrote)
 
@@ -24773,7 +24732,7 @@ class ImportCheckTest(ReaderRunner):
         (the rescreen pass reads the step at which the comment job died, held.sh unrecorded), and the step OWE runs
         for every other run that the post job gave owed or withdrawn, as before that step. The label step takes the line
         from whichever of the two wrote its output line."""
-        owe, refused = step("comment", self.OWE), step("comment", self.OWE_REFUSED)
+        owe, refused = step("comment", OWE), step("comment", OWE_REFUSED)
         self.assertEqual((owe["id"], refused["id"]), ("owed", "owed_refused"))
         self.assertEqual((refused["env"], refused["run"]), (owe["env"], owe["run"]))
         self.assertEqual(step("comment", self.LABEL)["env"]["OWED_LINE"],
@@ -24823,7 +24782,7 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual([body["conclusion"] for _t, body in got["checks"]],
                                  ["neutral"] if kind == "outsider" else [])
                 outcomes, wrote, bodies = self.refused_comment_job(got, trust, "100", [passed, label])
-                self.assertEqual(outcomes[self.OWE], "success", self.logs[-4:])
+                self.assertEqual(outcomes[OWE], "success", self.logs[-4:])
                 self.assertEqual([w for w in wrote if "check-runs" in w[1]], [])
                 self.assertFalse(any("withdraw-owed" in b for b in bodies), bodies)
 
@@ -24995,8 +24954,7 @@ class ImportCheckTest(ReaderRunner):
         self.assertTrue(all("filter=all" in c for c in reads), reads)
         self.assertEqual(writes(self.api), [])
         self.refuse(f"repos/{REPO}/commits/{HEAD}/check-runs", 502, "Bad Gateway")
-        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{held_sh()}\n'
-                                     f"relabel_withdraws 7 {HEAD}\n")
+        rc, out, _ = self.held_call(f"relabel_withdraws 7 {HEAD}")
         self.assertEqual(rc, 1, out)
         self.assertIn("::error::rules.py: gh: Bad Gateway (HTTP 502)", out)
 
@@ -25004,8 +24962,7 @@ class ImportCheckTest(ReaderRunner):
         """What held.sh holds gives for #7, whose comments are comments, from text, a changed copy of held.sh as a
         control, or else held.sh."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
-        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{text or held_sh()}\n'
-                                     "holds 7\n")
+        rc, out, _ = self.held_call("holds 7", text)
         self.assertEqual(rc, 0, out)
         return out.strip().split("\n")
 
@@ -25092,8 +25049,7 @@ class ImportCheckTest(ReaderRunner):
         """What held.sh replaced_hold gives for #7, whose comments are comments, with args (<work> <screen> <head>
         [<started>]), from text, a changed copy of held.sh as a control, or else held.sh."""
         self.serve(f"repos/{REPO}/issues/7/comments", list(comments))
-        rc, out, _ = self.run_script(f'set -euo pipefail\nseen=$(mktemp -d -p "$RUNNER_TEMP")\n{text or held_sh()}\n'
-                                     f"replaced_hold 7 {shlex.join(args)}\n")
+        rc, out, _ = self.held_call(f"replaced_hold 7 {shlex.join(args)}", text)
         self.assertEqual(rc, 0, out)
         return out.strip()
 
@@ -25138,10 +25094,6 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(self.replaced_of(comments, "answer", "true", HEAD, t40, text=control), "51")
         self.assertEqual(writes(self.api), [])
 
-    # The last step of the comment job and of the hold job (rules.py unclaim). GitHub runs it only after a step of its
-    # job failed or was cancelled (AFTER_FAILURE).
-    UNCLAIM = "Leave no label that says the workflow recorded the check"
-
     def test_a_failed_or_cancelled_comment_or_hold_job_leaves_no_label_that_says_recorded_while_no_check_stands(self):
         """OSSV-613's architect, 2026-11-25 23:02Z (G2; round 29, item 2): the label comment says that the workflow
         recorded the check only while a success import check run stands, also after a comment job or a hold job that
@@ -25182,7 +25134,7 @@ class ImportCheckTest(ReaderRunner):
             runs served: GitHub refuses the read of #7's labels (fail "read"), a cancel of the job ends its label step
             (fail "cancel"), or neither (None). With on False, the job's last step has the if 'false'. (The outcome of
             each step, the writes as (method, endpoint), the label comment bodies.)"""
-            last = step(name, self.UNCLAIM)
+            last = step(name, UNCLAIM)
             self.assertEqual(last["if"], AFTER_FAILURE)
             self.serve_checks(served)
             if fail == "read":
@@ -25212,10 +25164,10 @@ class ImportCheckTest(ReaderRunner):
             for fail in ("read", "cancel"):
                 with self.subTest(job=name, fail=fail):
                     outcomes, base, bodies = job(name, fail, label, after, on=False)
-                    self.assertEqual(outcomes[self.UNCLAIM], "skipped")
+                    self.assertEqual(outcomes[UNCLAIM], "skipped")
                     self.assertTrue(rules.says_recorded(([label["body"]] + bodies)[-1]), bodies)
                     outcomes, wrote, bodies = job(name, fail, label, after)
-                    self.assertEqual((outcomes[self.UNCLAIM], wrote, bodies[-1]), ("success", base + [patch], working),
+                    self.assertEqual((outcomes[UNCLAIM], wrote, bodies[-1]), ("success", base + [patch], working),
                                      self.logs[-1])
                     self.assertFalse(rules.says_recorded(bodies[-1]))
                     self.assertIn(marker, bodies[-1].split("\n"))
@@ -25225,12 +25177,12 @@ class ImportCheckTest(ReaderRunner):
                             ("901 stands", label, checks, "and that check run stands."),
                             ("no claim", change, after, "does not say that the workflow recorded the check")):
                         outcomes, wrote, _bodies = job(name, fail, comment, served)
-                        self.assertEqual((outcomes[self.UNCLAIM], wrote), ("success", base), (case, self.logs[-1]))
+                        self.assertEqual((outcomes[UNCLAIM], wrote), ("success", base), (case, self.logs[-1]))
                         self.assertIn(said, self.logs[-1], case)
             with self.subTest(job=name, fail=None):
                 outcomes, _wrote, _bodies = job(name, None, label, after)
                 self.assertNotIn("failure", outcomes.values(), self.logs[-3:])
-                self.assertEqual(outcomes[self.UNCLAIM], "skipped")
+                self.assertEqual(outcomes[UNCLAIM], "skipped")
 
     def test_the_last_step_writes_the_state_working_in_place_of_a_claim_that_no_check_run_shows(self):
         """OSSV-613's architect, 2026-11-25 23:02Z (G2): the comment job and the hold job have one script in their last
@@ -25242,8 +25194,8 @@ class ImportCheckTest(ReaderRunner):
         REPO_PAIRS_IMPORT_PATHS: it records another decision and does not show the claim, so the step writes the state
         working too. The control of (b): the same check run with the marker line of the label comment shows the claim,
         and the step writes nothing."""
-        script = step("comment", self.UNCLAIM)["run"]
-        self.assertEqual(step("hold", self.UNCLAIM)["run"], script)
+        script = step("comment", UNCLAIM)["run"]
+        self.assertEqual(step("hold", UNCLAIM)["run"], script)
         label = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
                  "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
         working = rules.label_comment("working", label["body"])
@@ -25280,7 +25232,7 @@ class ImportCheckTest(ReaderRunner):
         the newest label comment of github-actions[bot] counts, as for each reader of the label comment: an older one
         that says that the workflow recorded the check, before a newer one of the state change, gets no write, and the
         status is 0. A NUMBER that is not a number fails the step with its error, before any call of gh."""
-        script = step("comment", self.UNCLAIM)["run"]
+        script = step("comment", UNCLAIM)["run"]
         marker = rules.import_marker(HEAD, self.LPS)
         older = {"id": 40, "user": {"login": BOT}, "created_at": ago(34), "updated_at": ago(34),
                  "body": rules.label_comment("import", "", [marker])}

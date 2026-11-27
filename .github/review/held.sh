@@ -705,6 +705,9 @@ waits_of() {
   waits_read=1
 }
 : > "$seen/stops"
+# stop_note: the sentence of the error line of stopped, left_stopped, answer_stopped and draft_stopped that says what
+# the comment job of the stop writes.
+stop_note="The stop's comment job writes its hold comment, and the label comment of the stop when the label rule allows it."
 # halt <stop> <fact> <work> <title> <text>: the work of #number is not tried again, at a bound of its tries
 # (stopped, head_stopped, left_stopped, answer_stopped and draft_stopped). The rescreen pass writes nothing for it: it
 # starts a run of review.yml with the task stop, named "stop #<n>[ at <head>] for <stop>", at most one for each item in
@@ -745,8 +748,7 @@ stopped() {
   [ "$of" != rescreen ] || of=review runs="rescreen or review"
   [ -z "${3:-}" ] || from="after run $3, which settled its hold"
   echo "::error::#$number: $from, $2 runs of $runs were tries that settled nothing, with no new hold. The work" \
-    "of the hold is not tried again. The stop's comment job writes its hold comment, and the label comment of the" \
-    "stop when the label rule allows it."
+    "of the hold is not tried again. $stop_note"
   case $1 in
     answer) title="Automated answer held." work="the automated answer" ;;
     draft) title="Automated reply held." work="the automated reply" ;;
@@ -810,8 +812,7 @@ head_stopped() {
 # (gave_up).
 left_stopped() {
   echo "::error::#$number: the automated catch-up closed it and could not reopen it after $1 tries: it is not" \
-    "tried again. The stop's comment job writes its hold comment, and the label comment of the stop when the label" \
-    "rule allows it."
+    "tried again. $stop_note"
   halt reopen left_closed catchup "Automated close and reopen held." \
     "The workflow closed this pull request so that GitHub starts its checks. It could not reopen the pull request after $1 tries."
 }
@@ -988,8 +989,7 @@ answer_stopped() {
   local what="this issue"
   [ "$kind" != pr ] || what="this pull request"
   echo "::error::#$number: $2 answer runs of comment $1 counted a try and posted nothing: the answer is not tried" \
-    "again. The stop's comment job writes its hold comment, and the label comment of the stop when the label rule" \
-    "allows it."
+    "again. $stop_note"
   halt answer-post tries_used_up answer "Automated answer held." "The workflow tried the automated answer to your comment on $what $2 times, and none of these tries posted it. The workflow does not try it again. You do not need to do anything."
 }
 # due_answer: the answer to the newest comment of the author of #number that waits for one (waiting) and is
@@ -1062,8 +1062,7 @@ due_answer() {
 # came before, so the text does not say that the workflow held the issue.
 draft_stopped() {
   echo "::error::#$number: $1 draft runs counted a try and stored no draft, with no hold: the draft is not tried" \
-    "again. The stop's comment job writes its hold comment, and the label comment of the stop when the label rule" \
-    "allows it."
+    "again. $stop_note"
   halt hold-draft tries_used_up draft "Automated reply held." "The workflow tried the automated reply $1 times, and none of these tries finished. The workflow does not try it again. You do not need to do anything."
 }
 # due_draft: the draft of the reply to an outside issue whose label comment holds neither a stored draft nor
@@ -1368,11 +1367,11 @@ unclaimed() {
 # already starts a run for, or whose hold the pass tries again (retaken), gets no re-run: that run takes its place.
 due_rerun() {
   local created ended id task f post early commented hold_job run="" which="" how="" attempt work
-  local stood what made relabel stop idle owes="" stopped
+  local stood what made relabel stop idle owes="" import_stop
   [ -z "$retaken" ] || return 0
   if awk -v n="$number" '$2 == n { found = 1 } END { exit !found }' "$seen/due"; then return 0; fi
   # The stop of the import check of the head: a hold of the work import that is not tried again names it (holds).
-  stopped=$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")
+  import_stop=$(awk -v h="$head" '$1 == "import" && $3 == "-" && $9 == h' <<< "$hold")
   while read -r created ended id task; do
     f=$(facts "$id") || { echo "::error::the jobs of run $id could not be read."; return 1; }
     read -r _ _ post _ early _ commented _ <<< "$f"
@@ -1380,7 +1379,7 @@ due_rerun() {
     owes=""
     if [ "$post" != success ] && [ "$post" != skipped ]; then
       unrecorded "$id" || continue
-      if [ -n "$stopped" ]; then
+      if [ -n "$import_stop" ]; then
         echo "#$number: the post job of run $id did not succeed, and its comment job recorded nothing that the run" \
           "owes, but the stop of the import check of $head names it: its label comment names Sami's step, and no App" \
           "write of $head follows, so the failed jobs of run $id, whose post job could record the check, do not run" \
@@ -1454,7 +1453,7 @@ due_rerun() {
         "for run $run."
       return 0
     fi
-    if [ -n "$(awk '$1 == "import"' <<< "$stood")" ]; then
+    if [ -n "$import_stop" ]; then
       echo "#$number: the stop of the import check of $head names it, so the rescreen pass starts no relabel, whose" \
         "post job could write a check run of $head. It starts the stop of the import check of $head again; its" \
         "comment job writes the label comment of that stop when the label rule allows it."
