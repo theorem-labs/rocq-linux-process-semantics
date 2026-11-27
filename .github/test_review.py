@@ -17664,6 +17664,71 @@ class DecisionLogTest(unittest.TestCase):
                     self.assertEqual(long(meaning), [])
         self.assertEqual(len(long(" ".join(["word"] * 25) + ". " + " ".join(["word"] * 26) + ".")), 1)
 
+    def test_the_meanings_of_the_words_that_print_in_a_relabel_after_a_give_way_say_what_its_steps_do(self):
+        """Round 33 (OSSV-613's architect's ruling of 2026-11-27 18:42Z, on b7's fresh reader of 972a0ebb to 6aac835e):
+        after the decision skip, the comment job and the hold job run three steps as a relabel of the head
+        (ImportCheckTest.RELABEL_STEPS), with the script of the post job's decide step and the script of the comment
+        job's label step. Their log lines carry the words of the tables, so the meaning of each word that prints there
+        says what happens there: skip (the line before the three steps), record, hand, screened and the cause rule. No
+        step of the three records or withdraws a check run. The last one writes the state label and the label comment
+        that a relabel of the head gives now and, for the decision record, counts a success that stands, or gives the
+        decision gone. The workflow facts that the sentences rest on are asserted here too. No step and no command
+        prints a meaning: only its word goes into a log line."""
+        steps = ImportCheckTest.RELABEL_STEPS
+        after = "In the steps of a relabel after the decision skip, no step "
+        writes = ("The last of these steps writes the state label and the label comment that a relabel of the head "
+                  "gives now.")
+        said = {
+            "skip": ("One case differs: this run withdrew an import check run of the head with the conclusion success. "
+                     "Then three later steps run as a relabel of the head. None of them records or withdraws a check "
+                     "run. The last of them writes the state label and the label comment that a relabel of the head "
+                     "gives now."),
+            "record": ("In the post job, this run records the import check run of the head. It does so while the "
+                       "GitHub environment named post holds the key of the OSS Verify App. " + after +
+                       "records a check run. The label step of that relabel reads the import check runs of the head "
+                       "again, while the variable REPO_PAIRS_IMPORT_PATHS is set. It counts the check as recorded if "
+                       "one with the conclusion success and the marker of the import's paths stands. It gives the "
+                       "decision gone if none stands."),
+            "hand": after + "records or withdraws a check run. " + writes,
+            "screened": after + "records or withdraws a check run. " + writes}
+        for word, sentences in said.items():
+            with self.subTest(decision=word):
+                self.assertIn(sentences, rules.LOG_DECISIONS[word])
+        self.assertIn("In the post job, a later step can still withdraw for the newest word that withdraws",
+                      rules.LOG_DECISIONS["hand"])
+        self.assertNotIn(". A later step can still withdraw", rules.LOG_DECISIONS["hand"])
+        self.assertIn("Both steps are in the post job. They run only while the GitHub environment named post holds the "
+                      "key", rules.LOG_DECISIONS["screened"])
+        self.assertIn("The decide step of the post job applies the rules of R12 (import_decision). After the decision "
+                      "skip, the comment job or the hold job applies them in the decide step of its relabel. The rules "
+                      "read the verdict,", rules.LOG_CAUSES["rule"])
+        decide = step("post", "Decide the import check of the head")["run"]
+        label = step("comment", PostLabelTest.STEP)["run"]
+        for word in ("POST", "PATCH", "DELETE"):
+            self.assertNotIn(word, decide)
+        self.assertEqual(decide.count("--method"), decide.count("--method GET"))
+        self.assertIn("approved=$RECORDED", label)
+        self.assertIn('rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED"', label)
+        self.assertIn("rules.py relabel", label)
+        for job, gives, ids in (("comment", ImportCheckTest.SKIP, "way"),
+                                ("hold", ImportCheckTest.HOLD_RELABEL, "withdrew")):
+            with self.subTest(job=job):
+                names = [s.get("name") for s in JOBS[job]["steps"]]
+                first = names.index(steps[0])
+                self.assertEqual(names[first:first + 3], list(steps))
+                self.assertGreater(first, names.index(gives))
+                if job == "hold":
+                    self.assertEqual(first, names.index(gives) + 1)
+                self.assertIn(ImportCheckTest.RELABELS, step(job, gives)["run"])
+                kept = answers, decided, labelled = [step(job, name) for name in steps]
+                self.assertEqual((decided["run"], labelled["run"]), (decide, label))
+                self.assertEqual({s["if"] for s in kept}, {f"steps.{ids}.outputs.relabel != ''"})
+                self.assertEqual(({s["env"]["TASK"] for s in kept}, decided["env"]["APP_KEY_SET"]),
+                                 ({"relabel"}, "false"))
+                for s in kept:
+                    self.assertNotIn("uses", s)
+                    self.assertNotIn("steps.app.outputs.token", str(s))
+
 
 class LabelTest(Runner):
     """rules.py label and make-label, as the comment, hold and rescreen jobs run them, against the stand-in gh: one
@@ -23320,7 +23385,7 @@ class ImportCheckTest(ReaderRunner):
     RELABEL_STEPS = ("Read the author-kind table for a relabel of the head",
                      "Decide the import check of the head as a relabel decides it now",
                      "Set the state label as a relabel of the head sets it now")
-    HOLD_RELABEL = "Run the steps of a relabel when this run gave way after it withdrew a success of the head"
+    HOLD_RELABEL = "Run the steps of a relabel when this run gave way and withdrew a success of the head"
     # The value of WITHDREW in the step HOLD_RELABEL: the output withdrew of the post job, or the output head of the
     # hold job's step that withdraws for an answer. POST_ONLY is the rule of 484b8851, which reads the post job alone.
     WITHDREW_EITHER = "${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}"

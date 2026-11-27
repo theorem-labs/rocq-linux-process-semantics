@@ -807,9 +807,15 @@ OWED = re.compile(rf"<!-- withdraw-owed ([0-9a-f]{{40}}) (blocking|person|refuse
 LOG_DECISIONS = {
     # The decide step of the post job: the decisions of DECISIONS. Where a decision says that this run records no
     # import check run with the conclusion success, the job can still record a check run with the conclusion neutral
-    # (not-approved).
-    "record": ("This run records the import check run of the head, while the GitHub environment named post holds the "
-               "key of the OSS Verify App."),
+    # (not-approved). The comment job and the hold job run the same decide step as a relabel after the decision skip,
+    # when this run withdrew a success of the head. Its decisions are these words too. No step of that relabel
+    # records or withdraws a check run (its APP_KEY_SET is false).
+    "record": ("In the post job, this run records the import check run of the head. It does so while the GitHub "
+               "environment named post holds the key of the OSS Verify App. In the steps of a relabel after the "
+               "decision skip, no step records a check run. The label step of that relabel reads the import check runs "
+               "of the head again, while the variable REPO_PAIRS_IMPORT_PATHS is set. It counts the check as recorded "
+               "if one with the conclusion success and the marker of the import's paths stands. It gives the decision "
+               "gone if none stands."),
     "screen": ("No screen passed the head in the run of the review that this decision rests on, or the head has no "
                "review. So this run records no import check run with the conclusion success."),
     "verdict": ("The verdict of the review is neither pass nor person, so this run records no import check run with "
@@ -834,16 +840,21 @@ LOG_DECISIONS = {
              "relabel whose newest review is a screened pass also counts an import check run for screen as such a "
              "hold. So this run records no import check run with the conclusion success."),
     "hand": ("This run records no import check run with the conclusion success. No word that this step reads gives a "
-             "reason to withdraw one, except a word that the newest screened review outranks. A later step can still "
-             "withdraw for the newest word that withdraws, unless a screened review that passes outranks it. That word "
-             "is a review comment, the withdraw-owed line or a hold of the screen. An import check run is that word "
-             "only while a success that it withdraws stands. In a review by hand, the verdict of this run's own "
-             "review can also withdraw."),
+             "reason to withdraw one, except a word that the newest screened review outranks. In the post job, a later "
+             "step can still withdraw for the newest word that withdraws, unless a screened review that passes "
+             "outranks it. That word is a review comment, the withdraw-owed line or a hold of the screen. An import "
+             "check run is that word only while a success that it withdraws stands. In a review by hand, the verdict "
+             "of this run's own review can also withdraw. In the steps of a relabel after the decision skip, no step "
+             "records or withdraws a check run. The last of these steps writes the state label and the label comment "
+             "that a relabel of the head gives now."),
     "screened": ("This run records no import check run with the conclusion success. A later step withdraws each import "
                  "check run with the conclusion success whose run read the item at or before a time. The withdraw or "
                  "keep line of the step that finds those check runs names that time in the field from. The later step "
-                 "also withdraws each one that names no read, and each one when from is none. Both steps run only "
-                 "while the GitHub environment named post holds the key of the OSS Verify App."),
+                 "also withdraws each one that names no read, and each one when from is none. Both steps are in the "
+                 "post job. They run only while the GitHub environment named post holds the key of the OSS Verify "
+                 "App. In the steps of a relabel after the decision skip, no step records or withdraws a check run. "
+                 "The last of these steps writes the state label and the label comment that a relabel of the head "
+                 "gives now."),
     "withdrawn": ("A withdrawal of the import check run stands, or the label comment holds a withdraw-owed line whose "
                   "reason no workflow comment gives (cause unposted). So this run records no import check run with "
                   "the conclusion success."),
@@ -864,7 +875,10 @@ LOG_DECISIONS = {
                      "check names that check run in the line of the step that records it."),
     # The step of the comment job and of the hold job that gives way to a newer word.
     "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label. A "
-             "withdraw-owed line that an earlier step wrote stays."),
+             "withdraw-owed line that an earlier step wrote stays. One case differs: this run withdrew an import check "
+             "run of the head with the conclusion success. Then three later steps run as a relabel of the head. None "
+             "of them records or withdraws a check run. The last of them writes the state label and the label comment "
+             "that a relabel of the head gives now."),
 }
 LOG_CAUSES = {
     "blocking": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the "
@@ -892,9 +906,10 @@ LOG_CAUSES = {
     "earlier": "A screen passed the head in the run of an earlier review.",
     "standing": "An import check run of the head with the conclusion success stands.",
     "head": "The head of the pull request is not the head that this run read.",
-    "rule": ("The decide step of the post job applies the rules of R12 (import_decision). They read the verdict, the "
-             "soundness hold, the import's paths, the changed files that the step read, and whether a screen passed "
-             "the head."),
+    "rule": ("The decide step of the post job applies the rules of R12 (import_decision). After the decision skip, the "
+             "comment job or the hold job applies them in the decide step of its relabel. The rules read the verdict, "
+             "the soundness hold, the import's paths, the changed files that the step read, and whether a screen "
+             "passed the head."),
     "none": "This run has no reason to withdraw an import check run.",
 }
 # The fields after read, in this order: the pattern of the value, and what it says. The check run ids of check are
