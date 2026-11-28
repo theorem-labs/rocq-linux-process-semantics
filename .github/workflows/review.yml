@@ -4373,7 +4373,7 @@ jobs:
             || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}. Nothing posts."; exit 1; }
           # own: the kind of the own word of this run, its verdict (refused for a review that the fresh reader refused),
           # or read for a run that gives no word.
-          own=read
+          own="read"
           if [ "$TASK" = review ] || [ "$TASK" = rescreen ]; then
             case ${VERDICT:-} in pass|blocking|person|refused) own=$VERDICT ;; esac
           fi
@@ -4826,7 +4826,7 @@ jobs:
           # The own word of this run: the verdict of this run's review from STARTED, or a read from STARTED for a run
           # that gives no verdict. The verdict of a review that the fresh reader refused is refused, as in the step of
           # this job that skips its posts: one rule in each reader (OSSV-221's architect, 2026-11-25 19:29Z).
-          word=read
+          word="read"
           if [ "${TASK:-}" = review ] || [ "${TASK:-}" = rescreen ]; then
             case ${VERDICT:-} in pass|blocking|person|refused) word=$VERDICT ;; esac
           fi
