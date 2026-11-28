@@ -3031,7 +3031,7 @@ jobs:
       # rescreen whose route is not screen) records no check run, as no screen ran in its run, and keeps its own
       # verdict. It reads the rule for every author, as a relabel does, so that it withdraws for the same reasons.
       # The rule gives its decision only for an outside author. For screened or earlier, its decision is screened when
-      # the rule withdraws, and hand when it does not. So is a relabel's in the state earlier with the verdict pass.
+      # the rule withdraws, and hand when it does not.
       # The comment job replaces the review comment in place, but a review with no screen never replaces a screened
       # review of the same head that gives a blocking finding or the verdict person: it posts a comment of its own. So a
       # review with no screen hides only a screened pass of the same head, and a run whose posts are skipped posts no
@@ -3043,10 +3043,10 @@ jobs:
       # reads the newest review comment: screened when it is screened, and earlier when it is not but a screened review
       # comment or such a check run exists. A success whose summary names neither does not count. So for an outside
       # author, an unscreened newest pass with no reason to withdraw and no such screened word gives the decision hand
-      # while such a check run stands (replaced). Else the decision is screen, and the label comment says
-      # that no screen passed the head in a run that also reviewed it. A run whose decision is hand records and
-      # withdraws nothing, and reads whether an import check run of the head with the conclusion success, for the value
-      # of the variable now, still stands (output standing).
+      # while such a check run stands (replaced). Else, for a review by hand, the decision is screen, and the label
+      # comment says that no screen passed the head in a run that also reviewed it. A run whose decision is hand records
+      # and withdraws nothing, and reads whether an import check run of the head with the conclusion success, for the
+      # value of the variable now, still stands (output standing).
       # The comment job counts such a check run as recorded, unless a later step of this job withdraws it: so the state
       # is import when one stands while the variable is set, and decide when none does. The state of the decision
       # screened follows this run's verdict, and for a pass the label comment says that the screen and the review passed
@@ -3209,12 +3209,13 @@ jobs:
           # outrank it (OSSV-221's architect, 2026-11-25 23:02Z, G1). held or a why writes the output owed first
           # (write_owed), from the comments alone, and the second read writes it empty again when it gives no why.
           # The step that withdraws an import check run takes its own word from rules.py withdraw-word.
-          # held gives the decision held. For an outside author, the state screened with the verdict pass and a why
-          # gives a decision that records no check run, as a relabel that withdraws records none: withdrawn when no
-          # comment of the workflow gives the why of the line (from owed, and posted is unposted: the comment of the
-          # line's run that gives its why, or a screened review comment whose run read the item after the time of the
-          # line, its <read>; rules.py owed and word_time), so that the label comment says so (rules.py, the decision
-          # withdrawn), and screened else.
+          # held gives the decision held. For an outside author, the verdict pass with a why records no check run, as a
+          # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the
+          # reason of the why (posted is unposted), so that the label comment says so (rules.py NO_REASON), and else
+          # screened for the states screened and earlier. That comment, for the line (from owed; the cause unposted), is
+          # the comment of the line's run that gives its why, or a screened review comment whose run read the item after
+          # the line's <read> (rules.py owed and word_time), and for a check run, the same for the why, the run and the
+          # time that its summary names (rules.py reason_posted; the cause neutral, as for a withdrawal that stands).
           # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
           # review (a screened review comment, or a success that names its run and read) outranks it, it gives no why,
           # and from is outranked (rules.py verdict). For such a review comment the step that withdraws then gives the
@@ -3229,10 +3230,9 @@ jobs:
           # 2026-11-24 09:43Z) has no success of a newer read over it, and no screened review comment that passes the
           # head counts from a time after the time that its summary names (its run read the item after it; rules.py
           # word_time; stands names the withdrawal, and since names that time, or - when the summary names none), the
-          # state screened with the verdict pass gives the decision withdrawn too, and no check run is recorded. It does
-          # so also when a why stands, unless the line gives that why and its comment did not post (unposted): the
-          # withdrawal is itself the record of the word that rules.py verdict reads in its check run. The state earlier
-          # with the verdict pass gives the decision screened with a why, and hand with none. The state unscreened gives
+          # state screened with the verdict pass gives the decision withdrawn too, with a why or none, and no check run
+          # is recorded: the withdrawal is itself the record of the word that rules.py verdict reads in its check run.
+          # The state earlier with the verdict pass and no why gives the decision hand. The state unscreened gives
           # replaced.
           relabeled() {
             local reviewed state why from posted stands since ahead owed
@@ -3250,10 +3250,12 @@ jobs:
             screen=false
             [ "$state" != screened ] || screen=true
             [ "$state" != held ] || decided held screen
-            if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
-              [ "$posted" != unposted ] || decided withdrawn unposted
-              [ "$stands" = - ] || decided withdrawn neutral check "$stands" from "$since"
-              decided screened "$why"
+            if [ "$RECORD" = true ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
+              [ "$from" != owed ] || [ "$posted" != unposted ] || decided withdrawn unposted
+              if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$posted" = unposted ]; }; then
+                decided withdrawn neutral check "$stands" from "$since"
+              fi
+              [ "$state" = unscreened ] || decided screened "$why"
             fi
             if [ "$RECORD" = true ] && [ "$state" = screened ] && [ "$verdict" = pass ] && [ "$stands" != - ]; then
               decided withdrawn neutral check "$stands" from "$since"
@@ -3263,7 +3265,6 @@ jobs:
               decided hand outranked
             fi
             if [ "$RECORD" = true ] && [ "$state" = earlier ] && [ "$verdict" = pass ]; then
-              [ "$why" = - ] || decided screened "$why"
               standing
               decided hand earlier
             fi

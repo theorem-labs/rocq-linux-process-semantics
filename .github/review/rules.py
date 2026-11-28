@@ -250,7 +250,10 @@ import check run), when the newest screened review of <head> does not outrank it
 gives a reason, as the newest screened review of <head> (a screened review comment, or such a check run) does not
 outrank it (owed_reason, by the rule of <state>), outranked when that review outranks the line, so that the line gives
 no reason, and - else. <posted> is, for <from> owed, posted when a comment of github-actions[bot] gives a reason for the
-line to go, as for an outside author (line_reason: from the <read> of the line), and unposted when none does; - else.
+line to go, as for an outside author (line_reason: from the <read> of the line), and unposted when none does. Else, for
+a <why> that an import check run gives, it is posted when such a comment gives that reason (reason_posted, from the why,
+the run and the time that withdrawn_by reads in it), and unposted when none does; for a <why> of a review comment,
+posted; - else.
 <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion, completed_at, summary} one on each
 line; with none given, no check run is read. The decision step gives them for a relabel and for a review by hand (its
 import_checks). They are in the order of the time that each one names, never of completed_at: for a success, the time
@@ -263,12 +266,13 @@ or - when <stands> is - or the summary names no time. <run> and <read> are the r
 <head> and the time when that run read the item, from its markers <!-- review-read <time> --> and
 <!-- review-run <run> -->, or - and - when it has none: a relabel's record names them. Only the line for screen gives a
 state (held). A relabel records the import check run only for screened with the verdict pass, no <why>, <stands> - and
-<from> -: with a <why>, its decision is withdrawn when <posted> is unposted, and screened else, and with <stands> it is
-withdrawn.
+<from> -. Its decision is withdrawn for screened with the verdict pass and <stands>, and for screened, earlier or
+unscreened with the verdict pass, a <why> and <posted> unposted. Else, with a <why>, it is screened for screened or
+earlier.
 With <from> outranked, it records none while the line stands, and it withdraws none for the line: its decision is hand.
 The step OWE of its comment job takes the line out when a screened review comment outranks it (withdraw-word); a check
-run that outranks it leaves it. For earlier with the verdict pass, its decision is hand with no <why>, and screened with
-one. A review by hand with no screen records none. Its post job's decision is hand for screened or earlier with no
+run that outranks it leaves it. For earlier with the verdict pass and no <why>, its decision is hand. A review by hand
+with no screen records none. Its post job's decision is hand for screened or earlier with no
 <why>, and screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for
 unscreened. For the decision hand, the label step counts an import check run of <head> that still stands, for the value
 of the variable now, as recorded. The comment job's label step reads the check runs again before it writes the state
@@ -3950,6 +3954,12 @@ def main(argv):
             posted = "-"
             if origin == "owed":
                 found = line_reason(comments, argv[2], line_why, line_run, line_read, True)[0]
+                posted = "posted" if found else "unposted"
+            elif state != "held" and why:
+                # The word that gives <why> (review_verdict): a review comment gives it itself.
+                giver = newest_word(words, kinds=VERDICT_WITHDRAWS, carriers={"review", "line", "check"})
+                found = giver.carrier != "check" or reason_posted(comments, argv[2], giver.why, giver.run, True,
+                                                                   giver.read)
                 posted = "posted" if found else "unposted"
             stands = standing_withdrawal(words)
             stood, since = (str(stands.check.get("id") or "-"), stands.read or "") if stands else ("", "")
