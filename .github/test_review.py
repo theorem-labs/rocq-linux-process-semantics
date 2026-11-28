@@ -17783,6 +17783,23 @@ class DecisionLogTest(unittest.TestCase):
                     self.assertNotIn("uses", s)
                     self.assertNotIn("steps.app.outputs.token", str(s))
 
+    def test_the_meaning_of_skip_names_the_label_comment_that_the_last_step_writes_after_a_failure_or_a_cancel(self):
+        """The tester's round 33 (b7, M2): the meaning of the decision skip is true for each case it prints for, by
+        OSSV-613's architect's ruling of 2026-11-28 05:15Z. After the decision skip, the last step of the comment job
+        and of the hold job, "Leave no label that says the workflow recorded the check", runs when a step of the job
+        failed or was cancelled, and rules.py unclaim can write the label comment of the state working there. So when
+        the meaning of skip says that the later steps of the run post no label comment, it also names that failure or
+        cancel."""
+        for job in ("comment", "hold"):
+            with self.subTest(job=job):
+                last = JOBS[job]["steps"][-1]
+                want = ("Leave no label that says the workflow recorded the check", "failure() || cancelled()")
+                self.assertEqual((last["name"], last["if"]), want)
+                self.assertIn("rules.py unclaim", last["run"])
+        skip = rules.LOG_DECISIONS["skip"]
+        if re.search(r"post no comment and no label comment", skip):
+            self.assertRegex(skip, r"fail|cancel")
+
     def test_the_meaning_of_hand_says_no_screened_pass_stops_the_withdrawal_for_the_own_verdict_of_a_hand_run(self):
         """The tester's round 33 (b7): the meaning of the decision hand is true for each case it names. In the post job
         of a review by hand whose own verdict is blocking, the own verdict is a word at the read of that run, and the
