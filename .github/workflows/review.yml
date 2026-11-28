@@ -2874,7 +2874,10 @@ jobs:
       # from the comments of the item; and the step that finds the check runs, once rules.py withdraw-word gives its
       # word. A job that ends before the first of them (at its checkout, or at its read of the author-kind table, or at
       # that step itself) leaves owed and withdrawn empty. For a review that the fresh reader refused, which posts no
-      # comment, the comment job then derives owed itself (its step "Record a withdrawal that the post job owes").
+      # comment, or of the verdict blocking or person, whose comment job can give way to a newer word before it posts,
+      # the comment job then derives owed itself (the script of its step "Record a withdrawal that the post job owes",
+      # in its step "Record the withdrawal of a refused review whose post job did not finish"; OSSV-613's architect,
+      # 2026-11-28 00:08Z, C3).
       owed: >-
         ${{ steps.withdraw.outputs.clear == '' && steps.withdrawn.outputs.head == '' && steps.neutral.outputs.head == ''
         && (steps.withdraw.outputs.owed || steps.decide.outputs.owed || steps.own.outputs.owed) || '' }}
@@ -2892,9 +2895,10 @@ jobs:
       withdrew: ${{ steps.withdrawn.outputs.head }}
       # Whether the environment post holds the App's key, as this job read it when it started (APP_KEY_SET): true or
       # false, never the key. No step writes it. The comment job has no key. For a post job that ended before it wrote
-      # owed, over a review that the fresh reader refused, the comment job writes the line of that refusal only when
-      # this output is not false. GitHub can give no output of a post job that was cancelled, so there an empty value
-      # counts as true (OSSV-613's architect, 2026-11-27 09:24Z).
+      # owed, over a review that the fresh reader refused or of the verdict blocking or person (2026-11-28 00:08Z, C3),
+      # the comment job writes the line of that review only when this output is not false. GitHub can give no output
+      # of a post job that was cancelled, so there an empty value counts as true (OSSV-613's architect, 2026-11-27
+      # 09:24Z).
       key_set: ${{ env.APP_KEY_SET }}
       # The decision held, withdrawn or newer of the own record of a run on the route screen (screened_run in the
       # decision step): a run that read the item at or after this run held the head, withdrew its import check run, or
@@ -4144,27 +4148,39 @@ jobs:
       # output owed for it: at its checkout, at its read of the author-kind table, or in its step "Write the output owed
       # for the withdrawal of the import check runs". Its outputs owed and withdrawn are then both empty, and nothing
       # would carry the refusal: the hold job of an older answer would read no newer word and write its own label over
-      # the label of the refusal. So a post job that failed or was cancelled (its result), over a review that the fresh
-      # reader refused (the review job's output refused is review), has a step of its own after this one: "Record the
-      # withdrawal of a refused review whose post job did not finish". It runs the script of this step (one YAML
-      # anchor), which takes as the output owed, when the post job gave none, what the post job's step gives,
-      # "<head> refused" with the head that the review read, when the event is workflow_run or workflow_dispatch and
-      # the author-kind table's withdraw holds for the task and the trust job's outside, read as the post job reads it
-      # (OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4), and the post job's output key_set is not false.
-      # GitHub can give no output of a post job that was cancelled, so an empty key_set counts as true: while the
-      # environment post holds no key, the App writes no import check run, so the line then carries only the refusal,
-      # and each reader gives the state of the refused review (2026-11-27 09:24Z, round 31, R7). A key_set of false
-      # (the environment post holds no key) gives no line, as the post job then writes no owed. The line names this run
-      # and STARTED, as for the output owed of the post job itself. The two steps never both run: this one runs for
-      # each other post job that gave owed or withdrawn, and the step after it for each post job of a refused review
-      # that did not succeed, whatever it gave. The rescreen pass cannot read the verdict of a job, so it reads the step
-      # at which this job died (held.sh unrecorded): when this job failed or was cancelled at its checkout, at this step
-      # or at the step after it (or before its first step), and the post job did not succeed, the run recorded nothing
-      # that it owes, whatever its verdict, and no relabel can read a word that neither a line, nor a review comment,
-      # nor a check run carries. So the pass runs the failed jobs of the run again (the post job too), an hour after it
-      # ended, but not under the stop of the import check of the head, which ends each App write of the head
-      # (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)). The review job's outputs stand in each attempt, and the
-      # re-run derives the same output owed. The label step reads the line from whichever of the two ran.
+      # the label of the refusal. A blocking finding or the verdict person of this run's review is in that place too
+      # when this job gives way to a newer word (the step that skips the posts, below): that review never posts, and a
+      # relabel reads no word that withdraws, so a success of the same or an older read stands under it (OSSV-613's
+      # architect, 2026-11-28 00:08Z, C3). So a post job that failed or was cancelled (its result), over a review that
+      # the fresh reader refused (the review job's output refused is review), or over a review of the verdict blocking
+      # or person (its output verdict) when it gave neither owed nor withdrawn, has a step of its own after this one:
+      # "Record the withdrawal of a refused review whose post job did not finish". It runs the script of this step (one
+      # YAML anchor), which takes as the output owed, when the post job gave none, what the post job's step gives,
+      # "<head> <verdict>" with the head that the review read and the verdict refused, blocking or person, when the
+      # event is workflow_run or workflow_dispatch and the author-kind table's withdraw holds for the task and the trust
+      # job's outside, read as the post job reads it (OSSV-613's architect, 2026-11-26 20:57Z, round 30, item 4), and
+      # the post job's output key_set is not false. GitHub can give no output of a post job that was cancelled, so an
+      # empty key_set counts as true: while the environment post holds no key, the App writes no import check run, so
+      # the line then carries only the word of the review, and each reader gives its state (2026-11-27 09:24Z, round
+      # 31, R7). A key_set of false (the environment post holds no key) gives no line, as the post job then writes no
+      # owed. The line names this run and STARTED, as for the output owed of the post job itself. The two steps never
+      # both run: this one runs for each other post job that gave owed or withdrawn, and the step after it for each
+      # post job of a refused review that did not succeed, whatever it gave, and for each post job of a review of the
+      # verdict blocking or person that did not succeed and gave neither. When that review of the verdict blocking or
+      # person then posts, its line stays: the step "Remove the line of a withdrawal that the posted review records"
+      # takes out only the line of a withdrawal that the post job finished (the output pending, which this script
+      # writes only for the post job's output withdrawn). This post job did not finish it, so a success of the head can
+      # still stand: each relabel withdraws it for the line, and a run that finishes the withdrawal takes the line out
+      # once that review gives its reason (rules.py line_reason), as for a line of the post job's own output owed. When
+      # this job gives way, the line is written before the step that skips the posts, so it carries the word. The
+      # rescreen pass cannot read the verdict of a job, so it reads the step at which this job died (held.sh
+      # unrecorded): when this job failed or was cancelled at its checkout, at this step or at the step after it (or
+      # before its first step), and the post job did not succeed, the run recorded nothing that it owes, whatever its
+      # verdict, and no relabel can read a word that neither a line, nor a review comment, nor a check run carries. So
+      # the pass runs the failed jobs of the run again (the post job too), an hour after it ended, but not under the
+      # stop of the import check of the head, which ends each App write of the head (OSSV-613's architect, 2026-11-27
+      # 00:24Z, choice (a)). The review job's outputs stand in each attempt, and the re-run derives the same output
+      # owed. The label step reads the line from whichever of the two ran.
       # The label step after it keeps the line. For an author whose write access GitHub did not give, the line goes in
       # all the same, as the post job withdraws for every author (OSSV-221's architect, 2026-11-23 01:47Z), but no line
       # goes out. For such an author, the label step changes no label comment. So when the post job finished the
@@ -4211,12 +4227,20 @@ jobs:
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           [[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}"; exit 1; }
-          # The output owed of a post job that failed or was cancelled before it wrote owed or withdrawn, for a review
-          # that the fresh reader refused: "<head> refused", as the post job's step "Write the output owed for the
-          # withdrawal of the import check runs" gives it, for the events and the author-kind table's withdraw of that
-          # step, unless the post job's output key_set is false (the environment post holds no key). An empty key_set,
-          # which GitHub can give for a post job that was cancelled, counts as true (the comment above).
-          if [ -z "${OWED:-}" ] && [ -z "${WITHDRAWN:-}" ] && [ "${REFUSED:-}" = review ] \
+          # The output owed of a post job that failed or was cancelled before it wrote owed or withdrawn, for this run's
+          # review that the fresh reader refused (its output refused is review: "<head> refused") or that gives the
+          # verdict blocking or person ("<head> <verdict>"; OSSV-613's architect, 2026-11-28 00:08Z, C3), as the post
+          # job's step "Write the output owed for the withdrawal of the import check runs" gives it, for the events and
+          # the author-kind table's withdraw of that step, unless the post job's output key_set is false (the
+          # environment post holds no key). An empty key_set, which GitHub can give for a post job that was cancelled,
+          # counts as true (the comment above).
+          why=
+          if [ "${REFUSED:-}" = review ]; then
+            why=refused
+          elif [ "${VERDICT:-}" = blocking ] || [ "${VERDICT:-}" = person ]; then
+            why=$VERDICT
+          fi
+          if [ -z "${OWED:-}" ] && [ -z "${WITHDRAWN:-}" ] && [ -n "$why" ] \
             && { [ "${POSTED:-}" = failure ] || [ "${POSTED:-}" = cancelled ]; } && [ "${KEY_SET:-}" != false ] \
             && { [ "${EVENT:-}" = workflow_run ] || [ "${EVENT:-}" = workflow_dispatch ]; } \
             && { [ "$TASK" = review ] || [ "$TASK" = rescreen ]; }; then
@@ -4225,10 +4249,10 @@ jobs:
             if grep -qx 'withdraw=true' <<< "$answers"; then
               [[ ${REVIEW_HEAD:-} =~ ^[0-9a-f]{40}$ ]] \
                 || { echo "::error::the review job gave no head commit: ${REVIEW_HEAD:-}"; exit 1; }
-              OWED="$REVIEW_HEAD refused"
+              OWED="$REVIEW_HEAD $why" said="The review of $REVIEW_HEAD gives the verdict $why"
+              [ "$why" != refused ] || said="The fresh reader refused the review of $REVIEW_HEAD"
               echo "#$NUMBER: the post job of this run ended with the result $POSTED, and it gave no output owed." \
-                "The fresh reader refused the review of $REVIEW_HEAD, so this step tries to record \"$OWED\" in" \
-                "the label comment. The next line says whether it did."
+                "$said, so this step tries to record \"$OWED\" in the label comment. The next line says whether it did."
             fi
           fi
           [ -n "${OWED:-}" ] || [ -n "${WITHDRAWN:-}" ] || exit 0
@@ -4254,7 +4278,9 @@ jobs:
         id: owed_refused
         if: >-
           env.POST_REVIEW == 'true' && (needs.post.result == 'failure' || needs.post.result == 'cancelled')
-          && needs.review.outputs.refused == 'review'
+          && (needs.review.outputs.refused == 'review'
+              || ((needs.review.outputs.verdict == 'blocking' || needs.review.outputs.verdict == 'person')
+                  && needs.post.outputs.owed == '' && needs.post.outputs.withdrawn == ''))
         env: *owe-env
         run: *owe
       # Whether the posts of this run are skipped because a review or a hold of its head is newer than the read of this
@@ -5933,8 +5959,14 @@ jobs:
       # while such a check run stands: the last of the three reads the check runs again before it writes that. This run
       # still posts no hold comment. No step between the step that skips the posts and this one posts on the item for
       # such a run: the step "Label it and say that it was held" reads the output gave_way, and the steps of the
-      # withdrawal of an answer write only check runs. When neither of the two names the head, this step writes no
-      # output relabel, and those three steps do not run. A step of the three that fails fails the job, and its last
+      # withdrawal of an answer write only check runs. An earlier attempt of this run can have withdrawn such a check
+      # run and then failed in those three steps (a read of GitHub that failed, say), so that its last step wrote the
+      # label comment of the state working (rules.py unclaim). The step "Find the import check runs that the screen of
+      # this answer withdraws" of the re-run then reads that check run with the conclusion neutral, and withdraws
+      # nothing. So this step also counts a check run of the head, among those that step read before this attempt
+      # wrote any, whose summary names this run as the run of its withdrawal (rules.py withdrawn-by; OSSV-613's
+      # architect, 2026-11-28 00:14Z, C4): this run withdrew it. When none of these names the head, this step writes
+      # no output relabel, and those three steps do not run. A step of the three that fails fails the job, and its last
       # step leaves no label comment that says that the workflow recorded the check while no such check run stands
       # (rules.py unclaim).
       - name: Run the steps of a relabel when this run gave way and withdrew a success of the head
@@ -5945,9 +5977,20 @@ jobs:
           # withdrew of the post job, or the output head of the step "Withdraw the import check runs of the head" of
           # this job. Only an answer runs that step, and an answer has no post job, so at most one of the two is set.
           WITHDREW: ${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}
+          # The outcome of the step "Find the import check runs that the screen of this answer withdraws": success when
+          # it read the import check runs of the head into $RUNNER_TEMP/import-checks.jsonl.
+          FOUND: ${{ steps.withdraw.outcome }}
         run: |
           set -euo pipefail
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
+          # An import check run of the head that an earlier attempt of this run withdrew (the comment above this step).
+          if [ -z "${WITHDREW:-}" ] && [ "${FOUND:-}" = success ]; then
+            rc=0
+            python3 .github/review/rules.py withdrawn-by "$HEAD" "$GITHUB_RUN_ID" "$RUNNER_TEMP/import-checks.jsonl" \
+              || rc=$?
+            (( rc == 0 || rc == 3 )) || exit "$rc"
+            (( rc != 0 )) || WITHDREW=$HEAD
+          fi
           # This run withdrew a success of the head, in its post job or in the withdrawal of an answer: the steps after
           # this one run as a relabel of the head that reads the item now (the comment above this step).
           [ "${WITHDREW:-}" = "$HEAD" ] || exit 0

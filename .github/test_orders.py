@@ -5,7 +5,9 @@ architect, 2026-11-24 14:36Z and 14:42Z, for round 24 of OSSV-613; the relabel a
 of a writer, left out of the model, and the line that the comment job derives for a post job that died before it wrote
 its output owed, 2026-11-26 20:57Z, round 30, item 4; the re-run of a run whose comment job died before it recorded what
 the run owes, 2026-11-27 00:24Z, choice (a); the pass of a review by hand with no screen, OSSV-613's architect, round
-33, item 1, with its end state and its switch ORDERS_HAND, 2026-11-27 15:50Z and 15:51Z).
+33, item 1, with its end state and its switch ORDERS_HAND, 2026-11-27 15:50Z and 15:51Z; the line of a blocking or
+person review whose post job did not finish, the re-run of a review by hand by its person and the time of a withdrawal
+of a run with no word of its own, 2026-11-28 00:08Z, C3, C1 and C2).
 
 The jobs of a pull request that write its import check run, its label comment and its review and hold comments share
 one concurrency group (write-<n>), so GitHub runs them one at a time, each whole. A run of the review workflow on HEAD
@@ -40,7 +42,10 @@ the state change, the label waits-on-author, and no import check run. At the end
       import check run of HEAD with the conclusion neutral whose summary names the reason refused of its run from its
       read (rules.withdrawn_by: its own withdrawal or check run of not-approved, or a withdrawal for its line). At a
       tie of two newest words, one of them is enough.
-  I5  no run withdraws a success that a run of a newer read recorded (a tie withdraws).
+  I5  no run withdraws a success that a run of a newer read recorded (a tie withdraws). The withdrawal counts from the
+      read of the run that withdrew it, or, for a run with no word of its own (a pass by hand of an outside author,
+      which reads each word whatever its time, as a relabel does), from the time that the withdrawn check run names
+      (rules.withdrawn_by): the time of the word that it withdrew for (OSSV-613's architect, 2026-11-28 00:08Z, C2).
   I0  every job that runs succeeds: no order here has a failure of GitHub but the refusal of refusedline (below).
 
 The newest words (OrderTest.newest) are the words of the newest read, and at a tie of read times a verdict, a refusal
@@ -89,7 +94,11 @@ output refused=review), runs the script of the step "Record a withdrawal that th
 run), which takes "HEAD refused" as the output owed when the post job gave none, under the table's withdraw and an
 output key_set that is not false (an empty one, when GitHub gives no output of a post job that did not succeed, counts
 as true; test_review.post_outputs fills it in from the post job's env). So that step writes the line, and the older
-answer's hold job gives way to it. When the comment job of a run
+answer's hold job gives way to it. The same step derives "HEAD blocking" or "HEAD person" for a post job of a review of
+that verdict that failed or was cancelled and gave neither owed nor withdrawn (OSSV-613's architect, 2026-11-28 00:08Z,
+C3): when its comment job gives way to a newer word, its review never posts, and that line carries its word, so that a
+relabel withdraws for it (test_review's
+test_a_review_that_withdraws_and_gives_way_with_its_post_job_cancelled_leaves_its_line). When the comment job of a run
 whose post job did not succeed fails or is cancelled before it records what the run owes, of any word (at its
 checkout, at that step, or at the step "Record a withdrawal that the post job owes": the sweep fails their reads and
 their writes, and cancels them, after a refusal of refusedline too), the run recorded neither its line nor its review
@@ -137,8 +146,8 @@ not hold for it by design. Nor hand of a writer: a writer's review already runs 
 with two runs of hand, or with hand and a read of unknown. Also not run: any failure of GitHub but the one of
 refusedline and the one of the failure sweep (below); relabels, catch-ups, approvals, and runs by hand but the review
 of hand (a review by hand with an input head, or with another verdict, say); more than one head; a run's re-run
-attempt but the re-run of the failed jobs of a run that the retry starts. The sweep runs under ORDERS_FAILURES=1
-alone.
+attempt but the re-run of the failed jobs of a run that the retry starts, and the one that alice starts of a review by
+hand after the retry (below). The sweep runs under ORDERS_FAILURES=1 alone.
 
 That is 1,285 combinations, 129,813 job runs, with no ORDERS_HAND: 741 of 2 runs (3,912 orders, 11,550 job runs, and
 after each order a relabel of 2 job runs, or for the 972 orders of refusedline the retry, about 6 job runs
@@ -187,24 +196,27 @@ that run whose newest result is failure or cancelled, at the next attempt: the p
 did not succeed and whose comment job died before it recorded what the run owes (at its checkout or at either step
 that records a withdrawal; held.sh unrecorded). A stop runs its trust job, which reads what the pass read, and its
 comment job (test_review.write_stop). The pass runs again until it starts nothing, REVIEW_TRIES + 2 times at most.
+The pass takes a run by the head that its name gives, so it runs no job of a review by hand (hand) again, and nothing
+else of the workflow does. GitHub tells the person who started that run, alice, that it failed, and she runs its failed
+jobs again once, after the retry, as a re-run of the failed jobs above (OSSV-613's architect, 2026-11-28 00:08Z, C1).
 
-The checks at the end of a hurt order, after its retry: I1, I2, I3 and I5 as above; I4, or the newest label comment
-names Sami's step (the step of a state whose label is waits-on-theorem, but refused-review, the state of a refusal
-itself, which only its line or its check run carries); and I0 for each job but the one that the failure ended. Four
-more findings come from the retry. PASS: a pass fails and starts no stop (each stop fails its pass). RETRY: the last
-pass still starts something. START <task>: a pass starts a run that the sweep does not model (a review, a rescreen, an
-approval, a catch-up). An answer that a pass starts is modelled: a new answer run of comment 77 whose screen holds it
-again, read now, so its word, answer, is the newest one. STOP: the trust job of a stop does not take it. Each finding
-fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl one line for each
-finding of a job, a kind of failure and a site, with its count of orders and its first order, and one line of its
-counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed nothing, which are
-plain orders and run no further), the passes, the seconds, and sites, each site that a failure of the sweep hit as
-{job, task, kind, site, count}: site is the text where of a finding's line ("<step> | <METHOD endpoint>" of a read or
-a write, "no <kind> <n> in the job" when the job made no such call, or the step of a cancel), and count the failures
-of the sweep there. Two hurt worlds of one shape (the same text but for the times, of which only the order counts)
-share the jobs, the passes and the checks after them. The sweep does not run two failures in one order (but in an
-order of refusedline, whose refused write is one of its plain orders), a failure in a job of the retry, in the trust,
-gather, screen or review job, or in the pass.
+The checks at the end of a hurt order, after its retry and that re-run: I1, I2, I3 and I5 as above; I4, or the newest
+label comment names Sami's step (the step of a state whose label is waits-on-theorem, but refused-review, the state of
+a refusal itself, which only its line or its check run carries); and I0 for each job but the one that the failure
+ended. Four more findings come from the retry. PASS: a pass fails and starts no stop (each stop fails its pass). RETRY:
+the last pass still starts something. START <task>: a pass starts a run that the sweep does not model (a review, a
+rescreen, an approval, a catch-up). An answer that a pass starts is modelled: a new answer run of comment 77 whose
+screen holds it again, read now, so its word, answer, is the newest one. STOP: the trust job of a stop does not take
+it. Each finding fails the test method. With ORDERS_REPORT=<dir>, each test method appends to <dir>/<pid>.jsonl one
+line for each finding of a job, a kind of failure and a site, with its count of orders and its first order, and one
+line of its counts: the failures of each kind, the hurt orders (leaves; unchanged: those whose failure changed
+nothing, which are plain orders and run no further), the passes, the seconds, and sites, each site that a failure of
+the sweep hit as {job, task, kind, site, count}: site is the text where of a finding's line ("<step> | <METHOD
+endpoint>" of a read or a write, "no <kind> <n> in the job" when the job made no such call, or the step of a cancel),
+and count the failures of the sweep there. Two hurt worlds of one shape (the same text but for the times, of which
+only the order counts) share the jobs, the passes and the checks after them. The sweep does not run two failures in
+one order (but in an order of refusedline, whose refused write is one of its plain orders), a failure in a job of the
+retry or of the re-run of a review by hand, in the trust, gather, screen or review job, or in the pass.
 
 The checks above have no exception for a site or a combination. A hurt order of refusedline whose refused run's comment
 job is cancelled at its first step, "Run actions/checkout", so before either of its steps that record a withdrawal
@@ -619,14 +631,17 @@ class OrderTest(T.ReaderRunner):
         return found
 
     def apply(self, w, run):
-        """w after the writes that the stand-in gh saw since it last forgot, as GitHub applies them."""
+        """w after the writes that the stand-in gh saw since it last forgot, as GitHub applies them. Each withdrawal
+        goes to w["withdrawals"] as (run, check run id, the check run before it, the check run after it)."""
         before = {c["id"]: c for c in w["checks"]}
+        patched = []
         for call, body in zip([c for c in gh_calls(self.api) if "--input" in c], gh_inputs(self.api)):
             endpoint = next((a for a in call if a.startswith(f"repos/{REPO}/check-runs/")), "")
             if "PATCH" in call and endpoint and body.get("conclusion") == "neutral":
-                w["withdrawals"].append((run["id"], int(endpoint.rsplit("/", 1)[1]), before.get(
-                    int(endpoint.rsplit("/", 1)[1]))))
+                patched.append(int(endpoint.rsplit("/", 1)[1]))
         w["checks"] = self.applied_checks(w["checks"])
+        after = {c["id"]: c for c in w["checks"]}
+        w["withdrawals"] += [(run["id"], cid, before.get(cid), after.get(cid)) for cid in patched]
         for call in writes(self.api):
             args, method, endpoint, fields = list(call), "", "", []
             while args:
@@ -744,10 +759,19 @@ class OrderTest(T.ReaderRunner):
                 found.append(("I3", (sorted(states), sorted(want))))
         if not any(self.on_the_item(r, w) for r in newest):
             found.append(("I4", [r["id"] for r in newest]))
+        # I5 compares the read of the record with the time from which the withdrawal counts: the read of the run that
+        # withdrew it, or, for a run with no word of its own (a pass by hand of an outside author, which reads each word
+        # whatever its time, as a relabel does), the time that the withdrawn check run names (rules.withdrawn_by), the
+        # time of the word that it withdrew for (OSSV-613's architect, 2026-11-28 00:08Z, C2).
         reads = {r["id"]: self.read(r) for r in runs}
-        for run_id, cid, check in w["withdrawals"]:
+        wordless = {r["id"] for r in runs if r["word"] == HAND}
+        for run_id, cid, check, withdrawn in w["withdrawals"]:
             record = rules.recorded_by(check) if check else None
-            if run_id in reads and record and record[1] and reads[run_id] < record[1]:
+            since = reads.get(run_id)
+            if run_id in wordless:
+                named = rules.withdrawn_by(withdrawn, HEAD) if withdrawn else None
+                since = named[2] if named and named[2] else since
+            if since and record and record[1] and since < record[1]:
                 found.append(("I5", (run_id, cid, record)))
         return found
 
@@ -779,7 +803,8 @@ class OrderTest(T.ReaderRunner):
                     failures.extend((order + ["relabel"], ("R:" + b[0], b[1]))
                                     for b in self.broken(runs, after) if b[0] not in names)
                     stood = {c["id"] for c in w["checks"] if c.get("name") == NAME and c.get("conclusion") == "success"}
-                    taken = [cid for rid, cid, _check in after["withdrawals"] if rid == relabel["id"] and cid in stood]
+                    taken = [cid for rid, cid, *_checks in after["withdrawals"]
+                             if rid == relabel["id"] and cid in stood]
                     if not before and taken:
                         failures.append((order + ["relabel"], ("R:I5", taken)))
                 return
@@ -874,15 +899,34 @@ class OrderTest(T.ReaderRunner):
         return f"{TIME.sub(lambda m: rank[m.group(0)], text)} {len(w['failed'])} {len(w['hurt'])}"
 
     def hurt_end(self, runs, by_id, w):
-        """The end of a hurt order, w: the retry when its failure ended a job, then the checks (the module's text).
-        (Each pass and each job of the retry, what broke.)"""
+        """The end of a hurt order, w: the retry when its failure ended a job, then the re-run of the failed jobs of a
+        review by hand (HAND) by the person who started it, then the checks (the module's text). (Each pass and each job
+        of the retry and of that re-run, what broke.)"""
         done, broke, made = [], [], []
         if w["hurt"]:
             w = self.retry(runs, by_id, w, done, broke, made)
+            # GitHub tells the person who started a run by hand that it failed, and the rescreen pass takes no run whose
+            # name gives no head: that person runs its failed jobs again, once (OSSV-613's architect, 2026-11-28 00:08Z,
+            # C1).
+            for run in runs:
+                if run["word"] == HAND and run["id"] in w["jobs"]:
+                    w = self.rerun(run, w, done, by=BY_HAND)
         sami = self.names_sami(w)
         words = runs + [r for r in made if r["word"]]
         broke += [b for b in self.broken(words, w) if not (b[0] == "I4" and sami)]
         return done, broke
+
+    def rerun(self, run, w, done, by=""):
+        """w after a re-run of the failed jobs of run: each job of run whose newest result is failure or cancelled runs
+        again, at the next attempt of run. done gets each job that ran, with by, the person who started the re-run,
+        when one did."""
+        newest = {name: (result_of(outcomes), k) for name, outcomes, _at, k in w["jobs"][run["id"]]}
+        attempt = max(k for _result, k in newest.values()) + 1
+        for name, _rid in jobs_of(run):
+            if newest.get(name, ("",))[0] in ("failure", "cancelled"):
+                w = self.job(name, run, w, attempt=attempt)
+                done.append(f"{name} {run['id']} attempt {attempt}" + (f" by {by}" if by else ""))
+        return w
 
     @staticmethod
     def names_sami(w):
@@ -934,12 +978,7 @@ class OrderTest(T.ReaderRunner):
                     if run is None or run["task"] == "stop":
                         broke.append(("START rerun", said))
                         return w
-                    newest = {name: (result_of(outcomes), k) for name, outcomes, _at, k in w["jobs"][run["id"]]}
-                    attempt = max(k for _result, k in newest.values()) + 1
-                    for name, _rid in jobs_of(run):
-                        if newest.get(name, ("",))[0] in ("failure", "cancelled"):
-                            w = self.job(name, run, w, attempt=attempt)
-                            done.append(f"{name} {run['id']} attempt {attempt}")
+                    w = self.rerun(run, w, done)
                 elif start[0] == "relabel":
                     run = dict(RELABEL, id=str(900 + len(made)), kind=true, account=start[1])
                     made.append(run)
