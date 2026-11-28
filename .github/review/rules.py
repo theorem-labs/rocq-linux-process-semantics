@@ -915,10 +915,10 @@ LOG_DECISIONS = {
     "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, unless "
              "this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This run relabels the "
              "head in three later steps when GitHub accepted the withdrawal of each check run that its withdraw line "
-             "names. The hold job also relabels it when the check runs read before its withdrawal show that an "
-             "earlier attempt withdrew one with the conclusion success. In the comment job, it also relabels the head "
-             "when its post job recorded the import check run and the cause is pass. None of the three writes a "
-             "check run, and the last writes the state label and the label comment that a relabel gives now."),
+             "names. The hold job of an answer also relabels it when the head's check runs show that an earlier "
+             "attempt of this run withdrew a success. In the comment job, it also relabels the head when its post job "
+             "recorded the import check run and the cause is pass. None of the three writes a check run, and the last "
+             "writes the state label and the label comment that a relabel gives now."),
 }
 LOG_CAUSES = {
     "blocking": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the "
