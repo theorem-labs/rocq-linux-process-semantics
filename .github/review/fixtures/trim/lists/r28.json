@@ -1,0 +1,12 @@
+[
+  {
+    "kind": "question",
+    "ref": "proofs/lib/ConstAccept.v:1-3",
+    "text": "A maintainer must decide: the licence lines of `projects/cgif/cgif_rgb_fuzzer/proofs/lib/ConstAccept.v`. `proofs/lib/ConstAccept.v:1-3` puts Anthropic's two lines and a `Modified by` line over the whole file. If that counts as code from `UZZ0.v`, case 2 asks for these lines. Requirement 7 then reads lines 4–111 as coming from Anthropic's proofs, although they were written here, and line 3 does not say otherwise. If it does not count, case 3 applies and lines 1–3 should be removed. The review cannot judge which of the two holds. The option the pull request offers works either way: move `ubsan_equiv` into a `lib/` file of its own with Anthropic's two lines and a `Modified by` line, and leave `ConstAccept.v` without licence lines."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "The pull request says which files came from which. A maintainer compares them and updates the build record."
+  }
+]

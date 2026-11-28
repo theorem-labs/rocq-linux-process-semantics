@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "change",
+    "ref": "projects/cjson/cjson_read_fuzzer/proofs/lib/Halts/HaltsTops.v:10-16",
+    "text": "`projects/cjson/cjson_read_fuzzer/proofs/lib/Halts/HaltsTops.v:10-16`: the `(* Modified by gabelogan195, 2026-11: … *)` comment starts on line 10 and ends on line 16. Requirement 7 of `docs/adding-a-proof.md` says a file's licence lines are in its first 10 lines, and each `Modified by` line counts as a licence line. Lint's `licence` rule looks below line 10 only for SPDX and copyright lines (`tools/oft/lint.py:953-962`), so a clean lint does not show that this is met. Fix: put the whole comment on line 10 as one line, as `HaltsBridge.v:4` and `SpecHalts.v:4` do."
+  },
+  {
+    "kind": "question",
+    "ref": "checks.json",
+    "text": "Checks: `checks.json` lists only jobs of the `review` workflow. It has no `pr` workflow result for head `be1fdc5`. So it does not say whether the proofs compile or whether every assumption is allowed. `HaltsBridge.v:16` imports `Classical_Prop`; its `classic` is on the list at `toolchain/allowed-axioms.txt:93`."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "Sources: the three `lib/Halts/` files name `projects/skcms/iccprofile_info/proofs/lib/Halts/*.v` at `f92feaf8b7` as their sources. Those files are not in the review's checkout, so a maintainer has to compare two things: Lines 1–3 of `HaltsBridge.v` and `SpecHalts.v`, and lines 1–9 of `HaltsTops.v`, should equal those files' licence lines, unchanged."
+  },
+  {
+    "kind": "question",
+    "ref": "SpecHalts.v:4",
+    "text": "Each gabelogan195 line should say what changed. `SpecHalts.v:4` names only the imports and the dropped `PropExec.fp0` instance. But `exs_body`/`exs_spec` and `nk_body`/`nk_spec` (`SpecHalts.v:65-84`, `:111-129`) follow cjson's `ShapeSpec.spec` (`proofs/lib/ShapeSpec.v:50-94`) case by case. If skcms's cases differ, the line should say so."
+  }
+]

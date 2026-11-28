@@ -1,0 +1,22 @@
+[
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_manifest.c:213 and :222",
+    "text": "Compare the answer with the exact value in both directions: `if (want && named != 1) abort();` and `if (!want && named != 0) abort();`."
+  },
+  {
+    "kind": "change",
+    "ref": null,
+    "text": "Add this record to the comment of the first check:\n\n```\nmutant: src/lv2_locate.c:161 `return 1;` -> `return LV2_LOCATE_READ_FAILED;`\ninput: prefixes-past-most-read\n```"
+  },
+  {
+    "kind": "change",
+    "ref": "project.yaml",
+    "text": "The file is in the repository, so this change needs a new commit there, and `repo` in `project.yaml` must name that commit."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

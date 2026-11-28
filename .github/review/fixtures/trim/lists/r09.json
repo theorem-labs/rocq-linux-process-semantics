@@ -1,0 +1,17 @@
+[
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_eq.c:200",
+    "text": "Add an upper bound where the design is the prototype bell (for example a centre at most an eighth of the rate). Add a `mutant:` record of this change, with an input whose bell is in that range."
+  },
+  {
+    "kind": "change",
+    "ref": "fuzz/fuzz_src.c:171 and fuzz/fuzz_src.c:179",
+    "text": "Add a check that a flushed take of n inputs makes at least n * l / m outputs (the harness's `want`). Add a `mutant:` record of this change with the input `32000-48000`, which is a flushed take."
+  },
+  {
+    "kind": "question",
+    "ref": null,
+    "text": "We can write these changes for you. Reply here if you want that."
+  }
+]

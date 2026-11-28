@@ -2,18 +2,17 @@ name: Review tests
 
 # The tests of the review workflow (.github/workflows/review.yml) and of its
 # screen. They have a workflow of their own, apart from ci.yml's Rocq lanes, so
-# a change to them changes no file that the lanes' workflow holds. Every job
-# runs on every event: this repository has no merge queue, so a pull request's
-# run is the whole check of its change.
+# a change to them changes no file that the lanes' workflow holds. The workflow
+# runs on pull requests alone, and every job runs on each of them: this
+# repository has no merge queue, so a pull request's run is the whole check of
+# its change. A push to main and a run by hand start no run of it
+# (dispatch://INFRA-4858 R5).
 on:
-  push:
-    branches: [main]
   pull_request:
-  workflow_dispatch:
 
-# As in ci.yml: one group per branch, so a newer push to main, or a pull
-# request's newer head, cancels the run of the older one. No job reads the
-# previous tip of main, so the newer run checks all the older one would have.
+# One group per pull request (its ref, refs/pull/<n>/merge), so a newer head of
+# a pull request cancels the run of its older head. No job reads an older head,
+# so the newer run checks all the older one would have.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -22,36 +21,68 @@ permissions:
   contents: read
 
 jobs:
-  # The scripts of .github/workflows/review.yml, run against a stand-in gh (.github/test_review.py): who is reviewed and
-  # who is screened first, which jobs run on each route, which comments the review reads, and what the posted comment
-  # can notify or link; and its screen, against stand-in services (.github/test_screen.py). Each of the two test files
-  # runs in its own job, in parallel, so a failure of one does not hide the result of the other.
+  # The scripts of .github/workflows/review.yml, .github/workflows/rescreen.yml and .github/workflows/screen-start.yml,
+  # run against a stand-in gh (.github/test_review.py): who is reviewed and who is screened first, which jobs run on
+  # each route, which comments the review reads, and what the posted comment can notify or link; and its screen,
+  # against stand-in services (.github/test_screen.py). Each of the two test files runs in its own job, in parallel,
+  # so a failure of one does not hide the result of the other. The job of test_review.py runs its tests in 4
+  # processes, one for each core of the runner (.github/parallel_tests.py): in INFRA-5317's measurement in a container
+  # like the runner, 4 processes took 276 s and one process 876 s. Its job keeps its 20 minutes (OSSV-221's architect,
+  # 2026-11-22 03:17Z, after a run that 10 minutes cancelled).
   review-workflow-review:
     name: 'Review workflow: test_review.py'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: python3 .github/test_review.py
+      - run: python3 .github/parallel_tests.py --processes 4 .github/test_review.py
 
   review-workflow-screen:
     name: 'Review workflow: test_screen.py'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: python3 .github/test_screen.py
+
+  # Every order of the jobs of two and three runs of one head, and the end state that each order must reach
+  # (.github/test_orders.py; OSSV-221's architect, 2026-11-24 14:36Z and 14:42Z). Its 1,285 combinations run in 60
+  # shards (ORDERS_SHARD), each in 4 processes, so that each shard ends in under 10 minutes (CI rule 3; OSSV-613's
+  # architect, 2026-11-26 02:17Z). The 747 combinations before the refused review of round 30 took 179.6 job-minutes
+  # in 30 shards of 4.3 to 7.9 minutes; at that speed, the 129,813 job runs of the 1,285 (test_orders.py cost; 68,605
+  # for the 747) take about 340, so 60 shards of about 5.7 minutes each. Its failure sweep (ORDERS_FAILURES=1) is no
+  # job of this workflow: it takes hours of CPU time, so it runs on demand on the build cluster, and no env here sets
+  # ORDERS_FAILURES. Nor are its combinations of a review by hand of round 33 (ORDERS_HAND=1): they run on the build
+  # cluster, in plain orders and in the failure sweep, and never in this workflow, so no env here sets ORDERS_HAND
+  # (OSSV-613's architect, 2026-11-27 15:50Z and 15:51Z).
+  review-workflow-orders:
+    name: 'Review workflow: test_orders.py (${{ matrix.shard }}/60)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+                28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+                54, 55, 56, 57, 58, 59]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - env:
+          ORDERS_SHARD: ${{ matrix.shard }}/60
+        run: python3 .github/parallel_tests.py --processes 4 .github/test_orders.py
 
   # The one check of this workflow to require: it always runs, and passes only
   # when every job it needs succeeded. .github/test_ci.py, which ci.yml runs,
   # tests this script.
   gate:
     name: Review tests
-    needs: [review-workflow-review, review-workflow-screen]
+    needs: [review-workflow-review, review-workflow-screen, review-workflow-orders]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
