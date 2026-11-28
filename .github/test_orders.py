@@ -82,22 +82,22 @@ its own) or records the check run of not-approved for refused, and its comment j
 comment the state refused-review. Two words are such a review. refused: its post job's writes land, so its check run
 carries its word. refusedline: GitHub refuses the first write of its post job (that PATCH or that check run) at the
 first attempt of its run, a 502 as the sweep's failure of a write gives it (job); its post job fails with the output
-owed, and its comment job's step "Record the withdrawal of a refused review whose post job did not finish" writes the
-line <!-- withdraw-owed HEAD refused <run> <read> -->, which carries its word. An order in which GitHub refused that
-write ends as a hurt order of the sweep ends (below): with the retry, then the checks of a hurt order, as the workflow
-leaves a refused write to the retry. A post job that dies before the step that writes its output owed (a cancel of the
-sweep at "Run actions/checkout", at "Read the author-kind table" or at "Write the output owed for the withdrawal of the
-import check runs") of either word leaves neither that output nor a check run, and a refused review posts no comment.
-The comment job derives that output itself: its step "Record the withdrawal of a refused review whose post job did not
-finish", for a post job that failed or was cancelled over a review that the fresh reader refused (its review job's
-output refused=review), runs the script of the step "Record a withdrawal that the post job owes" (the two never both
-run), which takes "HEAD refused" as the output owed when the post job gave none, under the table's withdraw and an
-output key_set that is not false (an empty one, when GitHub gives no output of a post job that did not succeed, counts
-as true; test_review.post_outputs fills it in from the post job's env). So that step writes the line, and the older
-answer's hold job gives way to it. The same step derives "HEAD blocking" or "HEAD person" for a post job of a review of
-that verdict that failed or was cancelled and gave neither owed nor withdrawn (OSSV-613's architect, 2026-11-28 00:08Z,
-C3): when its comment job gives way to a newer word, its review never posts, and that line carries its word, so that a
-relabel withdraws for it (test_review's
+owed, and its comment job's step "Record the withdrawal of a blocking, person or refused review whose post job did not
+finish" writes the line <!-- withdraw-owed HEAD refused <run> <read> -->, which carries its word. An order in which
+GitHub refused that write ends as a hurt order of the sweep ends (below): with the retry, then the checks of a hurt
+order, as the workflow leaves a refused write to the retry. A post job that dies before the step that writes its output
+owed (a cancel of the sweep at "Run actions/checkout", at "Read the author-kind table" or at "Write the output owed for
+the withdrawal of the import check runs") of either word leaves neither that output nor a check run, and a refused
+review posts no comment. The comment job derives that output itself: its step "Record the withdrawal of a blocking,
+person or refused review whose post job did not finish", for a post job that failed or was cancelled over a review that
+the fresh reader refused (its review job's output refused=review), runs the script of the step "Record a withdrawal that
+the post job owes" (the two never both run), which takes "HEAD refused" as the output owed when the post job gave none,
+under the table's withdraw and an output key_set that is not false (an empty one, when GitHub gives no output of a post
+job that did not succeed, counts as true; test_review.post_outputs fills it in from the post job's env). So that step
+writes the line, and the older answer's hold job gives way to it. The same step derives "HEAD blocking" or "HEAD person"
+for a post job of a review of that verdict that failed or was cancelled and gave neither owed nor withdrawn (OSSV-613's
+architect, 2026-11-28 00:08Z, C3): when its comment job gives way to a newer word, its review never posts, and that line
+carries its word, so that a relabel withdraws for it (test_review's
 test_a_review_that_withdraws_and_gives_way_with_its_post_job_cancelled_leaves_its_line). When the comment job of a run
 whose post job did not succeed fails or is cancelled before it records what the run owes, of any word (at its
 checkout, at that step, or at the step "Record a withdrawal that the post job owes": the sweep fails their reads and

@@ -1182,14 +1182,14 @@ due_approve() {
 # unrecorded <run>: whether, in the newest attempt of <run> ($seen/jobs-<run>, which facts read), its comment job failed
 # or was cancelled before it recorded what the run owes (OSSV-613's architect, 2026-11-27 00:24Z, choice (a)): at
 # GitHub's own first step of a job ("Set up job"), at its checkout ("Run actions/checkout"), or at either step that
-# records a withdrawal, "Record a withdrawal that the post job owes" or "Record the withdrawal of a refused review whose
-# post job did not finish" (review.yml, the comment job), which come first after the checkout. The pass cannot read the
-# verdict of a job, so it reads the steps of that job: the step that failed or was cancelled, the first one, and each
-# step before it are all among those steps. A comment job that GitHub ended before its first step (it lists no step)
-# died there too. Such a job wrote no line <!-- withdraw-owed <head> <why> <run> <read> --> and posted no review
-# comment, whatever the verdict of the run's review: pass, blocking, person, or refused, which posts no comment and
-# whose word only that line or a check run of the post job carries. When the post job of the run failed or was
-# cancelled too, it can have written the check run or the withdrawal before it failed, or neither. Either way, while
+# records a withdrawal, "Record a withdrawal that the post job owes" or "Record the withdrawal of a blocking, person or
+# refused review whose post job did not finish" (review.yml, the comment job), which come first after the checkout. The
+# pass cannot read the verdict of a job, so it reads the steps of that job: the step that failed or was cancelled, the
+# first one, and each step before it are all among those steps. A comment job that GitHub ended before its first step
+# (it lists no step) died there too. Such a job wrote no line <!-- withdraw-owed <head> <why> <run> <read> --> and
+# posted no review comment, whatever the verdict of the run's review: pass, blocking, person, or refused, which posts no
+# comment and whose word only that line or a check run of the post job carries. When the post job of the run failed or
+# was cancelled too, it can have written the check run or the withdrawal before it failed, or neither. Either way, while
 # the newest attempt of the run recorded nothing, the run gets the re-run of its failed jobs (due_rerun) and no relabel
 # (due_retry, due_variable, due_conflict). A comment job that failed at a later step (its label step, say) recorded what
 # it owes.
@@ -1199,7 +1199,7 @@ unrecorded() {
       | .[:(if $died == null then length else $died + 1 end)]
       | all((.name // "") as $n | $n == "Set up job" or ($n | test("^Run actions/checkout(@|$)"))
           or $n == "Record a withdrawal that the post job owes"
-          or $n == "Record the withdrawal of a refused review whose post job did not finish"))' \
+          or $n == "Record the withdrawal of a blocking, person or refused review whose post job did not finish"))' \
     "$seen/jobs-$1")" = true ]
 }
 # unrecorded_run: the id of the newest run, by when GitHub made it, of the reviews, rescreens, relabels and approvals

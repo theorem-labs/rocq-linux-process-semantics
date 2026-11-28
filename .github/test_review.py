@@ -5106,11 +5106,11 @@ AFTER_FAILURE = "failure() || cancelled()"
 # The last step of the comment job and of the hold job (rules.py unclaim), whose if is AFTER_FAILURE.
 UNCLAIM = "Leave no label that says the workflow recorded the check"
 # The comment job's two steps that come first after its checkout and record a withdrawal (held.sh unrecorded): the
-# step that records what the post job owes (OWE), and the step that records the withdrawal of a refused review whose
-# post job did not finish (OWE_REFUSED), which runs the script of the step OWE (OSSV-613's architect, 2026-11-26
-# 20:57Z and 22:03Z, round 30, item 4). The two never both run.
+# step that records what the post job owes (OWE), and the step that records the withdrawal of a blocking, person or
+# refused review whose post job did not finish (OWE_REFUSED), which runs the script of the step OWE (OSSV-613's
+# architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4). The two never both run.
 OWE = "Record a withdrawal that the post job owes"
-OWE_REFUSED = "Record the withdrawal of a refused review whose post job did not finish"
+OWE_REFUSED = "Record the withdrawal of a blocking, person or refused review whose post job did not finish"
 
 
 def run_job(test, job, ctx, tokens, mint=True, cancel=None):
@@ -13954,18 +13954,18 @@ class ScheduleTest(Scheduled):
         """OSSV-613's architect, 2026-11-27 00:24Z, choice (a), (i), (iii) and (v): rescreen run 10 of mallory's #7,
         whose post job failed or was cancelled at its App write, and whose comment job failed or was cancelled before
         it recorded what the run owes: at its checkout, at its step "Record a withdrawal that the post job owes", at its
-        step "Record the withdrawal of a refused review whose post job did not finish", or before its first step. That
-        run wrote neither its review comment nor a line <!-- withdraw-owed <head> <why> <run> <read> -->, whatever its
-        verdict: pass, blocking, person or refused (the pass cannot read the verdict of a job: it reads the steps of
-        the comment job). Its post job can have written its check run or its withdrawal before it failed, or neither.
-        An hour after the run ended, the rescreen pass runs its failed jobs again, the post job among them (one POST of
-        rerun-failed-jobs), and starts no run. The last case is the order of the failure sweep of test_orders.py's
-        test_0751_2_runs_opass0_orefusedline1: GitHub refused the first write of the post job of the refused review,
-        and its comment job was cancelled at its checkout. Less than an hour after the run ended, the pass starts
-        nothing for #7, no relabel and no re-run: due_rerun waits, and due_retry gives way. The controls, the old code:
-        held.sh whose due_rerun skips each run whose post job did not succeed runs no job again, and starts nothing
-        either (due_retry gives way); held.sh whose due_rerun has no bound of the hour runs the failed jobs again at
-        once."""
+        step "Record the withdrawal of a blocking, person or refused review whose post job did not finish", or before
+        its first step. That run wrote neither its review comment nor a line <!-- withdraw-owed <head> <why> <run>
+        <read> -->, whatever its verdict: pass, blocking, person or refused (the pass cannot read the verdict of a job:
+        it reads the steps of the comment job). Its post job can have written its check run or its withdrawal before it
+        failed, or neither. An hour after the run ended, the rescreen pass runs its failed jobs again, the post job
+        among them (one POST of rerun-failed-jobs), and starts no run. The last case is the order of the failure sweep
+        of test_orders.py's test_0751_2_runs_opass0_orefusedline1: GitHub refused the first write of the post job of the
+        refused review, and its comment job was cancelled at its checkout. Less than an hour after the run ended, the
+        pass starts nothing for #7, no relabel and no re-run: due_rerun waits, and due_retry gives way. The controls,
+        the old code: held.sh whose due_rerun skips each run whose post job did not succeed runs no job again, and
+        starts nothing either (due_retry gives way); held.sh whose due_rerun has no bound of the hour runs the failed
+        jobs again at once."""
         rerun = f"repos/{REPO}/actions/runs/10/rerun-failed-jobs"
         skipping = changed_held("due_rerun", 'unrecorded "$id" || continue', "continue")
         hourless = changed_held("due_rerun", "if [[ ! $ended < $hour ]]; then", "if false; then")
@@ -20615,8 +20615,8 @@ class ImportCheckTest(ReaderRunner):
         it is cancelled there. GitHub fills in the outputs of such a job, so the jobs after it read that verdict, as for
         a blocking finding. The post job withdraws 901 for the reason refused, from the time when this run read the
         item, and records, approves and decides nothing. When GitHub refuses the withdrawal, its output owed names HEAD
-        and refused, and the comment job's step "Record the withdrawal of a refused review whose post job did not finish"
-        (OSSV-613's architect, 2026-11-26 22:03Z) writes the line
+        and refused, and the comment job's step "Record the withdrawal of a blocking, person or refused review whose
+        post job did not finish" (OSSV-613's architect, 2026-11-26 22:03Z) writes the line
         <!-- withdraw-owed <head> refused 100 <read> -->. The hold job does not run, so the run is not held for a retry.
         The comment job posts no review, and its label step takes review-held off and gives the state of the refusal,
         which the label comment keeps the line in. The control, the ifs of before that rule (before_refused_ifs): no
@@ -25604,7 +25604,7 @@ class ImportCheckTest(ReaderRunner):
         finding of the run's own review when GitHub refuses it. Run 100 recorded 901 and posted its screened pass, and
         GitHub refuses run 130's withdrawal of 901. Run 130's post job fails, with an error that names HEAD and 901,
         and its output owed names HEAD and refused. Its comment job posts no review, and its step "Record the withdrawal
-        of a refused review whose post job did not finish" writes the line
+        of a blocking, person or refused review whose post job did not finish" writes the line
         <!-- withdraw-owed <HEAD> refused 130 <read> -->: run 130 and the time
         when it read the item, as for its own blocking finding. Each later write of the label comment keeps the line
         (KEPT), and the rescreen pass reads it (held.sh relabel_withdraws: refused owed). A relabel then withdraws 901
@@ -25660,8 +25660,8 @@ class ImportCheckTest(ReaderRunner):
         post job's outputs, so a cancelled post job of which GitHub gives no output still leaves the refusal a
         carrier. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused its
         review. Its post job was cancelled, and GitHub gives none of its outputs (no owed, no withdrawn, no key_set).
-        The comment job's step "Record the withdrawal of a refused review whose post job did not finish" writes the
-        line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment."""
+        The comment job's step "Record the withdrawal of a blocking, person or refused review whose post job did not
+        finish" writes the line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment."""
         rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
         label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
                  "body": rules.label_comment("working")}
@@ -25686,14 +25686,14 @@ class ImportCheckTest(ReaderRunner):
 
     def test_an_empty_key_set_counts_as_true_and_only_a_key_set_of_false_leaves_no_line_of_a_refused_review(self):
         """OSSV-613's architect, 2026-11-27 09:24Z, round 31, R7: for a post job that did not succeed over a review that
-        the fresh reader refused, the comment job's step "Record the withdrawal of a refused review whose post job did
-        not finish" reads the post job's output key_set, which GitHub can leave out for a post job that was cancelled.
-        An empty key_set counts as true, and only a key_set of false (the environment post holds no key) leaves no
-        line. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused its review.
-        Its post job was cancelled, with no output owed and none withdrawn. With no key_set, and with key_set true, the
-        step writes the line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment 40; with key_set false
-        it writes no line. The control, the step that writes the line only for a key_set of true, as before that
-        ruling, writes no line with no key_set (the case of
+        the fresh reader refused, the comment job's step "Record the withdrawal of a blocking, person or refused review
+        whose post job did not finish" reads the post job's output key_set, which GitHub can leave out for a post job
+        that was cancelled. An empty key_set counts as true, and only a key_set of false (the environment post holds no
+        key) leaves no line. Rescreen run 130 of mallory's #7 read the item 20 minutes ago, and the fresh reader refused
+        its review. Its post job was cancelled, with no output owed and none withdrawn. With no key_set, and with
+        key_set true, the step writes the line <!-- withdraw-owed HEAD refused 130 <read> --> in the label comment 40;
+        with key_set false it writes no line. The control, the step that writes the line only for a key_set of true, as
+        before that ruling, writes no line with no key_set (the case of
         test_a_cancelled_post_job_with_no_outputs_still_leaves_the_line_of_its_refused_review)."""
         rescreen = dict(self.REVIEWED, task="rescreen", started=ago(20))
         label = {"id": 40, "user": {"login": BOT}, "created_at": ago(50), "updated_at": ago(50),
@@ -25939,12 +25939,12 @@ class ImportCheckTest(ReaderRunner):
         derives the output owed of the post job itself, "<head> refused", the value that the post job's step
         "Write the output owed for the withdrawal of the import check runs" gives, under the conditions of that step
         (the environment post holds the App's key, which the post job's output key_set says, and the author-kind
-        table's withdraw): its step "Record the withdrawal of a refused review whose post job did not finish" writes
-        the line <!-- withdraw-owed <head> refused 100 <read> --> in the label comment, before its label step gives the
-        item the state of the refusal. The hold job of answer run 130, which read #7 40 minutes ago and whose screen
-        held HEAD, runs after it and gives way to that line: it posts no hold comment and writes no label comment. The
-        control, the comment job as before that step, writes no line: the hold job reads no newer word, and writes the
-        label comment of the state after-hold over the label of the refusal."""
+        table's withdraw): its step "Record the withdrawal of a blocking, person or refused review whose post job did
+        not finish" writes the line <!-- withdraw-owed <head> refused 100 <read> --> in the label comment, before its
+        label step gives the item the state of the refusal. The hold job of answer run 130, which read #7 40 minutes ago
+        and whose screen held HEAD, runs after it and gives way to that line: it posts no hold comment and writes no
+        label comment. The control, the comment job as before that step, writes no line: the hold job reads no newer
+        word, and writes the label comment of the state after-hold over the label of the refusal."""
         for result in ("cancelled", "failure"):
             with self.subTest(site=site, result=result):
                 self.tearDown()
@@ -25969,16 +25969,16 @@ class ImportCheckTest(ReaderRunner):
 
     def test_a_comment_job_whose_step_that_records_the_withdrawal_failed_writes_the_same_line_when_it_runs_again(self):
         """OSSV-613's architect, 2026-11-26 20:57Z and 22:03Z, round 30, item 4: the step "Record the withdrawal of a
-        refused review whose post job did not finish" can fail, at its read of the comments of #7 or at its write of the
-        label comment 40 (GitHub refuses the call). That is a comment job that failed, and its post job did not succeed
-        either: the rescreen pass runs the failed jobs of that run again (held.sh due_rerun, unrecorded), and
-        the last step of the comment job, "Leave no label that says the workflow recorded the check", runs after the
-        failed step, so the label comment holds no claim that is not true. The post job of rescreen run 100, whose
-        review the fresh reader refused, was cancelled at its checkout. The first run of its comment job writes no
-        label comment; its re-run, after GitHub took the call, derives the same output owed from the same needs and
-        writes the same line <!-- withdraw-owed <head> refused 100 <read> -->, so the hold job of the older answer 130
-        gives way to it. The control, the comment job as before the step, writes no line in the re-run: the hold job
-        writes after-hold. A refused read fails the last step too, which reads the same comments: it leaves the
+        blocking, person or refused review whose post job did not finish" can fail, at its read of the comments of #7 or
+        at its write of the label comment 40 (GitHub refuses the call). That is a comment job that failed, and its post
+        job did not succeed either: the rescreen pass runs the failed jobs of that run again (held.sh due_rerun,
+        unrecorded), and the last step of the comment job, "Leave no label that says the workflow recorded the check",
+        runs after the failed step, so the label comment holds no claim that is not true. The post job of rescreen run
+        100, whose review the fresh reader refused, was cancelled at its checkout. The first run of its comment job
+        writes no label comment; its re-run, after GitHub took the call, derives the same output owed from the same
+        needs and writes the same line <!-- withdraw-owed <head> refused 100 <read> -->, so the hold job of the older
+        answer 130 gives way to it. The control, the comment job as before the step, writes no line in the re-run: the
+        hold job writes after-hold. A refused read fails the last step too, which reads the same comments: it leaves the
         comment as it is."""
         site = self.POST_SITES[0]
         for case, call, last in (("read", f"repos/{REPO}/issues/7/comments", "failure"),
