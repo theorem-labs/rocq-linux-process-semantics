@@ -277,16 +277,17 @@ than screen, posted when a comment of github-actions[bot] gives the reason of th
 (reason_posted, from the why, the run and the time of that word, as for <posted>; a review comment gives it itself),
 and unposted when none does; - else. Only the line for screen gives a state (held). A relabel records the import check
 run only for screened with the verdict pass, no <why>, <stands> - and <from> -. Its decision is withdrawn for screened
-with the verdict pass and <stands>, and with the verdict pass and a <why> for <posted> unposted, or for earlier or
-unscreened with <given> unposted and <stands>. Else, with a <why>, it is screened for screened or earlier.
-With <from> outranked, it records none while the line stands, and it withdraws none for the line: its decision is hand.
-The step OWE of its comment job takes the line out when a screened review comment outranks it (withdraw-word). For
-earlier with the verdict pass and no <why>, its decision is hand. A review by hand
-with no screen records none. Its post job's decision is hand for screened or earlier with no
-<why>, and screened with a <why>: the review of this run has not posted yet. It is held for held, and screen for
-unscreened. For the decision hand, the label step counts an import check run of <head> that still stands, for the value
-of the variable now, as recorded. The comment job's label step reads the check runs again before it writes the state
-import, and writes it only while such a check run stands: else its decision is gone (GONE).
+with the verdict pass and <stands>. With the verdict pass and a <why>, a relabel and a review by hand with no screen
+(with the verdict of its own review, and earlier for screened: the state once its comment posts) decide by one rule:
+withdrawn for <from> owed and <posted> unposted, or for <stands> with screened or <given> unposted; else screened for
+screened or earlier. With <from> outranked, a relabel records none while the line stands, and it withdraws none for
+the line: its decision is hand. The step OWE of its comment job takes the line out when a screened review comment
+outranks it (withdraw-word). For earlier with the verdict pass and no <why>, its decision is hand. A review by hand
+with no screen records none. Its post job's decision is held for held; else, but for that rule, hand for screened or
+earlier with no <why>, screened with a <why>, and screen for unscreened. For the decision hand, the label step counts
+an import check run of <head> that still stands, for the value of the variable now, as recorded. The comment job's
+label step reads the check runs again before it writes the state import, and writes it only while such a check run
+stands: else its decision is gone (GONE).
 With own=<verdict> started=<time>, for a review by hand (the decision step's by_hand), or with an empty <verdict> for
 a relabel (relabeled), <owed> follows <given>: the why of the output owed that the decision step writes as soon as
 it reads why the import check runs of <head> are withdrawn (owed_why), or - when it reads none (neither held nor a
@@ -331,11 +332,11 @@ or a hold counts from the time when its run read the item (its marker <!-- revie
 at no time. The line counts from its <read>, and the check run from the time that its summary names. <other> is the
 run of that word, or - when it names none. "-" alone when no such word stands. A run whose own word such a word
 outranks posts nothing on the item: the comment job and the hold job read this. Only when that run withdrew a success
-of <head>, or its post job recorded one and the newer word is a pass (in the comment job), do they give the item the
-state label and the label comment that a relabel of <head> gives now (relabel). It reads the comments and the import
-check runs of <head> of the OSS Verify App (OSS_VERIFY_APP_ID) for <number>. The status is 1 when GitHub could not
-give the comments or the check runs, and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID is not a whole number
-greater than 0 (NUMBER).
+of <head>, its post job recorded one and the newer word is a pass (in the comment job), or the label comment claims a
+success of <head> that no check run shows (untrue-claim), do they give the item the state label and the label comment
+that a relabel of <head> gives now (relabel). It reads the comments and the import check runs of <head> of the OSS
+Verify App (OSS_VERIFY_APP_ID) for <number>. The status is 1 when GitHub could not give the comments or the check runs,
+and 2 when <kind> is no kind of word or OSS_VERIFY_APP_ID is not a whole number greater than 0 (NUMBER).
 
 relabel-withdraws: why a relabel of <head> of the pull request <number> withdraws the import check runs of <head>, by
 the rule that the post job of that relabel reads (review_verdict, with the import check runs of <head>), from
@@ -503,10 +504,10 @@ label comment, the item gets no state label and the line goes. When it wrote not
 relabel gives no word of its own, so no word of its run (GITHUB_RUN_ID) counts, such as its own withdrawal for a word
 whose run is not known, which counts from when it withdrew. RELABEL_RUN, when the step sets it, takes the place of
 GITHUB_RUN_ID, and an empty one names no run, so that each word counts: the comment job and the hold job set it empty
-in the steps of a relabel that they run (after a run whose posts were skipped withdrew a success of <head>, or its post
-job recorded one and the newer word is a pass, and after the label step of a pass by hand while a success stands), as
-they set the labels that a relabel of <head> gives now, and the words of their own run are words of another run for
-that relabel.
+in the steps of a relabel that they run (after a run whose posts were skipped withdrew a success of <head>, its post
+job recorded one and the newer word is a pass, or the label comment claims a success of <head> that no check run shows,
+and after the label step of a pass by hand while a success stands), as they set the labels that a relabel of <head>
+gives now, and the words of their own run are words of another run for that relabel.
 
 answers: the answers of the author-kind table (TABLE) for <task>, one of TASKS, as <answer>=<value> lines for
 $GITHUB_OUTPUT: label (set, off or unchanged), then approve, record, withdraw and retry (true or false). <outside> and
@@ -644,15 +645,17 @@ UNSCREENED = ("The automated review passed this pull request. No automated scree
 SCREEN_HELD_AFTER = ("The automated review passed this pull request. An automated screen held its head commit. After "
                      "that, no automated screen passed it in a run that also reviewed it. So the check "
                      "`repo-pairs/import-approved` does not approve this head commit for the import.")
-# The decision withdrawn: a run found a reason to withdraw the check run of the head, this relabel or an earlier run (a
+# The decision withdrawn: a run found a reason to withdraw the check run of the head, this run or an earlier run (a
 # line of OWED, or a withdrawal that stands), and no comment gives that reason; the head can also have had no such
 # check run. The run whose review passed can be the earlier or the later of the two, so the text gives no order. It
-# says so in the place of PASSED and of the steps of the import. The next step is a review of the head by hand
-# (REVIEW_AGAIN), whose comment gives a verdict of the head.
+# says so in the place of PASSED and of the steps of the import. The next step is a review of the head by hand with
+# the screen first (REVIEW_AGAIN; OSSV-613's architect, 2026-11-28 13:05Z): its screened pass outranks the word that
+# withdraws, so it lifts the reason (review_verdict). A review by hand with no screen lifts nothing.
 NO_REASON = ("The automated review passed this pull request. A run of the workflow found a reason to withdraw the "
              "check `repo-pairs/import-approved` from its head commit. No comment on this pull request gives that "
              "reason. So no such check approves this head commit for the import.")
-REVIEW_AGAIN = "Sami starts the automated review of the head commit again, by hand."
+REVIEW_AGAIN = ("Sami starts the automated review of the head commit again, by hand, with the screen first (the input "
+                "screen of review.yml).")
 # The decision gone (the label step, unrecord): the screen and the review passed the head, and no import check run of
 # the head with the conclusion success holds the marker line of the value that the decision read, or, for unrecord, of
 # the label comment. The comment that gives the reason of a withdrawal can have posted already, so the text does not say

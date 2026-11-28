@@ -17814,8 +17814,7 @@ class DecisionLogTest(unittest.TestCase):
                 self.assertEqual((last["name"], last["if"]), want)
                 self.assertIn("rules.py unclaim", last["run"])
         skip = rules.LOG_DECISIONS["skip"]
-        if re.search(r"post no comment and no label comment", skip):
-            self.assertRegex(skip, r"fail|cancel")
+        self.assertRegex(skip, r"fail|cancel")
 
     def test_the_meaning_of_hand_says_no_screened_pass_stops_the_withdrawal_for_the_own_verdict_of_a_hand_run(self):
         """The tester's round 33 (b7): the meaning of the decision hand is true for each case it names. In the post job
@@ -19800,7 +19799,9 @@ class ImportCheckTest(ReaderRunner):
         GitHub refuses the withdrawal of 901. The post job fails, and its output owed, which GitHub gives the comment
         job also for a job that failed, names HEAD and blocking: the comment job records the line. alice's review
         replaces the screened pass, which gives no reason to withdraw. alice then passes HEAD by hand: that review
-        withdraws for the line, and GitHub refuses again, so the line stays. Her pass replaces her blocking review. Now
+        withdraws for the line, and GitHub refuses again, so the line stays. No comment gives the reason of the line, so
+        the decision of that pass is withdrawn, as for a relabel (pass_why; OSSV-613's architect, 2026-11-28 13:03Z),
+        where it was screened before. Her pass replaces her blocking review. Now
         no review comment of HEAD gives a reason to withdraw, and 901 stands. With no line, a relabel would read 901 as
         the record of a screened pass and keep #7 in the state import. With the line, it withdraws 901, for blocking,
         and records no check run. The line gives only the reason (round 13, part B, F2 and F3), and the title of the
@@ -19833,7 +19834,7 @@ class ImportCheckTest(ReaderRunner):
         got = self.judge(["README.md"], "pass", self.LPS, trust=by_hand, event="workflow_dispatch",
                          comments=[blocked, marked], listed=[listed], named=HEAD)
         self.assertEqual((got["result"], got["post"]["decision"], got["post"]["owed"]),
-                         ("failure", "screened", f"{HEAD} blocking"), self.logs)
+                         ("failure", "withdrawn", f"{HEAD} blocking"), self.logs)
         self.assertEqual(self.owe(got, by_hand, [blocked, marked]), [])
         # The comment job posts alice's pass: it replaces her blocking review (30), which had no screen.
         passed = review_of(HEAD, at=ago(0), screened=False)
@@ -23796,10 +23797,11 @@ class ImportCheckTest(ReaderRunner):
     # The read of the import check runs of HEAD that the label step makes, as the stand-in gh records it.
     CHECKS_READ = ["--method", "GET", "--paginate", f"repos/{REPO}/commits/{HEAD}/check-runs"]
 
-    # The rule of relabeled for the verdict pass with a why (OSSV-613's architect, 2026-11-28 06:13Z, item A, and
-    # 08:11Z, GIVEN_RULE): the decision withdrawn also for the states unscreened and earlier when no comment gives the
-    # reason of the why. Also what a control puts in its place, in two parts: the rule of before, which gives withdrawn
-    # for the state screened alone, and screened with the why for earlier.
+    # The rule of relabeled for the verdict pass with a why, which its function pass_why holds (OSSV-613's architect,
+    # 2026-11-28 06:13Z, item A, and 13:03Z: by_hand calls it too; 08:11Z, GIVEN_RULE): the decision withdrawn also for
+    # the states unscreened and earlier when no comment gives the reason of the why. Also what a control puts in its
+    # place, in two parts: the rule of before, which gives withdrawn for the state screened alone, and screened with the
+    # why for earlier.
     WHY_RULE = (('  if [ "$RECORD" = true ] && [ "$verdict" = pass ] && [ "$why" != - ]; then\n'
                  '    [ "$from" != owed ] || [ "$posted" != unposted ] || decided withdrawn unposted\n'
                  '    if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$given" = unposted ]; }; then\n'
@@ -23830,6 +23832,24 @@ class ImportCheckTest(ReaderRunner):
     # in its place: the test of before that ruling, which reads <posted>, for from owed the reason of the line.
     GIVEN_RULE = ('{ [ "$state" = screened ] || [ "$given" = unposted ]; }',
                   '{ [ "$state" = screened ] || [ "$posted" = unposted ]; }')
+
+    # by_hand as 8e0d84b1 made it, a control of OSSV-613's architect's ruling of 2026-11-28 13:03Z: it reads none of
+    # from, posted, stands, since and given, and calls no pass_why, so its pass with a why gives the decision screened
+    # for the states screened and earlier, and screen for unscreened. STATE_AFTER is the line of by_hand that gives
+    # pass_why the state that a relabel reads once the review comment of the run by hand posts (earlier for screened),
+    # and what a control puts in its place: nothing, so that pass_why gets the state of the read before that post.
+    BY_HAND_8E0D84B1 = ('  read -r earlier state why from posted stands since _ _ given owed <<< "$reviewed"\n'
+                        '  [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""\n'
+                        '  [ "$RECORD" = true ] || return 0\n'
+                        '  [ "$state" != held ] || decided held screen\n'
+                        '  after=$state\n'
+                        '  [ "$state" != screened ] || after=earlier\n'
+                        '  pass_why "$verdict" "$after" "$why" "$from" "$posted" "$stands" "$since" "$given"\n',
+                        '  read -r earlier state why _ _ _ _ _ _ _ owed <<< "$reviewed"\n'
+                        '  [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""\n'
+                        '  [ "$RECORD" = true ] || return 0\n'
+                        '  [ "$state" != held ] || decided held screen\n')
+    STATE_AFTER = ('  [ "$state" != screened ] || after=earlier\n', "")
 
     def ordered(self, jobs, comments=None, labels=("review-held",), checks=()):
         """The jobs of runs of mallory's #7 at HEAD, in the order of jobs, each job whole and each while #7 is as the
@@ -24036,6 +24056,147 @@ class ImportCheckTest(ReaderRunner):
                 comments, _labels, _checks, _done = order(True)
                 body = self.label_body(comments)
                 self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{rules.UNSCREENED}"), body)
+
+    def refused_then_by_hand(self, deep, reads):
+        """The two orders of the reviewer's round 4 (pull request #152, review 6097895326, at review.yml:3297): runs of
+        mallory's #7 at HEAD, each whole, in this order (ordered). Run 100, a screened CI review, passes HEAD and
+        records 901. Run 120, a screened rescreen, is refused by the fresh reader: it posts no review comment, and its
+        post job withdraws 901. Run 130, alice's review by hand with no screen (BY_HAND), passes HEAD. With deep (the
+        deep review's order), run 100 does not run: no success was ever recorded, and run 120 records a check run of
+        not-approved (901). reads gives the time when each run read the item. ordered's result."""
+        ci = ("100", dict(self.REVIEWED, started=reads["100"]), "pass", {})
+        refused = ("120", dict(self.REVIEWED, task="rescreen", started=reads["120"]), "refused",
+                   {"event": "workflow_dispatch", "named": HEAD, "refused": "review"})
+        hand = ("130", dict(self.BY_HAND, started=reads["130"]), "pass",
+                {"event": "workflow_dispatch", "screened": False})
+        return self.ordered(([] if deep else [ci]) + [refused, hand])
+
+    def test_a_pass_by_hand_whose_why_no_comment_gives_gets_the_label_that_a_relabel_gives(self):
+        """The reviewer's round 4, finding 1 (review 6097895326, at review.yml:3297), by OSSV-613's architect's ruling
+        of 2026-11-28 13:03Z: by_hand applies the rule of relabeled to the pass of its run with a why (pass_why). In
+        each order of refused_then_by_hand, the decide step of run 130 reads the why refused, which no comment gives,
+        and the withdrawal 901 that stands: the decision withdrawn, cause neutral, check 901, from the read of run
+        120. (In the deep review's order, only that check run of not-approved stands, and no success was ever
+        recorded.) Its label comment has the state decide, the text that no comment gives the reason (rules.py
+        NO_REASON) and the next step REVIEW_AGAIN, no success stands, and a relabel of HEAD at the end
+        (relabel_at_the_end) leaves #7 as it is. The control, by_hand as 8e0d84b1 made it (BY_HAND_8E0D84B1), gives
+        the decision screened in the reviewer's order (the text that the screen and the review passed the pull
+        request, rules.py PASSED) and screen in the deep review's order (UNSCREENED), each with Sami's steps of the
+        import, and the relabel at the end changes that label to the one of withdrawn."""
+        _label, step, _text = rules.STATES["decide"]
+        withdrawn = f"{rules.FIRST}\n**Next step:** {rules.REVIEW_AGAIN}\n\n{rules.NO_REASON}"
+        for deep, decision, text in ((False, "screened", rules.PASSED), (True, "screen", rules.UNSCREENED)):
+            with self.subTest(order="the deep review's" if deep else "the reviewer's"):
+                reads = {"100": ago(60), "120": ago(40), "130": ago(20)}
+
+                def ended(control=False):
+                    self.tearDown()
+                    self.setUp()
+
+                    def run():
+                        comments, labels, checks, done = self.refused_then_by_hand(deep, reads)
+                        logs = "\n".join(self.logs)
+                        return done["130"][0], logs, comments, labels, checks, self.relabel_at_the_end(comments,
+                                                                                                       labels, checks)
+
+                    return self.changed_step("post", self.DECIDE, *self.BY_HAND_8E0D84B1, run) if control else run()
+
+                got, logs, comments, labels, checks, end = ended()
+                body = self.label_body(comments)
+                self.assertEqual(got["post"]["decision"], "withdrawn", logs)
+                self.assertIn(f"#7 at {HEAD}: decision withdrawn, cause neutral, read {reads['130']}, check 901, from "
+                              f"{reads['120']}\n", logs)
+                self.assertTrue(body.startswith(withdrawn), body)
+                self.assertEqual((rules.says_recorded(body), labels, self.successes(checks)),
+                                 (False, [THEOREM_LABEL], []), body)
+                self.assertEqual(end, (True, "success", body), self.logs[-4:])
+                got, logs, comments, _labels, _checks, end = ended(True)
+                body = self.label_body(comments)
+                self.assertEqual(got["post"]["decision"], decision, logs)
+                self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{text}"), body)
+                self.assertIn(rules.IMPORT_STEPS, body)
+                self.assertEqual((end[0], end[2].startswith(withdrawn)), (False, True), end[2])
+
+    def test_a_pass_by_hand_decides_for_the_state_that_a_relabel_reads_once_its_comment_posts(self):
+        """OSSV-613's architect's ruling of 2026-11-28 13:03Z, round 35: rules.py verdict gives by_hand the state before
+        the review comment of its run posts. That comment has no screen and becomes the newest review comment, so
+        by_hand gives pass_why the state earlier where the read gives screened (STATE_AFTER): the state that a relabel
+        reads after it. Run 100 records 901; the screened review comment of rescreen run 120 gives a blocking finding,
+        and its post job withdraws 901; run 130, alice's review by hand, passes HEAD (each run whole, in that order:
+        ordered). The decide step of run 130 reads the state screened, the why blocking, which the comment of run 120
+        gives, and the withdrawal 901: the decision screened, as before round 35 (as in the case "a pass after a
+        screened review with a blocking finding" of the test of a review by hand after a screened review), and its
+        label comment says that the screen and the review passed the pull request (rules.py PASSED). A relabel of HEAD
+        at the end (relabel_at_the_end) leaves #7 as it is. The control, with the state of the read (STATE_AFTER),
+        gives the decision withdrawn, whose text says that no comment gives the reason (NO_REASON), and the relabel at
+        the end changes it."""
+        ci = ("100", dict(self.REVIEWED, started=ago(60)), "pass", {})
+        rescreen = ("120", dict(self.REVIEWED, task="rescreen", started=ago(40)), "blocking",
+                    {"event": "workflow_dispatch", "named": HEAD})
+        hand = ("130", dict(self.BY_HAND, started=ago(20)), "pass", {"event": "workflow_dispatch", "screened": False})
+        _label, step, _text = rules.STATES["decide"]
+
+        def ended(control=False):
+            self.tearDown()
+            self.setUp()
+
+            def run():
+                comments, labels, checks, done = self.ordered([ci, rescreen, hand])
+                return done["130"][0], self.label_body(comments), self.relabel_at_the_end(comments, labels, checks)
+
+            return self.changed_step("post", self.DECIDE, *self.STATE_AFTER, run) if control else run()
+
+        got, body, end = ended()
+        self.assertEqual(got["post"]["decision"], "screened", self.logs[-8:])
+        self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{rules.PASSED}"), body)
+        self.assertEqual(end, (True, "success", body), self.logs[-4:])
+        got, body, end = ended(True)
+        self.assertEqual(got["post"]["decision"], "withdrawn", self.logs[-8:])
+        self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {rules.REVIEW_AGAIN}\n\n{rules.NO_REASON}"),
+                        body)
+        self.assertFalse(end[0], end[2])
+
+    def test_the_screened_review_by_hand_that_review_again_names_lifts_the_why_or_gives_its_own_label(self):
+        """OSSV-613's architect, 2026-11-28 13:05Z: after the decision withdrawn, the next step (rules.py REVIEW_AGAIN)
+        is Sami's review of the head by hand with the screen first (-f screen=true: the trust job gives the route
+        screen and no outsider). That step, taken after each order of refused_then_by_hand: run 140, which read the
+        item 10 minutes ago, screens HEAD and reviews it. Its pass is a screened review comment, which outranks the
+        refusal of run 120 and lifts its why (rules.py review_verdict): its post job records a success (902), and #7
+        gets the state import, whose label comment says that the workflow recorded the check. Its blocking finding
+        gives the state change, and the fresh reader's refusal of its review the state refused-review: the label of
+        its own verdict, and no success stands. So the step that the label names never leads back to that label. The
+        control, the step that REVIEW_AGAIN named before round 35 (a review by hand with no screen, BY_HAND), lifts
+        nothing: its decision is withdrawn again, and its label is the same."""
+        screened = dict(self.BY_HAND, route="screen", started=ago(10))
+        for deep in (False, True):
+            self.tearDown()
+            self.setUp()
+            reads = {"100": ago(60), "120": ago(40), "130": ago(20)}
+            before = self.refused_then_by_hand(deep, reads)[:3]
+            for verdict, state in (("pass", "import"), ("blocking", "change"), ("refused", "refused-review")):
+                with self.subTest(order="the deep review's" if deep else "the reviewer's", verdict=verdict):
+                    given = {"event": "workflow_dispatch", **({"refused": "review"} if verdict == "refused" else {})}
+                    comments, labels, checks, done = self.ordered([("140", screened, verdict, given)], *before)
+                    got, _outcomes = done["140"]
+                    body = self.label_body(comments)
+                    label, step, text = rules.STATES[state]
+                    self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step}\n\n{text}"), body)
+                    self.assertEqual(labels, [label] if label else [], body)
+                    if verdict == "pass":
+                        self.assertEqual((got["post"]["decision"], self.successes(checks), rules.says_recorded(body)),
+                                         ("record", [902], True), self.logs[-8:])
+                        self.assertEqual(rules.review_verdict(comments, HEAD, checks), ("pass", "screened", ""))
+                    else:
+                        self.assertEqual((self.successes(checks), rules.says_recorded(body)), ([], False), body)
+            with self.subTest(order="the deep review's" if deep else "the reviewer's", step="no screen"):
+                hand = ("140", dict(self.BY_HAND, started=ago(10)), "pass",
+                        {"event": "workflow_dispatch", "screened": False})
+                comments, labels, checks, done = self.ordered([hand], *before)
+                body = self.label_body(comments)
+                self.assertEqual(done["140"][0]["post"]["decision"], "withdrawn", self.logs[-8:])
+                self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {rules.REVIEW_AGAIN}\n\n"
+                                                f"{rules.NO_REASON}"), body)
+                self.assertEqual((self.successes(checks), labels), ([], [THEOREM_LABEL]), body)
 
     def test_a_hold_job_that_gives_way_after_its_post_job_withdrew_a_success_writes_the_labels_of_a_relabel(self):
         """As for the comment job (OSSV-613's architect, 2026-11-27 15:50Z), in the hold job: the reviewer's order
@@ -24857,7 +25018,7 @@ class ImportCheckTest(ReaderRunner):
     # gives no reason (OSSV-613's architect, 2026-11-27 21:00Z, architect-rulings v21). The controls: NO_CLEAR never
     # writes it empty again, and SECOND_OWED writes the owed of the second read in its place, whatever the first read
     # gave.
-    SECOND_READ = '  read -r earlier state why _ _ _ _ _ _ _ owed <<< "$reviewed"\n'
+    SECOND_READ = '  read -r earlier state why from posted stands since _ _ given owed <<< "$reviewed"\n'
     OWED_AGAIN = SECOND_READ + '  [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""\n'
     NO_CLEAR = (OWED_AGAIN, SECOND_READ)
     SECOND_OWED = (OWED_AGAIN, SECOND_READ + '  if [ "$owed" = - ]; then write_owed ""; else write_owed "$owed"; fi\n')
@@ -24877,7 +25038,8 @@ class ImportCheckTest(ReaderRunner):
         job's output owed is the decide step's: none. (ii) Through the real jobs, the order post 100, post 120, post
         110, comment 120, comment 110, comment 100 of test_orders.py's
         OrderTest.test_1458_3_runs_oblocking0_opass1_ohand2 (runs_1458): the post job of run 120 reads the check run of
-        not-approved of run 100 and decides screened, and owes nothing, as the comments give it no reason. So the
+        not-approved of run 100, whose reason no comment gives yet, and decides withdrawn (pass_why; OSSV-613's
+        architect, 2026-11-28 13:03Z: screened before), and owes nothing, as the comments give it no reason. So the
         comment job of run 120 writes no line of run 120,
         and the relabel that its label step starts, after run 110 recorded its success, gives the state import. At the
         end the success stands, the label comment says that the workflow recorded the check, and a relabel of HEAD at
@@ -24925,7 +25087,7 @@ class ImportCheckTest(ReaderRunner):
                 body = self.label_body(comments)
                 self.assertEqual((done["120"][0]["post"]["decision"], len(self.successes(checks)),
                                   bool(line.search(body)), rules.says_recorded(body)),
-                                 ("screened", 1, bool(control), not control), self.logs[-8:])
+                                 ("withdrawn", 1, bool(control), not control), self.logs[-8:])
                 if not control:
                     self.assertEqual(labels, [], body)
                     relabel = dict(self.RELABEL, started=ago(0))
