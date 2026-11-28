@@ -232,8 +232,8 @@ check run and each label comment of an outside pull request hold (import_marker)
 JSON string, or null when it is not given. The JSON writes each character outside ASCII, <, > and & as a \\u escape,
 so that the line holds no line break and no --> before its end.
 
-verdict: "<verdict> <state> <why> <from> <posted> <stands> <since> <run> <read>" on standard output for <head> of the
-pull request <number> (review_verdict), from the comments of github-actions[bot] and the import check runs of
+verdict: "<verdict> <state> <why> <from> <posted> <stands> <since> <run> <read> <given>" on standard output for <head>
+of the pull request <number> (review_verdict), from the comments of github-actions[bot] and the import check runs of
 <checks.jsonl> when it is given. Each word on <head> comes from the one model of the order of the words on a head
 (head_words, newest_word, below). A review comment that names <head> counts from the time when its run read the item,
 its marker <!-- review-read <time> -->, never from when it posted. One with no such marker counts from when GitHub last
@@ -260,10 +260,7 @@ import check run), when the newest screened review of <head> does not outrank it
 gives a reason, as the newest screened review of <head> (a screened review comment, or such a check run) does not
 outrank it (owed_reason, by the rule of <state>), outranked when that review outranks the line, so that the line gives
 no reason, and - else. <posted> is, for <from> owed, posted when a comment of github-actions[bot] gives a reason for the
-line to go, as for an outside author (line_reason: from the <read> of the line), and unposted when none does. Else, for
-a <why> that an import check run gives, it is posted when such a comment gives that reason (reason_posted, from the why,
-the run and the time that withdrawn_by reads in it), and unposted when none does; for a <why> of a review comment,
-posted; - else.
+line to go, as for an outside author (line_reason: from the <read> of the line), and unposted when none does; - else.
 <checks.jsonl> holds the import check runs of <head> for <number>, {id, conclusion, completed_at, summary} one on each
 line; with none given, no check run is read. The decision step gives them for a relabel and for a review by hand (its
 import_checks). They are in the order of the time that each one names, never of completed_at: for a success, the time
@@ -274,11 +271,13 @@ newest read when no success names a newer read and when it blocks a record: its 
 review comment that passes <head> counts from a time after that time (withdrawal_stands); - else. <since> is that time,
 or - when <stands> is - or the summary names no time. <run> and <read> are the run of the newest review comment of
 <head> and the time when that run read the item, from its markers <!-- review-read <time> --> and
-<!-- review-run <run> -->, or - and - when it has none: a relabel's record names them. Only the line for screen gives a
-state (held). A relabel records the import check run only for screened with the verdict pass, no <why>, <stands> - and
-<from> -. Its decision is withdrawn for screened with the verdict pass and <stands>, and for screened, earlier or
-unscreened with the verdict pass, a <why> and <posted> unposted. Else, with a <why>, it is screened for screened or
-earlier.
+<!-- review-run <run> -->, or - and - when it has none: a relabel's record names them. <given> is, for a <why> other
+than screen, posted when a comment of github-actions[bot] gives the reason of the newest word that gives <why>
+(reason_posted, from the why, the run and the time of that word, as for <posted>; a review comment gives it itself),
+and unposted when none does; - else. Only the line for screen gives a state (held). A relabel records the import check
+run only for screened with the verdict pass, no <why>, <stands> - and <from> -. Its decision is withdrawn for screened
+with the verdict pass and <stands>, and with the verdict pass and a <why> for <posted> unposted, or for earlier or
+unscreened with <given> unposted and <stands>. Else, with a <why>, it is screened for screened or earlier.
 With <from> outranked, it records none while the line stands, and it withdraws none for the line: its decision is hand.
 The step OWE of its comment job takes the line out when a screened review comment outranks it (withdraw-word); a check
 run that outranks it leaves it. For earlier with the verdict pass and no <why>, its decision is hand. A review by hand
@@ -288,7 +287,7 @@ unscreened. For the decision hand, the label step counts an import check run of 
 of the variable now, as recorded. The comment job's label step reads the check runs again before it writes the state
 import, and writes it only while such a check run stands: else its decision is gone (GONE).
 With own=<verdict> started=<time>, for a review by hand (the decision step's by_hand), or with an empty <verdict> for
-a relabel (relabeled), a tenth word <owed> follows: the why of the output owed that the decision step writes as soon as
+a relabel (relabeled), <owed> follows <given>: the why of the output owed that the decision step writes as soon as
 it reads why the import check runs of <head> are withdrawn (owed_why), or - when it reads none (neither held nor a
 <why>). That step reads the comments alone first, and writes the output owed of that read ahead of its read of the
 check runs; with them, it writes the output owed empty again when this <owed> is - (OSSV-613's architect's decision of
@@ -3981,16 +3980,17 @@ def main(argv):
             if origin == "owed":
                 found = line_reason(comments, argv[2], line_why, line_run, line_read, True)[0]
                 posted = "posted" if found else "unposted"
-            elif state != "held" and why:
-                # The word that gives <why> (review_verdict): a review comment gives it itself.
+            given = "-"
+            if state != "held" and why:
+                # The word that gives <why> (review_verdict): a review comment gives its reason itself.
                 giver = newest_word(words, kinds=VERDICT_WITHDRAWS, carriers={"review", "line", "check"})
-                found = giver.carrier != "check" or reason_posted(comments, argv[2], giver.why, giver.run, True,
-                                                                   giver.read)
-                posted = "posted" if found else "unposted"
+                found = giver.carrier == "review" or reason_posted(comments, argv[2], giver.why, giver.run, True,
+                                                                    giver.read)
+                given = "posted" if found else "unposted"
             stands = standing_withdrawal(words)
             stood, since = (str(stands.check.get("id") or "-"), stands.read or "") if stands else ("", "")
             reply = (f"{verdict or '-'} {state} {why or '-'} {origin} {posted} {stood or '-'} {since or '-'} "
-                     f"{record_run or '-'} {record_read or '-'}")
+                     f"{record_run or '-'} {record_read or '-'} {given}")
             print(f"{reply} {owed_why(words, state, why, started, own) or '-'}" if mine else reply)
             return 0
         if (len(argv) == 6 and argv[0] == "own-record" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2])

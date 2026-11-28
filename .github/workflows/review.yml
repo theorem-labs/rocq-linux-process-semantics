@@ -3210,12 +3210,12 @@ jobs:
           # (write_owed), from the comments alone, and the second read writes it empty again when it gives no why.
           # The step that withdraws an import check run takes its own word from rules.py withdraw-word.
           # held gives the decision held. For an outside author, the verdict pass with a why records no check run, as a
-          # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the why
-          # (posted is unposted), so that the label comment says so, and else screened for the states screened and
-          # earlier. That comment, for the line (from owed; the cause unposted), is
-          # the comment of the line's run that gives its why, or a screened review comment whose run read the item after
-          # the line's <read> (rules.py owed and word_time), and for a check run, the same for the why, the run and the
-          # time that its summary names (rules.py verdict; the cause neutral, as for a withdrawal that stands).
+          # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the
+          # reason of the line (from owed, and posted is unposted; the cause unposted), or, for the states earlier and
+          # unscreened, of the newest word that gives the why (given is unposted: a check run, the cause neutral, as for
+          # a withdrawal that stands), so that the label comment says so. Else it is screened for the states screened
+          # and earlier. Such a comment is the comment of the word's run that gives its why, or a screened review
+          # comment whose run read the item after the word's time (rules.py reason_posted and word_time).
           # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
           # review (a screened review comment, or a success that names its run and read) outranks it, it gives no why,
           # and from is outranked (rules.py verdict). For such a review comment the step that withdraws then gives the
@@ -3235,16 +3235,16 @@ jobs:
           # The state earlier with the verdict pass and no why gives the decision hand. The state unscreened gives
           # replaced.
           relabeled() {
-            local reviewed state why from posted stands since ahead owed
+            local reviewed state why from posted stands since given ahead owed
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" own= started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
+            read -r _ _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
             [ "$ahead" = - ] || write_owed "$ahead"
             import_checks
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl" \
               own= started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r verdict state why from posted stands since record_run record_read owed <<< "$reviewed"
+            read -r verdict state why from posted stands since record_run record_read given owed <<< "$reviewed"
             [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""
             [ "$verdict" != - ] || verdict=""
             screen=false
@@ -3252,7 +3252,7 @@ jobs:
             [ "$state" != held ] || decided held screen
             if [ "$RECORD" = true ] && [ "$verdict" = pass ] && [ "$why" != - ]; then
               [ "$from" != owed ] || [ "$posted" != unposted ] || decided withdrawn unposted
-              if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$posted" = unposted ]; }; then
+              if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$given" = unposted ]; }; then
                 decided withdrawn neutral check "$stands" from "$since"
               fi
               [ "$state" = unscreened ] || decided screened "$why"
@@ -3287,13 +3287,13 @@ jobs:
             local reviewed earlier state why ahead owed
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" own="$verdict" started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
+            read -r _ _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"
             [ "$ahead" = - ] || write_owed "$ahead"
             import_checks
             reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" "$RUNNER_TEMP/import-checks.jsonl" \
               own="$verdict" started="$STARTED") \
               || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }
-            read -r earlier state why _ _ _ _ _ _ owed <<< "$reviewed"
+            read -r earlier state why _ _ _ _ _ _ _ owed <<< "$reviewed"
             [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""
             [ "$RECORD" = true ] || return 0
             [ "$state" != held ] || decided held screen

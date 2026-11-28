@@ -20436,9 +20436,9 @@ class ImportCheckTest(ReaderRunner):
         first = ('  reviewed=$(python3 .github/review/rules.py verdict "$NUMBER" "$HEAD" own="$verdict" '
                  'started="$STARTED") \\\n'
                  '    || { echo "::error::the comments of #$NUMBER could not be read."; exit 1; }\n')
-        shell = (first + '  read -r _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"\n'
+        shell = (first + '  read -r _ _ _ _ _ _ _ _ _ _ ahead <<< "$reviewed"\n'
                  '  [ "$ahead" = - ] || write_owed "$ahead"\n',
-                 first + '  read -r _ _ why _ _ _ _ _ _ ahead <<< "$reviewed"\n'
+                 first + '  read -r _ _ why _ _ _ _ _ _ _ ahead <<< "$reviewed"\n'
                  '  if [ "$why" != - ]; then\n'
                  "    owed=$why\n"
                  "    case $verdict in\n"
@@ -23089,6 +23089,103 @@ class ImportCheckTest(ReaderRunner):
                 body = self.assertWaits(got, self.SOME, rules.PASSED, rules.IMPORT_STEPS, value=self.LPS)
                 self.assertNotIn(rules.NO_REASON, body)
 
+    def test_a_relabel_withdraws_for_a_newer_withdrawal_that_no_comment_gives_over_a_line_that_one_gives(self):
+        """OSSV-613's architect, 2026-11-28 08:11Z: in the states earlier and unscreened, a relabel with the verdict
+        pass gets the decision withdrawn when no comment of the workflow gives the reason of the newest word that gives
+        its why (rules.py verdict's <given>), also while one gives the reason of the line (<posted>). The newest review
+        comment of HEAD of mallory's #7 is alice's pass by hand of run 130, which read the item 20 minutes ago. The
+        review comment of run 110, which read it 70 minutes ago, gives a blocking finding, the reason of the line
+        <!-- withdraw-owed HEAD blocking 110 <read> --> of the label comment. Check run 901 of the screened pass of run
+        100 is withdrawn from 40 minutes ago, so it gives the why, and no comment gives its reason: (i) run 120 withdrew
+        it for its refused review; (ii) run 125 withdrew it for the line of run 120 with a blocking finding, whose
+        comment never posted. The review comment of run 110 is screened, so the state is earlier. (iii) As (i), with a
+        review by hand of run 110: the state unscreened, which only the decide step reads, as the comment job replaces
+        the newest review comment of the item unless it is a screened review of the same head with a blocking finding
+        or the verdict person, and so never leaves that review beside the pass. The decision is withdrawn, with the
+        cause neutral and check run 901, and the label comment says that no comment gives the reason (rules.py
+        NO_REASON), with Sami's review by hand as the next step (REVIEW_AGAIN): no PASSED, no steps of the import and no
+        claim that the workflow recorded the check. The control, relabeled as before that ruling (GIVEN_RULE), gives
+        the decision screened for earlier, whose label comment says that the screen and the review passed the pull
+        request (PASSED), and screen for unscreened (UNSCREENED), each with the steps of the import."""
+        relabel = dict(self.RELABEL, started=ago(-1))
+        read, since = ago(70), ago(40)
+        hand = review_of(HEAD, at=ago(15), id_=31, screened=False, run=130, read=ago(20))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        line = dict(old, updated_at=ago(60),
+                    body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 110 {read} -->"))
+        success = dict(rules.check_run("7", HEAD, self.LPS, False, "100", ago(90)), id=901, app={"id": VERIFY_APP_ID})
+        refused = self.withdrawn(success, "refused", "120", since)
+        owed = {**success, **rules.withdrawal("7", HEAD, "blocking", success["output"]["text"], "125", "owed", "120",
+                                              since), "completed_at": ago(30)}
+        for case, screened, check, state, why, decision, text in (
+                ("(i) refused", True, refused, "earlier", "refused", "screened", rules.PASSED),
+                ("(ii) the line of run 120", True, owed, "earlier", "blocking", "screened", rules.PASSED),
+                ("(iii) refused, unscreened", False, refused, "unscreened", "refused", "screen", rules.UNSCREENED)):
+            with self.subTest(case=case):
+                comments = [review_of(HEAD, "blocking", at=ago(65), run=110, read=read, screened=screened), hand, line]
+                self.assertEqual(rules.review_verdict(comments, HEAD, [check]), ("pass", state, why))
+
+                def judge():
+                    return self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                      comments=comments, listed=[check])
+
+                start = len(self.logs)
+                got = judge()
+                self.assertEqual((got["result"], got["post"]["decision"], got["checks"]), ("success", "withdrawn", []),
+                                 self.logs[start:])
+                self.assertIn(f"#7 at {HEAD}: decision withdrawn, cause neutral, read {relabel['started']}, check 901, "
+                              f"from {since}\n", "\n".join(self.logs[start:]))
+                body = self.assertWaits(got, rules.REVIEW_AGAIN, f"{rules.NO_REASON} You do not need to do anything.",
+                                        value=self.LPS)
+                for absent in (rules.PASSED, rules.IMPORT_STEPS):
+                    self.assertNotIn(absent, body)
+                self.assertFalse(rules.says_recorded(body), body)
+                start = len(self.logs)
+                got = self.changed_step("post", self.DECIDE, *self.GIVEN_RULE, judge)
+                self.assertEqual((got["result"], got["post"]["decision"]), ("success", decision), self.logs[start:])
+                body = self.assertWaits(got, self.SOME, text, rules.IMPORT_STEPS, value=self.LPS)
+                self.assertNotIn(rules.NO_REASON, body)
+
+    def test_a_relabel_keeps_its_decision_when_a_comment_gives_the_reason_of_the_newest_word_that_gives_its_why(self):
+        """OSSV-613's architect, 2026-11-28 08:11Z: a relabel keeps its decision when a comment gives the reason of the
+        newest word that gives its why (rules.py verdict's <given> posted). As in
+        test_a_relabel_withdraws_for_a_newer_withdrawal_that_no_comment_gives_over_a_line_that_one_gives, alice's pass
+        by hand of run 130 is the newest review comment of HEAD, and the review comment of run 110 gives a blocking
+        finding, the reason of the line of run 110. Run 125 withdrew check run 901 for that line, from the read of run
+        110: the check run gives the why, and the review comment of run 110 gives its reason. With that comment
+        screened, the state is earlier and the decision screened, whose label comment says that the screen and the
+        review passed the pull request (PASSED); with a review by hand of run 110, the state is unscreened and the
+        decision screen (UNSCREENED). Each label comment gives the steps of the import. The control, relabeled as before
+        that ruling (GIVEN_RULE), gives the same."""
+        relabel = dict(self.RELABEL, started=ago(-1))
+        read = ago(70)
+        hand = review_of(HEAD, at=ago(15), id_=31, screened=False, run=130, read=ago(20))
+        old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
+               "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
+        line = dict(old, updated_at=ago(60),
+                    body=rules.with_marker(old["body"], f"<!-- withdraw-owed {HEAD} blocking 110 {read} -->"))
+        success = dict(rules.check_run("7", HEAD, self.LPS, False, "100", ago(90)), id=901, app={"id": VERIFY_APP_ID})
+        owed = {**success, **rules.withdrawal("7", HEAD, "blocking", success["output"]["text"], "125", "owed", "110",
+                                              read), "completed_at": ago(30)}
+        for screened, state, decision, text in ((True, "earlier", "screened", rules.PASSED),
+                                                (False, "unscreened", "screen", rules.UNSCREENED)):
+            with self.subTest(state=state):
+                comments = [review_of(HEAD, "blocking", at=ago(65), run=110, read=read, screened=screened), hand, line]
+                self.assertEqual(rules.review_verdict(comments, HEAD, [owed]), ("pass", state, "blocking"))
+
+                def judge():
+                    return self.judge(["README.md"], value=self.LPS, trust=relabel, event="workflow_dispatch",
+                                      comments=comments, listed=[owed])
+
+                for control in (False, True):
+                    start = len(self.logs)
+                    got = self.changed_step("post", self.DECIDE, *self.GIVEN_RULE, judge) if control else judge()
+                    self.assertEqual((got["result"], got["post"]["decision"]), ("success", decision),
+                                     self.logs[start:])
+                    body = self.assertWaits(got, self.SOME, text, rules.IMPORT_STEPS, value=self.LPS)
+                    self.assertNotIn(rules.NO_REASON, body)
+
     def test_a_line_whose_writer_gives_no_reason_of_its_own_names_the_run_of_the_comment_that_gives_it(self):
         """OSSV-221's architect, 2026-11-22 17:27Z: a writer of the line whose own comment does not give its reason, as
         a relabel whose withdrawal GitHub refused, names the run of the comment that gives it when no line of that head
@@ -23464,10 +23561,11 @@ class ImportCheckTest(ReaderRunner):
         listed = dict(record([passed]), id=901, app={"id": VERIFY_APP_ID}, completed_at=ago(0))
         self.assertEqual((rules.withdraws(listed, ago(40)), rules.withdraws(listed, ago(60))), (True, False))
         # The control takes the place of the run and the read of the newest review comment, the eighth and ninth words
-        # of rules.py verdict (the tenth is owed).
+        # of rules.py verdict (given and owed follow).
         body = self.changed_step("post", self.DECIDE, '    own= started="$STARTED") \\\n',
-                                 '    own= started="$STARTED" | sed "s/ [^ ]* [^ ]* \\([^ ]*\\)\\$/ 1 $STARTED \\1/") '
-                                 '\\\n', lambda: record([passed]))
+                                 '    own= started="$STARTED" '
+                                 '| sed "s/ [^ ]* [^ ]* \\([^ ]* [^ ]*\\)\\$/ 1 $STARTED \\1/") \\\n',
+                                 lambda: record([passed]))
         self.assertFalse(rules.withdraws(dict(body, id=901), ago(40)), body["output"]["summary"])
 
     def test_a_hold_or_a_verdict_at_the_same_read_time_as_a_pass_outranks_it_in_every_reader(self):
@@ -23660,13 +23758,13 @@ class ImportCheckTest(ReaderRunner):
     # The read of the import check runs of HEAD that the label step makes, as the stand-in gh records it.
     CHECKS_READ = ["--method", "GET", "--paginate", f"repos/{REPO}/commits/{HEAD}/check-runs"]
 
-    # The rule of relabeled for the verdict pass with a why (OSSV-613's architect, 2026-11-28 06:13Z, item A): the
-    # decision withdrawn also for the states unscreened and earlier when no comment gives the reason of the why. Also
-    # what a control puts in its place, in two parts: the rule of before, which gives withdrawn for the state screened
-    # alone, and screened with the why for earlier.
+    # The rule of relabeled for the verdict pass with a why (OSSV-613's architect, 2026-11-28 06:13Z, item A, and
+    # 08:11Z, GIVEN_RULE): the decision withdrawn also for the states unscreened and earlier when no comment gives the
+    # reason of the why. Also what a control puts in its place, in two parts: the rule of before, which gives withdrawn
+    # for the state screened alone, and screened with the why for earlier.
     WHY_RULE = (('  if [ "$RECORD" = true ] && [ "$verdict" = pass ] && [ "$why" != - ]; then\n'
                  '    [ "$from" != owed ] || [ "$posted" != unposted ] || decided withdrawn unposted\n'
-                 '    if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$posted" = unposted ]; }; then\n'
+                 '    if [ "$stands" != - ] && { [ "$state" = screened ] || [ "$given" = unposted ]; }; then\n'
                  '      decided withdrawn neutral check "$stands" from "$since"\n'
                  '    fi\n'
                  '    [ "$state" = unscreened ] || decided screened "$why"\n'
@@ -23688,6 +23786,12 @@ class ImportCheckTest(ReaderRunner):
         2026-11-28 06:13Z (WHY_RULE), as a control. Its result."""
         (now, before), (earlier, sooner) = self.WHY_RULE
         return self.changed_step(job, name, now, before, lambda: self.changed_step(job, name, earlier, sooner, run))
+
+    # The test of relabeled for the states earlier and unscreened that no comment gives the reason of the newest word
+    # that gives the why (rules.py verdict's <given>; OSSV-613's architect, 2026-11-28 08:11Z), and what a control puts
+    # in its place: the test of before that ruling, which reads <posted>, for from owed the reason of the line.
+    GIVEN_RULE = ('{ [ "$state" = screened ] || [ "$given" = unposted ]; }',
+                  '{ [ "$state" = screened ] || [ "$posted" = unposted ]; }')
 
     def ordered(self, jobs, comments=None, labels=("review-held",), checks=()):
         """The jobs of runs of mallory's #7 at HEAD, in the order of jobs, each job whole and each while #7 is as the
@@ -24712,7 +24816,7 @@ class ImportCheckTest(ReaderRunner):
     # owed of its first read, of the comments alone, is written ahead, and this read writes it empty again when it
     # gives no reason (OSSV-613's architect's decision of round 33i). The controls: NO_CLEAR never writes it empty
     # again, and SECOND_OWED writes the owed of the second read in its place, whatever the first read gave.
-    SECOND_READ = '  read -r earlier state why _ _ _ _ _ _ owed <<< "$reviewed"\n'
+    SECOND_READ = '  read -r earlier state why _ _ _ _ _ _ _ owed <<< "$reviewed"\n'
     OWED_AGAIN = SECOND_READ + '  [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""\n'
     NO_CLEAR = (OWED_AGAIN, SECOND_READ)
     SECOND_OWED = (OWED_AGAIN, SECOND_READ + '  if [ "$owed" = - ]; then write_owed ""; else write_owed "$owed"; fi\n')
