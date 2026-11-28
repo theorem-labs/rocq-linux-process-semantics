@@ -3293,7 +3293,8 @@ jobs:
           # withdraw-word, with this run's own verdict.
           # Only for an outside author does the rule give a decision: held gives held, and the pass of this run with a
           # why gives what pass_why gives for the state that a relabel reads after the review comment of this run posts
-          # (after: earlier where rules.py verdict gives screened, as that comment is unscreened and the newest). Else
+          # (after: earlier where rules.py verdict gives screened, as that comment is unscreened and the newest; when it
+          # replaced the only screened pass and no screened word is left, a relabel reads unscreened). Else
           # screened or earlier gives screened with a why, and hand with none, with the output standing. The state
           # unscreened gives replaced, and else the import check below gives the decision screen.
           by_hand() {
