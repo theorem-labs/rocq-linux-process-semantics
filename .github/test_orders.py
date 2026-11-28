@@ -7,7 +7,8 @@ its output owed, 2026-11-26 20:57Z, round 30, item 4; the re-run of a run whose 
 the run owes, 2026-11-27 00:24Z, choice (a); the pass of a review by hand with no screen, OSSV-613's architect, round
 33, item 1, with its end state and its switch ORDERS_HAND, 2026-11-27 15:50Z and 15:51Z; the line of a blocking or
 person review whose post job did not finish, the re-run of a review by hand by its person and the time of a withdrawal
-of a run with no word of its own, 2026-11-28 00:08Z, C3, C1 and C2).
+of a run with no word of its own, 2026-11-28 00:08Z, C3, C1 and C2; the re-run of the jobs that need a failed job,
+2026-11-28 03:20Z).
 
 The jobs of a pull request that write its import check run, its label comment and its review and hold comments share
 one concurrency group (write-<n>), so GitHub runs them one at a time, each whole. A run of the review workflow on HEAD
@@ -191,10 +192,17 @@ attempt and its jobs (titled, listed_jobs). A review by hand (hand) is listed as
 workflow_dispatch, the actor alice, and the name review #7, which names no head, so that the pass takes it as a run of
 #7 of no head (held.sh take); its jobs are trust, gather, review and its post and comment jobs, and its screen job,
 screen alice, is skipped. Then the jobs of what the pass started run, against what the plain jobs read. A relabel runs
-its post job and its comment job (runs 900, 901 and on). A re-run of the failed jobs of a run runs again each job of
-that run whose newest result is failure or cancelled, at the next attempt: the post job too, for a run whose post job
-did not succeed and whose comment job died before it recorded what the run owes (at its checkout or at either step
-that records a withdrawal; held.sh unrecorded). A stop runs its trust job, which reads what the pass read, and its
+its post job and its comment job (runs 900, 901 and on). A re-run of the failed jobs of a run (in the UI, or by the
+REST endpoint rerun-failed-jobs, which the pass calls) runs as GitHub documents it: "When you re-run failed jobs or a
+specific job, GitHub also re-runs the jobs that depend on them. Jobs that aren't included keep their outputs from the
+previous attempt, which the newly run jobs can use."
+(https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs; OSSV-613's architect,
+2026-11-28 03:20Z). So in the order of the run's jobs (jobs_of: its post job, then its comment or hold job, which
+needs the post job), each job whose newest result is failure or cancelled runs again, at the next attempt, and so does
+every later job of the run once one has run again; a job that does not run again keeps its outputs, so the comment or
+hold job reads the outputs of the newest attempt of the post job. A run whose post job did not succeed and whose
+comment job died before it recorded what the run owes (at its checkout or at either step that records a withdrawal;
+held.sh unrecorded) runs both again. A stop runs its trust job, which reads what the pass read, and its
 comment job (test_review.write_stop). The pass runs again until it starts nothing, REVIEW_TRIES + 2 times at most.
 The pass takes a run by the head that its name gives, so it runs no job of a review by hand (hand) again, and nothing
 else of the workflow does. GitHub tells the person who started that run, alice, that it failed, and she runs its failed
@@ -917,13 +925,20 @@ class OrderTest(T.ReaderRunner):
         return done, broke
 
     def rerun(self, run, w, done, by=""):
-        """w after a re-run of the failed jobs of run: each job of run whose newest result is failure or cancelled runs
-        again, at the next attempt of run. done gets each job that ran, with by, the person who started the re-run,
-        when one did."""
+        """w after a re-run of the failed jobs of run, as GitHub runs it (the module's text): "When you re-run failed
+        jobs or a specific job, GitHub also re-runs the jobs that depend on them. Jobs that aren't included keep their
+        outputs from the previous attempt, which the newly run jobs can use."
+        (https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs). In the order of
+        jobs_of(run), each job whose newest result is failure or cancelled runs again at the next attempt of run, and so
+        does every later job of run once one has run again: the comment or hold job needs the post job. A job that does
+        not run again keeps its outputs, so the comment or hold job reads the post job's outputs of its newest attempt.
+        done gets each job that ran, with by, the person who started the re-run, when one did."""
         newest = {name: (result_of(outcomes), k) for name, outcomes, _at, k in w["jobs"][run["id"]]}
         attempt = max(k for _result, k in newest.values()) + 1
+        again = False
         for name, _rid in jobs_of(run):
-            if newest.get(name, ("",))[0] in ("failure", "cancelled"):
+            again = again or newest.get(name, ("",))[0] in ("failure", "cancelled")
+            if again:
                 w = self.job(name, run, w, attempt=attempt)
                 done.append(f"{name} {run['id']} attempt {attempt}" + (f" by {by}" if by else ""))
         return w
