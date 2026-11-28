@@ -242,9 +242,8 @@ no_key_of() {
 # outrank it. " owed" follows it while a label comment holds that line of a withdrawal that a run owes (it found a
 # reason for it and did not finish it, or no comment gives that reason yet), and the newest screened review of <head>
 # does not outrank that line: the line is a word from <read> (rules.py owed_reason, by the rule of the state; OSSV-221's
-# architect, 2026-11-25 01:13Z, G1), whatever the newest review says else. Only a run that finished the withdrawal of
-# <head> takes that line out, and only while a comment of github-actions[bot] gives a reason for it (rules.py owed,
-# line_reason): a success that outranks the line takes its reason, but never takes it out. Else -: then a relabel of
+# architect, 2026-11-25 01:13Z, G1), whatever the newest review says else. A run takes that line out only while a
+# comment of github-actions[bot] gives a reason for it (rules.py owe, line_reason). Else -: then a relabel of
 # <head> withdraws nothing. It records an import check run only when the newest review comment of <head> holds the
 # marker <!-- review-screened <head> --> and passes, with no withdraw-owed line of <head>, and no withdrawal of the
 # newest read among the import check runs of <head> blocks it (rules.py verdict, screened, and withdrawal_stands). It

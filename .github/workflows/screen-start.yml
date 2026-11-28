@@ -64,8 +64,8 @@
 # again: the run of the pass with the number of the pull request takes nothing while it is closed, and only its
 # conflict or the approval of its held runs while it is open, and starts no catch-up. The run with no number that it
 # starts closes a pull request for a catch-up at most once for each head (rescreen.yml), and starts no run of
-# rescreen.yml. So an event starts no loop of screens. Its cost: one job of up to 2 minutes for each event, on a
-# standard runner, whose minutes GitHub does not bill in a public repository.
+# rescreen.yml. So an event starts no loop of screens. Its cost: one job for each event, of about 2 minutes and at most
+# 5 (its timeout-minutes), on a standard runner, whose minutes GitHub does not bill in a public repository.
 name: screen-start
 
 on:
