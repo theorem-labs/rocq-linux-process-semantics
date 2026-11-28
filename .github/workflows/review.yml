@@ -3138,7 +3138,7 @@ jobs:
           # that owed ahead (write ahead, round 14), then reads them again with the import check runs of the head, which
           # count since OSSV-613's architect's ruling of 2026-11-27 20:53Z, and decides. When that second read gives no
           # why, write_owed with an empty <why> writes the output owed empty again: a success of a newer read outranks
-          # the why of the first read (OSSV-613's architect's decision of round 33i).
+          # the why of the first read (OSSV-613's architect, 2026-11-27 21:00Z, architect-rulings v21).
           write_owed() {
             if [ "$APP_KEY_SET" = true ] && [ "$WITHDRAW" = true ]; then
               echo "owed=${1:+$HEAD $1}" >> "$GITHUB_OUTPUT"
@@ -3211,16 +3211,16 @@ jobs:
           # The step that withdraws an import check run takes its own word from rules.py withdraw-word.
           # held gives the decision held. For an outside author, the verdict pass with a why records no check run, as a
           # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the
-          # reason of the line (from owed, and posted is unposted; the cause unposted), or, for the states earlier and
-          # unscreened, of the newest word that gives the why (given is unposted: a check run, the cause neutral, as for
-          # a withdrawal that stands), so that the label comment says so. Else it is screened for the states screened
+          # why of the line (from owed, and posted is unposted; the cause unposted), or, for the states earlier and
+          # unscreened, of the newest word that gives the why while a withdrawal stands (given is unposted; the cause
+          # neutral), so that the label comment says so. Else it is screened for the states screened
           # and earlier. Such a comment is the comment of the word's run that gives its why, or a screened review
-          # comment whose run read the item after the word's time (rules.py reason_posted and word_time).
+          # comment whose run read the item after the word's time (rules.py verdict and word_time).
           # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
           # review (a screened review comment, or a success that names its run and read) outranks it, it gives no why,
           # and from is outranked (rules.py verdict). For such a review comment the step that withdraws then gives the
           # head to its output clear (rules.py withdraw-word), so that the comment job takes the line out (rules.py
-          # owed); for such a success it does not, and the line stays. The state screened with the verdict pass and such
+          # owed); for such a success it does not. The state screened with the verdict pass and such
           # a line, with no withdrawal that stands, gives the decision hand: this relabel records no check run while a
           # line stands, and withdraws none for it. The label step counts an import check run that stands (standing) as
           # recorded.
@@ -4327,23 +4327,23 @@ jobs:
       # can stand while one stands, as the run of the newer word need not write the label again (the reviewer's round 3,
       # finding 1; OSSV-613's architect, 2026-11-27 15:50Z and 20:53Z). So when this step skips the posts and withdrew
       # names the head, or recorded is true and the newer word is a pass (the cause pass), it also writes the output
-      # relabel: the time now. A record counts only under a newer pass (OSSV-613's architect's decision of round 33i):
-      # a newer verdict, refusal or hold withdraws that success or owes its withdrawal, and the label of its run is
-      # right, but a newer pass, as of a review by hand, can leave a label that read the item before the record. Those
-      # outputs miss a withdrawal that GitHub took when the post job then failed or was cancelled before it wrote them
-      # (OSSV-613's architect, 2026-11-28 06:13Z, item B). So in each other case this step reads the item (rules.py
-      # untrue-claim), and it writes the output relabel too when the newest label comment says that the workflow
-      # recorded the check on the head and no such check run with the marker line of that comment stands. With
-      # the output relabel, three steps after the label step run as a relabel of the head that reads the item at that
-      # time, each with the script of that step of a relabel (a YAML anchor): "Read the author-kind table for a relabel
-      # of the head", "Decide the import check of the head as a relabel decides it now" and "Set the state label as a
-      # relabel of the head sets it now". So the item gets the state label and the label comment that a relabel of the
-      # head gives now (rules.py relabel and relabel_facts). That label comment says that the workflow recorded the
-      # check only while such a check run stands: the label step reads the check runs again before it writes that.
-      # This run still posts no review comment and no fix. This step then writes to its log why it wrote the output
-      # relabel, and its time. In each other case, this step writes no output relabel, and those three steps do not
-      # run. A step of the three that fails fails the job, and its last step leaves no label comment that says that the
-      # workflow recorded the check while no such check run stands (rules.py unclaim).
+      # relabel: the time now. A record counts only under a newer pass (OSSV-613's architect, 2026-11-27 21:00Z,
+      # architect-rulings v21): a newer verdict, refusal or hold withdraws that success or owes its withdrawal, and the
+      # label of its run is right, but a newer pass, as of a review by hand, can leave a label that read the item before
+      # the record. Those outputs miss a withdrawal that GitHub took when the post job then failed or was cancelled
+      # before it wrote them (OSSV-613's architect, 2026-11-28 06:13Z, item B). So in each other case this step reads
+      # the item (rules.py untrue-claim), and it writes the output relabel too when the newest label comment says that
+      # the workflow recorded the check on the head and no such check run with the marker line of that comment stands.
+      # With the output relabel, three steps after the label step run as a relabel of the head that reads the item at
+      # that time, each with the script of that step of a relabel (a YAML anchor): "Read the author-kind table for a
+      # relabel of the head", "Decide the import check of the head as a relabel decides it now" and "Set the state label
+      # as a relabel of the head sets it now". So the item gets the state label and the label comment that a relabel of
+      # the head gives now (rules.py relabel and relabel_facts). That label comment says that the workflow recorded the
+      # check only while such a check run stands: the label step reads the check runs again before it writes that. This
+      # run still posts no review comment and no fix. This step then writes to its log why it wrote the output relabel,
+      # and its time. In each other case, this step writes no output relabel, and those three steps do not run. A step
+      # of the three that fails fails the job, and its last step leaves no label comment that says that the workflow
+      # recorded the check while no such check run stands (rules.py unclaim).
       - name: >-
           Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
           this run's screened pass

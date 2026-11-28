@@ -17697,19 +17697,23 @@ class DecisionLogTest(unittest.TestCase):
         when the check runs that the withdrawal of an answer read first show that an earlier attempt of this run
         withdrew one with the conclusion success (rules.py withdrew-success) and then failed in the three steps. By
         b7's third fresh reader at cbef405f, that is the run that withdrew it, not the run whose reason it gives, and a
-        check run of not-approved withdrew no success. So skip has a sentence for each job, and its last sentence says
-        both that no step of the three writes a check run and what the last one writes. hand says that only a screened
-        review comment that passes stops the later withdrawal, as a success lifts nothing there (rules.py lifts). skip,
-        hand and screened have 6 sentences or fewer each. The workflow facts that the sentences rest on are asserted
-        here too. No step and no command prints a meaning: only its word goes into a log line."""
+        check run of not-approved withdrew no success. By the ruling of 2026-11-28 06:13Z (item B), both jobs also run
+        them when the label comment claims a success that no check run shows (rules.py untrue-claim), and by the ruling
+        of 05:15Z (M2), the first sentence of skip names the label comment of the state working that the last step
+        writes after a failure or a cancel (the next test asserts that step). So skip has a sentence for each job, and
+        its last sentence says both that no step of the three writes a check run and what the last one writes. By the
+        ruling of 05:15Z (M1), hand says that a later step can still withdraw, also for the own verdict of a review by
+        hand, and names nothing that stops it. skip, hand and screened have 6 sentences or fewer each. The workflow
+        facts that the sentences rest on are asserted here too. No step and no command prints a meaning: only its word
+        goes into a log line."""
         steps = ImportCheckTest.RELABEL_STEPS
         after = "In the steps of a relabel in the comment job or the hold job, no step "
         said = {
-            "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, "
-                     "unless this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This "
-                     "run relabels the head in three later steps when GitHub accepted the withdrawal of each check "
-                     "run that its withdraw line names. The hold job of an answer also relabels it when the head's "
-                     "check runs show that an earlier attempt of this run withdrew a success. In the "
+            "skip": ("Later steps post no comment, and write a label or label comment only for a relabel, or for the "
+                     "state working after failure or cancel. A withdraw-owed line that an earlier step wrote stays. "
+                     "This run relabels the head in three steps when GitHub accepted each withdrawal of its withdraw "
+                     "line, or the label comment claims a missing success. The hold job of an answer also relabels it "
+                     "when the head's check runs show that an earlier attempt of this run withdrew a success. In the "
                      "comment job, it also relabels the head when its post job recorded the import check run and the "
                      "cause is pass. None of the three writes a check run, and the last writes the state label and "
                      "the label comment that a relabel gives now."),
@@ -17720,8 +17724,7 @@ class DecisionLogTest(unittest.TestCase):
                        "one with the conclusion success and the marker of the import's paths stands. It gives the "
                        "decision gone if none stands."),
             "hand": ("In the post job, a later step can still withdraw for the newest word that withdraws, including "
-                     "the own verdict of a review by hand. Only a screened review comment that passes and outranks "
-                     "that word stops it. " + after + "records or withdraws a check run."),
+                     "the own verdict of a review by hand. " + after + "records or withdraws a check run."),
             "screened": ("This run records no import check run with the conclusion success. In the post job, later "
                          "steps withdraw only while the GitHub environment named post holds the key of the OSS Verify "
                          "App. They withdraw each import check run with the conclusion success whose run read the item "
@@ -17787,6 +17790,7 @@ class DecisionLogTest(unittest.TestCase):
                     self.assertEqual((first, step(job, PostLabelTest.STEP)["id"]),
                                      (names.index(PostLabelTest.STEP) + 1, "label"))
                 self.assertIn(ImportCheckTest.RELABELS, step(job, gives)["run"])
+                self.assertIn('rules.py untrue-claim "$NUMBER" "$HEAD"', step(job, gives)["run"])
                 kept = answers, decided, labelled = [step(job, name) for name in steps]
                 self.assertEqual((decided["run"], labelled["run"]), (decide, label))
                 self.assertEqual({s["if"] for s in kept}, {ifs})
@@ -19387,8 +19391,9 @@ class ImportCheckTest(ReaderRunner):
         comment of HEAD: it counts from when GitHub last changed it, the read of 901, and at that tie it outranks the
         record (rules.py withdraw-word). The decide step of a relabel and of a review by hand reads the check runs of
         HEAD too, for the rule (rules.py verdict; OSSV-613's architect, 2026-11-27 20:53Z): GitHub's refusal fails that
-        step, with its error, and the step that finds the check runs does not run. For those runs, that step's refusal
-        alone is the post job with the decide step taken out."""
+        step, with its error, and the step that finds the check runs does not run. The whole log of such a job, its
+        decide step included, promises no retry of the rescreen pass (OSSV-613's architect, 2026-11-28 05:30Z, D4). For
+        those runs, that step's refusal alone is the post job with the decide step taken out."""
         listed, _others = self.recorded()
         find = "Find the import check runs that a later review or screen withdraws"
         withdraw = "Withdraw the import check runs of the head"
@@ -19422,6 +19427,7 @@ class ImportCheckTest(ReaderRunner):
                             self.assertEqual((got["steps"].get(self.DECIDE), got["steps"].get(find), got["result"]),
                                              ("failure", "skipped", "failure"), logs)
                             self.assertIn(f"::error::the import check runs of {HEAD} could not be read.\n", logs)
+                            self.assertNotIn("The rescreen pass decides what comes next", logs)
                             post, decide = JOBS["post"]["steps"], step("post", self.DECIDE)
                             at = post.index(decide)
                             post.remove(decide)
@@ -20411,12 +20417,13 @@ class ImportCheckTest(ReaderRunner):
         (run 100, which read the item a minute ago) then gives a blocking finding. Its own word, at its read, is newer
         than that hold, so the why is blocking, as the step that withdraws gives it (withdraw_word). The decision step
         reads the comments, and then the check runs of HEAD with them, for the rule (rules.py verdict; OSSV-613's
-        architect, 2026-11-27 20:53Z, and the decision of round 33i), and GitHub refuses the next read of check runs,
-        in the step that withdraws (FIND), so the post job's output owed is the one of the decision step: HEAD and
-        blocking. A hold of the screen at the time of that read outranks the verdict, and the why is screen then; a
-        pass of this run gives no own word, and the why is the one of rules.py verdict; over a newer review comment
-        with the verdict person, the own word blocking is the why. The control, the decision step whose shell picks the
-        why again (the verdict of this run over the why of rules.py verdict, but screen stays screen), owes screen."""
+        architect, 2026-11-27 20:53Z, and 2026-11-27 21:00Z, architect-rulings v21), and GitHub refuses the next read of
+        check runs, in the step that withdraws (FIND), so the post job's output owed is the one of the decision step:
+        HEAD and blocking. A hold of the screen at the time of that read outranks the verdict, and the why is screen
+        then; a pass of this run gives no own word, and the why is the one of rules.py verdict; over a newer review
+        comment with the verdict person, the own word blocking is the why. The control, the decision step whose shell
+        picks the why again (the verdict of this run over the why of rules.py verdict, but screen stays screen), owes
+        screen."""
         listed, _others = self.recorded()
         t50 = ago(50)
         passed = review_of(HEAD, at=ago(70), run=60)
@@ -21018,7 +21025,7 @@ class ImportCheckTest(ReaderRunner):
         step reads the comments alone, writes its output owed (the reason blocking of the line) ahead of its read of the
         check runs (write ahead, round 14), and then fails at that read, with no decision (by OSSV-613's architect's
         ruling of 2026-11-27 20:53Z the decide step of a review by hand reads them too, after the comments, by the
-        decision of round 33i). A relabel
+        ruling of 2026-11-27 21:00Z, architect-rulings v21). A relabel
         of HEAD then reads a pass with no screen and the line: the state unscreened, with the reason blocking, which no
         comment gives. Its decision is withdrawn (OSSV-613's architect, 2026-11-28 06:13Z, item A; screen before it),
         so the label comment says that no comment gives the reason of a withdrawal (NO_REASON), not that the screen and
@@ -21352,10 +21359,10 @@ class ImportCheckTest(ReaderRunner):
         (a tie withdraws), and leaves it in the third. In the first two its decision is withdrawn, as no comment gives
         the reason of the line, and the step OWE of its comment job keeps the line. In the third, 901 names run 95 and
         its read, so it is the screened pass of run 95 from that read (OSSV-613's architect, 2026-11-27 20:53Z), newer
-        than the line: the line gives no reason (rules.py owed_reason, by the rule of review_verdict, the decision of
-        round 33i), so the decision is hand, with the cause outranked, 901 stands, and the label stays import. A success
-        takes no line out (withdraw_word), and no comment gives the line a reason to go, so the step OWE keeps it then
-        too. When that pass read #7 30 minutes ago, it outranks the line: in each case relabel 1 withdraws nothing, its
+        than the line: the line gives no reason (rules.py owed_reason, by the rule of review_verdict; OSSV-613's
+        architect, 2026-11-27 21:00Z, architect-rulings v21), so the decision is hand, with the cause outranked, 901
+        stands, and the label stays import. No comment gives the line a reason to go, so the step OWE keeps it then too.
+        When that pass read #7 30 minutes ago, it outranks the line: in each case relabel 1 withdraws nothing, its
         decision is hand, and the step OWE takes the line out."""
         read = ago(45)
         for case, recorded, withdrawn, under in (
@@ -21637,7 +21644,10 @@ class ImportCheckTest(ReaderRunner):
         recorded or withdrawn. The label step of a relabel whose post job failed writes nothing. That of a review by
         hand reads the check runs again, which GitHub refuses too, and its label comment does not say that the workflow
         recorded the check. The controls, the step that takes each refused read as an empty answer, pass with no error,
-        and decide hand (screen with no screened review comment) with standing false while 901 stands."""
+        and decide hand (screen with no screened review comment) with standing false while 901 stands. When GitHub
+        gives the check runs and refuses the read of standing alone (the stand-in gh's inject, as before that ruling),
+        the step fails the same way, and the post job writes nothing (OSSV-613's architect, 2026-11-28 05:30Z, D1). Its
+        control, the step that takes that read as an empty answer, decides hand with standing false."""
         listed, _others = self.recorded()
         old = {"id": 40, "user": {"login": BOT}, "created_at": ago(120), "updated_at": ago(120),
                "body": rules.label_comment("import", "", [rules.import_marker(HEAD, self.LPS)])}
@@ -21684,6 +21694,31 @@ class ImportCheckTest(ReaderRunner):
                     "post", self.DECIDE, unchecked, "    || true\n}\n",
                     lambda: self.changed_step("post", self.DECIDE, unread, "    || true\n  stands=false\n", refused)),
                     want, self.logs)
+                # GitHub gives the check runs again, and the stand-in gh fails the seventh read of the post job alone
+                # (its inject): the read of standing, after those of #7, its files, #7 again, the comments, the check
+                # runs (import_checks) and the comments again.
+                os.remove(os.path.join(self.api, f"repos/{REPO}/commits/{HEAD}/check-runs".replace("/", "_") + ".fail"))
+
+                def injected():
+                    for name in ("inject.read", "injected"):
+                        if os.path.exists(os.path.join(self.api, name)):
+                            os.remove(os.path.join(self.api, name))
+                    with open(os.path.join(self.api, "inject"), "w") as f:
+                        f.write("read 7\n")
+                    try:
+                        got, logs = decided()
+                    finally:
+                        os.remove(os.path.join(self.api, "inject"))
+                    with open(os.path.join(self.api, "injected")) as f:
+                        failed = f.read()
+                    return (failed, (got["result"], got["steps"][self.DECIDE]), error in logs, got["post"]["decision"],
+                            got["post"]["standing"], got["writes"])
+
+                want = (f"read GET repos/{REPO}/commits/{HEAD}/check-runs\n", ("failure", "failure"), True, "", "false",
+                        [])
+                self.assertEqual(injected(), want, self.logs)
+                self.assertNotEqual(self.changed_step("post", self.DECIDE, unread, "    || true\n  stands=false\n",
+                                                      injected), want, self.logs)
 
     def test_a_relabel_whose_rule_cannot_read_what_the_workflow_wrote_of_the_head_writes_nothing(self):
         """Round 30, item 2 (OSSV-613's architect, 2026-11-26 12:52Z): the comment job's label step of a relabel
@@ -23311,9 +23346,10 @@ class ImportCheckTest(ReaderRunner):
         The trust job gives HEAD as its output named only while #7 is not a draft. GitHub then refuses the read of the
         check runs of HEAD after a blocking finding. The decide step of a review by hand reads them too, for the rule
         (rules.py verdict; OSSV-613's architect, 2026-11-27 20:53Z): it fails with its error; the step that finds the
-        check runs to withdraw does not run. When GitHub refuses the read of that step alone (the post job with the
-        decide step taken out), its error says that the rescreen pass decides what comes next for the pull request
-        that is ready, and says "Re-run this run." for the draft."""
+        check runs to withdraw does not run, and the whole log of the job, its decide step included, promises no retry
+        of the rescreen pass (OSSV-613's architect, 2026-11-28 05:30Z, D3). When GitHub refuses the read of that step
+        alone (the post job with the decide step taken out), its error says that the rescreen pass decides what comes
+        next for the pull request that is ready, and says "Re-run this run." for the draft."""
         find = "Find the import check runs that a later review or screen withdraws"
         retry = " The rescreen pass decides what comes next for this head, and its log says what it starts."
         self.permissions(alice="write", mallory="read")
@@ -23333,6 +23369,7 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual((got["steps"].get(self.DECIDE), got["steps"].get(find), got["result"]),
                                  ("failure", "skipped", "failure"), logs)
                 self.assertIn(f"::error::the import check runs of {HEAD} could not be read.\n", logs)
+                self.assertNotIn("The rescreen pass decides what comes next", logs)
                 post, decide = JOBS["post"]["steps"], step("post", self.DECIDE)
                 at = post.index(decide)
                 post.remove(decide)
@@ -24635,8 +24672,9 @@ class ImportCheckTest(ReaderRunner):
 
     # The line of the comment job's step that skips the posts (SKIP) that lets a success that the post job of this run
     # recorded start the three steps of a relabel when the newer word is a pass (OSSV-613's architect, 2026-11-27
-    # 20:53Z, item 2, and the decision of round 33i), and what a control puts in its place: GIVE_WAY_UNRECORDED is the
-    # give-way branch of before that ruling, which reads the output withdrew of the post job alone.
+    # 20:53Z, item 2, and 2026-11-27 21:00Z, architect-rulings v21), and what a control puts in its place:
+    # GIVE_WAY_UNRECORDED is the give-way branch of before that ruling, which reads the output withdrew of the post job
+    # alone.
     RECORDED_RELABELS = 'if [ "${POST_RECORDED:-}" != true ] || [ "$cause" != pass ]; then'
     GIVE_WAY_UNRECORDED = (RECORDED_RELABELS, "if true; then")
     # The line of rules.py review_verdict that counts a success whose summary names its run as the screened pass of
@@ -24644,8 +24682,9 @@ class ImportCheckTest(ReaderRunner):
     # whose screened state and why read the screened review comments alone.
     SUCCESS_SCREENED = ("    screened = newest_word(words, where=screened_word)\n",
                         '    screened = newest_word(words, carriers={"review"}, where=lambda word: word.screened)\n')
-    # The line of rules.py owed_reason that counts such a success too, by the same rule (the decision of round 33i),
-    # and the control in its place: the rule of before, in which only a screened review comment outranks the line.
+    # The line of rules.py owed_reason that counts such a success too, by the same rule (OSSV-613's architect,
+    # 2026-11-27 21:00Z, architect-rulings v21), and the control in its place: the rule of before, in which only a
+    # screened review comment outranks the line.
     OWED_SCREENED = ("    if line is None or newest_word(words, over=line[:2], where=screened_word):\n",
                      '    if line is None or newest_word(words, carriers={"review"}, over=line[:2],\n'
                      "                                   where=lambda word: word.screened):\n")
@@ -24814,8 +24853,9 @@ class ImportCheckTest(ReaderRunner):
 
     # The lines of by_hand after its second read of rules.py verdict, with the import check runs of HEAD: the output
     # owed of its first read, of the comments alone, is written ahead, and this read writes it empty again when it
-    # gives no reason (OSSV-613's architect's decision of round 33i). The controls: NO_CLEAR never writes it empty
-    # again, and SECOND_OWED writes the owed of the second read in its place, whatever the first read gave.
+    # gives no reason (OSSV-613's architect, 2026-11-27 21:00Z, architect-rulings v21). The controls: NO_CLEAR never
+    # writes it empty again, and SECOND_OWED writes the owed of the second read in its place, whatever the first read
+    # gave.
     SECOND_READ = '  read -r earlier state why _ _ _ _ _ _ _ owed <<< "$reviewed"\n'
     OWED_AGAIN = SECOND_READ + '  [ "$ahead" = - ] || [ "$owed" != - ] || write_owed ""\n'
     NO_CLEAR = (OWED_AGAIN, SECOND_READ)
@@ -24823,11 +24863,12 @@ class ImportCheckTest(ReaderRunner):
 
     def test_the_decision_owes_ahead_from_the_comments_and_the_check_runs_only_take_that_owed_back(self):
         """By OSSV-613's architect's ruling of 2026-11-27 20:53Z, the decide step of a review by hand reads the import
-        check runs of HEAD too (rules.py verdict). By the decision of round 33i, it first reads the comments alone and
-        writes the output owed of that read ahead (write ahead, round 14), then reads them with the check runs and
-        decides. That second read only takes the owed back, when it gives no reason: a check run with the conclusion
-        neutral is a withdrawal that a run finished, or a check run of not-approved, so it is itself the record of its
-        reason, and a line of OWED for it would name the run and the read of this run (owed_run). (i) mallory's #7 has
+        check runs of HEAD too (rules.py verdict). By OSSV-613's architect's ruling of 2026-11-27 21:00Z
+        (architect-rulings v21), it first reads the comments alone and writes the output owed of that read ahead (write
+        ahead, round 14), then reads them with the check runs and decides. That second read only takes the owed back,
+        when it gives no reason: a check run with the conclusion neutral is a withdrawal that a run finished, or a check
+        run of not-approved, so it is itself the record of its reason, and a line of OWED for it would name the run and
+        the read of this run (owed_run). (i) mallory's #7 has
         the screened blocking review of run 100, which read #7 40 minutes ago, and success 902 of run 110, which read
         it 30 minutes ago. alice's pass by hand (run 120, read 20 minutes ago) owes blocking from the comments, and 902
         outranks that review in the second read, so the decide step writes owed empty again and decides hand. GitHub
