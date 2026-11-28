@@ -17783,6 +17783,20 @@ class DecisionLogTest(unittest.TestCase):
                     self.assertNotIn("uses", s)
                     self.assertNotIn("steps.app.outputs.token", str(s))
 
+    def test_the_meaning_of_hand_says_no_screened_pass_stops_the_withdrawal_for_the_own_verdict_of_a_hand_run(self):
+        """The tester's round 33 (b7): the meaning of the decision hand is true for each case it names. In the post job
+        of a review by hand whose own verdict is blocking, the own verdict is a word at the read of that run, and the
+        step that finds the import check runs to withdraw reads only the words at or before that read (rules.py
+        withdraw_word, until=started). So a screened review comment that passes, of a newer run, does not stop that
+        withdrawal, and no word at or before that read outranks the own verdict with a pass. The meaning of hand must
+        not say that a screened review comment that passes and outranks the own verdict stops the withdrawal for it."""
+        started = ago(30)
+        newer = review_of(HEAD, "pass", at=ago(10), id_=31, run="120", read=ago(10))
+        found = rules.withdraw_word([newer], HEAD, [], started, "110", "blocking")
+        self.assertEqual(found[:2], ("blocking", "own"))
+        self.assertIsNone(re.search(r"own verdict of a review by hand[^.]*\.\s+Only a screened review comment that "
+                                    r"passes and outranks that word stops it", rules.LOG_DECISIONS["hand"]))
+
 
 class LabelTest(Runner):
     """rules.py label and make-label, as the comment, hold and rescreen jobs run them, against the stand-in gh: one
