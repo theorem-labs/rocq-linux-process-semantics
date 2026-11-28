@@ -17709,14 +17709,14 @@ class DecisionLogTest(unittest.TestCase):
         steps = ImportCheckTest.RELABEL_STEPS
         after = "In the steps of a relabel in the comment job or the hold job, no step "
         said = {
-            "skip": ("Later steps post no comment, and write a label or label comment only for a relabel, or for the "
-                     "state working after failure or cancel. A withdraw-owed line that an earlier step wrote stays. "
-                     "This run relabels the head in three steps when GitHub accepted each withdrawal of its withdraw "
-                     "line, or the label comment claims a missing success. The hold job of an answer also relabels it "
-                     "when the head's check runs show that an earlier attempt of this run withdrew a success. In the "
-                     "comment job, it also relabels the head when its post job recorded the import check run and the "
-                     "cause is pass. None of the three writes a check run, and the last writes the state label and "
-                     "the label comment that a relabel gives now."),
+            "skip": ("Later steps post no comment, write labels only for a relabel, and after failure or cancel can "
+                     "write the label comment of the state working. A withdraw-owed line that an earlier step wrote "
+                     "stays. This run relabels the head in three steps when GitHub accepted each withdrawal of its "
+                     "withdraw line, or the label comment claims a missing success. The hold job of an answer also "
+                     "relabels it when the head's check runs show that an earlier attempt of this run withdrew a "
+                     "success. In the comment job, it also relabels the head when its post job recorded the import "
+                     "check run and the cause is pass. None of the three writes a check run, and the last writes the "
+                     "state label and the label comment that a relabel gives now."),
             "record": ("In the post job, this run records the import check run of the head. It does so while the "
                        "GitHub environment named post holds the key of the OSS Verify App. " + after +
                        "records a check run. The label step of that relabel reads the import check runs of the head "
@@ -23757,7 +23757,7 @@ class ImportCheckTest(ReaderRunner):
     RELABEL_STEPS = ("Read the author-kind table for a relabel of the head",
                      "Decide the import check of the head as a relabel decides it now",
                      "Set the state label as a relabel of the head sets it now")
-    HOLD_RELABEL = "Run the steps of a relabel when this run gave way and withdrew a success of the head"
+    HOLD_RELABEL = "Start a relabel after a give-way, for a success this run withdrew or an untrue label claim"
     # The value of WITHDREW in the step HOLD_RELABEL: the output withdrew of the post job, or the output head of the
     # hold job's step that withdraws for an answer. POST_ONLY is the rule of 484b8851, which reads the post job alone.
     WITHDREW_EITHER = "${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}"
@@ -24083,8 +24083,8 @@ class ImportCheckTest(ReaderRunner):
     # The two lines that the step SKIP or HOLD_RELABEL writes to its log when it starts the three steps of a relabel for
     # a label comment that says that the workflow recorded the check on HEAD while no such check run stands.
     UNTRUE_LINES = (f"#7: its label comment says that the workflow recorded the check `{rules.CHECK}` on {HEAD}, and "
-                    f"no such check run with the conclusion success stands.\n#7: so the steps after this one run as a "
-                    f"relabel of {HEAD} that reads #7 at ")
+                    f"no such check run with the conclusion success holds the marker line of that label comment.\n#7: "
+                    f"so the steps after this one run as a relabel of {HEAD} that reads #7 at ")
 
     def test_a_run_that_gives_way_after_github_took_an_unanswered_withdrawal_writes_the_labels_of_a_relabel(self):
         """OSSV-613's architect's ruling of 2026-11-28 06:13Z, item B, on the reviewer's read-ahead finding of 06:12Z: a
@@ -24199,8 +24199,8 @@ class ImportCheckTest(ReaderRunner):
 
     def test_a_run_that_gives_way_and_cannot_read_the_claim_of_its_label_comment_posts_nothing(self):
         """OSSV-613's architect, 2026-11-28 06:13Z, item B: when GitHub does not give the label comments or the check
-        runs that the read of the step SKIP or HOLD_RELABEL asks for, that step fails: nothing posts, and the last step
-        of the job (UNCLAIM) runs. In withdrawal_unanswered (end lost), with the screen of run 120 clean (the comment
+        runs that the read of the step SKIP or HOLD_RELABEL asks for, that step fails, and the last step of the job
+        (UNCLAIM) runs. In withdrawal_unanswered (end lost), with the screen of run 120 clean (the comment
         job) or held (the hold job), the stand-in gh fails one read of that step of run 120 (its inject): the read of
         the label comments or of the check runs of HEAD. Each later step of the job but UNCLAIM is skipped, and UNCLAIM
         writes the label comment of the state working in the place of the label comment of run 130, as no success
@@ -25272,7 +25272,7 @@ class ImportCheckTest(ReaderRunner):
         not say whether mallory has write access (kind unknown). Its review passes HEAD or gives a blocking finding, or
         its screen holds HEAD, and its post job withdraws 901; or the screen of answer run 130 holds HEAD, and its hold
         job withdraws 901 itself. Then the comment job or the hold job of run 130 writes the label comment of the state
-        decide in the place of 40, with the text that a run withdrew the check (rules.py GONE), as the label step of an
+        decide in the place of 40, with the text GONE, as the label step of an
         outside author's run does for a record that is gone. It adds and takes off no state label, as the author-kind
         table says for kind unknown. When check run 901 is the record of a run that read #7 10 minutes ago, run 130
         withdraws nothing (I5), and label comment 40 stays as it is. The control, rules.py whose owed does not read the
@@ -25331,9 +25331,10 @@ class ImportCheckTest(ReaderRunner):
                                  self.logs[-4:])
                 self.assertIn(f"#7: its label comment said that the workflow recorded the check "
                               f"`repo-pairs/import-approved` on {HEAD}. No such check run with the conclusion success "
-                              "stands now: a run withdrew it. So this step wrote the label comment, which says that "
-                              "a run withdrew the check. GitHub did not say whether the author has write access, so "
-                              "this step did not add or remove a state label.\n",
+                              "holds the marker line of that label comment. So this step wrote the label comment of "
+                              "the state decide, which does not say that the workflow recorded the check. GitHub did "
+                              "not say whether the author has write access, so this step did not add or remove a "
+                              "state label.\n",
                               "\n".join(self.logs))
                 self.tearDown()
                 self.setUp()
@@ -27265,7 +27266,8 @@ class ImportCheckTest(ReaderRunner):
                     self.assertFalse(rules.says_recorded(bodies[-1]))
                     self.assertIn(marker, bodies[-1].split("\n"))
                     self.assertEqual(state_labels(self.api), [])
-                    self.assertIn("No such check run with the conclusion success stands now", self.logs[-1])
+                    self.assertIn("No such check run with the conclusion success holds the marker line of that label "
+                                  "comment.", self.logs[-1])
                     for case, comment, served, said in (
                             ("901 stands", label, checks, "and that check run stands."),
                             ("no claim", change, after, "does not say that the workflow recorded the check")):
@@ -27301,7 +27303,8 @@ class ImportCheckTest(ReaderRunner):
         # The case of the refused read comes last: GitHub refuses that read from then on.
         for case, checks, said, bodies in (
                 ("a success of another value", [check("theories/**")],
-                 "No such check run with the conclusion success stands now", [working]),
+                 "No such check run with the conclusion success holds the marker line of that label comment.",
+                 [working]),
                 ("a success of the value of the label comment", [check(self.LPS)], "and that check run stands.", []),
                 ("the check runs refused", None, f"GitHub did not give the check runs of {HEAD}", [working])):
             with self.subTest(case=case):

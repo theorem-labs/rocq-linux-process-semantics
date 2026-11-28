@@ -137,9 +137,10 @@ untrue-claim: whether the label comment of <number> says that the workflow recor
 06:13Z, item B). Only the newest label comment of github-actions[bot] counts: its claim (says_recorded) with the marker
 line of R12 of <head> (record_line). The status is 0, with a line on standard output that says so, when it makes that
 claim and no import check run of <head> (import_checks, with OSS_VERIFY_APP_ID) has the conclusion success and that
-marker line. The status is 3 when it makes no such claim, or such a check run stands, and 1 when GitHub does not give
-the label comments or the check runs. A run that gives way runs the steps of a relabel of <head> on status 0, so that a
-withdrawal that GitHub took leaves no such claim when the post job failed or was cancelled before it wrote its outputs.
+marker line. The status is 3 when it makes no such claim, or such a check run stands, 1 when GitHub does not give the
+label comments or the check runs, and 2 when it reads the check runs and OSS_VERIFY_APP_ID is not a whole number greater
+than 0 (NUMBER). A run that gives way runs the steps of a relabel of <head> on status 0, so that a withdrawal that
+GitHub took leaves no such claim when the post job failed or was cancelled before it wrote its outputs.
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -652,14 +653,13 @@ NO_REASON = ("The automated review passed this pull request. A run of the workfl
              "check `repo-pairs/import-approved` from its head commit. No comment on this pull request gives that "
              "reason. So no such check approves this head commit for the import.")
 REVIEW_AGAIN = "Sami starts the automated review of the head commit again, by hand."
-# The decision gone of the label step: the screen and the review passed the head, the post job recorded the check run or
-# found one that stands, and after that a run of the workflow withdrew it. The comment that gives the reason of that run
-# can have posted already, so the text does not say that no comment gives it (NO_REASON). It says that a run withdrew
-# the check, in the place of PASSED and of the steps of the import. The next step is a review of the head by hand
-# (REVIEW_AGAIN), as for withdrawn.
-GONE = ("The automated screen and the automated review passed this pull request. After that, a run of the workflow "
-        "withdrew the check `repo-pairs/import-approved` from its head commit. So no such check approves this head "
-        "commit for the import.")
+# The decision gone (the label step, unrecord): the screen and the review passed the head, and no import check run of
+# the head with the conclusion success holds the marker line of the value now. The comment that gives the reason of a
+# withdrawal can have posted already, so the text does not say that no comment gives it (NO_REASON). It says that the
+# workflow could not show the check, in the place of PASSED and of the steps of the import. The next step is a review
+# of the head by hand (REVIEW_AGAIN), as for withdrawn.
+GONE = ("The automated screen and the automated review passed this pull request. After that, the workflow could not "
+        "show that the check `repo-pairs/import-approved` approves its head commit for the import.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -912,8 +912,8 @@ LOG_DECISIONS = {
     "not-approved": ("This job records the check run that says that the head is not approved for the import. The field "
                      "check names that check run in the line of the step that records it."),
     # The step of the comment job and of the hold job that gives way to a newer word.
-    "skip": ("Later steps post no comment, and write a label or label comment only for a relabel, or for the state "
-             "working after failure or cancel. A withdraw-owed line that an earlier step wrote stays. This run "
+    "skip": ("Later steps post no comment, write labels only for a relabel, and after failure or cancel can write the "
+             "label comment of the state working. A withdraw-owed line that an earlier step wrote stays. This run "
              "relabels the head in three steps when GitHub accepted each withdrawal of its withdraw line, or the label "
              "comment claims a missing success. The hold job of an answer also relabels it when the head's check runs "
              "show that an earlier attempt of this run withdrew a success. In the comment job, it also relabels the "
@@ -1621,9 +1621,9 @@ def unrecord(number, head):
     body = label_comment("decide", old["body"], (), "", (value, "gone"))
     write_label(number, old, body)
     print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. No such "
-          "check run with the conclusion success stands now: a run withdrew it. So this step wrote the label comment, "
-          "which says that a run withdrew the check. GitHub did not say whether the author has write access, so this "
-          "step did not add or remove a state label.")
+          "check run with the conclusion success holds the marker line of that label comment. So this step wrote the "
+          "label comment of the state decide, which does not say that the workflow recorded the check. GitHub did not "
+          "say whether the author has write access, so this step did not add or remove a state label.")
     return [*labels[:-1], dict(old, body=body)]
 
 
@@ -1651,10 +1651,12 @@ def unclaim(number):
             print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and "
                   "that check run stands.")
             return
-        why = "No such check run with the conclusion success stands now: a run withdrew it."
-    except (GhError, ValueError) as e:
+        why = "No such check run with the conclusion success holds the marker line of that label comment."
+    except GhError as e:
         why = (f"GitHub did not give the check runs of {head} ({' '.join(str(e).split())}), so this step cannot show "
                "that such a check run stands.")
+    except ValueError as e:
+        why = f"This step cannot show that such a check run stands: {' '.join(str(e).split())}."
     write_label(number, old, label_comment("working", old["body"]))
     print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. {why} So this "
           "step wrote the label comment of the state working, which does not say that the workflow recorded the "
@@ -1665,13 +1667,14 @@ def untrue_claim(number, head):
     """True when the newest label comment of BOT on the item number says that the workflow recorded the import check
     run on head (record_line), and no import check run of head with the conclusion success and that marker line stands
     (import_checks, record_stands): then it prints a line that says so. GhError when GitHub does not give the label
-    comments or the check runs."""
+    comments or the check runs, and a ValueError when it reads the check runs and OSS_VERIFY_APP_ID is not a whole
+    number greater than 0 (import_checks)."""
     labels = read_labels(number)
     found = record_line(labels[-1]["body"], head) if labels else None
     if found is None or record_stands(import_checks(number, head), found[0]):
         return False
     print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and no such "
-          "check run with the conclusion success stands.")
+          "check run with the conclusion success holds the marker line of that label comment.")
     return True
 
 
