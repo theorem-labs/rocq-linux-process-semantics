@@ -23757,8 +23757,8 @@ class ImportCheckTest(ReaderRunner):
     RELABEL_STEPS = ("Read the author-kind table for a relabel of the head",
                      "Decide the import check of the head as a relabel decides it now",
                      "Set the state label as a relabel of the head sets it now")
-    HOLD_RELABEL = ("Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue "
-                    "label claim")
+    HOLD_RELABEL = ("When this run gave way, run the steps of a relabel if it withdrew a success or the label claim is "
+                    "untrue")
     # The value of WITHDREW in the step HOLD_RELABEL: the output withdrew of the post job, or the output head of the
     # hold job's step that withdraws for an answer. POST_ONLY is the rule of 484b8851, which reads the post job alone.
     WITHDREW_EITHER = "${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}"

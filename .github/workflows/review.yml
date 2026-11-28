@@ -5503,8 +5503,8 @@ jobs:
       # The post job of such a run can have withdrawn an import check run of the head with the conclusion success, for
       # a screen of this run that held the head (its output withdrew names the head). The withdrawal of an answer below
       # can withdraw one too, after this step. Then a label comment that says that the workflow recorded the check can
-      # stand with no such check run. So the step "Run the steps of a relabel when this run gave way after it withdrew a
-      # success, or after an untrue label claim", after the withdrawal of an answer, reads the output gave_way of this
+      # stand with no such check run. So the step "When this run gave way, run the steps of a relabel if it withdrew a
+      # success or the label claim is untrue", after the withdrawal of an answer, reads the output gave_way of this
       # step. The comment of that step says what it does then.
       - name: Skip the posts of this run when a review or hold of the head is newer than this run's read
         id: way
@@ -5918,8 +5918,8 @@ jobs:
       # run gave way to a newer word: a failed read or write of the App fails this job, but the hold stands, and the
       # line of the step "Record a withdrawal that this run owes" stays. When this run gave way and they withdrew an
       # import check run of the head with the conclusion success, the steps after them run as a relabel of the head (the
-      # step "Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue label
-      # claim"). The rescreen pass tries no App write of an answer again (held.sh due_retry), so RETRY is false, and
+      # step "When this run gave way, run the steps of a relabel if it withdrew a success or the label claim is
+      # untrue"). The rescreen pass tries no App write of an answer again (held.sh due_retry), so RETRY is false, and
       # each error says to re-run this run. Only while the environment post holds the App's key.
       - name: Find the import check runs that the screen of this answer withdraws
         id: withdraw
@@ -5993,9 +5993,7 @@ jobs:
       # writes no output relabel, and those three steps do not run. A read here or a step of the three that fails fails
       # the job, and its last step leaves no label comment that says that the workflow recorded the check while no
       # such check run stands (rules.py unclaim).
-      - name: >-
-          Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue label
-          claim
+      - name: When this run gave way, run the steps of a relabel if it withdrew a success or the label claim is untrue
         id: withdrew
         if: steps.way.outputs.gave_way == 'true'
         env:
