@@ -5964,11 +5964,13 @@ jobs:
       # label comment of the state working (rules.py unclaim). The step "Find the import check runs that the screen of
       # this answer withdraws" of the re-run then reads that check run with the conclusion neutral, and withdraws
       # nothing. So this step also counts a check run of the head, among those that step read before this attempt
-      # wrote any, whose summary names this run as the run of its withdrawal (rules.py withdrawn-by; OSSV-613's
-      # architect, 2026-11-28 00:14Z, C4): this run withdrew it. When none of these names the head, this step writes
-      # no output relabel, and those three steps do not run. A step of the three that fails fails the job, and its last
-      # step leaves no label comment that says that the workflow recorded the check while no such check run stands
-      # (rules.py unclaim).
+      # wrote any, whose summary is a withdrawal that names this run as the run that withdrew it (rules.py
+      # withdrew-success; OSSV-613's architect, 2026-11-28 00:14Z, C4): an earlier attempt of this run withdrew a
+      # success of the head. A withdrawal counts for the run that withdrew it, not for the run whose reason it gives:
+      # another run can withdraw for the line of the screen of this run. A check run of not-approved counts for no run:
+      # it withdrew no success. When none of these names the head, this step writes no output relabel, and those three
+      # steps do not run. A step of the three that fails fails the job, and its last step leaves no label comment that
+      # says that the workflow recorded the check while no such check run stands (rules.py unclaim).
       - name: Run the steps of a relabel when this run gave way and withdrew a success of the head
         id: withdrew
         if: steps.way.outputs.gave_way == 'true'
@@ -5986,7 +5988,7 @@ jobs:
           # An import check run of the head that an earlier attempt of this run withdrew (the comment above this step).
           if [ -z "${WITHDREW:-}" ] && [ "${FOUND:-}" = success ]; then
             rc=0
-            python3 .github/review/rules.py withdrawn-by "$HEAD" "$GITHUB_RUN_ID" "$RUNNER_TEMP/import-checks.jsonl" \
+            python3 .github/review/rules.py withdrew-success "$HEAD" "$GITHUB_RUN_ID" "$RUNNER_TEMP/import-checks.jsonl" \
               || rc=$?
             (( rc == 0 || rc == 3 )) || exit "$rc"
             (( rc != 0 )) || WITHDREW=$HEAD

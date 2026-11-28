@@ -17677,28 +17677,29 @@ class DecisionLogTest(unittest.TestCase):
         screened and the cause rule. No step of the three records or withdraws a check run. The last one writes the
         state label and the label comment that a relabel of the head gives now and, for the decision record,
         counts a success that stands, or gives the decision gone. By b7's second fresh reader at 1ce9a9c2, skip says
-        exactly when the three steps run: GitHub took the withdrawal of each check run that the withdraw line of this
-        run names, or, in the comment job, the post job recorded the import check run and the cause is pass. GitHub can
-        refuse a later withdrawal after it took an earlier one: then the output withdrew stays empty and the steps do
-        not run. By OSSV-613's architect's ruling of 2026-11-28 00:14Z (C4), the hold job also runs them when the check
-        runs that the withdrawal of an answer read first show a withdrawal by this run (rules.py withdrawn-by): an
-        earlier attempt of this run withdrew a success and then failed in the three steps. So skip has a sentence for
-        each job, and its last sentence says both that no step of the three writes a check run and what the last one
-        writes. hand says that only a screened review comment that passes stops the later withdrawal, as a success
-        lifts nothing there (rules.py lifts). skip, hand and screened have 6 sentences or fewer each. The workflow facts
-        that the sentences rest on are asserted here too. No step and no command prints a meaning: only its word goes
-        into a log line."""
+        exactly when the three steps run: GitHub accepted the withdrawal of each check run that the withdraw line of
+        this run names, or, in the comment job, the post job recorded the import check run and the cause is pass.
+        GitHub can refuse a later withdrawal after it accepted an earlier one: then the output withdrew stays empty and
+        the steps do not run. By OSSV-613's architect's ruling of 2026-11-28 00:14Z (C4), the hold job also runs them
+        when the check runs that the withdrawal of an answer read first show that an earlier attempt of this run
+        withdrew one with the conclusion success (rules.py withdrew-success) and then failed in the three steps. By
+        b7's third fresh reader at cbef405f, that is the run that withdrew it, not the run whose reason it gives, and a
+        check run of not-approved withdrew no success. So skip has a sentence for each job, and its last sentence says
+        both that no step of the three writes a check run and what the last one writes. hand says that only a screened
+        review comment that passes stops the later withdrawal, as a success lifts nothing there (rules.py lifts). skip,
+        hand and screened have 6 sentences or fewer each. The workflow facts that the sentences rest on are asserted
+        here too. No step and no command prints a meaning: only its word goes into a log line."""
         steps = ImportCheckTest.RELABEL_STEPS
         after = "In the steps of a relabel in the comment job or the hold job, no step "
         said = {
             "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, "
                      "unless this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This "
-                     "run relabels the head in three later steps when GitHub took the withdrawal of each check run "
-                     "that its withdraw line names. In the hold job, it also relabels the head when the check runs "
-                     "that it read before its withdrawal show a withdrawal by this run. In the comment job, it also "
-                     "relabels the head when its post job recorded the import check run and the cause is pass. None "
-                     "of the three records or withdraws a check run, and the last writes the state label and label "
-                     "comment that a relabel gives now."),
+                     "run relabels the head in three later steps when GitHub accepted the withdrawal of each check "
+                     "run that its withdraw line names. The hold job also relabels it when the check runs read before "
+                     "its withdrawal show that an earlier attempt withdrew one with the conclusion success. In the "
+                     "comment job, it also relabels the head when its post job recorded the import check run and the "
+                     "cause is pass. None of the three writes a check run, and the last writes the state label and "
+                     "the label comment that a relabel gives now."),
             "record": ("In the post job, this run records the import check run of the head. It does so while the "
                        "GitHub environment named post holds the key of the OSS Verify App. " + after +
                        "records a check run. The label step of that relabel reads the import check runs of the head "
@@ -17733,7 +17734,7 @@ class DecisionLogTest(unittest.TestCase):
         self.assertIn("approved=$RECORDED", label)
         self.assertIn('rules.py log "$NUMBER" "$HEAD" gone missing "$STARTED"', label)
         self.assertIn("rules.py relabel", label)
-        # The facts of the conditions of skip: the output withdrew is written only after GitHub took each withdrawal
+        # The facts of the conditions of skip: the output withdrew is written only after GitHub accepted each withdrawal
         # (a refusal exits first), and only the comment job's step reads the post job's output recorded, with the
         # cause pass.
         withdrawn = step("post", "Withdraw the import check runs of the head")["run"]
@@ -17744,13 +17745,20 @@ class DecisionLogTest(unittest.TestCase):
                       step("comment", ImportCheckTest.SKIP)["run"])
         self.assertNotIn("recorded", str(step("hold", ImportCheckTest.HOLD_RELABEL)).lower())
         # The fact of the hold job's sentence (C4): the step reads the check runs that the withdrawal of an answer read
-        # before it wrote (that step's file, when it succeeded), through rules.py withdrawn-by.
+        # before it wrote (that step's file, when it succeeded), through rules.py withdrew-success, which counts a
+        # withdrawal of a success by the run that withdrew it (withdrawing_run): not by the run whose reason it gives,
+        # and not a check run of not-approved.
         relabels = step("hold", ImportCheckTest.HOLD_RELABEL)
         find = step("hold", ImportCheckTest.ANSWER_FIND)
         self.assertEqual((find["id"], relabels["env"]["FOUND"]), ("withdraw", "${{ steps.withdraw.outcome }}"))
         self.assertIn('> "$RUNNER_TEMP/import-checks.jsonl"', find["run"])
-        self.assertIn('rules.py withdrawn-by "$HEAD" "$GITHUB_RUN_ID" "$RUNNER_TEMP/import-checks.jsonl"',
+        self.assertIn('rules.py withdrew-success "$HEAD" "$GITHUB_RUN_ID" "$RUNNER_TEMP/import-checks.jsonl"',
                       relabels["run"])
+        own = rules.withdrawal("7", HEAD, "screen", "", "120", at=ago(40))
+        for_line = rules.withdrawal("7", HEAD, "screen", "", "900", "owed", "120", ago(40))
+        unapproved = rules.not_approved("7", HEAD, "screen", None, "120", ago(40))
+        self.assertEqual([(rules.withdrawn_by(c, HEAD)[1], rules.withdrawing_run(c, HEAD))
+                          for c in (own, for_line, unapproved)], [("120", "120"), ("120", "900"), ("120", None)])
         for job, gives, ifs in (
                 ("comment", ImportCheckTest.SKIP,
                  "steps.way.outputs.relabel != '' || steps.label.outputs.relabel != ''"),
@@ -23524,6 +23532,11 @@ class ImportCheckTest(ReaderRunner):
     # which reads WITHDREW alone.
     EARLIER_ATTEMPT = '[ -z "${WITHDREW:-}" ] && [ "${FOUND:-}" = success ]'
     STEP_6AAC835E = (EARLIER_ATTEMPT, "false")
+    # The test of rules.py withdrew-success for each check run that the step ANSWER_FIND read: the run that withdrew it
+    # (rules.py withdrawing_run; b7's third fresh reader at cbef405f, on C4). TEST_B4C9116A is what its control puts in
+    # its place, the test of b4c9116a: the run of the reason (withdrawn_by), also of a check run of not-approved.
+    WITHDREW_SUCCESS = "withdrawing_run(check, argv[1]) == argv[2]"
+    TEST_B4C9116A = (WITHDREW_SUCCESS, '(withdrawn_by(check, argv[1]) or ("", "", ""))[1] == argv[2]')
     # The line of the label step that marks a pass of a review by hand that the step would give the state decide, so
     # that it reads the import check runs of the head (OSSV-613's architect, 2026-11-27 19:02Z), and the line that
     # gives relabel when such a check run stands. Also what a control puts in their place. HAND_UNREAD is the label
@@ -23837,23 +23850,28 @@ class ImportCheckTest(ReaderRunner):
                 self.assertEqual(always[0][1], ["success"] * 3, self.logs[-6:])
                 self.assertNotEqual(always[1], before[1])
 
-    def answer_tried_twice(self):
-        """The answers' order (answers_order) in which the first attempt of the hold job of answer run 120 ends in the
-        steps of a relabel: a cancel of the job ends the second of them, the decision (RELABEL_STEPS), as a read of
-        GitHub that fails there does. Then the rescreen pass runs the failed job again (held.sh due_rerun), at attempt
-        2, while #7 and HEAD are as the first attempt left them. (#7's comments, its labels and the check runs of HEAD
-        at the end, and for each attempt its outcomes and the newest label comment after it.)"""
-        comments, labels, checks, _done = self.ordered([
-            ("100", dict(self.REVIEWED, started=ago(60)), "pass", {}),
-            ("130", dict(self.BY_HAND, started=ago(20)), "pass", {"event": "workflow_dispatch", "screened": False})])
+    def answer_tried_twice(self, runs=("100", "130"), cancel=None, between=()):
+        """The answers' order (answers_order) in which the first attempt of the hold job of answer run 120 ends at the
+        step cancel, by default in the steps of a relabel: a cancel of the job ends the second of them, the decision
+        (RELABEL_STEPS), as a read of GitHub that fails there does. runs are the runs of that order before the answer,
+        by default 100 and 130. Then the jobs of between run (ordered), and the rescreen pass runs the failed job again
+        (held.sh due_rerun), at attempt 2, while #7 and HEAD are as the jobs before it left them. (#7's comments, its
+        labels and the check runs of HEAD at the end, and for each attempt its outcomes and the newest label comment
+        after it.)"""
+        before = {"100": ("100", dict(self.REVIEWED, started=ago(60)), "pass", {}),
+                  "130": ("130", dict(self.BY_HAND, started=ago(20)), "pass",
+                          {"event": "workflow_dispatch", "screened": False})}
+        comments, labels, checks, _done = self.ordered([before[run] for run in runs])
         answer = dict(self.REVIEWED, task="answer", started=ago(40), comment="77")
         attempts = []
-        for attempt, cancel in ((1, self.RELABEL_STEPS[1]), (2, None)):
+        for attempt, ends in ((1, cancel or self.RELABEL_STEPS[1]), (2, None)):
+            if attempt == 2 and between:
+                comments, labels, checks, _done = self.ordered(between, comments, labels, checks)
             self.serve(f"repos/{REPO}/pulls/7/files", [{"filename": "README.md", "previous_filename": None}])
             self.serve(f"repos/{REPO}/pulls/7/reviews", [])
             self.serve_checks(checks)
             outcomes, _wrote = self.live(comments, lambda: self.hold_job_after_post(
-                {"result": "skipped", "post": {}}, answer, comments, "120", cancel=cancel, attempt=attempt))
+                {"result": "skipped", "post": {}}, answer, comments, "120", cancel=ends, attempt=attempt))
             checks = self.applied_checks(checks)
             for sign, name in state_labels(self.api):
                 labels = [n for n in labels if n != name] + ([name] if sign == "+" else [])
@@ -23869,7 +23887,7 @@ class ImportCheckTest(ReaderRunner):
         901 for the screen of run 120, and starts the steps of a relabel (HOLD_RELABEL), which end at the decision: the
         last step (UNCLAIM) writes the label comment of the state working. At attempt 2 the step ANSWER_FIND reads 901
         with the conclusion neutral, so the step "Withdraw the import check runs of the head" does not run, and its
-        output head is empty. 901 names run 120 as the run of its withdrawal (rules.py withdrawn_by), so the step
+        output head is empty. 901 names run 120 as the run that withdrew it (rules.py withdrawing_run), so the step
         HOLD_RELABEL starts the three steps again, and they write what a relabel of HEAD gives now: the state decide,
         with waits-on-theorem and the text SCREEN_HELD_AFTER, as in
         test_an_answer_that_gives_way_after_its_withdrawal_withdrew_a_success_writes_the_labels_of_a_relabel. No
@@ -23901,6 +23919,72 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(([second[n] for n in self.RELABEL_STEPS], self.successes(checks)), (["skipped"] * 3, []),
                          self.logs[-8:])
         self.assertTrue(self.label_body(comments).startswith(working), self.label_body(comments))
+
+    def test_the_re_run_of_an_answer_whose_first_attempt_recorded_not_approved_does_not_relabel(self):
+        """b7's third fresh reader at cbef405f, item 1 (a), on C4 (OSSV-613's architect, 2026-11-28 00:14Z: a
+        withdrawal of the head that an earlier attempt of this run made): a check run of not-approved withdrew no
+        success, so it starts no relabel. In answer_tried_twice with run 130 alone before the answer, HEAD has no import
+        check run, and run 130's decision is hand. The first attempt of the hold job of answer run 120 gives way to the
+        newer pass of run 130, finds no success to withdraw, and records the check run of not-approved 901 for the
+        screen of run 120. Then a cancel of the job ends the step HOLD_RELABEL. At attempt 2 the step ANSWER_FIND reads
+        901, which names run 120 as the run of its reason (rules.py withdrawn_by) but no run that withdrew it (rules.py
+        withdrawing_run), and the step "Withdraw the import check runs of the head" does not run. So the step
+        HOLD_RELABEL writes no output relabel, and the three steps of a relabel do not run. The control, the test of
+        b4c9116a in rules.py withdrew-success (TEST_B4C9116A), which reads the run of the reason, runs them at attempt
+        2."""
+        withdrawal = (self.ANSWER_FIND, "Withdraw the import check runs of the head",
+                      "Record that the head is not approved for the import")
+
+        def tried():
+            return self.answer_tried_twice(runs=("130",), cancel=self.HOLD_RELABEL)
+
+        _comments, _labels, checks, ((first, _after_first), (second, _body)) = tried()
+        self.assertEqual([first[n] for n in (HoldTest.SKIP, *withdrawal, self.HOLD_RELABEL, *self.RELABEL_STEPS)],
+                         ["success", "success", "skipped", "success", "cancelled"] + ["skipped"] * 3, self.logs[-8:])
+        (recorded,) = [c for c in checks if c["id"] == 901]
+        self.assertEqual((rules.withdrawn_by(recorded, HEAD)[:2], rules.withdrawing_run(recorded, HEAD),
+                          self.successes(checks)), (("screen", "120"), None, []), recorded)
+        self.assertEqual([second[n] for n in (HoldTest.SKIP, *withdrawal[:2], self.HOLD_RELABEL, *self.RELABEL_STEPS)],
+                         ["success", "success", "skipped", "success"] + ["skipped"] * 3, self.logs[-8:])
+        self.tearDown()
+        self.setUp()
+        _comments, _labels, _checks, (_first, (second, _body)) = self.changed_rules(*self.TEST_B4C9116A, tried)
+        self.assertEqual([second[n] for n in (self.HOLD_RELABEL, *self.RELABEL_STEPS)], ["success"] * 4,
+                         self.logs[-8:])
+
+    def test_the_re_run_of_an_answer_after_another_run_withdrew_a_success_for_its_line_does_not_relabel(self):
+        """b7's third fresh reader at cbef405f, item 1 (b), on C4: a withdrawal counts for the run that withdrew it, not
+        for the run whose reason it gives, so a withdrawal that another run made for the line of the screen of this run
+        starts no relabel of this run. In answer_tried_twice, run 100 records 901 and run 130's decision is hand. The
+        first attempt of the hold job of answer run 120 writes the line <!-- withdraw-owed HEAD screen 120 <read> -->
+        and gives way to the newer pass of run 130. Then a cancel of the job ends the step ANSWER_FIND, before any
+        withdrawal. Relabel run 900 then withdraws 901 for that line: its summary names run 900 as the run that
+        withdrew it (rules.py withdrawing_run), for the reason screen of run 120 (rules.py withdrawn_by). At attempt 2
+        the step ANSWER_FIND reads 901 with the conclusion neutral, and the step "Withdraw the import check runs of the
+        head" does not run. So the step HOLD_RELABEL writes no output relabel, and the three steps of a relabel do not
+        run. The control, the test of b4c9116a in rules.py withdrew-success (TEST_B4C9116A), which reads the run of the
+        reason, runs them at attempt 2."""
+        withdrawn = "Withdraw the import check runs of the head"
+        relabel = [("900", dict(self.RELABEL, started=ago(5)), "pass", {"event": "workflow_dispatch"})]
+
+        def tried():
+            return self.answer_tried_twice(cancel=self.ANSWER_FIND, between=relabel)
+
+        _comments, _labels, checks, ((first, after_first), (second, _body)) = tried()
+        self.assertEqual([first[n] for n in (HoldTest.SKIP, self.ANSWER_FIND, self.HOLD_RELABEL)],
+                         ["success", "cancelled", "skipped"], self.logs[-8:])
+        self.assertIn(f"<!-- withdraw-owed {HEAD} screen 120 ", after_first)
+        (withdrew,) = [c for c in checks if c["id"] == 901]
+        self.assertEqual((withdrew["conclusion"], rules.withdrawn_by(withdrew, HEAD)[:2],
+                          rules.withdrawing_run(withdrew, HEAD)), ("neutral", ("screen", "120"), "900"), withdrew)
+        self.assertEqual([second[n] for n in (HoldTest.SKIP, self.ANSWER_FIND, withdrawn, self.HOLD_RELABEL,
+                                              *self.RELABEL_STEPS)],
+                         ["success", "success", "skipped", "success"] + ["skipped"] * 3, self.logs[-8:])
+        self.tearDown()
+        self.setUp()
+        _comments, _labels, _checks, (_first, (second, _body)) = self.changed_rules(*self.TEST_B4C9116A, tried)
+        self.assertEqual([second[n] for n in (self.HOLD_RELABEL, *self.RELABEL_STEPS)], ["success"] * 4,
+                         self.logs[-8:])
 
     def interleaved(self, runs, order):
         """The jobs of runs of mallory's #7 at HEAD in order, a list of (job, run) with job post or comment, each job

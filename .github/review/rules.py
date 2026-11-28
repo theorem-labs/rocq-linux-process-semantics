@@ -33,7 +33,7 @@ labels").
         <route> <checks.jsonl>
     python3 .github/review/rules.py withdrawal <number> <head> <why> <kind> <run> <source> <at> <checks.jsonl>
         <directory>
-    python3 .github/review/rules.py withdrawn-by <head> <run> <checks.jsonl>
+    python3 .github/review/rules.py withdrew-success <head> <run> <checks.jsonl>
     python3 .github/review/rules.py not-approved <number> <head> <why> <run> <read> <request.json> [<import paths>]
     python3 .github/review/rules.py steering <files.jsonl>
     python3 .github/review/rules.py relabel <number> <head> outside=<outside> outsider=<outsider> author=<kind>
@@ -440,12 +440,14 @@ for a check run whose run read the pull request at or before <at>, or that names
 read. Each request goes to <directory>/withdraw-<id>.json, for PATCH repos/<repo>/check-runs/<id>, and its id goes to
 standard output, one on each line. The status is 2 when an argument or a line is not one of these.
 
-withdrawn-by: the status is 0 when an import check run of <checks.jsonl> with the conclusion neutral names <run> as
-the run of its withdrawal (withdrawn_by: the run whose reason it gives, or the run that withdrew or recorded it when
-its summary names no other), and 3 when none does. <checks.jsonl> holds the import check runs of <head>, {id,
-conclusion, summary} one on each line, as the step that finds the import check runs to withdraw read them. The hold
-job of an answer reads it after a give-way, for the check runs that an earlier attempt of its run withdrew
-(OSSV-613's architect, 2026-11-28 00:14Z, C4). The status is 2 when an argument or a line is not one of these.
+withdrew-success: whether <run> withdrew an import check run of <head> with the conclusion success, as <checks.jsonl>
+shows it (OSSV-613's architect, 2026-11-28 00:14Z, C4). The status is 0 when a check run there has the conclusion
+neutral and the summary of a withdrawal (WITHDREW) that names <run> as the run that withdrew it from <head>
+(withdrawing_run), whatever run gave its reason, and 3 when none has. A check run of not-approved (NOT_APPROVED)
+withdrew no success, so it names no such run. <checks.jsonl> holds the import check runs of <head>, {id, conclusion,
+summary} one on each line, as the step that finds the import check runs to withdraw read them. The hold job of an
+answer reads it after a give-way, for the check runs that an earlier attempt of its run withdrew. The status is 2 when
+an argument or a line is not one of these.
 
 not-approved: the request that records the check run repo-pairs/import-approved with the conclusion neutral on <head>
 of the pull request <number> (not_approved), for POST repos/<repo>/check-runs, in <request.json>. <why> is the reason
@@ -837,12 +839,13 @@ LOG_DECISIONS = {
     # The decide step of the post job: the decisions of DECISIONS. Where a decision says that this run records no
     # import check run with the conclusion success, the job can still record a check run with the conclusion neutral
     # (not-approved). The comment job and the hold job run the same decide step in the steps of a relabel. After the
-    # decision skip, they run them when GitHub took the withdrawal of each check run that the withdraw line of this run
-    # names (the post job's output withdrew, or in the hold job the output head of the withdrawal of an answer). The
-    # hold job also runs them when an import check run of the head that its withdrawal of an answer read first names
-    # this run as the run of its withdrawal (withdrawn-by: an earlier attempt of this run withdrew it; OSSV-613's
-    # architect, 2026-11-28 00:14Z, C4). The comment job alone also runs them when its post job recorded the import
-    # check run and the cause is pass, and after the label step of a pass by hand while a success of the head stands.
+    # decision skip, they run them when GitHub accepted the withdrawal of each check run that the withdraw line of this
+    # run names (the post job's output withdrew, or in the hold job the output head of the withdrawal of an answer).
+    # The hold job also runs them when the import check runs of the head that its withdrawal of an answer read first
+    # show that an earlier attempt of this run withdrew one with the conclusion success (withdrew-success: the run that
+    # withdrew it, not the run of its reason, and never a check run of not-approved; OSSV-613's architect, 2026-11-28
+    # 00:14Z, C4). The comment job alone also runs them when its post job recorded the import check run and the cause
+    # is pass, and after the label step of a pass by hand while a success of the head stands.
     # A line that the comment job derives for its own review whose post job did not finish starts none of them: that
     # post job did not succeed, so the comment job reads no record of it, and it gave no output withdrew (OSSV-613's
     # architect, 2026-11-28 00:08Z, C3). The decisions of the decide step there are these words too. No step of that
@@ -911,11 +914,11 @@ LOG_DECISIONS = {
     # The step of the comment job and of the hold job that gives way to a newer word.
     "skip": ("The later steps of this run post no comment and no label comment, and add or remove no label, unless "
              "this run relabels the head. A withdraw-owed line that an earlier step wrote stays. This run relabels the "
-             "head in three later steps when GitHub took the withdrawal of each check run that its withdraw line "
-             "names. In the hold job, it also relabels the head when the check runs that it read before its "
-             "withdrawal show a withdrawal by this run. In the comment job, it also relabels the head when its post "
-             "job recorded the import check run and the cause is pass. None of the three records or withdraws a check "
-             "run, and the last writes the state label and label comment that a relabel gives now."),
+             "head in three later steps when GitHub accepted the withdrawal of each check run that its withdraw line "
+             "names. The hold job also relabels it when the check runs read before its withdrawal show that an "
+             "earlier attempt withdrew one with the conclusion success. In the comment job, it also relabels the head "
+             "when its post job recorded the import check run and the cause is pass. None of the three writes a "
+             "check run, and the last writes the state label and the label comment that a relabel gives now."),
 }
 LOG_CAUSES = {
     "blocking": ("A review of the head, the withdraw-owed line of the label comment, or an import check run of the "
@@ -2739,6 +2742,16 @@ def withdrawn_by(check, head):
             named["read"] or named.get("at") or named.get("since"))
 
 
+def withdrawing_run(check, head):
+    """The run that withdrew check, an import check run of head with the conclusion neutral, from the conclusion
+    success: the run that the summary of a withdrawal (WITHDREW) names as the run that withdrew it from head, whatever
+    run gave its reason (withdrawn_by gives that run). None for any other check run, and for a check run of
+    not_approved (NOT_APPROVED): no success stood for it to withdraw."""
+    summary = check.get("summary") or (check.get("output") or {}).get("summary") or ""
+    m = WITHDREW.search(summary) if check.get("conclusion") == "neutral" and isinstance(summary, str) else None
+    return m.group("run") if m and m.group("head") == head else None
+
+
 def blocks_from(check, head):
     """The time from which check, a withdrawal of the import check runs of head, blocks a record: the time that its
     summary names (withdrawn_by), or "" when it names none. A check run of not_approved counts as a withdrawal by its
@@ -4028,11 +4041,11 @@ def main(argv):
                                          "" if at == "-" else at, read), f)
                 print(check["id"])
             return 0
-        if len(argv) == 4 and argv[0] == "withdrawn-by" and HEAD.fullmatch(argv[1]) and NUMBER.fullmatch(argv[2]):
+        if len(argv) == 4 and argv[0] == "withdrew-success" and HEAD.fullmatch(argv[1]) and NUMBER.fullmatch(argv[2]):
             checks = json_lines(argv[3])
             if not all(isinstance(check, dict) for check in checks):
                 raise ValueError(f"{argv[3]} holds a line that is not a check run")
-            return 0 if any((withdrawn_by(check, argv[1]) or ("", "", ""))[1] == argv[2] for check in checks) else 3
+            return 0 if any(withdrawing_run(check, argv[1]) == argv[2] for check in checks) else 3
         if len(argv) in (7, 8) and argv[0] == "not-approved":
             number, head, why, run, at, request = argv[1:7]
             body = not_approved(number, head, why, argv[7] if len(argv) == 8 else None, run, at)
