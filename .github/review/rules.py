@@ -138,9 +138,9 @@ untrue-claim: whether the label comment of <number> says that the workflow recor
 line of R12 of <head> (record_line). The status is 0, with a line on standard output that says so, when it makes that
 claim and no import check run of <head> (import_checks, with OSS_VERIFY_APP_ID) has the conclusion success and that
 marker line. The status is 3 when it makes no such claim, or such a check run stands, 1 when GitHub does not give the
-label comments or the check runs, and 2 when it reads the check runs and OSS_VERIFY_APP_ID is not a whole number greater
-than 0 (NUMBER). A run that gives way runs the steps of a relabel of <head> on status 0, so that a withdrawal that
-GitHub took leaves no such claim when the post job failed or was cancelled before it wrote its outputs.
+label comments or the check runs, and 2 when an argument, OSS_VERIFY_APP_ID or the label comment's marker line is not
+valid. A run that gives way runs the steps of a relabel of <head> on status 0, so that a withdrawal that GitHub took
+leaves no such claim when the post job failed or was cancelled before it wrote its outputs.
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -654,12 +654,12 @@ NO_REASON = ("The automated review passed this pull request. A run of the workfl
              "reason. So no such check approves this head commit for the import.")
 REVIEW_AGAIN = "Sami starts the automated review of the head commit again, by hand."
 # The decision gone (the label step, unrecord): the screen and the review passed the head, and no import check run of
-# the head with the conclusion success holds the marker line of the value now. The comment that gives the reason of a
-# withdrawal can have posted already, so the text does not say that no comment gives it (NO_REASON). It says that the
-# workflow could not show the check, in the place of PASSED and of the steps of the import. The next step is a review
-# of the head by hand (REVIEW_AGAIN), as for withdrawn.
-GONE = ("The automated screen and the automated review passed this pull request. After that, the workflow could not "
-        "show that the check `repo-pairs/import-approved` approves its head commit for the import.")
+# the head with the conclusion success holds the marker line of the value that the decision read, or, for unrecord, of
+# the label comment. The comment that gives the reason of a withdrawal can have posted already, so the text does not say
+# that no comment gives it (NO_REASON). It says that the workflow found no such check, in the place of PASSED and of the
+# steps of the import. The next step is a review of the head by hand (REVIEW_AGAIN), as for withdrawn.
+GONE = ("The automated screen and the automated review passed this pull request. After that, the workflow found no "
+        "check `repo-pairs/import-approved` with the conclusion success that approves its head commit for the import.")
 MERGE_STEPS = (
     "- If the rules of this repository allow a merge, Sami merges the pull request in this repository.\n"
     "- If not, when the import into the internal repository runs and copies each changed path, Sami approves the "
@@ -1667,13 +1667,13 @@ def untrue_claim(number, head):
     """True when the newest label comment of BOT on the item number says that the workflow recorded the import check
     run on head (record_line), and no import check run of head with the conclusion success and that marker line stands
     (import_checks, record_stands): then it prints a line that says so. GhError when GitHub does not give the label
-    comments or the check runs, and a ValueError when it reads the check runs and OSS_VERIFY_APP_ID is not a whole
-    number greater than 0 (import_checks)."""
+    comments or the check runs, and a ValueError when OSS_VERIFY_APP_ID or the label comment's marker line is not
+    valid."""
     labels = read_labels(number)
     found = record_line(labels[-1]["body"], head) if labels else None
     if found is None or record_stands(import_checks(number, head), found[0]):
         return False
-    print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and no such "
+    print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}. No such "
           "check run with the conclusion success holds the marker line of that label comment.")
     return True
 

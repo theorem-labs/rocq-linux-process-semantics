@@ -23757,7 +23757,8 @@ class ImportCheckTest(ReaderRunner):
     RELABEL_STEPS = ("Read the author-kind table for a relabel of the head",
                      "Decide the import check of the head as a relabel decides it now",
                      "Set the state label as a relabel of the head sets it now")
-    HOLD_RELABEL = "Start a relabel after a give-way, for a success this run withdrew or an untrue label claim"
+    HOLD_RELABEL = ("Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue "
+                    "label claim")
     # The value of WITHDREW in the step HOLD_RELABEL: the output withdrew of the post job, or the output head of the
     # hold job's step that withdraws for an answer. POST_ONLY is the rule of 484b8851, which reads the post job alone.
     WITHDREW_EITHER = "${{ needs.post.outputs.withdrew || steps.withdrawn.outputs.head }}"
@@ -24082,8 +24083,8 @@ class ImportCheckTest(ReaderRunner):
 
     # The two lines that the step SKIP or HOLD_RELABEL writes to its log when it starts the three steps of a relabel for
     # a label comment that says that the workflow recorded the check on HEAD while no such check run stands.
-    UNTRUE_LINES = (f"#7: its label comment says that the workflow recorded the check `{rules.CHECK}` on {HEAD}, and "
-                    f"no such check run with the conclusion success holds the marker line of that label comment.\n#7: "
+    UNTRUE_LINES = (f"#7: its label comment says that the workflow recorded the check `{rules.CHECK}` on {HEAD}. No "
+                    f"such check run with the conclusion success holds the marker line of that label comment.\n#7: "
                     f"so the steps after this one run as a relabel of {HEAD} that reads #7 at ")
 
     def test_a_run_that_gives_way_after_github_took_an_unanswered_withdrawal_writes_the_labels_of_a_relabel(self):

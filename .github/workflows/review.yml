@@ -280,9 +280,10 @@
 # author-kind table of .github/review/rules.py: only an outside author's item gets a state label, an approval of its
 # held runs and the import check run of R12. Any other item gets no state label, and when GitHub did not say whether
 # its author has write access, its state label and its label comment stay as they are. One case differs (OSSV-221's
-# architect, 2026-11-24 16:19Z, F5): after the withdrawal of a run of such an author, a label comment that says that
-# the workflow recorded the check of the head, while no such check run stands, becomes the label comment of the state
-# decide that says that a run withdrew it (rules.py owed and unrecord). The state labels stay as they are.
+# architect, 2026-11-24 16:19Z, F5): after the withdrawal of a run of such an author, a label comment that says that the
+# workflow recorded the check of the head, while no such check run stands, becomes the label comment of the state
+# decide, which does not say that the workflow recorded the check (rules.py owed and unrecord). The state labels stay as
+# they are.
 #
 # No job runs code of a pull request. The gather job checks out main, never the pull request; it reads the pull
 # request's diff and files from git objects as data under .review/, with every CLAUDE.md, AGENTS.md and .claude/ taken
@@ -4320,7 +4321,7 @@ jobs:
       # rules.py log: the decision skip and a cause. For a word that newer-word finds, the cause is its kind, or screen
       # for a hold, with the run that gave it and its time. For the post job's output gave_way, the cause is screen,
       # neutral or verdict, with no run and no time. It writes the output gave_way too. Each later step that writes on
-      # the item reads that output in its if. A read that fails fails this step, and this run posts no review.
+      # the item reads that output in its if. A read that fails fails this step.
       # The post job of such a run can have withdrawn an import check run of the head with the conclusion success (its
       # output withdrew names the head), or recorded one (its output recorded is true). Then a label comment that says
       # that the workflow recorded the check can stand with no such check run, or a label comment that does not say it
@@ -4370,12 +4371,11 @@ jobs:
           [[ $NUMBER =~ ^[1-9][0-9]*$ ]] || { echo "::error::not a number: $NUMBER"; exit 1; }
           # The review of an issue reads no head.
           [ -n "${HEAD:-}" ] || exit 0
-          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::not a head commit: $HEAD. This run posts no review."; exit 1; }
+          [[ $HEAD =~ ^[0-9a-f]{40}$ ]] || { echo "::error::not a head commit: $HEAD."; exit 1; }
           [[ $STARTED =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
-            || { echo "::error::no start time of this run. This run posts no review."; exit 1; }
+            || { echo "::error::no start time of this run."; exit 1; }
           [[ ${GITHUB_RUN_ID:-} =~ ^[1-9][0-9]*$ ]] \
-            || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}. This run posts no review."; exit 1; }
+            || { echo "::error::not a run id: ${GITHUB_RUN_ID:-}."; exit 1; }
           # own: the kind of the own word of this run, its verdict (refused for a review that the fresh reader refused),
           # or read for a run that gives no word.
           own="read"
@@ -4393,15 +4393,14 @@ jobs:
             newer) cause=verdict ;;
             "")
               found=$(python3 .github/review/rules.py newer-word "$NUMBER" "$HEAD" "$STARTED" "$GITHUB_RUN_ID" "$own") \
-                || { echo "::error::the comments of #$NUMBER or the import check runs of $HEAD could not be read." \
-                       "This run posts no review."; exit 1; }
+                || { echo "::error::the comments of #$NUMBER or the import check runs of $HEAD could not be read."
+                     exit 1; }
               [ "$found" != - ] || exit 0
               read -r other kind at <<< "$found"
               cause=$kind fields=(run "$other" from "$at")
               [ "$cause" != hold ] || cause=screen ;;
             *)
-              echo "::error::the post job's output gave_way is not held, withdrawn or newer: $GAVE_WAY." \
-                "This run posts no review."
+              echo "::error::the post job's output gave_way is not held, withdrawn or newer: $GAVE_WAY."
               exit 1 ;;
           esac
           line=$(python3 .github/review/rules.py log "$NUMBER" "$HEAD" skip "$cause" "$STARTED" "${fields[@]}") \
@@ -4418,12 +4417,7 @@ jobs:
             if [ "${WITHDREW:-}" != "$HEAD" ]; then
               rc=0
               python3 .github/review/rules.py untrue-claim "$NUMBER" "$HEAD" || rc=$?
-              (( rc != 2 )) \
-                || { echo "::error::OSS_VERIFY_APP_ID is not a whole number greater than 0. This run posts no review."
-                     exit 1; }
-              (( rc == 0 || rc == 3 )) \
-                || { echo "::error::the label comments of #$NUMBER or the import check runs of $HEAD could not be" \
-                       "read. This run posts no review."; exit 1; }
+              (( rc == 0 || rc == 3 )) || exit 1
               (( rc != 0 )) || did=claimed
             fi
             [ "$did" = claimed ] || [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
@@ -4696,7 +4690,7 @@ jobs:
       # it. A check run that the post job of this run withdrew for its own verdict never counts: then its output
       # standing is false (the outputs of the post job). It writes the state import only while a check run of this pull
       # request on the head with conclusion success stands with the marker line of that value (rules.py import-marker).
-      # Else it gives the decision gone: in the state decide, its text says that the workflow could not show the check
+      # Else it gives the decision gone: in the state decide, its text says that the workflow found no such check
       # after the screen and the review passed (rules.py GONE), with Sami's step for a review by hand. A read that
       # fails fails this step before it writes anything.
       # A pass of a review by hand (a review or a rescreen with no screen in its run) of an outside author's pull request
@@ -5279,8 +5273,8 @@ jobs:
   # the author has write access, the state labels and the label comment stay as they are, but review-held and the hold
   # comment go on, as they are the hold's. One thing more changes for such an author (OSSV-221's architect, 2026-11-24
   # 16:19Z, F5): once the post job or this job finished a withdrawal, a label comment that says that the workflow
-  # recorded the check, while no such record stands, becomes one that says that a run withdrew it (rules.py owed and
-  # unrecord). Each hold of a pull request also names the head that the run read, in the
+  # recorded the check, while no such record stands, becomes one that does not say that the workflow recorded the check
+  # (rules.py owed and unrecord). Each hold of a pull request also names the head that the run read, in the
   # marker <!-- review-held-head <head> -->, by which the pass tells which head a hold stops, and after it the id of the
   # run that wrote it, in the marker <!-- review-held-run <run> -->. A hold of the screen of a pull request names,
   # between those two, the time when the trust job of this run read the item, in the marker
@@ -5448,8 +5442,9 @@ jobs:
       # comment gives the reason once it posts. For an author whose write access GitHub did not give, the label step
       # changes no label comment. So when the post job finished the withdrawal of the head, rules.py also reads the
       # label comment here: one that says that the workflow recorded the check on that head, while no such check run
-      # with the conclusion success stands now, becomes the label comment of the state decide, with the text that a run
-      # withdrew it (rules.py unrecord; OSSV-221's architect, 2026-11-24 16:19Z, F5). No state label goes on or off.
+      # with the conclusion success stands now, becomes the label comment of the state decide, which does not say that
+      # the workflow recorded the check (rules.py unrecord; OSSV-221's architect, 2026-11-24 16:19Z, F5). No state label
+      # goes on or off.
       - name: Record a withdrawal that this run owes
         id: owed
         if: >-
@@ -5508,9 +5503,9 @@ jobs:
       # The post job of such a run can have withdrawn an import check run of the head with the conclusion success, for
       # a screen of this run that held the head (its output withdrew names the head). The withdrawal of an answer below
       # can withdraw one too, after this step. Then a label comment that says that the workflow recorded the check can
-      # stand with no such check run. So the step "Start a relabel after a give-way, for a success this run withdrew or
-      # an untrue label claim", after the withdrawal of an answer, reads the output gave_way of this step. The comment
-      # of that step says what it does then.
+      # stand with no such check run. So the step "Run the steps of a relabel when this run gave way after it withdrew a
+      # success, or after an untrue label claim", after the withdrawal of an answer, reads the output gave_way of this
+      # step. The comment of that step says what it does then.
       - name: Skip the posts of this run when a review or hold of the head is newer than this run's read
         id: way
         if: >-
@@ -5923,9 +5918,9 @@ jobs:
       # run gave way to a newer word: a failed read or write of the App fails this job, but the hold stands, and the
       # line of the step "Record a withdrawal that this run owes" stays. When this run gave way and they withdrew an
       # import check run of the head with the conclusion success, the steps after them run as a relabel of the head (the
-      # step "Start a relabel after a give-way, for a success this run withdrew or an untrue label claim"). The rescreen
-      # pass tries no App write of an answer again (held.sh due_retry), so RETRY is false, and each error says to re-run
-      # this run. Only while the environment post holds the App's key.
+      # step "Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue label
+      # claim"). The rescreen pass tries no App write of an answer again (held.sh due_retry), so RETRY is false, and
+      # each error says to re-run this run. Only while the environment post holds the App's key.
       - name: Find the import check runs that the screen of this answer withdraws
         id: withdraw
         if: env.APP_KEY_SET == 'true' && steps.answered.outputs.held == 'true'
@@ -5998,7 +5993,9 @@ jobs:
       # writes no output relabel, and those three steps do not run. A read here or a step of the three that fails fails
       # the job, and its last step leaves no label comment that says that the workflow recorded the check while no
       # such check run stands (rules.py unclaim).
-      - name: Start a relabel after a give-way, for a success this run withdrew or an untrue label claim
+      - name: >-
+          Run the steps of a relabel when this run gave way after it withdrew a success, or after an untrue label
+          claim
         id: withdrew
         if: steps.way.outputs.gave_way == 'true'
         env:
@@ -6025,7 +6022,6 @@ jobs:
           if [ "${WITHDREW:-}" != "$HEAD" ]; then
             rc=0
             python3 .github/review/rules.py untrue-claim "$NUMBER" "$HEAD" || rc=$?
-            (( rc != 2 )) || { echo "::error::OSS_VERIFY_APP_ID is not a whole number greater than 0."; exit 1; }
             (( rc == 0 || rc == 3 )) || exit "$rc"
             (( rc != 0 )) || claimed=true
           fi
