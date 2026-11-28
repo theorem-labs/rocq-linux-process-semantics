@@ -3210,12 +3210,12 @@ jobs:
           # (write_owed), from the comments alone, and the second read writes it empty again when it gives no why.
           # The step that withdraws an import check run takes its own word from rules.py withdraw-word.
           # held gives the decision held. For an outside author, the verdict pass with a why records no check run, as a
-          # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the
-          # reason of the why (posted is unposted), so that the label comment says so (rules.py NO_REASON), and else
-          # screened for the states screened and earlier. That comment, for the line (from owed; the cause unposted), is
+          # relabel that withdraws records none. The decision is withdrawn when no comment of the workflow gives the why
+          # (posted is unposted), so that the label comment says so, and else screened for the states screened and
+          # earlier. That comment, for the line (from owed; the cause unposted), is
           # the comment of the line's run that gives its why, or a screened review comment whose run read the item after
           # the line's <read> (rules.py owed and word_time), and for a check run, the same for the why, the run and the
-          # time that its summary names (rules.py reason_posted; the cause neutral, as for a withdrawal that stands).
+          # time that its summary names (rules.py verdict; the cause neutral, as for a withdrawal that stands).
           # The line is a word from its <read> (OSSV-221's architect, 2026-11-25 01:13Z, G1). When the newest screened
           # review (a screened review comment, or a success that names its run and read) outranks it, it gives no why,
           # and from is outranked (rules.py verdict). For such a review comment the step that withdraws then gives the
@@ -4329,18 +4329,21 @@ jobs:
       # names the head, or recorded is true and the newer word is a pass (the cause pass), it also writes the output
       # relabel: the time now. A record counts only under a newer pass (OSSV-613's architect's decision of round 33i):
       # a newer verdict, refusal or hold withdraws that success or owes its withdrawal, and the label of its run is
-      # right, but a newer pass, as of a review by hand, can leave a label that read the item before the record. With
+      # right, but a newer pass, as of a review by hand, can leave a label that read the item before the record. Those
+      # outputs miss a withdrawal that GitHub took when the post job then failed or was cancelled before it wrote them
+      # (OSSV-613's architect, 2026-11-28 06:13Z, item B). So in each other case this step reads the item (rules.py
+      # untrue-claim), and it writes the output relabel too when the newest label comment says that the workflow
+      # recorded the check on the head and no such check run with the marker line of that comment stands. With
       # the output relabel, three steps after the label step run as a relabel of the head that reads the item at that
       # time, each with the script of that step of a relabel (a YAML anchor): "Read the author-kind table for a relabel
       # of the head", "Decide the import check of the head as a relabel decides it now" and "Set the state label as a
       # relabel of the head sets it now". So the item gets the state label and the label comment that a relabel of the
       # head gives now (rules.py relabel and relabel_facts). That label comment says that the workflow recorded the
       # check only while such a check run stands: the label step reads the check runs again before it writes that.
-      # This run still posts no review comment and no fix. This step then writes one more line to its log, which says
-      # that the post job of this run recorded or withdrew such a check run and gives the time of the output relabel.
-      # In each other case, this step writes no output relabel, and those three steps do not run. A step of the three
-      # that fails fails the job, and its last step leaves no label comment that says that the workflow recorded the
-      # check while no such check run stands (rules.py unclaim).
+      # This run still posts no review comment and no fix. This step then writes to its log why it wrote the output
+      # relabel, and its time. In each other case, this step writes no output relabel, and those three steps do not
+      # run. A step of the three that fails fails the job, and its last step leaves no label comment that says that the
+      # workflow recorded the check while no such check run stands (rules.py unclaim).
       - name: >-
           Skip the posts when the head has a review or hold newer than this run's read, or a withdrawal newer than
           this run's screened pass
@@ -4404,16 +4407,29 @@ jobs:
           echo "$line"
           printf '%s\n' "$line" >> "$GITHUB_STEP_SUMMARY"
           echo "gave_way=true" >> "$GITHUB_OUTPUT"
-          # The post job of this run withdrew a success of the head, or recorded one and the newer word is a pass: the
-          # steps after this one run as a relabel of the head that reads the item now (the comment above this step).
+          # The post job of this run withdrew a success of the head, or recorded one and the newer word is a pass, or
+          # the label comment claims a success of the head that no check run shows: the steps after this one run as a
+          # relabel of the head that reads the item now (the comment above this step).
           did=recorded
           if [ "${POST_RECORDED:-}" != true ] || [ "$cause" != pass ]; then
-            [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
             did=withdrew
+            if [ "${WITHDREW:-}" != "$HEAD" ]; then
+              rc=0
+              python3 .github/review/rules.py untrue-claim "$NUMBER" "$HEAD" || rc=$?
+              (( rc == 0 || rc == 3 )) \
+                || { echo "::error::the label comments of #$NUMBER or the import check runs of $HEAD could not be" \
+                       "read. Nothing posts."; exit 1; }
+              (( rc != 0 )) || did=claimed
+            fi
+            [ "$did" = claimed ] || [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
           fi
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "#$NUMBER: the post job of this run $did an import check run of $HEAD with the conclusion" \
-            "success. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
+          if [ "$did" = claimed ]; then
+            echo "#$NUMBER: so the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
+          else
+            echo "#$NUMBER: the post job of this run $did an import check run of $HEAD with the conclusion" \
+              "success. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
+          fi
           echo "relabel=$now" >> "$GITHUB_OUTPUT"
       # The review comment: it replaces the newest review comment of the workflow on the item, or posts a new one when
       # there is none. A review with no screen in its run (its marker lines hold no <!-- review-screened <head> -->)
@@ -5969,9 +5985,14 @@ jobs:
       # withdrew-success; OSSV-613's architect, 2026-11-28 00:14Z, C4): an earlier attempt of this run withdrew a
       # success of the head. A withdrawal counts for the run that withdrew it, not for the run whose reason it gives:
       # another run can withdraw for the line of the screen of this run. A check run of not-approved counts for no run:
-      # it withdrew no success. When none of these names the head, this step writes no output relabel, and those three
-      # steps do not run. A step of the three that fails fails the job, and its last step leaves no label comment that
-      # says that the workflow recorded the check while no such check run stands (rules.py unclaim).
+      # it withdrew no success. The outputs of the post job miss a withdrawal that GitHub took when that job then failed
+      # or was cancelled before it wrote them (OSSV-613's architect, 2026-11-28 06:13Z, item B). So when none of these
+      # names the head, this step reads the item, as the comment job's step that skips the posts does (rules.py
+      # untrue-claim), and it writes the output relabel too when the newest label comment says that the workflow
+      # recorded the check on the head and no such check run with the marker line of that comment stands. Else it
+      # writes no output relabel, and those three steps do not run. A read here or a step of the three that fails fails
+      # the job, and its last step leaves no label comment that says that the workflow recorded the check while no
+      # such check run stands (rules.py unclaim).
       - name: Run the steps of a relabel when this run gave way and withdrew a success of the head
         id: withdrew
         if: steps.way.outputs.gave_way == 'true'
@@ -5994,13 +6015,26 @@ jobs:
             (( rc == 0 || rc == 3 )) || exit "$rc"
             (( rc != 0 )) || WITHDREW=$HEAD
           fi
-          # This run withdrew a success of the head, in its post job or in the withdrawal of an answer: the steps after
-          # this one run as a relabel of the head that reads the item now (the comment above this step).
-          [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
+          # A label comment that claims a success of the head that no check run shows (the comment above this step).
+          claimed=
+          if [ "${WITHDREW:-}" != "$HEAD" ]; then
+            rc=0
+            python3 .github/review/rules.py untrue-claim "$NUMBER" "$HEAD" || rc=$?
+            (( rc == 0 || rc == 3 )) || exit "$rc"
+            (( rc != 0 )) || claimed=true
+          fi
+          # This run withdrew a success of the head, in its post job or in the withdrawal of an answer, or the label
+          # comment claims one that no check run shows: the steps after this one run as a relabel of the head that
+          # reads the item now (the comment above this step).
+          [ -n "$claimed" ] || [ "${WITHDREW:-}" = "$HEAD" ] || exit 0
           now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "#$NUMBER: this run withdrew an import check run of $HEAD with the conclusion success, and this job" \
-            "skipped the posts of this run. So the steps after this one run as a relabel of $HEAD that reads #$NUMBER" \
-            "at $now."
+          if [ -n "$claimed" ]; then
+            echo "#$NUMBER: so the steps after this one run as a relabel of $HEAD that reads #$NUMBER at $now."
+          else
+            echo "#$NUMBER: this run withdrew an import check run of $HEAD with the conclusion success, and this job" \
+              "skipped the posts of this run. So the steps after this one run as a relabel of $HEAD that reads" \
+              "#$NUMBER at $now."
+          fi
           echo "relabel=$now" >> "$GITHUB_OUTPUT"
       # The three steps of a relabel of the head, as in the comment job (the comment of each there): the author-kind
       # table for the task relabel (*answers), the decision of the post job of a relabel (*decide), and the label step

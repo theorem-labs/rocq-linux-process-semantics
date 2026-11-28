@@ -9,6 +9,7 @@ labels").
         task=<task> outside=<outside> outsider=<outsider> author=<kind>
     python3 .github/review/rules.py hold-head <number> <head>
     python3 .github/review/rules.py unclaim <number>
+    python3 .github/review/rules.py untrue-claim <number> <head>
     python3 .github/review/rules.py log <number> <head> <decision> <cause> <read> [<field> <value> ...]
     python3 .github/review/rules.py make-label <name>
     python3 .github/review/rules.py proofs <head> <main> <files.jsonl> <changed files>
@@ -130,6 +131,15 @@ label comment of the state working in its place. That label comment keeps each m
 the workflow tries again. The state working has no state label, so this adds and takes off no state label. The status
 is 1 when GitHub does not give the label comments or does not take the write. Nothing more can be done then, and the
 re-run of the failed jobs of the run tries again (held.sh due_rerun).
+
+untrue-claim: whether the label comment of <number> says that the workflow recorded the check
+`repo-pairs/import-approved` on <head> while no such check run stands (untrue_claim; OSSV-613's architect, 2026-11-28
+06:13Z, item B). Only the newest label comment of github-actions[bot] counts: its claim (says_recorded) with the marker
+line of R12 of <head> (record_line). The status is 0, with a line on standard output that says so, when it makes that
+claim and no import check run of <head> (import_checks, with OSS_VERIFY_APP_ID) has the conclusion success and that
+marker line. The status is 3 when it makes no such claim, or such a check run stands, and 1 when GitHub does not give
+the label comments or the check runs. A run that gives way runs the steps of a relabel of <head> on status 0, so that a
+withdrawal that GitHub took leaves no such claim when the post job failed or was cancelled before it wrote its outputs.
 
 hold-head: the one check of each writer of a hold comment, before it writes anything (held_head): the hold job, and the
 comment job's step that writes a stop of the rescreen pass. <head> is the head that the new hold names, and empty for
@@ -1663,6 +1673,20 @@ def unclaim(number):
     print(f"#{number}: its label comment said that the workflow recorded the check `{CHECK}` on {head}. {why} So this "
           "step wrote the label comment of the state working, which does not say that the workflow recorded the "
           "check. This step did not add or remove a state label.")
+
+
+def untrue_claim(number, head):
+    """True when the newest label comment of BOT on the item number says that the workflow recorded the import check
+    run on head (record_line), and no import check run of head with the conclusion success and that marker line stands
+    (import_checks, record_stands): then it prints a line that says so. GhError when GitHub does not give the label
+    comments or the check runs."""
+    labels = read_labels(number)
+    found = record_line(labels[-1]["body"], head) if labels else None
+    if found is None or record_stands(import_checks(number, head), found[0]):
+        return False
+    print(f"#{number}: its label comment says that the workflow recorded the check `{CHECK}` on {head}, and no such "
+          "check run with the conclusion success stands.")
+    return True
 
 
 def owe(number, run, owed="", withdrawn="", own=False):
@@ -3847,6 +3871,8 @@ def main(argv):
         if len(argv) == 2 and argv[0] == "unclaim" and NUMBER.fullmatch(argv[1]):
             unclaim(argv[1])
             return 0
+        if len(argv) == 3 and argv[0] == "untrue-claim" and NUMBER.fullmatch(argv[1]) and HEAD.fullmatch(argv[2]):
+            return 0 if untrue_claim(argv[1], argv[2]) else 3
         if len(argv) >= 6 and argv[0] == "log" and len(argv) % 2 == 0:
             names = argv[6::2]
             if len(set(names)) != len(names):

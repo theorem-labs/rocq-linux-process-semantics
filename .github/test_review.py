@@ -129,7 +129,9 @@ BOT = "github-actions[bot]"   # the account of this workflow's comments and revi
 # the call has the field filter=all. As GitHub does, a POST of a check run (repos/<repo>/check-runs, --input) that is
 # answered adds it to the check runs of its commit (head_sha), with the id of the answer, the OSS Verify App and the
 # time now as completed_at, and a PATCH of one (repos/<repo>/check-runs/<id>) changes it there, when a test serves the
-# check runs of that commit: a later read of them sees the write.
+# check runs of that commit: a later read of them sees the write. An endpoint with a <endpoint>.lost file gives no
+# answer: each call takes its effect, as above, and then fails with that file's text, as gh names an HTTP error, as
+# when GitHub took a write and then answered with an error (Runner.lose).
 # gh pr view <n> and gh issue view <n> answer the --json fields from $FAKE_GH/pr_view_<n>.json or issue_view_<n>.json.
 # When $FAKE_GH/inject exists, it holds "<kind> <n>": read 3, write 1, or none 0, which only counts. The failure sweep
 # of test_orders.py (ORDERS_FAILURES) writes it. Each call is then a read or a write, as writes tells them (gh api
@@ -194,6 +196,8 @@ printf '%s\1' "${GH_TOKEN-}" >> "$FAKE_GH/tokens"
 [ -z "$input" ] || { cat "$input" >> "$FAKE_GH/inputs"; printf '\1' >> "$FAKE_GH/inputs"; }
 file="$FAKE_GH/${endpoint//\//_}.json"
 [ ! -f "${file%.json}.fail" ] || { cat "${file%.json}.fail" >&2; exit 1; }
+lost=${file%.json}.lost
+[ ! -f "$lost" ] || exec > /dev/null
 if [ -f "${file%.json}.refuse" ]; then
   while IFS= read -r field; do
     for a in "${all[@]}"; do
@@ -246,6 +250,7 @@ if [ -n "$input" ] && [[ $endpoint =~ ^(repos/[^/]+/[^/]+)/check-runs(/([1-9][0-
   fi
 fi
 [ ! -f "${file%.json}.then.json" ] || mv "${file%.json}.then.json" "$file"
+[ ! -f "$lost" ] || { cat "$lost" >&2; exit 1; }
 """
 
 
@@ -623,6 +628,12 @@ class Runner(unittest.TestCase):
     def refuse(self, endpoint, status, text="Validation Failed"):
         """Every call of endpoint fails with an HTTP status, as gh names it."""
         with open(os.path.join(self.api, endpoint.replace("/", "_") + ".fail"), "w") as f:
+            f.write(f"gh: {text} (HTTP {status})\n")
+
+    def lose(self, endpoint, status, text="Bad Gateway"):
+        """Every call of endpoint takes its effect and then fails with an HTTP status, as gh names it: GitHub took the
+        write, and its answer was an error."""
+        with open(os.path.join(self.api, endpoint.replace("/", "_") + ".lost"), "w") as f:
             f.write(f"gh: {text} (HTTP {status})\n")
 
     def refuse_field(self, endpoint, field):
@@ -5113,10 +5124,12 @@ OWE = "Record a withdrawal that the post job owes"
 OWE_REFUSED = "Record the withdrawal of a blocking, person or refused review whose post job did not finish"
 
 
-def run_job(test, job, ctx, tokens, mint=True, cancel=None):
+def run_job(test, job, ctx, tokens, mint=True, cancel=None, cancelled_after=None):
     """The steps of job in the contexts ctx, as GitHub runs them: each step whose if holds, in order, and none after a
     step that failed or was cancelled (GitHub's implicit success()), but a step whose if is AFTER_FAILURE, which runs
-    only after one. cancel is the name of the step that a cancel of the job ends (its outcome is cancelled). The job's
+    only after one. cancel is the name of the step that a cancel of the job ends (its outcome is cancelled).
+    cancelled_after is the name of a step that runs and that a cancel of the job then ends, after its calls of GitHub
+    and before GitHub takes its outputs: its outcome is cancelled, and none of its outputs join ctx. The job's
     env, which GitHub fills in from ctx when the job starts, is the context env of each if. ctx gets a stand-in for the
     App's key (APP_KEY) when it holds none, so that the environment post holds the key unless a test says otherwise.
     The checkout gives main's .github/ (test.checkout); a sign-in step of the App gives its token of tokens, or fails
@@ -5149,8 +5162,8 @@ def run_job(test, job, ctx, tokens, mint=True, cancel=None):
             run_id = {"GITHUB_RUN_ID": ctx["github.run_id"]} if ctx.get("github.run_id") else {}
             rc, out, got = test.run_script(s["run"], **dict({"GH_TOKEN": ""}, **run_id, **env))
             test.logs.append(out)
-            outcome = "success" if rc == 0 else "failure"
-            if "id" in s:
+            outcome = "cancelled" if name == cancelled_after else "success" if rc == 0 else "failure"
+            if "id" in s and name != cancelled_after:
                 ctx.update({f"steps.{s['id']}.outputs.{k}": v for k, v in got.items()})
         if "id" in s:
             ctx[f"steps.{s['id']}.outcome"] = outcome
@@ -18189,7 +18202,7 @@ class ImportCheckTest(ReaderRunner):
 
     def judge(self, paths, verdict="pass", value=None, trust=None, screen="clean", mint=True, event="workflow_run",
               changed=None, per_page=100, now=HEAD, then=None, comments=(), labels=("review-held",), outside="true",
-              listed=(), key=True, named=None, refused="", cancel=None):
+              listed=(), key=True, named=None, refused="", cancel=None, cancelled_after=None):
         """The post job, then the comment job's label step, each when its if holds, for a run whose trust job gave
         trust (the workflow_run review of #7 at HEAD when None), whose screen gave screen (none for the route review)
         and whose review gave verdict (an approval has no review job) and the output refused (review for a review that
@@ -18203,7 +18216,8 @@ class ImportCheckTest(ReaderRunner):
         job's output named, the head that the run's name gives. When neither named nor trust gives it, it is the trust
         job's head for a workflow_run (the name of a CI run gives its head), and empty for a run by hand (no input
         head). cancel is the step of the post job that a cancel of the job ends (run_job): the job's result is then
-        cancelled, and GitHub fills in its outputs from the steps that ran before it.
+        cancelled, and GitHub fills in its outputs from the steps that ran before it. cancelled_after is a step of the
+        post job that runs and that a cancel of the job then ends before GitHub takes its outputs (run_job).
         What the run did: each post step's outcome, the post job's result and outputs, its writes, the check runs that
         it recorded as (token, body), the check runs that it withdrew as (token, endpoint, body), the state labels set,
         and the label comments posted or edited."""
@@ -18252,7 +18266,7 @@ class ImportCheckTest(ReaderRunner):
         self.forget()
         got = {"steps": {}, "result": "skipped", "post": {}}
         if evaluate(JOBS["post"]["if"], ctx):
-            got["steps"] = run_job(self, "post", ctx, self.TOKENS, mint, cancel=cancel)
+            got["steps"] = run_job(self, "post", ctx, self.TOKENS, mint, cancel=cancel, cancelled_after=cancelled_after)
             results = got["steps"].values()
             got["result"] = "cancelled" if "cancelled" in results else "failure" if "failure" in results else "success"
             got["post"] = post_outputs(ctx)
@@ -23623,6 +23637,18 @@ class ImportCheckTest(ReaderRunner):
     # its place, the test of b4c9116a: the run of the reason (withdrawn_by), also of a check run of not-approved.
     WITHDREW_SUCCESS = "withdrawing_run(check, argv[1]) == argv[2]"
     TEST_B4C9116A = (WITHDREW_SUCCESS, '(withdrawn_by(check, argv[1]) or ("", "", ""))[1] == argv[2]')
+    # The read of the step SKIP of the comment job and of the step HOLD_RELABEL of the hold job that starts the three
+    # steps of a relabel when the newest label comment says that the workflow recorded the check on the head and no such
+    # check run stands (rules.py untrue-claim; OSSV-613's architect, 2026-11-28 06:13Z, item B), and what a control puts
+    # in its place: UNREAD_CLAIM is each step as before that ruling, with no such read.
+    UNTRUE_CLAIM = 'python3 .github/review/rules.py untrue-claim "$NUMBER" "$HEAD" || rc=$?'
+    UNREAD_CLAIM = (UNTRUE_CLAIM, "rc=3")
+    # The test of rules.py untrue_claim that a check run backs the claim, and what a control puts in its place:
+    # CLAIM_UNCHECKED reads no check run, so that each claim counts as untrue.
+    CLAIM_BACKED = "    if found is None or record_stands(import_checks(number, head), found[0]):\n"
+    CLAIM_UNCHECKED = (CLAIM_BACKED, "    if found is None:\n")
+    # The step of the post job whose PATCH of a check run GitHub takes before the job ends with no output withdrew.
+    WITHDRAW_STEP = "Withdraw the import check runs of the head"
     # The line of the label step that marks a pass of a review by hand that the step would give the state decide, so
     # that it reads the import check runs of the head (OSSV-613's architect, 2026-11-27 19:02Z), and the line that
     # gives relabel when such a check run stands. Also what a control puts in their place. HAND_UNREAD is the label
@@ -23902,6 +23928,198 @@ class ImportCheckTest(ReaderRunner):
                           rules.says_recorded(self.label_body(comments))),
                          (["skipped"] * 3, [], True), self.logs[-8:])
 
+    def withdrawal_unanswered(self, end, **kwargs):
+        """The reviewer's order (reviewers_order, with kwargs) in which GitHub takes the PATCH of run 120's post job
+        that withdraws 901 (its conclusion neutral), and the job then ends with no output withdrew (the reviewer's
+        read-ahead finding of 2026-11-28 06:12Z): with end lost, GitHub answers that PATCH with HTTP 502 (Runner.lose),
+        so the step WITHDRAW_STEP and the job fail; with end cancelled, a cancel of the job ends that step after the
+        PATCH and before GitHub takes its outputs (run_job's cancelled_after). ordered's result."""
+        if end == "lost":
+            self.lose(f"repos/{REPO}/check-runs/901", 502)
+            return self.reviewers_order(**kwargs)
+        return self.reviewers_order(cancelled_after=self.WITHDRAW_STEP, **kwargs)
+
+    # The two lines that the step SKIP or HOLD_RELABEL writes to its log when it starts the three steps of a relabel for
+    # a label comment that says that the workflow recorded the check on HEAD while no such check run stands.
+    UNTRUE_LINES = (f"#7: its label comment says that the workflow recorded the check `{rules.CHECK}` on {HEAD}, and "
+                    f"no such check run with the conclusion success stands.\n#7: so the steps after this one run as a "
+                    f"relabel of {HEAD} that reads #7 at ")
+
+    def test_a_run_that_gives_way_after_github_took_an_unanswered_withdrawal_writes_the_labels_of_a_relabel(self):
+        """OSSV-613's architect's ruling of 2026-11-28 06:13Z, item B, on the reviewer's read-ahead finding of 06:12Z: a
+        withdrawal that GitHub took leaves no label comment that says that the workflow recorded the check, also when
+        the post job then ends with no output withdrew. In withdrawal_unanswered, run 100 records 901, and run 130's
+        decision is hand, so its label comment says that the workflow recorded the check. GitHub takes the PATCH of run
+        120's post job that withdraws 901 for its blocking finding, and then (i) answers it with HTTP 502, so that the
+        post job fails, or (ii) a cancel of the post job ends that step. Run 120's comment job gives way to the newer
+        pass of run 130. Its step SKIP reads the label comment of run 130, which says that the workflow recorded the
+        check on HEAD while no success stands, and its log says so (UNTRUE_LINES). So the three steps of a relabel of
+        HEAD run, and their label comment does not say that the workflow recorded the check. A relabel of HEAD at the
+        end (relabel_at_the_end) changes nothing on #7. The control, the step SKIP with no such read (UNREAD_CLAIM),
+        skips the three steps, and the label comment of run 130 stands with no success."""
+        for end, result in (("lost", "failure"), ("cancelled", "cancelled")):
+            with self.subTest(end=end):
+                self.tearDown()
+                self.setUp()
+                comments, labels, checks, done = self.withdrawal_unanswered(end)
+                got, outcomes = done["120"]
+                body = self.label_body(comments)
+                self.assertEqual((got["result"], got["steps"][self.WITHDRAW_STEP], got["post"]["withdrew"],
+                                  self.successes(checks)), (result, result, "", []), self.logs[-8:])
+                self.assertEqual([outcomes[n] for n in (self.SKIP, self.REVIEW, self.LABEL, *self.RELABEL_STEPS,
+                                                        UNCLAIM)],
+                                 ["success", "skipped", "skipped", "success", "success", "success", "skipped"],
+                                 self.logs[-8:])
+                self.assertIn(self.UNTRUE_LINES, "\n".join(self.logs))
+                self.assertEqual((rules.says_recorded(body), labels), (False, [THEOREM_LABEL]), body)
+                self.assertEqual(self.relabel_at_the_end(comments, labels, checks), (True, "success", body),
+                                 self.logs[-4:])
+                self.tearDown()
+                self.setUp()
+                comments, _labels, checks, done = self.changed_step(
+                    "comment", self.SKIP, *self.UNREAD_CLAIM, lambda: self.withdrawal_unanswered(end))
+                self.assertEqual(([done["120"][1][n] for n in self.RELABEL_STEPS], self.successes(checks),
+                                  rules.says_recorded(self.label_body(comments))),
+                                 (["skipped"] * 3, [], True), self.logs[-8:])
+
+    def test_a_hold_job_that_gives_way_after_github_took_an_unanswered_withdrawal_writes_the_labels_of_a_relabel(self):
+        """As for the comment job (OSSV-613's architect, 2026-11-28 06:13Z, item B), in the hold job:
+        withdrawal_unanswered in which the screen of rescreen run 120 held HEAD. Run 100 records 901, and run 130's
+        label comment says that the workflow recorded the check. GitHub takes the PATCH of run 120's post job that
+        withdraws 901 for the screen of run 120, and then (i) answers it with HTTP 502, or (ii) a cancel of the post job
+        ends that step: its output withdrew is empty. Run 120's hold job gives way to the newer pass of run 130 and
+        posts no hold comment. Its step HOLD_RELABEL reads the label comment of run 130, which says that the workflow
+        recorded the check on HEAD while no success stands, and its log says so (UNTRUE_LINES). So the three steps of a
+        relabel of HEAD run, and they write what a relabel of HEAD gives now, as in
+        test_a_hold_job_that_gives_way_after_its_post_job_withdrew_a_success_writes_the_labels_of_a_relabel: the state
+        decide with the text SCREEN_HELD_AFTER. The control, the step HOLD_RELABEL with no such read (UNREAD_CLAIM),
+        skips the three steps, and the label comment of run 130 stands with no success."""
+        _label, step_, _text = rules.STATES["decide"]
+        for end, result in (("lost", "failure"), ("cancelled", "cancelled")):
+            with self.subTest(end=end):
+                self.tearDown()
+                self.setUp()
+                comments, labels, checks, done = self.withdrawal_unanswered(end, screen="held")
+                got, outcomes = done["120"]
+                body = self.label_body(comments)
+                self.assertEqual((got["result"], got["post"]["withdrew"], self.successes(checks)), (result, "", []),
+                                 self.logs[-8:])
+                self.assertEqual([outcomes[n] for n in (HoldTest.SKIP, Holding.STEP, self.HOLD_RELABEL,
+                                                        *self.RELABEL_STEPS, UNCLAIM)],
+                                 ["success", "skipped", "success", "success", "success", "success", "skipped"],
+                                 self.logs[-8:])
+                self.assertIn(self.UNTRUE_LINES, "\n".join(self.logs))
+                self.assertEqual(len([c for c in comments if c["body"].startswith("<!-- review-held -->")]), 0)
+                self.assertTrue(body.startswith(f"{rules.FIRST}\n**Next step:** {step_}\n\n{rules.SCREEN_HELD_AFTER}"),
+                                body)
+                self.assertEqual((rules.says_recorded(body), labels), (False, [THEOREM_LABEL]), body)
+                self.tearDown()
+                self.setUp()
+                comments, _labels, checks, done = self.changed_step(
+                    "hold", self.HOLD_RELABEL, *self.UNREAD_CLAIM,
+                    lambda: self.withdrawal_unanswered(end, screen="held"))
+                self.assertEqual(([done["120"][1][n] for n in self.RELABEL_STEPS], self.successes(checks),
+                                  rules.says_recorded(self.label_body(comments))),
+                                 (["skipped"] * 3, [], True), self.logs[-8:])
+
+    def test_a_run_that_gives_way_while_a_success_backs_its_label_comment_starts_no_relabel(self):
+        """OSSV-613's architect, 2026-11-28 06:13Z, item B: the read of the step SKIP or HOLD_RELABEL starts the three
+        steps of a relabel only when no check run backs the claim of the label comment. Run 130, a screened CI review
+        that read #7 20 minutes ago, records 901, and its label comment says that the workflow recorded the check. Then
+        rescreen run 120, which read #7 40 minutes ago, (i) gives a blocking finding, or (ii) its screen holds HEAD. Its
+        post job keeps 901, the record of a newer read, so its output withdrew is empty, and its comment job or its hold
+        job gives way to the pass of run 130. The step reads the label comment and 901, which backs its claim, so the
+        three steps do not run, and 901 and the label comment stay. The control, rules.py untrue-claim when it reads no
+        check run (CLAIM_UNCHECKED), runs them."""
+        newer = ("130", dict(self.REVIEWED, started=ago(20)), "pass", {})
+        rescreen = dict(self.REVIEWED, task="rescreen", started=ago(40))
+        for case, kwargs, label, relabels in (("(i) a blocking finding", {}, self.LABEL, self.SKIP),
+                                              ("(ii) a held screen", {"screen": "held"}, Holding.STEP,
+                                               self.HOLD_RELABEL)):
+            with self.subTest(case=case):
+                def gave_way(control=False):
+                    self.tearDown()
+                    self.setUp()
+
+                    def run():
+                        return self.ordered([newer, ("120", rescreen, "blocking",
+                                                     {"event": "workflow_dispatch", "named": HEAD, **kwargs})])
+
+                    comments, _labels, checks, done = (self.changed_rules(*self.CLAIM_UNCHECKED, run) if control
+                                                       else run())
+                    got, outcomes = done["120"]
+                    return ((got["post"]["withdrew"], outcomes[label], outcomes[relabels],
+                             [outcomes[n] for n in self.RELABEL_STEPS]),
+                            self.successes(checks), rules.says_recorded(self.label_body(comments)))
+
+                self.assertEqual(gave_way(), (("", "skipped", "success", ["skipped"] * 3), [901], True),
+                                 self.logs[-6:])
+                self.assertEqual(gave_way(True)[0][3], ["success"] * 3, self.logs[-6:])
+
+    def test_a_run_that_gives_way_and_cannot_read_the_claim_of_its_label_comment_posts_nothing(self):
+        """OSSV-613's architect, 2026-11-28 06:13Z, item B: when GitHub does not give the label comments or the check
+        runs that the read of the step SKIP or HOLD_RELABEL asks for, that step fails: nothing posts, and the last step
+        of the job (UNCLAIM) runs. In withdrawal_unanswered (end lost), with the screen of run 120 clean (the comment
+        job) or held (the hold job), the stand-in gh fails one read of that step of run 120 (its inject): the read of
+        the label comments or of the check runs of HEAD. Each later step of the job but UNCLAIM is skipped, and UNCLAIM
+        writes the label comment of the state working in the place of the label comment of run 130, as no success
+        stands. The control, the step with no such read (UNREAD_CLAIM), succeeds, UNCLAIM does not run, and the label
+        comment of run 130 stands with no success."""
+        working = f"{rules.FIRST}\n**Next step:** {rules.STATES['working'][1]}"
+        # The read of that step that fails: in the comment job, after the two reads of rules.py newer-word (the comments
+        # and the check runs of HEAD), and in the hold job, first.
+        for job, kwargs, gives, n, endpoint in (
+                ("comment", {}, self.SKIP, 3, f"repos/{REPO}/issues/7/comments"),
+                ("comment", {}, self.SKIP, 4, f"repos/{REPO}/commits/{HEAD}/check-runs"),
+                ("hold", {"screen": "held"}, self.HOLD_RELABEL, 1, f"repos/{REPO}/issues/7/comments"),
+                ("hold", {"screen": "held"}, self.HOLD_RELABEL, 2, f"repos/{REPO}/commits/{HEAD}/check-runs")):
+            with self.subTest(job=job, read=endpoint):
+                def failing():
+                    # The stand-in gh fails the n-th read of the step gives alone: live, which runs the job, calls this
+                    # run_script for each step.
+                    script, run_script = step(job, gives)["run"], self.run_script
+                    inject = os.path.join(self.api, "inject")
+
+                    def stepped(text, **env):
+                        if text != script:
+                            return run_script(text, **env)
+                        for name in ("inject.read", "injected"):
+                            if os.path.exists(os.path.join(self.api, name)):
+                                os.remove(os.path.join(self.api, name))
+                        with open(inject, "w") as f:
+                            f.write(f"read {n}\n")
+                        try:
+                            return run_script(text, **env)
+                        finally:
+                            os.remove(inject)
+
+                    self.run_script = stepped
+
+                def unread(control=False):
+                    self.tearDown()
+                    self.setUp()
+
+                    def run():
+                        return self.withdrawal_unanswered("lost", before=failing, **kwargs)
+
+                    comments, _labels, checks, done = (self.changed_step(job, gives, *self.UNREAD_CLAIM, run)
+                                                       if control else run())
+                    outcomes = done["120"][1]
+                    names = list(outcomes)
+                    later = {outcomes[n] for n in names[names.index(gives) + 1:] if n != UNCLAIM}
+                    return ((outcomes[gives], later, outcomes[UNCLAIM]), self.successes(checks),
+                            self.label_body(comments))
+
+                now = unread()
+                self.assertEqual(now[:2], (("failure", {"skipped"}, "success"), []), self.logs[-6:])
+                with open(os.path.join(self.api, "injected"), encoding="utf-8") as f:
+                    self.assertEqual(f.read(), f"read GET {endpoint}\n")
+                self.assertIn("::error::", self.logs[-2])
+                self.assertTrue(now[2].startswith(working), now[2])
+                control = unread(True)
+                self.assertEqual((control[0][::2], rules.says_recorded(control[2])), (("success", "skipped"), True),
+                                 self.logs[-6:])
+
     def test_a_run_that_gives_way_after_its_post_job_withdrew_nothing_writes_as_before(self):
         """OSSV-613's architect, 2026-11-27 15:50Z: when the post job of a run that gives way withdrew no success (its
         output withdrew is empty), the step that writes the output relabel (in the comment job the step that skips the
@@ -23975,9 +24193,9 @@ class ImportCheckTest(ReaderRunner):
         the decision held, as the line of run 120 for its screen is newer than each screened review comment of HEAD,
         and the review of run 130 replaced the one of run 100). At the end no success stands, no label comment says
         that the workflow recorded the check, and a relabel of HEAD at the end (relabel_at_the_end) changes nothing on
-        #7. The control, the step HOLD_RELABEL that reads the output withdrew of the post job alone (POST_ONLY), as the
-        hold job of 484b8851 did, skips the three steps, and the label comment of run 130 that says that the workflow
-        recorded the check stands with no success."""
+        #7. The control, the step HOLD_RELABEL that reads the output withdrew of the post job alone (POST_ONLY) and no
+        label comment (UNREAD_CLAIM), as the hold job of 484b8851 did, skips the three steps, and the label comment of
+        run 130 that says that the workflow recorded the check stands with no success."""
         withdrawn = "Withdraw the import check runs of the head"
         comments, labels, checks, done = self.answers_order()
         outcomes = done["120"][1]
@@ -23999,7 +24217,8 @@ class ImportCheckTest(ReaderRunner):
         self.assertEqual(kept, self.WITHDREW_EITHER)
         relabel["env"]["WITHDREW"] = self.POST_ONLY
         try:
-            comments, labels, checks, done = self.answers_order()
+            comments, labels, checks, done = self.changed_step("hold", self.HOLD_RELABEL, *self.UNREAD_CLAIM,
+                                                               self.answers_order)
         finally:
             relabel["env"]["WITHDREW"] = kept
         self.assertEqual(([done["120"][1][n] for n in (withdrawn, *self.RELABEL_STEPS)], self.successes(checks),
